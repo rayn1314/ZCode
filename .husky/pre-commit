@@ -1,0 +1,6 @@
+# 提交前门禁：格式与换行符。
+#
+# oxfmt 已把 endOfLine 钉成 lf（见 .oxfmtrc.json 与 .gitattributes），所以这一条同时
+# 拦住"文件没格式化"和"CRLF 回潮"两类问题 —— 两者过去都因为没有任何钩子执行而长期无人发现。
+# 失败时执行 `pnpm fmt` 一键修好。
+pnpm fmt:check

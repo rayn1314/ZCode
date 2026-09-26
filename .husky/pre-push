@@ -1,0 +1,9 @@
+# 推送前门禁：lint、架构边界、格式化、类型检查。
+#
+# 命令集合集中在 package.json 的 verify:pre-push，钩子只做转发，
+# 避免"门禁定义"和"实际执行"两处各写一份、日后漂移。
+#
+# 注意 apps/zcode-cli 不在这些脚本的覆盖范围内（oxlint 的 ignorePatterns 与 .prettierignore
+# 都排除了它），它有自己的 lint / format:check / typecheck；改动 CLI 代码时另跑
+# `pnpm typecheck:cli`。
+pnpm verify:pre-push
