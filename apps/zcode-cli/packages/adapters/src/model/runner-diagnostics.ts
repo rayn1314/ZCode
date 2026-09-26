@@ -121,7 +121,6 @@ export function logGenerateTextDiagnostics(input: {
       finishReason: input.result.finishReason,
       textLength,
       toolCallCount: input.toolCallCount,
-      usage: input.usage,
     })
   ) {
     input.logger?.warn("AI SDK generateText returned an empty non-stop result", {
@@ -241,7 +240,6 @@ export function logStreamDiagnostics(input: {
       finishReason: input.diagnostics.finishReason,
       textLength: input.diagnostics.textDeltaChars,
       toolCallCount: input.diagnostics.toolCallCount,
-      usage: input.diagnostics.usage,
     })
   ) {
     input.logger?.warn("AI SDK stream returned an empty non-stop result", {
@@ -403,25 +401,27 @@ export function isSuspiciousStreamDiagnostics(diagnostics: StreamDiagnostics): b
     finishReason: diagnostics.finishReason,
     textLength: diagnostics.textDeltaChars,
     toolCallCount: diagnostics.toolCallCount,
-    usage: diagnostics.usage,
   });
 }
 
+/**
+ * 适配器侧的"重试一次"闸门：比 {@link isSuspiciousModelCompletion} 多要求 provider 明确给出过
+ * finishReason——没有终态信号的流交给 core 与流恢复处理，不由适配器重试。
+ *
+ * 这里曾经还要求 `reasoningLength === 0`，但 reasoning 是内部思考、不是可交付输出：被上游截断的
+ * 流往往是"推理写到一半断掉、正文为空"，那条要求恰好把这一类整体挡在重试之外。
+ */
 export function isZeroOutputModelCompletion(input: {
   finishReason?: string;
-  reasoningLength: number;
   textLength: number;
   toolCallCount: number;
-  usage?: ModelUsage;
 }): boolean {
   return (
     input.finishReason !== undefined &&
-    input.reasoningLength === 0 &&
     isSuspiciousModelCompletion({
       finishReason: input.finishReason,
       textLength: input.textLength,
       toolCallCount: input.toolCallCount,
-      usage: input.usage,
     })
   );
 }
@@ -430,34 +430,17 @@ function isSuspiciousModelCompletion(input: {
   finishReason?: string;
   textLength: number;
   toolCallCount: number;
-  usage?: ModelUsage;
 }): boolean {
   return (
     input.textLength === 0 &&
     input.toolCallCount === 0 &&
-    isNonStopFinish(input.finishReason) &&
-    isZeroUsage(input.usage)
+    isNonStopFinish(input.finishReason)
   );
 }
 
 function isNonStopFinish(finishReason?: string): boolean {
   const normalized = finishReason?.trim().toLowerCase();
   return normalized !== "stop" && normalized !== "tool-calls" && normalized !== "tool_calls";
-}
-
-function isZeroUsage(usage?: ModelUsage): boolean {
-  if (!usage) return true;
-  const serverToolUse =
-    (usage.serverToolUse?.webSearchRequests ?? 0) + (usage.serverToolUse?.webFetchRequests ?? 0);
-  if (serverToolUse > 0) return false;
-  const total =
-    usage.totalTokens ??
-    (usage.inputTokens ?? 0) +
-      (usage.outputTokens ?? 0) +
-      (usage.cacheReadTokens ?? 0) +
-      (usage.cacheWriteTokens ?? 0) +
-      (usage.reasoningTokens ?? 0);
-  return total === 0;
 }
 
 function toLogError(error: unknown): Error {

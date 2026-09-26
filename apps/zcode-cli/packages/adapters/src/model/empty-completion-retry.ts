@@ -7,7 +7,7 @@ import type { ResolvedAiSdkModelRetryOptions } from "./retry-policy.js";
 
 const EMPTY_COMPLETION_MAX_RETRIES = 1;
 const EMPTY_COMPLETION_MESSAGE =
-  "Model returned no text, no tool calls, and no usage before completing the turn.";
+  "Model returned no text and no tool calls before completing the turn.";
 
 function createEmptyCompletionFailure(): ClassifiedModelFailure {
   return {

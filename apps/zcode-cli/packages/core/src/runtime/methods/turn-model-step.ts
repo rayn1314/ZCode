@@ -525,7 +525,7 @@ async function runModelBackedTurnStepImpl(
   if (
     !localTerminalResponse &&
     outputTokenContinuation === "none" &&
-    isSuspiciousEmptyModelResult(result.finishReason, responseLength, toolCalls.length, usage)
+    isSuspiciousEmptyModelResult(result.finishReason, responseLength, toolCalls.length)
   ) {
     this.logger?.warn("Model returned an empty non-stop result", {
       ...traceContextToLogContext(modelTraceContext),

@@ -234,7 +234,7 @@ export function resolveStartPlanConcurrentLimitBannerReason(
 
 /** 与 core `model-errors.ts` 中 anomaly guard 文案保持一致。 */
 export const SUSPICIOUS_EMPTY_MODEL_RESULT_MESSAGE =
-  "Model returned no text, no tool calls, and no usage before completing the turn.";
+  "Model returned no text and no tool calls before completing the turn.";
 
 /**
  * 闲时票据不可用（上游 3102：票据失效或过期）。

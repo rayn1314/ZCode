@@ -393,10 +393,8 @@ export async function* runStreamText(input: {
           input.request.preserveProviderStreamBoundaries !== true &&
           isZeroOutputModelCompletion({
             finishReason: diagnostics.finishReason,
-            reasoningLength: diagnostics.reasoningDeltaChars,
             textLength: diagnostics.textDeltaChars,
             toolCallCount: diagnostics.toolCallCount,
-            usage: diagnostics.usage,
           }) &&
           canRetryEmptyCompletion({
             abortSignal: input.request.abortSignal,
@@ -530,10 +528,8 @@ export async function* runStreamText(input: {
             input.request.preserveProviderStreamBoundaries !== true &&
             isZeroOutputModelCompletion({
               finishReason: diagnostics.finishReason,
-              reasoningLength: diagnostics.reasoningDeltaChars,
               textLength: diagnostics.textDeltaChars,
               toolCallCount: diagnostics.toolCallCount,
-              usage: diagnostics.usage,
             }) &&
             canRetryEmptyCompletion({
               abortSignal: input.request.abortSignal,

@@ -1,5 +1,4 @@
 import { CoreErrorType, ModelErrorCode, createCoreError, isCoreError } from "../deps.js";
-import type { ModelUsage } from "../deps.js";
 import { isPlainRecord, stringProperty } from "./data.js";
 import {
   createCoreErrorFromProviderBusinessLike,
@@ -64,22 +63,22 @@ export function createCompactRapidRefillError(input: {
   );
 }
 
+/**
+ * 空 completion 的判据只看两件事：没有可交付输出，且流没给出正常终态。
+ * 曾经额外要求 usage 为零，但 usage 记的是计费而不是流的终止形态：被上游截断的流
+ * 照样会带上已生成的 token 数（实测 14.6 万 input / 213 output），于是最常见的
+ * "截断但计费"这一类被整体漏判，turn 被当成正常收尾且无任何报错。
+ */
 export function isSuspiciousEmptyModelResult(
   finishReason: string | undefined,
   responseLength: number,
   toolCallCount: number,
-  usage?: ModelUsage,
 ): boolean {
-  return (
-    responseLength === 0 &&
-    toolCallCount === 0 &&
-    isNonStopFinish(finishReason) &&
-    isZeroUsage(usage)
-  );
+  return responseLength === 0 && toolCallCount === 0 && isNonStopFinish(finishReason);
 }
 
 const SUSPICIOUS_EMPTY_MODEL_RESULT_MESSAGE =
-  "Model returned no text, no tool calls, and no usage before completing the turn.";
+  "Model returned no text and no tool calls before completing the turn.";
 
 function createSuspiciousEmptyModelResultError(
   finishReason: string | undefined,
@@ -170,18 +169,6 @@ function tryCreateProviderBusinessModelErrorFromMetadata(
 function isNonStopFinish(finishReason?: string): boolean {
   const normalized = finishReason?.trim().toLowerCase();
   return normalized !== "stop" && normalized !== "tool-calls" && normalized !== "tool_calls";
-}
-
-function isZeroUsage(usage?: ModelUsage): boolean {
-  if (!usage) return true;
-  const total =
-    usage.totalTokens ??
-    (usage.inputTokens ?? 0) +
-      (usage.outputTokens ?? 0) +
-      (usage.cacheReadTokens ?? 0) +
-      (usage.cacheWriteTokens ?? 0) +
-      (usage.reasoningTokens ?? 0);
-  return total === 0;
 }
 
 export function normalizeStreamError(error: unknown): Error {

@@ -223,18 +223,12 @@ export async function runGenerateText(input: {
         ? serializeStructuredOutput(result)
         : result.text;
       const reasoning = normalizeReasoning(result.reasoning);
-      const reasoningLength = (reasoning ?? []).reduce(
-        (total, block) => total + block.text.length,
-        0,
-      );
       if (
         input.request.preserveProviderStreamBoundaries !== true &&
         isZeroOutputModelCompletion({
           finishReason: result.finishReason,
-          reasoningLength,
           textLength: text.length,
           toolCallCount: toolCalls?.length ?? 0,
-          usage,
         }) &&
         canRetryEmptyCompletion({
           abortSignal: input.request.abortSignal,

@@ -481,7 +481,7 @@ export async function runModelTextRequest(
   if (
     !contextExceeded &&
     !outputTokenLimit &&
-    isSuspiciousEmptyModelResult(finishReason, text.length, toolCalls.length, usage)
+    isSuspiciousEmptyModelResult(finishReason, text.length, toolCalls.length)
   ) {
     // zcode-plan 常返回 HTTP 200 空 SSE，需在抛错前打出 finish/providerMetadata 摘要，避免只能看到 UI 泛化文案。
     this.logger?.warn("Model stream ended with suspicious empty completion", {
