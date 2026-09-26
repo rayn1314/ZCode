@@ -7,7 +7,10 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolveZCodeEndpointOrigin, pickProductEndpointEnv } from "@zcode/shared/zcodeEndpoint";
 import { pdfJsCMapsPlugin } from "../ui/vite/pdfJsCMapsPlugin.js";
 import { getBuildMetadata } from "./scripts/build-metadata.mjs";
-import { resolveDesktopProductFlavor } from "./scripts/desktop-product-identity.mjs";
+import {
+  resolveDesktopProductFlavor,
+  resolveDesktopProductIdentityForFlavor,
+} from "./scripts/desktop-product-identity.mjs";
 
 const buildMetadata = getBuildMetadata();
 const desktopRequire = createRequire(import.meta.url);
@@ -140,6 +143,35 @@ function stripViteRequestQuery(id: string) {
   return id.split("?")[0] ?? id;
 }
 
+/**
+ * HTML 入口里的产品名占位符。
+ * 用 `{{...}}` 而不是 Vite 的 `%VITE_*%`，避免和 HTML env 替换语法撞车。
+ */
+const ZCODE_PRODUCT_NAME_PLACEHOLDER = "{{ZCODE_PRODUCT_NAME}}";
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+/**
+ * 把 HTML 入口里的 {{ZCODE_PRODUCT_NAME}} 换成构建期产品名。
+ *
+ * Electron 里 document.title 就是窗口标题，所以标题写死 "ZCode" 时，
+ * 自建客户端的窗口标题、任务栏悬停和 Alt+Tab 都会显示 "ZCode"，和官方版分不清。
+ * 用占位符而不是匹配字面量，是为了后续新增入口页也能自动跟随身份。
+ */
+function htmlProductNamePlugin(productName: string): Plugin {
+  return {
+    name: "zcode:html-product-name",
+    transformIndexHtml: (html) =>
+      html.replaceAll(ZCODE_PRODUCT_NAME_PLACEHOLDER, escapeHtmlText(productName)),
+  };
+}
+
 export default defineConfig(({ mode }) => {
   // `.env*` 只提供链接常量；当前产品环境由启动脚本或 CI 注入 ZCODE_ENV。
   const env = { ...loadEnv(mode, "../..", ""), ...process.env };
@@ -147,6 +179,12 @@ export default defineConfig(({ mode }) => {
   const zcodeEnv = resolveZCodeEnv(env.ZCODE_ENV);
   // 安装包身份与后端环境分轴；renderer 用它决定是否展示更新入口。
   const zcodeProductFlavor = resolveDesktopProductFlavor({
+    ...process.env,
+    ...env,
+    ZCODE_ENV: zcodeEnv,
+  });
+  // 产品身份（应用名 / appId）允许下游覆盖，与 tsup 保持同一份解析结果。
+  const zcodeProductIdentity = resolveDesktopProductIdentityForFlavor(zcodeProductFlavor, {
     ...process.env,
     ...env,
     ZCODE_ENV: zcodeEnv,
@@ -163,6 +201,7 @@ export default defineConfig(({ mode }) => {
     env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? process.env.VITE_CODING_PLAN_WEBVIEW_ORIGIN ?? "";
   const plugins = [
     ...(e2eCoverageEnabled ? [createE2EUIRendererCoveragePlugin(repoRoot)] : []),
+    htmlProductNamePlugin(zcodeProductIdentity.productName),
     pdfJsCMapsPlugin(),
     react(),
     tailwindcss(),
@@ -194,6 +233,8 @@ export default defineConfig(({ mode }) => {
       __ZCODE_BUILD_TIME__: JSON.stringify(buildMetadata.buildTime),
       __ZCODE_ENV__: JSON.stringify(zcodeEnv),
       __ZCODE_PRODUCT_FLAVOR__: JSON.stringify(zcodeProductFlavor),
+      __ZCODE_PRODUCT_NAME__: JSON.stringify(zcodeProductIdentity.productName),
+      __ZCODE_DATA_ROOT_SUFFIX__: JSON.stringify(zcodeProductIdentity.dataRootSuffix),
       __ZCODE_LOCAL_DEVELOPMENT_RUNTIME__: JSON.stringify(mode !== "production"),
       "import.meta.env.VITE_ZCODE_BASE_URL": JSON.stringify(zcodeEndpointOrigin),
       // 兼容旧 renderer 读取名；新代码统一读 VITE_ZCODE_BASE_URL。

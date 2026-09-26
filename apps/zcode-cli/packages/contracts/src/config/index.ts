@@ -1,9 +1,18 @@
 // Config Port - Scoped configuration with change notification
 
+import { join } from "node:path";
 import type { CollaborationMode } from "../interfaces/session.port.js";
 import type { McpServerConfig } from "../interfaces/mcp.port.js";
 import type { HooksRuntimeConfig, HooksRuntimeConfigPatch } from "../hooks/index.js";
 import type { PluginConfig, PluginOptionValues } from "../plugins/index.js";
+import { resolveZCodeDataRoot } from "../path/userDataRoot.js";
+
+/**
+ * 用户级数据根：宿主进程可按产品身份重定向（并排安装的客户端各用各的会话库、凭据与设置）。
+ * 在模块加载时解析一次，进程内所有默认路径必须收敛到同一个根，否则会出现
+ * 「桌面读新根、Agent 写旧根」的分裂。
+ */
+const defaultDataRoot = resolveZCodeDataRoot();
 
 // ============================================================
 // Config Key Types
@@ -299,8 +308,8 @@ export const DefaultRuntimeConfig: RuntimeConfig = {
     allowMediumRiskInAuto: false,
   },
   storage: {
-    dir: "~/.zcode",
-    sessionDbPath: "~/.zcode/cli/db/db.sqlite",
+    dir: defaultDataRoot,
+    sessionDbPath: join(defaultDataRoot, "cli", "db", "db.sqlite"),
   },
   network: {
     timeout: 180000,

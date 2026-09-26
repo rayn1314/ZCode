@@ -10,7 +10,7 @@ import {
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import type { RuntimeConfigPatch, UiLocale } from "@zcode/contracts";
+import { resolveZCodeDataRoot, type RuntimeConfigPatch, type UiLocale } from "@zcode/contracts";
 import { z } from "zod";
 import {
   CANONICAL_CUA_PLUGIN_ID,
@@ -59,7 +59,9 @@ export interface PluginRemovePatchResult {
 }
 
 const DEFAULT_CONFIG_FILE = "config.json";
-const DEFAULT_BASE_DIR = "~/.zcode/cli";
+// 跟随数据根：并排安装的客户端各有独立的 CLI 配置（MCP、插件、模型），
+// 共用会让一方的改动直接改变另一方的行为。
+const DEFAULT_BASE_DIR = join(resolveZCodeDataRoot(), "cli");
 
 /**
  * Resolve path with ~ expansion

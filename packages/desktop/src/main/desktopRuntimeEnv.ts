@@ -11,6 +11,7 @@ import {
   ZCODE_DYNAMIC_WORKFLOW_MODE_ENV,
   ZCODE_ENV,
   ZCODE_PRODUCT_FLAVOR,
+  ZCODE_PRODUCT_NAME,
   ZCODE_RUNTIME_ENV_KEY,
   ZCODE_VERSION,
   buildZCodeToolEnvPassthroughEnv,
@@ -29,7 +30,9 @@ import { resolvePlatformKeyForPackagedApp } from "../../scripts/target-platform.
 import {
   getAppConfigDir,
   getDataBaseDir,
+  getZCodeDataRootDir,
   ZCODE_CUA_BUNDLED_HELPER_APP_PATH_ENV,
+  ZCODE_DATA_ROOT_ENV,
   ZCODE_WINDOWS_APP_INSTALL_DIR_ENV,
 } from "@zcode/services/node";
 import {
@@ -58,9 +61,18 @@ function isTruthyRuntimeEnvOverride(name: string): boolean {
 // e2e 运行的是生产构建，默认会和本机正式版 ZCode 共用 app name / userData，
 // 触发 Electron 单实例锁后只激活已有窗口，Chromedriver 无法接管测试进程。
 // 这里允许测试显式隔离运行时身份，正常桌面/远控路径保持原来的默认值。
+//
+// 打包态应用名取自构建期产品身份（下游可用 ZCODE_PRODUCT_NAME env 覆盖），
+// 开发态保持 "ZCode Dev"。这个名字同时决定 Electron 数据目录（%APPDATA%\<name>）与
+// 单实例锁，所以自建客户端必须与官方不同名；否则两个客户端会抢同一份 userData，
+// 也就无法并排运行。
+// 常量缺失时的回退值是身份表默认值，供未经 tsup 注入的构建路径使用。
+const packagedApplicationName =
+  ZCODE_PRODUCT_NAME || (isPreviewPackagedRuntime ? "ZCode Preview" : "ZCode");
+
 export const runtimeApplicationName =
   readRuntimeEnvOverride("ZCODE_DESKTOP_APPLICATION_NAME") ??
-  (isLocalDevelopmentRuntime ? "ZCode Dev" : isPreviewPackagedRuntime ? "ZCode Preview" : "ZCode");
+  (isLocalDevelopmentRuntime ? "ZCode Dev" : packagedApplicationName);
 // Electron 的 app.getPath("home") 不一定跟随测试进程里的 HOME 覆盖。
 // e2e 默认工作区依赖 home 路径，因此提供显式覆盖，避免测试写到开发者真实 ~/ZCodeProject。
 export const runtimeHomePath = readRuntimeEnvOverride("ZCODE_DESKTOP_HOME_DIR");
@@ -477,6 +489,10 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
     larkCliBinaryPath,
   );
   const dataBaseDir = getDataBaseDir();
+  const dataRootDir = getZCodeDataRootDir();
+  // 数据根被产品身份整体覆盖时（下游自建客户端，见 desktopDataBaseDirBootstrap），
+  // 必须显式下发：否则 Host 会按 {dataBaseDir}/.zcode 自行推算，落到与 Main 不同的目录。
+  const overriddenDataRootDir = dataRootDir === join(dataBaseDir, ".zcode") ? null : dataRootDir;
   const rawInheritedEnv = {
     ...hostProcessLocalEnv,
     ...readDefinedProcessEnv(),
@@ -554,6 +570,9 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
     // 这里从 main 进程显式下发，agent 子进程继承 host env 后即可稳定写入请求 header。
     [ZCODE_APP_VERSION_ENV]: ZCODE_VERSION,
     ...(dataBaseDir !== homedir() ? { ZCODE_DATA_BASE_DIR: dataBaseDir } : {}),
+    // 身份数据根：与 ZCODE_DATA_BASE_DIR 是两层——后者是父目录，这里是 `.zcode` 根本身。
+    // 自建客户端与官方客户端并排安装时各用各的根，共用会让两者的会话列表互相可见。
+    ...(overriddenDataRootDir ? { [ZCODE_DATA_ROOT_ENV]: overriddenDataRootDir } : {}),
     ...(windowsAppInstallDir ? { [ZCODE_WINDOWS_APP_INSTALL_DIR_ENV]: windowsAppInstallDir } : {}),
     ...(bundledCuaHelperAppPath
       ? { [ZCODE_CUA_BUNDLED_HELPER_APP_PATH_ENV]: bundledCuaHelperAppPath }

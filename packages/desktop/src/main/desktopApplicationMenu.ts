@@ -114,7 +114,7 @@ function buildApplicationMenuTemplate(options: {
             label: app.name,
             submenu: [
               {
-                label: getLabel(desktopMenuMessageIds.helpAbout),
+                label: getAppLabel(desktopMenuMessageIds.helpAbout),
                 click: () => void options.executeDesktopCommand(DesktopCommandIds.ShowAbout),
               },
               // 更新入口跟随产品身份：Preview 禁用更新器，生产后端的 Preview 也不例外。
@@ -256,7 +256,7 @@ function buildApplicationMenuTemplate(options: {
         ...(process.platform !== "darwin"
           ? [
               {
-                label: getLabel(desktopMenuMessageIds.helpAbout),
+                label: getAppLabel(desktopMenuMessageIds.helpAbout),
                 click: () => void options.executeDesktopCommand(DesktopCommandIds.ShowAbout),
               },
               ...(ZCODE_PRODUCT_FLAVOR === "production"

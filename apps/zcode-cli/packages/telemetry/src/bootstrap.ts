@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type {
   AgentTelemetryRuntimeOwner,
@@ -11,6 +10,7 @@ import type {
   TelemetryResourceContext,
 } from "@zcode/contracts/telemetry";
 import type { ModelStatusSink } from "@zcode/contracts/model";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
 import { NoopAgentExecutionTelemetry } from "./agent-trace-runtime.js";
 
 type EnvRecord = Record<string, string | undefined>;
@@ -126,7 +126,7 @@ export async function prepareModelTelemetryEnv(
   }
   const existingInstallationId = normalizeTelemetryDeviceMid(env.ZCODE_TELEMETRY_DEVICE_MID);
   const installationId =
-    existingInstallationId ?? (await resolveStandaloneDeviceMid(env.ZCODE_HOME?.trim()));
+    existingInstallationId ?? (await resolveStandaloneDeviceMid(env));
   const preparedEnv = installationId ? { ...env, ZCODE_TELEMETRY_DEVICE_MID: installationId } : env;
 
   if (!preparingOwner && !preparedOwner) {
@@ -220,12 +220,15 @@ function normalizeTelemetryId(value: string | undefined): string | undefined {
   return normalized && TELEMETRY_ID_PATTERN.test(normalized) ? normalized : undefined;
 }
 
-async function resolveStandaloneDeviceMid(
-  zcodeHome: string | undefined,
-): Promise<string | undefined> {
+async function resolveStandaloneDeviceMid(env: EnvRecord): Promise<string | undefined> {
+  const zcodeHome = env.ZCODE_HOME?.trim();
+  // ZCODE_HOME 是显式的 .zcode 根覆盖，优先于统一数据根；未给出时按数据根解析，
+  // 它会认 ZCODE_DATA_ROOT / ZCODE_DATA_BASE_DIR。这里与 adapters 的 cli-device-mid
+  // 读写的是同一份设备标识文件，两处规则不一致会让桌面与 CLI 落在不同文件上，
+  // 结果是同一台机器出现两个 deviceMid。
   const stateFile = zcodeHome
     ? join(zcodeHome, "v2", "telemetry-state.json")
-    : join(homedir(), ".zcode", "v2", "telemetry-state.json");
+    : join(resolveZCodeDataRoot(env), "v2", "telemetry-state.json");
   const pending = pendingStandaloneDeviceMidByStateFile.get(stateFile);
   if (pending) return pending;
   const resolution = resolveStandaloneDeviceMidFromFile(stateFile);

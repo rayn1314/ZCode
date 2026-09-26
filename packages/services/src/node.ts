@@ -58,6 +58,7 @@ export type {
 } from "./fs/fsFaultInjection.js";
 export {
   setDataBaseDir,
+  setDataRootDir,
   getDataBaseDir,
   getZCodeDataRootDir,
   getConversationWorkspaceDir,
@@ -71,6 +72,7 @@ export {
   copyDataDirectory,
   validateDataBaseDirTarget,
   ZCODE_WINDOWS_APP_INSTALL_DIR_ENV,
+  ZCODE_DATA_ROOT_ENV,
 } from "./paths.js";
 export { createGitService } from "./git/gitService.js";
 export { GitCommitMessageGenerator } from "./git/gitCommitMessageGenerator.js";

@@ -1,11 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
+import { resolveUserPath, resolveZCodeDataRoot } from "@zcode/contracts";
 import { atomicWritePrivateTextFile, backupCorruptFile, withFileLock } from "@zcode/shared/node";
 import { createZCodeCredentialCipher, type ZCodeCredentialCipher } from "./credential-cipher.js";
 
-const ZCODE_DATA_BASE_DIR_ENV_KEY = "ZCODE_DATA_BASE_DIR";
 const ZAI_PROVIDER_ID = "zai";
 const credentialChangeListeners = new Map<
   string,
@@ -285,8 +284,13 @@ export function resolveSharedZCodeCredentialsPath(
   }
 
   const env = options.env ?? process.env;
-  const baseDir = options.baseDir ?? env[ZCODE_DATA_BASE_DIR_ENV_KEY] ?? homedir();
-  return join(resolveUserPath(baseDir), ".zcode", "v2", "credentials.json");
+  // options.baseDir 是数据根的父目录（调用方显式指定）；未指定时交给统一数据根解析，
+  // 它会优先认 ZCODE_DATA_ROOT —— 并排安装的客户端必须各用各的凭据库，否则一处登录
+  // 会让另一处也处于登录态（甚至互相刷新同一份 token）。
+  const dataRoot = options.baseDir
+    ? join(resolveUserPath(options.baseDir), ".zcode")
+    : resolveZCodeDataRoot(env);
+  return join(dataRoot, "v2", "credentials.json");
 }
 
 async function readRawCredentialRecord(filePath: string): Promise<Record<string, string>> {
@@ -366,16 +370,6 @@ function validateCredentialValue(value: string): string {
     throw new Error("Credential value must not be empty");
   }
   return value;
-}
-
-function resolveUserPath(value: string): string {
-  if (value === "~") {
-    return homedir();
-  }
-  if (value.startsWith("~/")) {
-    return join(homedir(), value.slice(2));
-  }
-  return resolve(value);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

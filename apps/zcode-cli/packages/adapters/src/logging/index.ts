@@ -3,10 +3,9 @@
 // ============================================================
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LogContext, LogEntry, Logger, LoggerFactory, LogRedactor } from "@zcode/contracts";
-import { LogLevel, LogLevelName } from "@zcode/contracts";
+import { LogLevel, LogLevelName, resolveZCodeDataRoot } from "@zcode/contracts";
 import { ZCODE_RUNTIME_ENV_KEY, normalizeZCodeRuntimeEnv } from "@zcode/shared";
 import {
   formatLocalLogDate,
@@ -220,7 +219,8 @@ export function createNodeLoggerFactory(options: NodeLoggerFactoryOptions = {}):
 }
 
 export function getDefaultLogDir(): string {
-  return join(homedir(), ".zcode", "cli", "log");
+  // 跟随数据根：并排安装的客户端日志必须分开，否则排查时两个客户端的现场会混在一起。
+  return join(resolveZCodeDataRoot(), "cli", "log");
 }
 
 function getDefaultMinLevel(env: NodeJS.ProcessEnv | undefined): LogLevel {

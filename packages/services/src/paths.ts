@@ -7,8 +7,18 @@ import { homedir } from "node:os";
 import { DATA_BASE_DIR_FORBIDDEN_WINDOWS_INSTALL_DIR_ERROR_CODE } from "@zcode/shared";
 
 let _dataBaseDir: string | null = null;
+let _dataRootDir: string | null = null;
 export const ZCODE_WINDOWS_APP_INSTALL_DIR_ENV = "ZCODE_WINDOWS_APP_INSTALL_DIR";
+/**
+ * 数据根本身的覆盖（完整路径，不再拼 `.zcode`）。
+ *
+ * 宿主进程用它把不同产品身份指向各自的数据根：并排安装的客户端若共用 `{dataBaseDir}/.zcode`，
+ * 会读写同一个会话库（cli/db/db.sqlite）、凭据和设置，会话列表互相可见并并发写同一个 SQLite。
+ * 官方渠道不设该变量，路径与历史完全一致。
+ */
+export const ZCODE_DATA_ROOT_ENV = "ZCODE_DATA_ROOT";
 const envDataBaseDir = process.env.ZCODE_DATA_BASE_DIR?.trim() || null;
+const envDataRootDir = process.env[ZCODE_DATA_ROOT_ENV]?.trim() || null;
 const defaultDataBaseDir = process.env.HOME?.trim() || homedir();
 
 interface DataBaseDirTargetValidationOptions {
@@ -39,8 +49,23 @@ export function getDataBaseDir(): string {
   return defaultDataBaseDir;
 }
 
-/** {dataBaseDir}/.zcode */
+/**
+ * Set the app data root outright, bypassing the `{dataBaseDir}/.zcode` layout.
+ * 供宿主进程按产品身份定向数据根；子进程通过 ZCODE_DATA_ROOT 继承同一值。
+ */
+export function setDataRootDir(dir: string | null): void {
+  _dataRootDir = dir?.trim() || null;
+}
+
+/**
+ * {dataBaseDir}/.zcode
+ *
+ * 优先返回 setDataRootDir() / ZCODE_DATA_ROOT 指定的完整根：同一台机器上并排安装的
+ * 产品身份各有独立数据根，会话库、任务索引、凭据和设置都从这里派生。
+ */
 export function getZCodeDataRootDir(): string {
+  if (_dataRootDir) return _dataRootDir;
+  if (envDataRootDir) return envDataRootDir;
   return join(getDataBaseDir(), ".zcode");
 }
 

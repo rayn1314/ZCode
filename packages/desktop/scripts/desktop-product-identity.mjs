@@ -9,6 +9,7 @@ const PRODUCTION_IDENTITY = Object.freeze({
   flavor: "production",
   appId: "dev.zcode.app",
   productName: "ZCode",
+  dataRootSuffix: "",
   linuxExecutableName: "zcode",
   linuxPackageName: "zcode",
   cuaHelperInstallVariant: null,
@@ -18,6 +19,7 @@ const PREVIEW_IDENTITY = Object.freeze({
   flavor: "preview",
   appId: "dev.zcode.app.preview",
   productName: "ZCode Preview",
+  dataRootSuffix: "",
   linuxExecutableName: "zcode-preview",
   linuxPackageName: "zcode-preview",
   cuaHelperInstallVariant: "preview",
@@ -63,8 +65,79 @@ export function resolveDesktopProductFlavor(env = process.env) {
   return normalizeDesktopZCodeEnv(env) === "production" ? "production" : "preview";
 }
 
+/**
+ * 下游自建客户端的产品身份覆盖开关。
+ *
+ * 身份表里的 `production` / `preview` 是上游两条发行通道。下游 fork 需要「自己的名字」
+ * 才能与官方客户端并排共存（独立安装位、独立 Electron 数据目录、独立 AppUserModelId）。
+ * 这里不给身份轴再加第三个 flavor——那会连带改变更新策略、菜单、托盘、CUA Helper 等
+ * 所有按 flavor 分支的语义——只覆盖展示身份，flavor 仍按上游规则选择。
+ *
+ * 用法：`ZCODE_PRODUCT_NAME="ZCode Rayn" ZCODE_APP_ID="dev.zcode.app.rayn" pnpm bundle:desktop -- --win`
+ */
+export const ZCODE_PRODUCT_NAME_ENV = "ZCODE_PRODUCT_NAME";
+export const ZCODE_APP_ID_ENV = "ZCODE_APP_ID";
+
+function readIdentityOverride(env, name) {
+  const value = env?.[name];
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Linux 可执行名/包名必须是稳定的小写 slug，否则 electron-builder 会推出 `@zcoderayn` 之类的非法名。 */
+function toLinuxSlug(productName) {
+  const slug = productName
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return slug || "zcode";
+}
+
+function applyIdentityOverrides(identity, env) {
+  const productName = readIdentityOverride(env, ZCODE_PRODUCT_NAME_ENV);
+  const appId = readIdentityOverride(env, ZCODE_APP_ID_ENV);
+  if (!productName && !appId) {
+    return identity;
+  }
+
+  const resolvedProductName = productName ?? identity.productName;
+  const linuxSlug = toLinuxSlug(resolvedProductName);
+  return Object.freeze({
+    ...identity,
+    productName: resolvedProductName,
+    appId: appId ?? identity.appId,
+    dataRootSuffix: resolveDataRootSuffix(productName, appId),
+    linuxExecutableName: linuxSlug,
+    linuxPackageName: linuxSlug,
+  });
+}
+
+/**
+ * 数据根后缀：并排安装的产品身份必须各自独立的数据根。
+ *
+ * 上游两条官方渠道保持空串，沿用历史数据根 `{dataBaseDir}/.zcode`——上游把
+ * 「Preview 与正式版共享任务、配置和凭据」当成设计（见 desktopRuntimeEnv 中
+ * ZCODE_CUA_HELPER_INSTALL_VARIANT 的注释），不能替它改语义。
+ *
+ * 下游自建客户端一旦覆盖产品名或 appId，就说明它要与官方客户端并排运行。此时若仍共用
+ * `~/.zcode`，两个客户端会读写同一个会话库（cli/db/db.sqlite）、凭据和设置：会话列表互相
+ * 可见，还会并发写同一个 SQLite。所以按覆盖后的身份派生独立后缀。
+ */
+function resolveDataRootSuffix(productNameOverride, appIdOverride) {
+  // appId 末段是下游为自己客户端选定的标识（dev.zcode.app.rayn -> rayn），
+  // 比产品名的 slug 短且稳定；只覆盖产品名时退回它。
+  const appIdTail = appIdOverride?.split(".").filter(Boolean).pop();
+  return `-${toLinuxSlug(appIdTail || productNameOverride || "client")}`;
+}
+
+export function resolveDesktopProductIdentityForFlavor(flavor, env = process.env) {
+  return applyIdentityOverrides(
+    desktopProductIdentities[flavor === "preview" ? "preview" : "production"],
+    env,
+  );
+}
+
 export function resolveDesktopProductIdentity(env = process.env) {
-  return desktopProductIdentities[resolveDesktopProductFlavor(env)];
+  return resolveDesktopProductIdentityForFlavor(resolveDesktopProductFlavor(env), env);
 }
 
 /**
@@ -82,13 +155,24 @@ export function resolveDesktopArtifactSuffix(env = process.env) {
  * 和运行中的 Electron 进程会被 Windows 视为三个不同的应用。开发态继续保留旧身份，
  * 避免本地调试快捷方式和正式/Preview 安装包互相污染。
  */
-export function resolveWindowsAppUserModelIdForFlavor(flavor, runtime = { isPackaged: true }) {
+export function resolveWindowsAppUserModelIdForFlavor(
+  flavor,
+  runtime = { isPackaged: true },
+  appIdOverride,
+) {
   if (runtime.isPackaged === false) {
     return "cn.aminer.zcode";
   }
-  return desktopProductIdentities[flavor === "preview" ? "preview" : "production"].appId;
+  // 打包态优先用构建期注入的 appId。下游自建客户端的 appId 覆盖只在构建期可见，
+  // 运行时进程环境里没有该变量；若退回身份表，会与安装包注册的 AUMID 不一致，
+  // Shell 会把快捷方式、通知和进程当成三个不同应用。
+  return appIdOverride?.trim() || resolveDesktopProductIdentityForFlavor(flavor).appId;
 }
 
 export function resolveWindowsAppUserModelId(env = process.env, runtime = { isPackaged: true }) {
-  return resolveWindowsAppUserModelIdForFlavor(resolveDesktopProductFlavor(env), runtime);
+  return resolveWindowsAppUserModelIdForFlavor(
+    resolveDesktopProductFlavor(env),
+    runtime,
+    resolveDesktopProductIdentity(env).appId,
+  );
 }

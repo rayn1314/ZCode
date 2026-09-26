@@ -42,6 +42,10 @@ export function createWindowsDesktopTray(options: {
 
   const getLabel = (id: (typeof desktopMenuMessageIds)[keyof typeof desktopMenuMessageIds]) =>
     getDesktopMenuMessage(options.getLocale(), id);
+  // 文案里的 {appName} 取自 Electron 应用名（启动时已按构建期产品身份 setName）。
+  // 不在这里替换，托盘提示和菜单就会固定显示 "ZCode"，自建客户端看起来仍是官方版。
+  const getAppLabel = (id: (typeof desktopMenuMessageIds)[keyof typeof desktopMenuMessageIds]) =>
+    getLabel(id).replaceAll("{appName}", app.name);
   const showTrayWindow = () => {
     void Promise.resolve(options.showCurrentWindow()).catch((error) => {
       options.logger.warn("[desktop-tray] failed to show current window", error);
@@ -55,11 +59,11 @@ export function createWindowsDesktopTray(options: {
       });
   };
   const rebuildContextMenu = () => {
-    desktopTray?.setToolTip(getLabel(desktopMenuMessageIds.trayTooltip));
+    desktopTray?.setToolTip(getAppLabel(desktopMenuMessageIds.trayTooltip));
     desktopTray?.setContextMenu(
       Menu.buildFromTemplate([
         {
-          label: getLabel(desktopMenuMessageIds.trayOpenZCode),
+          label: getAppLabel(desktopMenuMessageIds.trayOpenZCode),
           click: showTrayWindow,
         },
         { type: "separator" },
@@ -82,7 +86,7 @@ export function createWindowsDesktopTray(options: {
             ]
           : []),
         {
-          label: getLabel(desktopMenuMessageIds.helpAbout),
+          label: getAppLabel(desktopMenuMessageIds.helpAbout),
           click: () => executeTrayCommand(DesktopCommandIds.ShowAbout),
         },
         {

@@ -8,6 +8,7 @@ import {
   ZCODE_BUILD_TIME,
   ZCODE_COMMIT,
   ZCODE_ENV,
+  ZCODE_PRODUCT_NAME,
   ZCODE_VERSION,
 } from "@zcode/shared";
 import { createCustomAboutDialogHtml } from "./aboutWindow.js";
@@ -53,6 +54,16 @@ interface AboutSnapshotOptions {
 }
 
 const ABOUT_APPLICATION_NAME = "ZCode Desktop App";
+
+/**
+ * 「关于」窗口显示的产品名。
+ * 跟随构建期产品身份：生产版 "ZCode Desktop App"、Preview "ZCode Preview Desktop App"、
+ * 下游自建客户端 "ZCode Rayn Desktop App"。
+ * 固定文案会让自建客户端的「关于」自称 ZCode，与窗口标题、数据目录对不上。
+ */
+function resolveAboutApplicationName(): string {
+  return ZCODE_PRODUCT_NAME ? `${ZCODE_PRODUCT_NAME} Desktop App` : ABOUT_APPLICATION_NAME;
+}
 // 自定义 About 内容本体是 256x280；原生窗口如果同尺寸会让内容贴满透明窗口边界。
 // 这里给 BrowserWindow 额外留出背景呼吸空间，避免正式 About 看起来比 demo 更局促。
 const ABOUT_WINDOW_WIDTH = 256;
@@ -255,7 +266,7 @@ export async function showAboutDialog(
   void aboutWindow.loadURL(
     `data:text/html;charset=utf-8,${encodeURIComponent(
       createCustomAboutDialogHtml({
-        applicationName: ABOUT_APPLICATION_NAME,
+        applicationName: resolveAboutApplicationName(),
         appVersion: snapshot.appVersion,
         copyright: formatAboutCopyright(undefined, locale),
         optimizationLine: formatAboutOptimizationLine(snapshot, locale),

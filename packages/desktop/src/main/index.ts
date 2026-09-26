@@ -69,6 +69,7 @@ import {
   PlatformChannels,
   ZCODE_ENV,
   ZCODE_PRODUCT_FLAVOR,
+  ZCODE_APP_ID,
   DEFAULT_ZCODE_ENDPOINT_ORIGIN,
   DEFAULT_LOCALE,
   ZCODE_VERSION,
@@ -1976,9 +1977,14 @@ app.whenReady().then(async () => {
 
   if (process.platform === "win32") {
     // 打包态必须与 NSIS 快捷方式使用同一 AUMID，否则 Shell 把它们当成不同应用。
-    // 使用构建期产品身份，不依赖用户机器环境；开发态继续保持独立身份。
+    // 身份全部取自构建期常量（含下游自建客户端的产品身份），不依赖用户机器环境；
+    // 开发态继续保持独立身份。
     app.setAppUserModelId(
-      resolveWindowsAppUserModelIdForFlavor(ZCODE_PRODUCT_FLAVOR, { isPackaged: app.isPackaged }),
+      resolveWindowsAppUserModelIdForFlavor(
+        ZCODE_PRODUCT_FLAVOR,
+        { isPackaged: app.isPackaged },
+        ZCODE_APP_ID,
+      ),
     );
   }
 

@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join, normalize, parse } from "node:path";
 import type {
   WorkflowDefinition,
@@ -17,6 +16,7 @@ import {
   WorkflowEventSchema,
   WorkflowGraphRecordSchema,
   WorkflowRunSnapshotSchema,
+  resolveZCodeDataRoot,
 } from "@zcode/contracts";
 
 export interface NodeWorkflowStoreOptions {
@@ -32,7 +32,7 @@ interface WorkflowIndexFile {
   runs: WorkflowRunListItem[];
 }
 
-const DEFAULT_WORKFLOW_ROOT = join(homedir(), ".zcode", "cli", "workflows");
+const DEFAULT_WORKFLOW_ROOT = join(resolveZCodeDataRoot(), "cli", "workflows");
 const WORKFLOW_DEFINITION_FILE_EXTENSION = ".json";
 
 export class NodeWorkflowStore implements WorkflowStorePort {

@@ -1,4 +1,8 @@
-import type { CuaPermissionKind, Locale } from "@zcode/shared";
+import { ZCODE_PRODUCT_NAME, type CuaPermissionKind, type Locale } from "@zcode/shared";
+
+// 面板窗口标题里的 {appName} 取自构建期产品身份，与主窗口标题、托盘提示用同一份值。
+// 未经 tsup/vite 注入的构建路径（例如直接跑单测）拿不到常量，回退到上游默认名。
+const PANEL_APP_NAME = ZCODE_PRODUCT_NAME || "ZCode";
 
 interface CuaPermissionPanelMessages {
   documentTitle: string;
@@ -14,7 +18,7 @@ const MESSAGES: Record<
   Omit<CuaPermissionPanelMessages, "permissionLabel"> & Record<CuaPermissionKind, string>
 > = {
   "zh-CN": {
-    documentTitle: "ZCode Computer Use 权限",
+    documentTitle: "{appName} Computer Use 权限",
     dragTitle: "拖动我到上面的权限列表",
     hintPrefix: "把左边的图标拖进上方的",
     hintSuffix: "列表",
@@ -23,7 +27,7 @@ const MESSAGES: Record<
     screen_recording: "屏幕录制",
   },
   "en-US": {
-    documentTitle: "ZCode Computer Use Permissions",
+    documentTitle: "{appName} Computer Use Permissions",
     dragTitle: "Drag me to the permission list above",
     hintPrefix: "Drag the icon on the left into the ",
     hintSuffix: " list above",
@@ -39,7 +43,7 @@ export function resolveCuaPermissionPanelMessages(
 ): CuaPermissionPanelMessages {
   const messages = MESSAGES[locale];
   return {
-    documentTitle: messages.documentTitle,
+    documentTitle: messages.documentTitle.replaceAll("{appName}", PANEL_APP_NAME),
     dragTitle: messages.dragTitle,
     hintPrefix: messages.hintPrefix,
     permissionLabel: messages[permission],

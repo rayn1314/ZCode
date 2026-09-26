@@ -37,6 +37,32 @@ export const ZCODE_PRODUCT_FLAVOR = normalizeZCodeProductFlavor(
   typeof __ZCODE_PRODUCT_FLAVOR__ !== "undefined" ? __ZCODE_PRODUCT_FLAVOR__ : undefined,
   ZCODE_ENV,
 );
+
+// ── 构建期产品身份（应用名 / appId） ──
+// 上游身份表只有 production / preview 两个 flavor。下游 fork 需要自己的应用名与 appId，
+// 才能与官方客户端并排共存（独立安装位、独立 Electron 数据目录、独立 AppUserModelId）。
+// 构建脚本把**解析后**的身份注入成编译期常量（含下游覆盖，见 desktop-product-identity.mjs），
+// 所以这里拿到的是最终值而不是"覆盖开关"。未注入时为空串，调用方回退身份表默认值。
+declare const __ZCODE_PRODUCT_NAME__: string;
+declare const __ZCODE_APP_ID__: string;
+declare const __ZCODE_DATA_ROOT_SUFFIX__: string;
+
+/** 打包态应用名。同时决定 Electron 数据目录与单实例锁，必须与打包身份一致。 */
+export const ZCODE_PRODUCT_NAME =
+  typeof __ZCODE_PRODUCT_NAME__ !== "undefined" ? __ZCODE_PRODUCT_NAME__.trim() : "";
+
+/** 打包态 appId。必须与安装包注册的 AUMID 一致，否则 Shell 会把快捷方式和进程当成两个应用。 */
+export const ZCODE_APP_ID = typeof __ZCODE_APP_ID__ !== "undefined" ? __ZCODE_APP_ID__.trim() : "";
+
+/**
+ * 数据根后缀（含前导 `-`），空串表示沿用默认数据根 `{dataBaseDir}/.zcode`。
+ *
+ * 上游官方渠道为空串；下游自建客户端非空（如 `-rayn` → `~/.zcode-rayn`），
+ * 据此与官方客户端并排运行时各用各的会话库、凭据和设置。派生规则见
+ * `desktop-product-identity.mjs` 的 resolveDataRootSuffix。
+ */
+export const ZCODE_DATA_ROOT_SUFFIX =
+  typeof __ZCODE_DATA_ROOT_SUFFIX__ !== "undefined" ? __ZCODE_DATA_ROOT_SUFFIX__.trim() : "";
 export const ZCODE_APP_VERSION_ENV = "ZCODE_APP_VERSION" as const;
 export const ZCODE_BUILD_COMMIT_ID_ENV = "ZCODE_BUILD_COMMIT_ID" as const;
 
