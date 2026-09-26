@@ -1,5 +1,6 @@
 {
   "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "endOfLine": "lf",
   "ignorePatterns": [
     "THIRD-PARTY-NOTICES.md",
     "third-party/inventory.json",

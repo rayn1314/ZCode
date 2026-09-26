@@ -1,0 +1,33 @@
+# 编辑器契约，与 .gitattributes 的 `* text=auto eol=lf` 配套。
+#
+# 两者分工：.gitattributes 决定 git 怎么入库、怎么检出；.editorconfig 决定编辑器怎么
+# 写盘。只有两边一致，工作区才不会在每次保存后重新变回 CRLF、再被 git 归一化掉。
+# apps/zcode-cli/.editorconfig 自带 root = true 且声明了相同的 end_of_line，
+# 子项目行为不受本文件影响。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+
+# 缩进与行尾空白刻意不在此声明：它们由 oxfmt 统一负责。尤其是
+# trim_trailing_whitespace —— Markdown 里行尾两个空格是硬换行，编辑器级裁剪会破坏语义。
+
+# 与 .gitattributes 中 -text 的路径保持一致：这些文件按字节保存，
+# 编辑器不得替它们改换行或补末尾换行。
+[THIRD-PARTY-NOTICES.md]
+end_of_line = unset
+insert_final_newline = false
+
+[third-party/upstream/**]
+end_of_line = unset
+insert_final_newline = false
+
+[third-party/native-search/licenses/**]
+end_of_line = unset
+insert_final_newline = false
+
+[third-party/runtime/*.txt]
+end_of_line = unset
+insert_final_newline = false

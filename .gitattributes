@@ -1,9 +1,21 @@
-# 保持脚本文件 LF 换行，避免 Windows CRLF 导致 shebang 解析失败
-*.mjs text eol=lf
-*.sh  text eol=lf
+# 换行符治理：仓库内一律 LF，工作区也一律 LF。
+#
+# 为什么是 text=auto eol=lf，而不是只写 text=auto：
+#   只写 text=auto 时，检出方向交给 core.eol（默认 native），Windows 拿到 CRLF、
+#   Linux/macOS 拿到 LF。同一个文件在不同机器上字节不同，diff、blame、打包校验会随
+#   平台漂移；更麻烦的是工作区字节与索引不一致后，任何"按字节判断"的工具（oxfmt --check
+#   等）都会把整文件判成有差异。写成 eol=lf 后，检出与入库方向都是 LF，任何平台结果一致。
+#
+# 为什么必须带 text=auto 前缀：
+#   单独的 eol=lf 会隐含 text，即对所有文件（含二进制）强制做换行转换。text=auto 先让
+#   git 判断文本/二进制，只对文本文件套用 LF，二进制文件保持字节原样。
+#
+# 该属性优先于 core.autocrlf，各人本地 git 配置不再影响结果。
+* text=auto eol=lf
 
 # 上游许可原文与生成的声明按字节保存，不能自动转换换行或裁剪空白。
 # 原文中的 License / ======= 是 Markdown 标题，不是合并冲突。
+# 这些规则写在 * 规则之后：同名属性后者覆盖前者，因此这里的 -text 生效。
 THIRD-PARTY-NOTICES.md -text -whitespace conflict-marker-size=32 linguist-generated=true
 third-party/upstream/** -text -whitespace
 third-party/native-search/licenses/** -text -whitespace
