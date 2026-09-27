@@ -65,8 +65,8 @@ export const getWorkflowRunToolResultDisplaySubagentSchema = z
     turn: z.number().int().nonnegative().optional(),
     toolCalls: z.number().int().nonnegative().optional(),
     lastTool: GetWorkflowRunSubagentLastToolSchema.optional(),
-    /** 在等什么（原因文本不上卡：卡只需要「等槽位」还是「在退避」和还要等多久）。 */
-    waitCause: z.enum(["slot", "backoff"]).optional(),
+    /** 在等什么（原因文本不上卡：卡只需要「等槽位 / 等配额 / 在退避」和还要等多久）。 */
+    waitCause: z.enum(["slot", "backoff", "rate_limit"]).optional(),
     retryAfterMs: z.number().nonnegative().optional(),
     waitSince: z.number().optional(),
     parkedOn: z.string().optional(),

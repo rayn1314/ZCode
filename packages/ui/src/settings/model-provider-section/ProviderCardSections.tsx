@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- 模型供应商卡片仍在迁移期集中维护多个紧耦合区块，后续拆分时再移除。 */
 import {
   useCallback,
+  useId,
   useRef,
   useState,
   type KeyboardEvent as ReactKeyboardEvent,
@@ -12,7 +13,7 @@ import type {
   ProviderSettingsFormModel,
 } from "@/lib/providerSettingsFormTypes.js";
 import type { ModelConnectivityResult } from "@zcode/shared";
-import type { ProviderApiType } from "@zcode/provider";
+import type { ProviderApiType, ProviderConfigObject } from "@zcode/provider";
 import {
   TID_MODEL_PROVIDER_ADD_MODEL_BUTTON,
   TID_MODEL_PROVIDER_BASE_URL_INPUT,
@@ -22,7 +23,15 @@ import {
   TID_MODEL_PROVIDER_NAME_INPUT,
   testId,
 } from "@zcode/shared";
-import { InfoIcon, LockKeyholeIcon, Plus, Pencil, Trash2, MoreHorizontal } from "lucide-react";
+import {
+  InfoIcon,
+  LockKeyholeIcon,
+  Plus,
+  Pencil,
+  Trash2,
+  MoreHorizontal,
+  ChevronRightIcon,
+} from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import {
@@ -35,6 +44,7 @@ import {
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useServices } from "@/hooks/useServices.js";
 import { TECHNICAL_INPUT_ATTRIBUTES } from "@/lib/technicalInputAttributes.js";
+import { parseProviderRequestsPerMinuteDraft } from "./ProviderDraftSave.js";
 import { ApiKeyInput } from "./ApiKeyInput.js";
 import { ModelRowInput } from "./ProviderFormControls.js";
 import { PresetProviderApiKeyBanner } from "./PresetProviderApiKeyBanner.js";
@@ -47,7 +57,6 @@ import {
 import { SortableProviderModelList } from "@/settings/model-provider-section/SortableProviderModelList.js";
 import { useProviderModelDraft } from "@/settings/model-provider-section/useProviderModelDraft.js";
 import { ProviderLogo } from "@/settings/model-provider-section/ProviderLogo.js";
-import type { ProviderConfigObject } from "@zcode/provider";
 
 export { formatModelContextWindowLabel } from "@/lib/tokenNumberFormat.js";
 export {
@@ -177,6 +186,28 @@ export function ProviderCardHeader({
   );
 }
 
+function ProviderReadOnlyField({ label, value }: { label: string; value: string }) {
+  const { intl } = useZCodeIntl();
+  return (
+    <div>
+      <label className="mb-1 block text-ui-base text-foreground-subtle">{label}</label>
+      <div className="flex min-h-8 items-center gap-2 rounded-lg border border-input-border bg-input px-3 py-1.5 text-ui-base text-foreground">
+        <span className="min-w-0 flex-1 break-all">{value || "-"}</span>
+        <span
+          role="img"
+          aria-label={intl.formatMessage(
+            { id: "settings.modelProvider.readOnlyField" },
+            { field: label },
+          )}
+          className="shrink-0 text-foreground-subtle"
+        >
+          <LockKeyholeIcon className="size-3.5" aria-hidden="true" />
+        </span>
+      </div>
+    </div>
+  );
+}
+
 export function ProviderConnectionSection({
   provider,
   readOnly,
@@ -205,38 +236,19 @@ export function ProviderConnectionSection({
   const readOnlyBaseUrl = provider.config.api?.baseUrl ?? "";
   const resolvedApiFormat = provider.config.api?.type ?? "anthropic-messages";
 
-  const renderReadOnlyField = (label: string, value: string) => (
-    <div>
-      <label className="mb-1 block text-ui-base text-foreground-subtle">{label}</label>
-      <div className="flex min-h-8 items-center gap-2 rounded-lg border border-input-border bg-input px-3 py-1.5 text-ui-base text-foreground">
-        <span className="min-w-0 flex-1 break-all">{value || "-"}</span>
-        <span
-          role="img"
-          aria-label={intl.formatMessage(
-            { id: "settings.modelProvider.readOnlyField" },
-            { field: label },
-          )}
-          className="shrink-0 text-foreground-subtle"
-        >
-          <LockKeyholeIcon className="size-3.5" aria-hidden="true" />
-        </span>
-      </div>
-    </div>
-  );
-
   if (readOnly) {
     return (
       <>
-        {renderReadOnlyField(
-          intl.formatMessage({ id: "settings.modelProvider.baseUrl" }),
-          readOnlyBaseUrl,
-        )}
-        {showApiFormat
-          ? renderReadOnlyField(
-              intl.formatMessage({ id: "settings.modelProvider.apiFormat" }),
-              resolveProviderConnectionApiFormatDisplayLabel(intl, resolvedApiFormat),
-            )
-          : null}
+        <ProviderReadOnlyField
+          label={intl.formatMessage({ id: "settings.modelProvider.baseUrl" })}
+          value={readOnlyBaseUrl}
+        />
+        {showApiFormat ? (
+          <ProviderReadOnlyField
+            label={intl.formatMessage({ id: "settings.modelProvider.apiFormat" })}
+            value={resolveProviderConnectionApiFormatDisplayLabel(intl, resolvedApiFormat)}
+          />
+        ) : null}
       </>
     );
   }
@@ -323,6 +335,106 @@ export function ProviderApiKeySection({
         onCompositionEnd={onApiKeyCompositionEnd}
         onToggleVisibility={onToggleApiKeyVisibility}
       />
+    </div>
+  );
+}
+
+export function ProviderRequestPolicySection({
+  requestsPerMinuteValue,
+  configured,
+  readOnly,
+  onRequestsPerMinuteChange,
+  onRequestsPerMinuteBlur,
+}: {
+  requestsPerMinuteValue: string;
+  configured: boolean;
+  readOnly?: boolean;
+  onRequestsPerMinuteChange: (value: string) => void;
+  onRequestsPerMinuteBlur: () => void;
+}) {
+  const { intl } = useZCodeIntl();
+  const [expanded, setExpanded] = useState(false);
+  const baseId = useId();
+  const contentId = `${baseId}-content`;
+  const requestsPerMinuteInputId = `${baseId}-requests-per-minute`;
+  const requestsPerMinuteLabel = intl.formatMessage({
+    id: "settings.modelProvider.requestsPerMinute",
+  });
+  const effectiveRequestsPerMinute = parseProviderRequestsPerMinuteDraft(requestsPerMinuteValue);
+
+  return (
+    <div data-model-request-policy="true">
+      <button
+        type="button"
+        data-model-request-policy-trigger="true"
+        data-testid="model-provider-request-policy-trigger"
+        aria-expanded={expanded}
+        aria-controls={contentId}
+        onClick={() => setExpanded((value) => !value)}
+        className="flex w-fit cursor-pointer items-center gap-2 rounded-sm bg-transparent px-2 py-1 text-ui-base text-foreground hover:bg-hover focus-visible:outline-2 focus-visible:outline-primary"
+      >
+        <ChevronRightIcon
+          className={`size-4 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : ""}`}
+          aria-hidden="true"
+        />
+        {intl.formatMessage({ id: "settings.modelProvider.requestPolicy" })}
+        {/* 收起态必须还能看出这里已经调过，否则用户只会以为这层是空的。 */}
+        {configured ? (
+          <span className="rounded-md bg-secondary px-1.5 py-0.5 text-ui-sm text-foreground-subtle">
+            {intl.formatMessage({ id: "settings.modelProvider.requestPolicyConfigured" })}
+          </span>
+        ) : null}
+      </button>
+      {/* 保持控件挂载：草稿状态由卡片持有，展开收起不能丢输入。收起时退出键盘与读屏导航。 */}
+      <div
+        id={contentId}
+        inert={!expanded}
+        aria-hidden={!expanded}
+        className={`-mx-1 grid transition-[grid-template-rows,opacity,visibility] duration-200 motion-reduce:transition-none ${expanded ? "visible grid-rows-[1fr] opacity-100" : "invisible grid-rows-[0fr] opacity-0"}`}
+      >
+        <div className="min-h-0 overflow-hidden">
+          <div className="space-y-4 px-1 pt-4 pb-1">
+            {readOnly ? (
+              <ProviderReadOnlyField
+                label={requestsPerMinuteLabel}
+                value={
+                  effectiveRequestsPerMinute == null
+                    ? intl.formatMessage({
+                        id: "settings.modelProvider.requestsPerMinuteUnlimited",
+                      })
+                    : String(effectiveRequestsPerMinute)
+                }
+              />
+            ) : (
+              <div>
+                <label
+                  htmlFor={requestsPerMinuteInputId}
+                  className="mb-1 block text-ui-base text-foreground-subtle"
+                >
+                  {requestsPerMinuteLabel}
+                </label>
+                <Input
+                  {...TECHNICAL_INPUT_ATTRIBUTES}
+                  id={requestsPerMinuteInputId}
+                  data-testid="model-provider-requests-per-minute-input"
+                  // 数字键盘只是便利；越界与空值仍由 parseProviderRequestsPerMinuteDraft 收敛。
+                  inputMode="numeric"
+                  size="lg"
+                  value={requestsPerMinuteValue}
+                  placeholder={intl.formatMessage({
+                    id: "settings.modelProvider.requestsPerMinutePlaceholder",
+                  })}
+                  onChange={(event) => onRequestsPerMinuteChange(event.target.value)}
+                  onBlur={onRequestsPerMinuteBlur}
+                />
+                <p className="mt-1 text-ui-sm text-foreground-subtle">
+                  {intl.formatMessage({ id: "settings.modelProvider.requestsPerMinuteHint" })}
+                </p>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

@@ -56,7 +56,7 @@ export function instanceKey(siteId: string, ordinal: number): string {
 
 /** 当前 ask 在等什么（最后一条 `node-waiting` 的观察 + 进入这次等待的时刻）。 */
 export interface RosterWaitTrace {
-  cause: "slot" | "backoff";
+  cause: "slot" | "backoff" | "rate_limit";
   reason?: string;
   retryAfterMs?: number;
   since?: number;

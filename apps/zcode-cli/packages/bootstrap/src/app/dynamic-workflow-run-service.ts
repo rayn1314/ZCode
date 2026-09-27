@@ -121,6 +121,7 @@ import {
   resolveWorkflowConcurrencyCeiling,
 } from "./workflow-concurrency-ceiling.js";
 import type { WorkflowConcurrencyPort } from "./workflow-concurrency-governor.js";
+import type { ProviderRateLimitPort } from "./provider-rate-limiter.js";
 import type { AgentRuntimeWorkflowDriverDeps } from "./workflow-driver-types.js";
 import {
   createWorkflowEscalationRegistry,
@@ -242,6 +243,11 @@ export interface DynamicWorkflowRunServiceDeps {
    * per-run 上界（测试装配、无治理器的宿主）。
    */
   concurrency?: WorkflowConcurrencyPort;
+  /**
+   * per-provider 每分钟请求数限速。原样转交 driver，装到 actor 的准入端口上（等配额在抢并发槽
+   * **之前**）。缺席即不限速——准入端口与从前逐字相同。
+   */
+  rateLimit?: ProviderRateLimitPort;
   /**
    * 把一次启动登记为父 runtime 的**常驻阻塞工作**。
    *

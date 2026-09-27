@@ -79,6 +79,28 @@ export const personalProviderApiDataSchema = providerApiDataSchema.extend({
   baseUrl: z.string().nullable().optional(),
 });
 
+/**
+ * per-provider 每分钟请求数上限的值域：1 ~ 600。
+ *
+ * 下界 1：0 会让配额永久耗尽（每个请求都要等令牌，而令牌不再产生），那不是限速是死锁。
+ * 上界 600：600/min 已经是 10 req/s，任何 provider 配额都远高于此；再大的数字对用户没有
+ * 可感知的意义，却会让 UI 允许填出「配了等于没配」的值。
+ */
+export const providerRateLimitRequestsPerMinuteDataSchema = z.number().int().min(1).max(600);
+
+/**
+ * per-provider 请求策略：与「用哪个 Key」无关，只约束**发请求的节奏**。
+ *
+ * 这里刻意只有速率一个旋钮。服务商侧的「每分钟 N 次」才是真正的约束来源：按它限速后并发自然
+ * 被压住（见 bootstrap 的 provider-rate-limiter），而 429 处理策略是多余的——不主动撞墙就不会
+ * 触发，真撞了走既有的指数退避即可。
+ */
+export const providerRequestPolicyDataSchema = z
+  .object({
+    requestsPerMinute: providerRateLimitRequestsPerMinuteDataSchema.nullable().optional(),
+  })
+  .strict();
+
 const modelIdsDataSchema = z.array(z.string().min(1)).readonly().nullable().optional();
 export const providerConfigDataSchema = z
   .object({
@@ -86,6 +108,7 @@ export const providerConfigDataSchema = z
     logo: providerLogoDataSchema.nullable().optional(),
     access: providerAccessDataSchema.nullable().optional(),
     api: providerApiDataSchema.nullable().optional(),
+    requestPolicy: providerRequestPolicyDataSchema.nullable().optional(),
     builtinModelIds: modelIdsDataSchema,
     personalModelIds: modelIdsDataSchema,
     modelOrder: modelIdsDataSchema,

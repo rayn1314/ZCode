@@ -18,7 +18,7 @@ import {
   type ModelProviderId,
   type ModelRequestAuth,
 } from "@zcode/contracts";
-import type { RegistryProviderConfig } from "@zcode/provider";
+import type { ProviderRequestPolicy, RegistryProviderConfig } from "@zcode/provider";
 import { withOpenRouterAttributionHeaders } from "@zcode/shared";
 import { createAnthropicCompatFetch } from "./anthropic-stream-compat.js";
 import { createOpenAIResponsesJsonCompatFetch } from "./openai-responses-json-compat.js";
@@ -69,6 +69,11 @@ export interface AiSdkResolvedModel {
   providerKind: AiSdkProviderKind;
   providerOptions?: Record<string, unknown>;
   rawRequestBodyCapture?: RawRequestBodyCapture;
+  /**
+   * per-provider 请求策略（每分钟请求数上限）。与 access、apiKey 一样是**创建时**的 Provider
+   * 静态事实：runner 每次 attempt 都要读它，而它不会在一次请求中途变化。
+   */
+  requestPolicy?: ProviderRequestPolicy;
 }
 
 export interface AiSdkBoundModelResolution {
@@ -219,6 +224,10 @@ export class AiSdkModelExecution {
       providerId: input.providerId as ModelProviderId,
       modelId: input.modelId as ModelId,
       supportsJsonSchemaOutput: input.supportsJsonSchemaOutput,
+      // 与 Endpoint / Header 同一层快照：Registry 热更新不该让在飞的请求中途换策略。
+      ...(input.providerConfig.requestPolicy == null
+        ? {}
+        : { requestPolicy: input.providerConfig.requestPolicy }),
     };
   }
 
@@ -249,6 +258,7 @@ export class AiSdkModelExecution {
       providerKind: providerConfig.kind,
       providerOptions: providerConfig.providerOptions,
       rawRequestBodyCapture,
+      ...(snapshot.requestPolicy === undefined ? {} : { requestPolicy: snapshot.requestPolicy }),
     };
   }
 
@@ -345,6 +355,7 @@ interface AiSdkModelSnapshot {
   readonly providerConfig: AiSdkProviderConfig;
   readonly providerId: ModelProviderId;
   readonly modelId: ModelId;
+  readonly requestPolicy?: ProviderRequestPolicy;
 }
 
 function toAiSdkProviderConfig(

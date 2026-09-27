@@ -27,6 +27,7 @@ import {
   workflowConcurrencyKey,
   type WorkflowConcurrencyPort,
 } from "./workflow-concurrency-governor.js";
+import type { ProviderRateLimitPort } from "./provider-rate-limiter.js";
 import type { WorkflowRunSeatGate } from "./workflow-seat-gate.js";
 
 /** 与治理器同一条纪律：这两种 retry 不是 provider 失败，不值一个徽标。 */
@@ -108,6 +109,11 @@ interface Chain {
  */
 export function createActorModelActivity(input: {
   port: WorkflowConcurrencyPort | undefined;
+  /**
+   * per-provider 每分钟限速。装在 `governed` 上，runner 在抢并发槽**之前**先过它——两层闸门正交，
+   * 顺序载荷（见 ModelRequestAdmission 的注释）。缺席即 actor 不受限速。
+   */
+  rateLimit?: ProviderRateLimitPort;
   runId: string;
   /** 当前在飞 ask 的实例（结算 / 取消后为 undefined）；只有工具活动的上报需要它。 */
   live?: () => InstanceRef | undefined;
@@ -126,7 +132,7 @@ export function createActorModelActivity(input: {
   let turnsResolved = 0;
   let waitSeq = 0;
   let unsubscribeEvents: (() => void) | undefined;
-  const { handlers, live, port, runId, seat } = input;
+  const { handlers, live, port, rateLimit, runId, seat } = input;
   // 同一条会话事件流的第二个读者：工具调用。实现单独成文件（判定与计数都在那里），这里只把它
   // 编进同一个生命周期，好让 driver 侧仍然只有一个观察对象。
   const toolActivity = createActorToolActivity({
@@ -177,10 +183,13 @@ export function createActorModelActivity(input: {
 
   // 准入端口就是治理器端口的窄包装：快路径 = tryAdmit，排队 = admit（waiting(slot)
   // 由 runner 的 queued 事件报，这里不再自己发）。acquire 仍先试快路径，兼容没有走 tryAcquire 的调用方。
+  // 限速是**外加**的一层：只补 awaitRateLimit，tryAcquire / acquire 逐字不动——它等的是配额，
+  // 不是槽位，混进这两条会让「等槽」的快路径语义失真。
   const governed: ModelRequestAdmission | undefined =
     port === undefined
       ? undefined
       : {
+          ...(rateLimit === undefined ? {} : { awaitRateLimit: rateLimit.awaitRateLimit }),
           tryAcquire: ({ model }) => port.tryAdmit(runId, workflowConcurrencyKey(model)),
           acquire: async ({ model, signal }) => {
             const key = workflowConcurrencyKey(model);
@@ -228,7 +237,12 @@ export function createActorModelActivity(input: {
           const key = chainKey(status);
           switch (status.type) {
             case "model_request_queued":
-              setWaiting(key, "queued", { cause: "slot" });
+              // 准入等待有两个正交来源：并发闸门（`concurrency`，既有行为）与 per-provider 每分钟
+              // 配额（`rate_limit`）。`reason` 缺席时读作 `concurrency`——限速上线前发的所有事件
+              // 都没有它，漏映射会把老数据说成限速。
+              setWaiting(key, "queued", {
+                cause: status.reason === "rate_limit" ? "rate_limit" : "slot",
+              });
               return;
             case "model_request_admitted":
             case "model_request_started":

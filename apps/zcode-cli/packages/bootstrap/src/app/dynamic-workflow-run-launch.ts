@@ -245,6 +245,8 @@ export function launchDynamicWorkflowRun(
     // 进程级并发治理器的窄端口：在场时 driver 给每个
     // actor runtime 一个请求级准入端口（下面 runtimeFactory 原样下传）；缺席即 actor 不受闸门约束。
     ...(deps.concurrency === undefined ? {} : { concurrency: deps.concurrency }),
+    // per-provider 每分钟限速：装进 actor 的准入端口，等配额发生在抢并发槽之前。
+    ...(deps.rateLimit === undefined ? {} : { rateLimit: deps.rateLimit }),
     // 本 run 的座位闸门：driver 把每个 actor 的准入端口包进它，并把 ask 的起止喂给它
     // （startAsk 与引擎的 `node-settled`）。
     seatGate,

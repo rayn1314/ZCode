@@ -254,6 +254,8 @@ function waitCell(subagent: GetWorkflowRunSubagent, now: number): string {
   const waited = formatRelativeAge(now, wait.since);
   const forHow = waited === undefined ? "" : ` for ${waited.replace(/ ago$/u, "")}`;
   if (wait.cause === "slot") return `waiting for a slot${forHow}`;
+  // 配额等待不是退避：说成 backoff 会让模型去找重试阶梯，而它等的是用户自己设的每分钟上限。
+  if (wait.cause === "rate_limit") return `waiting for request quota${forHow}`;
   const after = wait.reason === undefined ? "" : ` after ${escapeWorkflowRunText(wait.reason)}`;
   const retry =
     wait.retryAfterMs === undefined

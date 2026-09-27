@@ -1,4 +1,5 @@
 import type {
+  ModelAdmissionWaitReason,
   ModelRequestAdmission,
   ModelRequestAdmissionTicket,
   ModelRequestTarget,
@@ -24,29 +25,47 @@ export interface AttemptAdmission {
 const NO_ADMISSION: AttemptAdmission = { release() {} };
 
 /**
- * 等待准入。先试同步快路径 `tryAcquire`；未命中才排队 `acquire`，并在两端回调 `onQueued` / `onAdmitted`
- * （runner 据此发 `model_request_queued` / `model_request_admitted`）。没有快路径的端口分不清
- * 「排了队」与「立即放行」，所以不回调。`signal` 被 abort 时 reject（以 `signal.reason`，与 `sleep` 的
- * abort 错误同一形状，由调用方按 cancelled 归类）。
+ * 等待准入。**顺序载荷**：先过速率配额，再抢并发槽。
+ *
+ * 限速等待绝不能放在 `tryAcquire` 之后：并发槽是稀缺资源，而令牌只能靠已发出的请求补充。持槽
+ * 等令牌时，槽被一个「等令牌的人」占着，令牌要等别人发请求，别人在排队等槽——三者互等即死锁。
+ * 限速层只读自己的令牌桶、不碰任何槽，所以先它后槽不存在环。
+ *
+ * 速率层缺席（`awaitRateLimit` 未实现）时本函数逐字等于从前：快路径 `tryAcquire`，未命中才排队
+ * `acquire`，并在两端回调 `onQueued` / `onAdmitted`。没有快路径的端口分不清「排了队」与「立即
+ * 放行」，所以不回调。`signal` 被 abort 时 reject（以 `signal.reason`，与 `sleep` 的 abort 错误
+ * 同一形状，由调用方按 cancelled 归类）。
  */
 export async function admitAttempt(input: {
   admission?: ModelRequestAdmission;
   model: ModelRequestTarget;
   signal?: AbortSignal;
-  onQueued?: () => Promise<void>;
-  onAdmitted?: (queuedMs: number) => Promise<void>;
+  onQueued?: (reason: ModelAdmissionWaitReason) => Promise<void>;
+  onAdmitted?: (queuedMs: number, reason: ModelAdmissionWaitReason) => Promise<void>;
 }): Promise<AttemptAdmission> {
   if (input.admission === undefined) return NO_ADMISSION;
+  // 只在**真的等了**配额时才报等待：不限速的 provider 每个请求都发一对 queued/admitted，
+  // 只会把「在等并发」这条真信号淹掉。
+  if (typeof input.admission.awaitRateLimit === "function") {
+    const rateLimitWaitedMs = await input.admission.awaitRateLimit({
+      model: input.model,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    if (rateLimitWaitedMs > 0) {
+      await input.onQueued?.("rate_limit");
+      await input.onAdmitted?.(rateLimitWaitedMs, "rate_limit");
+    }
+  }
   const hasFastPath = typeof input.admission.tryAcquire === "function";
   let ticket = hasFastPath ? input.admission.tryAcquire!({ model: input.model }) : undefined;
   if (ticket === undefined) {
     const queuedAt = Date.now();
-    if (hasFastPath) await input.onQueued?.();
+    if (hasFastPath) await input.onQueued?.("concurrency");
     ticket = await input.admission.acquire({
       model: input.model,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
-    if (hasFastPath) await input.onAdmitted?.(Date.now() - queuedAt);
+    if (hasFastPath) await input.onAdmitted?.(Date.now() - queuedAt, "concurrency");
   }
   let released = false;
   return {

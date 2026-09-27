@@ -334,9 +334,11 @@ export interface WorkflowDriver {
  *   `reason` 是 contracts `ModelRetryReason` 的值（`rate_limited` / `provider_overloaded` / `server_error` /
  *   `network_error` / `timeout` / `stream_idle_timeout` / `stale_connection` / `offpeak_queued` …），
  *   纯包不 import contracts 故为开放字符串。`delayMs` 是相对量：引擎无时钟。
+ * - `cause: "rate_limit"`：下一个请求在 per-provider 每分钟配额前排队（`admit` 等令牌）；无其余字段。
+ *   与 `slot` 分开是因为「等槽位」是并发闸门的说法，用户没设并发上限时看到它是错的信息。
  */
 export interface AskWaitInfo {
-  cause: "slot" | "backoff";
+  cause: "slot" | "backoff" | "rate_limit";
   reason?: string;
   attempt?: number;
   delayMs?: number;

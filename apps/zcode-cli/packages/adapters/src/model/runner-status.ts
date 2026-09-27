@@ -1,5 +1,6 @@
 import type {
   Logger,
+  ModelAdmissionWaitReason,
   ModelNetworkStatusEvent,
   ModelReasoningCallHint,
   ModelStatusSink,
@@ -148,33 +149,36 @@ function initialReasoningObservation(
 
 /**
  * 准入等待两端的状态事件：`admitAttempt` 的 `tryAcquire` 未命中即 `queued`，拿到票即
- * `admitted`（带排队时长）。此时还没有票据，所以不经 ticket 投递——治理器不需要这两条。
+ * `admitted`（带排队时长）；等每分钟配额走同一对事件，只是 `reason` 换成 `rate_limit`。
+ * 此时还没有票据，所以不经 ticket 投递——治理器不需要这两条。
  */
 export function admissionWaitPublishers(
   statusContext: ModelStatusContext,
   attempt: number,
   publishOptions: Parameters<typeof publishModelStatus>[1],
 ): {
-  onQueued: () => Promise<void>;
-  onAdmitted: (queuedMs: number) => Promise<void>;
+  onQueued: (reason: ModelAdmissionWaitReason) => Promise<void>;
+  onAdmitted: (queuedMs: number, reason: ModelAdmissionWaitReason) => Promise<void>;
 } {
   return {
-    onQueued: () =>
+    onQueued: (reason) =>
       publishModelStatus(
         {
           ...statusContext,
           attempt,
+          reason,
           timestamp: new Date().toISOString(),
           type: "model_request_queued",
         },
         publishOptions,
       ),
-    onAdmitted: (queuedMs) =>
+    onAdmitted: (queuedMs, reason) =>
       publishModelStatus(
         {
           ...statusContext,
           attempt,
           queuedMs,
+          reason,
           timestamp: new Date().toISOString(),
           type: "model_request_admitted",
         },

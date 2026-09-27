@@ -244,6 +244,7 @@ class AgentRuntimeWorkflowDriver implements WorkflowDriver {
         : state.currentInstance;
     const modelActivity = createActorModelActivity({
       port: this.deps.concurrency,
+      rateLimit: this.deps.rateLimit,
       runId: this.deps.runId ?? "run",
       live,
       // 座位闸门按 **actor** 键入（不是 ask 实例）：per-actor FIFO 保证一个 actor 至多一个在飞

@@ -17,12 +17,19 @@ import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { Switch } from "@/components/ui/switch.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { isImeComposingKeyEvent } from "@/lib/imeComposition.js";
-import { resolvePendingProviderDraftSave, type ProviderDraftValues } from "./ProviderDraftSave.js";
+import {
+  formatProviderRequestsPerMinuteDraft,
+  parseProviderRequestsPerMinuteDraft,
+  PROVIDER_REQUESTS_PER_MINUTE_MAX,
+  resolvePendingProviderDraftSave,
+  type ProviderDraftValues,
+} from "./ProviderDraftSave.js";
 import {
   ProviderApiKeySection,
   ProviderCardHeader,
   ProviderConnectionSection,
   ProviderModelsSection,
+  ProviderRequestPolicySection,
 } from "./ProviderCardSections.js";
 import { resolveModelProviderDisplayName } from "./constants.js";
 import { useProviderDetailFeedback } from "./ProviderDetailFeedback.js";
@@ -191,6 +198,9 @@ export function InlineEditableProviderCard({
   const [baseUrlValue, setBaseUrlValue] = useState(provider.config.api?.baseUrl ?? "");
   const [apiKeyValue, setApiKeyValue] = useState(getProviderFormApiKey(provider));
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [requestsPerMinuteValue, setRequestsPerMinuteValue] = useState(() =>
+    formatProviderRequestsPerMinuteDraft(provider.config.requestPolicy?.requestsPerMinute ?? null),
+  );
   const [savingEnabled, setSavingEnabled] = useState(false);
   const authoritativeModels = useMemo(
     () => resolveVisibleProviderModelsForEdit(provider),
@@ -232,6 +242,9 @@ export function InlineEditableProviderCard({
     apiFormat: provider.config.api?.type ?? "anthropic-messages",
     baseUrlValue: provider.config.api?.baseUrl ?? "",
     apiKeyValue: getProviderFormApiKey(provider),
+    requestsPerMinuteValue: formatProviderRequestsPerMinuteDraft(
+      provider.config.requestPolicy?.requestsPerMinute ?? null,
+    ),
   });
 
   useEffect(() => {
@@ -239,6 +252,9 @@ export function InlineEditableProviderCard({
     const resolvedBaseUrl = provider.config.api?.baseUrl ?? "";
     const resolvedApiKey = getProviderFormApiKey(provider);
     const resolvedLabel = getProviderFormLabel(provider);
+    const resolvedRequestsPerMinute = formatProviderRequestsPerMinuteDraft(
+      provider.config.requestPolicy?.requestsPerMinute ?? null,
+    );
     if (providerIdRef.current !== provider.providerId) {
       providerIdRef.current = provider.providerId;
       nameEditProviderIdRef.current = null;
@@ -262,6 +278,7 @@ export function InlineEditableProviderCard({
     syncField("apiFormat", resolvedApiFormat, setApiFormat);
     syncField("baseUrlValue", resolvedBaseUrl, setBaseUrlValue);
     syncField("apiKeyValue", resolvedApiKey, setApiKeyValue);
+    syncField("requestsPerMinuteValue", resolvedRequestsPerMinute, setRequestsPerMinuteValue);
   }, [provider]);
 
   const markDraftDirty = useCallback((field: keyof ProviderDraftValues) => {
@@ -584,6 +601,43 @@ export function InlineEditableProviderCard({
     [commitPendingDraft, markDraftDirty],
   );
 
+  const handleRequestsPerMinuteValueChange = useCallback(
+    (value: string) => {
+      // 只放行纯数字与空串：负号、小数点、字母在这里整段拒绝，而不是「抽出其中数字」——
+      // 后者会把 8.5 悄悄存成 85，存盘值和用户眼睛看到的不是一回事。位数跟着上界走，
+      // 日后调整 PROVIDER_REQUESTS_PER_MINUTE_MAX 时这里不必同步跟改。
+      const accepted = /^\d*$/.test(value)
+        ? value.slice(0, String(PROVIDER_REQUESTS_PER_MINUTE_MAX).length)
+        : draftRef.current.requestsPerMinuteValue;
+      if (accepted === draftRef.current.requestsPerMinuteValue) return;
+      markDraftDirty("requestsPerMinuteValue");
+      draftRef.current.requestsPerMinuteValue = accepted;
+      setRequestsPerMinuteValue(accepted);
+      scheduleIdleDraftSave();
+    },
+    [markDraftDirty, scheduleIdleDraftSave],
+  );
+
+  const handleRequestsPerMinuteBlur = useCallback(() => {
+    // 归一越界值（0/999 → 1/600），并把「归一后与生效值一致」的编辑判为无意图：
+    // 此时必须把字段拉回权威值，否则一次没改动的清空会永远占着 dirty 标记把继承值挡住。
+    const effectiveRequestsPerMinute = provider.config.requestPolicy?.requestsPerMinute ?? null;
+    const normalized = formatProviderRequestsPerMinuteDraft(
+      parseProviderRequestsPerMinuteDraft(draftRef.current.requestsPerMinuteValue),
+    );
+    if (parseProviderRequestsPerMinuteDraft(normalized) === effectiveRequestsPerMinute) {
+      draftRef.current.requestsPerMinuteValue = formatProviderRequestsPerMinuteDraft(
+        effectiveRequestsPerMinute,
+      );
+      setRequestsPerMinuteValue(draftRef.current.requestsPerMinuteValue);
+      dirtyProviderFieldsRef.current.delete("requestsPerMinuteValue");
+    } else if (normalized !== draftRef.current.requestsPerMinuteValue) {
+      draftRef.current.requestsPerMinuteValue = normalized;
+      setRequestsPerMinuteValue(normalized);
+    }
+    void commitPendingDraft("requests-per-minute-blur").catch(() => undefined);
+  }, [commitPendingDraft, provider]);
+
   const handleApiKeyBlur = useCallback(() => {
     void commitPendingDraft("api-key-blur").catch(() => undefined);
   }, [commitPendingDraft]);
@@ -749,6 +803,9 @@ export function InlineEditableProviderCard({
   const isAccountProvider = provider.config.access?.type === "zhipu-account";
   const isApiKeyProvider = isApiKeyAccess(provider.config.access);
   const effectiveHeaderVisible = headerVisible && statusSection === undefined;
+  // 折叠态的唯一提示就是这枚徽标：配过额度就必须显示，否则用户只会以为这层是空的。
+  const providerRequestPolicyConfigured =
+    (provider.config.requestPolicy?.requestsPerMinute ?? null) !== null;
 
   return (
     <div className="space-y-3">
@@ -838,6 +895,14 @@ export function InlineEditableProviderCard({
             onToggleApiKeyVisibility={() => setApiKeyVisible((value) => !value)}
           />
         ) : null}
+
+        <ProviderRequestPolicySection
+          requestsPerMinuteValue={requestsPerMinuteValue}
+          configured={providerRequestPolicyConfigured}
+          readOnly={readOnlyEndpoints}
+          onRequestsPerMinuteChange={handleRequestsPerMinuteValueChange}
+          onRequestsPerMinuteBlur={handleRequestsPerMinuteBlur}
+        />
 
         <ProviderModelsSection
           // 不同 Provider 可以有同名模型；不能复用上一供应商的打开中草稿和版本。

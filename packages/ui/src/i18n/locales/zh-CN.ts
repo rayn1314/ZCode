@@ -2581,6 +2581,13 @@ const zhCN: Record<string, string> = {
   "settings.modelProvider.addProviderModelReminder": "添加供应商前，请至少添加一个模型。",
   "settings.modelProvider.baseUrl": "Base URL",
   "settings.modelProvider.baseUrlPlaceholder": "https://api.example.com/v1",
+  "settings.modelProvider.requestPolicy": "请求策略",
+  "settings.modelProvider.requestPolicyConfigured": "已配置",
+  "settings.modelProvider.requestsPerMinute": "每分钟最多请求数",
+  "settings.modelProvider.requestsPerMinutePlaceholder": "不限制",
+  "settings.modelProvider.requestsPerMinuteUnlimited": "不限制",
+  "settings.modelProvider.requestsPerMinuteHint":
+    "限制这个服务商每分钟最多接收几个请求，多个对话共享同一份额度。填站点标称上限的八成左右，可以避免被限流后长时间等待；留空则不限制。",
   "settings.modelProvider.readOnlyField": "{field}（只读）",
   "settings.modelProvider.endpointPath": "接口路径：{format}",
   "settings.modelProvider.apiFormat": "API 格式",
@@ -5003,6 +5010,7 @@ const zhCN: Record<string, string> = {
   "chat.toolCall.workflow.getRun.subagent.parkedOn": "等待问题 {qid} 的答复",
   "chat.toolCall.workflow.getRun.subagent.waitingSlot": "等待槽位",
   "chat.toolCall.workflow.getRun.subagent.waitingBackoff": "退避中",
+  "chat.toolCall.workflow.getRun.subagent.waitingRateLimit": "等待请求额度",
   "chat.toolCall.workflow.getRun.subagent.waitedFor": "已等 {age}",
   "chat.toolCall.workflow.getRun.subagent.retryIn": "{duration} 后重试",
   "chat.toolCall.workflow.getRun.subagent.inFlightAtStop": "停止时仍在执行",
@@ -5318,6 +5326,7 @@ const zhCN: Record<string, string> = {
   "chat.toolCall.workflow.run.event.unknown": "{type}",
   // 自适应并发：被限流的 ask 与进程级并发闸门。
   "chat.toolCall.workflow.run.event.nodeWaitingSlot": "等待槽位",
+  "chat.toolCall.workflow.run.event.nodeWaitingRateLimit": "等待请求额度",
   "chat.toolCall.workflow.run.event.nodeWaitingBackoff":
     "等待 provider（{reason}）· {seconds}s 后重试",
   "chat.toolCall.workflow.run.event.nodeExecuting": "请求已发出",

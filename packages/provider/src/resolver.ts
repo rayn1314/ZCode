@@ -62,6 +62,9 @@ export function serializeRegistryProviderConfig(
       baseUrl: config.api.baseUrl,
       ...(config.api.headers == null ? {} : { headers: config.api.headers }),
     },
+    // requestPolicy 是嵌套对象，必须整体带上（它的子字段在 ProviderConfig 里已剔除 undefined）；
+    // 漏掉这一行会让 per-provider 策略在 Registry → adapter 之间静默丢失。
+    ...(config.requestPolicy == null ? {} : { requestPolicy: { ...config.requestPolicy } }),
     ...(config.builtinModelIds == null ? {} : { builtinModelIds: [...config.builtinModelIds] }),
     ...(config.personalModelIds == null ? {} : { personalModelIds: [...config.personalModelIds] }),
     ...(config.modelOrder == null ? {} : { modelOrder: [...config.modelOrder] }),

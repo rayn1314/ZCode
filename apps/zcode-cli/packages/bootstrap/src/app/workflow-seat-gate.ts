@@ -166,6 +166,10 @@ export function createWorkflowRunSeatGate(input: { limit: number }): WorkflowRun
     wrap: (key, subagent, inner) => {
       if (inner === undefined) return undefined;
       return {
+        // 限速是**闸门之外**的一层：原样透传，让 runner 仍能在碰座位之前先等配额。座位与并发槽
+        // 都是「本 run 能同时占多少」的闸门，配额不是——把它塞进这两层里任何一层都会让
+        // 「等配额」被误报成「等槽位」。
+        awaitRateLimit: inner.awaitRateLimit,
         // 快路径：这次请求要过座位、而座位已经满了 ⇒ 未命中。runner 因此发 `model_request_queued`，
         // driver 报 `askWaiting(slot)`——与共享 cap 造成的等待逐字相同的那一条，不需要新词汇。
         tryAcquire: (request) => {

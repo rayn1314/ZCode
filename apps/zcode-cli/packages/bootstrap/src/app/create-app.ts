@@ -79,6 +79,7 @@ import {
   resolveDynamicWorkflowJournalStore,
 } from "./dynamic-workflow-run-service.js";
 import { getWorkflowConcurrencyGovernor } from "./workflow-concurrency-governor.js";
+import { getProviderRateLimiter, withProviderRateLimit } from "./provider-rate-limiter.js";
 import { createDynamicWorkflowSnippetService } from "./dynamic-workflow-snippet-service.js";
 import { createModelCatalogPort } from "./model-catalog-port.js";
 import { createDynamicWorkflowRunProgressSink } from "./dynamic-workflow-run-progress-sink.js";
@@ -544,6 +545,14 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // 不排队、不看冷却，但计入在飞并喂信号。进程级单例——配额本就在账号上，不按会话分。
     // 不再经 adapter 级 addStatusSink 喂信号：同一事件只能沿 ticket 喂一次。
     const workflowConcurrencyGovernor = getWorkflowConcurrencyGovernor();
+    // per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
+    // 已解析策略的地方就是这个 Registry。限速器自己也是进程单例（配额在账号上，跨会话共享），
+    // 每次请求重读配置——用户在设置里改完立刻生效。
+    const providerRateLimit = getProviderRateLimiter({
+      resolveRequestsPerMinute: (providerId) =>
+        options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.requestsPerMinute ??
+        undefined,
+    });
     modelAdapter.setModelIoFullRetentionEnabled(options.modelIoFullRetentionEnabled ?? false);
     providerModelRuntime = new ApiProviderModelRuntime({
       registry: options.providerRegistry,
@@ -588,6 +597,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         ? undefined
         : createDynamicWorkflowRunService({
             concurrency: workflowConcurrencyGovernor,
+            rateLimit: providerRateLimit,
             createActorRuntime: ({
               persona,
               pinnedModel,
@@ -726,7 +736,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
       agentTelemetry: modelTelemetry.agentExecution,
       // 主代理的模型请求过治理器的 observer：立即放行，但让治理器看见它的 429 / 成功。
-      modelRequestAdmission: workflowConcurrencyGovernor.observer(),
+      // 并发上 observer 无条件放行（主代理的 turn 永不被 workflow 流量阻塞），**限速上不放行**：
+      // 每分钟配额是 provider 侧的账，主代理和 workflow 共用同一份，不限它就会从这里撞墙。
+      modelRequestAdmission: withProviderRateLimit(
+        workflowConcurrencyGovernor.observer(),
+        providerRateLimit,
+      ),
       eventStore: options.eventStore ?? createInMemorySessionEventStore(),
       sessionStore,
       sessionMailboxPort,

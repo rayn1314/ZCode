@@ -124,12 +124,14 @@ export function workflowRunConcurrencyEventLine(
     ...(detail === undefined ? {} : { detail }),
   });
   switch (event.type) {
-    // node-waiting：cause=slot 是在闸门前排队，没有别的可说；cause=backoff 带 runner 的
-    // 退避原因与时长——徽标不显示这些细节，事件日志是它们唯一的落点。
+    // node-waiting：cause=slot 是在闸门前排队，cause=rate_limit 是在 per-provider 每分钟配额前
+    // 排队，两者都没有别的可说；cause=backoff 带 runner 的退避原因与时长——徽标不显示这些细节，
+    // 事件日志是它们唯一的落点。cause 读不动或不认识时读作 slot（限速之前的事件都没有它）。
     case "node-waiting": {
       if (payload.cause !== "backoff") {
+        const key = payload.cause === "rate_limit" ? "nodeWaitingRateLimit" : "nodeWaitingSlot";
         return withDetail(
-          formatMessage({ id: `${EVENT_KEY_PREFIX}nodeWaitingSlot` }),
+          formatMessage({ id: `${EVENT_KEY_PREFIX}${key}` }),
           refText(payload.instance),
         );
       }

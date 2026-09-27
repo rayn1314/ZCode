@@ -181,6 +181,17 @@ function executingCells(
   return cells;
 }
 
+/**
+ * 等待原因 → 文案键。**逐条枚举，不做 `cause === "slot" ? … : …`**：三个原因对用户是三件不同
+ * 的事（我设过并发上限吗 / 我设过每分钟额度吗 / 服务方让我退避），新增原因时漏映射会静默落到
+ * 别人的文案上，那比不显示更糟。键在 `subagent` 下。
+ */
+const WAIT_CAUSE_MESSAGE_KEY: Record<NonNullable<WorkflowRunSubagentView["waitCause"]>, string> = {
+  slot: "waitingSlot",
+  backoff: "waitingBackoff",
+  rate_limit: "waitingRateLimit",
+};
+
 function waitCells(
   subagent: WorkflowRunSubagentView,
   generatedAt: number | undefined,
@@ -188,9 +199,7 @@ function waitCells(
 ): string[] {
   if (subagent.waitCause === undefined) return [];
   const cells = [
-    formatMessage({
-      id: `${I18N_PREFIX}subagent.${subagent.waitCause === "slot" ? "waitingSlot" : "waitingBackoff"}`,
-    }),
+    formatMessage({ id: `${I18N_PREFIX}subagent.${WAIT_CAUSE_MESSAGE_KEY[subagent.waitCause]}` }),
   ];
   // 「等了多久」贴着原因，「还要等多久」收尾：两个时长挨在一起时读者分不清哪个是哪个。
   const waited = formatWorkflowAge(generatedAt, subagent.waitSince);

@@ -79,10 +79,10 @@ export const GetWorkflowRunSubagentAskSchema = z
   })
   .strict();
 
-/** 当前 ask 正在等什么。`slot` = 等进程级准入闸门；`backoff` = runner 在退避重试。 */
+/** 当前 ask 正在等什么。`slot` = 等进程级准入闸门；`backoff` = runner 在退避重试；`rate_limit` = 等 per-provider 每分钟配额。 */
 export const GetWorkflowRunSubagentWaitSchema = z
   .object({
-    cause: z.enum(["slot", "backoff"]),
+    cause: z.enum(["slot", "backoff", "rate_limit"]),
     reason: z.string().max(GET_WORKFLOW_RUN_ROSTER_LIMITS.maxWaitReasonLength).optional(),
     retryAfterMs: z.number().nonnegative().optional(),
     since: z.number().optional(),

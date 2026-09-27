@@ -59,19 +59,36 @@ export interface ModelRequestAdmissionTicket extends ModelStatusSink {
 }
 
 /**
- * 模型请求的准入端口（runtime-only）。runner 在**每一次尝试发出前**先试同步快路径
- * `tryAcquire`，未命中再 `acquire` 排队；拿到票据后才发请求；尝试结束即 `release`，退避 sleep 期间
- * 不持票——所以进程级并发 cap 约束的是 provider 真正看到的在飞请求数。`signal` 被 abort 时
- * `acquire` 以 `signal.reason` reject。
+ * 准入等待的原因。`concurrency` = 在等并发空位（既有行为）；`rate_limit` = 在等 per-provider
+ * 的每分钟配额。两者都表现为「请求还没发出去」，不分的话用户只看到无休止的转圈。
+ */
+export type ModelAdmissionWaitReason = "concurrency" | "rate_limit";
+
+/**
+ * 模型请求的准入端口（runtime-only）。runner 在**每一次尝试发出前**先过速率配额
+ * `awaitRateLimit`（缺席即不限速），再试同步快路径 `tryAcquire`，未命中再 `acquire` 排队；拿到
+ * 票据后才发请求；尝试结束即 `release`，退避 sleep 期间不持票——所以进程级并发 cap 约束的
+ * 是 provider 真正看到的在飞请求数。`signal` 被 abort 时 `acquire` 以 `signal.reason` reject。
+ *
+ * **等待顺序是载荷性的**：`awaitRateLimit` 必须在抢并发槽**之前**。并发槽是稀缺资源，令牌又
+ * 只能靠已发出的请求补充——持槽等令牌会形成「占着槽的人等令牌、令牌要等别人的请求发出、
+ * 而别人在排队等槽」的环。限速层只依赖自己的令牌桶、不依赖任何槽，所以先它后槽无环。
  *
  * `tryAcquire` 未命中是 runner 发 `model_request_queued` / `model_request_admitted` 的唯一依据
  * 没有快路径的实现 runner 无法分辨「排了队」与「立即放行」，一律不发这两条事件。
  *
  * 端口绑定在 runtime 的模型工厂上：runtime 交出的每一个模型句柄——turn step、工具内部
  * 的模型调用、压缩、标题 sidecar——都带它；缺席即不设闸门（runner 行为逐字不变）。主代理拿的是
- * 治理器的 observer 实现：`tryAcquire` 总命中、只喂信号。
+ * 治理器的 observer 实现：`tryAcquire` 总命中、只喂信号——**并发**上它无条件放行，但
+ * `awaitRateLimit` 照样生效：限速约束的是 provider 配额，主代理与 workflow 共用同一份额度。
  */
 export interface ModelRequestAdmission {
+  /**
+   * per-provider 速率配额闸门（可选）。返回本次为配额**实际等待的毫秒数**，0 = 令牌现成即用。
+   * 返回等待时长而不是 void，是为了让 runner 能据此决定要不要发 `model_request_queued`：
+   * 无限速的 provider 不该为每个请求都报一次「在等」。
+   */
+  awaitRateLimit?(input: { model: ModelRequestTarget; signal?: AbortSignal }): Promise<number>;
   /** 同步快路径：闸门开着且无人排队即给票；否则 undefined，runner 转 `acquire` 并报排队。 */
   tryAcquire?(input: { model: ModelRequestTarget }): ModelRequestAdmissionTicket | undefined;
   acquire(input: {
@@ -196,14 +213,19 @@ export interface ModelRequestStartedStatusEvent extends ModelNetworkStatusBase {
  * 准入等待的两端：runner 的 `tryAcquire` 未命中
  * 即发 `queued`，拿到票即发 `admitted`（带排队时长）。它们是 runtime 观测——driver 据此报「等待槽位」，
  * 工具执行器据此暂停工具超时——不进 provider 请求；协议侧凡枚举状态类型的消费方显式忽略。
+ *
+ * `reason` 说明等的是哪一种闸门（等并发空位 / 等每分钟配额）。缺席按 `concurrency` 读——那是
+ * 这个事件最初的唯一成因，老消费者不认这个字段也不会读错。
  */
 export interface ModelRequestQueuedStatusEvent extends ModelNetworkStatusBase {
   type: "model_request_queued";
+  reason?: ModelAdmissionWaitReason;
 }
 
 export interface ModelRequestAdmittedStatusEvent extends ModelNetworkStatusBase {
   type: "model_request_admitted";
   queuedMs: number;
+  reason?: ModelAdmissionWaitReason;
 }
 
 export interface ModelRequestCompletedStatusEvent extends ModelNetworkStatusBase {

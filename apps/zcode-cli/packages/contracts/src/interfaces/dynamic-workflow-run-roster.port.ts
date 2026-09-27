@@ -97,8 +97,11 @@ export interface DynamicWorkflowRunSubagentAsk {
 
 /** 当前 ask 正在等什么（最后一条 `node-waiting` 的观察）。 */
 export interface DynamicWorkflowRunSubagentWait {
-  /** `slot` = 在等进程级准入闸门；`backoff` = runner 在退避重试。 */
-  cause: "slot" | "backoff";
+  /**
+   * `slot` = 在等进程级准入闸门；`backoff` = runner 在退避重试；`rate_limit` = 在等 per-provider
+   * 每分钟配额。三个词各自对应用户能自己认出来的原因，不合并成一个「在等」。
+   */
+  cause: "slot" | "backoff" | "rate_limit";
   reason?: string;
   retryAfterMs?: number;
   /**

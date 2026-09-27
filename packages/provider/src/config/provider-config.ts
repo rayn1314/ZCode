@@ -16,6 +16,7 @@ import {
   type providerAccessDataSchema,
   type providerApiDataSchema,
   type providerConfigDataSchema,
+  type providerRequestPolicyDataSchema,
   type providerTemplateNameMapDataSchema,
   type providerTemplateDataSchema,
 } from "./provider-data-schema.js";
@@ -170,11 +171,14 @@ export type ProviderConfigInput = Omit<ProviderConfigObject, "access" | "api"> &
 
 export type ProviderConfigObject = Readonly<z.infer<typeof providerConfigDataSchema>>;
 
+export type ProviderRequestPolicy = z.infer<typeof providerRequestPolicyDataSchema>;
+
 export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
   readonly group?: ProviderConfigObject["group"];
   readonly logo?: ProviderConfigObject["logo"];
   readonly access?: ProviderAccessConfig | null;
   readonly api?: ProviderApiConfig | null;
+  readonly requestPolicy?: ProviderRequestPolicy | null;
   readonly builtinModelIds?: ProviderConfigObject["builtinModelIds"];
   readonly personalModelIds?: ProviderConfigObject["personalModelIds"];
   readonly modelOrder?: ProviderConfigObject["modelOrder"];
@@ -186,6 +190,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
     this.logo = freezeProviderLogo(input.logo);
     this.access = input.access;
     this.api = input.api;
+    this.requestPolicy = freezeProviderRequestPolicy(input.requestPolicy);
     this.builtinModelIds = freezeModelIds(input.builtinModelIds);
     this.personalModelIds = freezeModelIds(input.personalModelIds);
     this.modelOrder = freezeModelIds(input.modelOrder);
@@ -199,6 +204,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
       logo: this.overlayValue(this.logo, next.logo),
       access: overlayProviderAccess(this.access, next.access),
       api: this.overlayConfig(this.api, next.api),
+      requestPolicy: this.overlayRequestPolicy(next.requestPolicy),
       builtinModelIds: this.overlayValue(this.builtinModelIds, next.builtinModelIds),
       personalModelIds: this.overlayValue(this.personalModelIds, next.personalModelIds),
       modelOrder: this.overlayValue(this.modelOrder, next.modelOrder),
@@ -223,6 +229,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
       logo: this.logo,
       access: this.access,
       api: this.api,
+      requestPolicy: this.requestPolicy,
       builtinModelIds: this.builtinModelIds,
       personalModelIds: this.personalModelIds,
       modelOrder: this.modelOrder,
@@ -237,6 +244,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
       logo: this.logo,
       access: this.access,
       api: this.api,
+      requestPolicy: this.requestPolicy,
       builtinModelIds: source?.builtinModelIds,
       personalModelIds: source?.personalModelIds,
       modelOrder: source?.modelOrder,
@@ -255,11 +263,31 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
       logo: this.logo,
       access: this.access?.toJSON() ?? this.access,
       api: this.api?.toJSON() ?? this.api,
+      requestPolicy: this.requestPolicy,
       builtinModelIds: this.builtinModelIds,
       personalModelIds: this.personalModelIds,
       modelOrder: this.modelOrder,
       visibility: this.visibility,
     });
+  }
+
+  /**
+   * requestPolicy 是嵌套稀疏对象，必须逐子字段合并：personal 层只想改速率时整体替换会连带
+   * 清掉 template 层的值，反之同理。合并结果为空归一为 undefined——空策略对象与「没配」是同一
+   * 件事，不该写进盘。
+   */
+  private overlayRequestPolicy(
+    next: ProviderConfigObject["requestPolicy"],
+  ): ProviderRequestPolicy | null | undefined {
+    if (next === undefined) return this.requestPolicy;
+    if (next === null || this.requestPolicy == null) return next;
+    const merged = objectWithoutUndefined({
+      requestsPerMinute: this.overlayValue(
+        this.requestPolicy.requestsPerMinute,
+        next.requestsPerMinute,
+      ),
+    });
+    return Object.keys(merged).length > 0 ? Object.freeze(merged) : undefined;
   }
 }
 
@@ -360,6 +388,15 @@ function freezeProviderLogo(
   logo: ProviderLogoRef | null | undefined,
 ): ProviderLogoRef | null | undefined {
   return logo ? Object.freeze({ ...logo }) : logo;
+}
+
+/** requestPolicy 是纯数据（单个标量），冻结一层即可；空对象归一为 undefined 免得写进盘。 */
+function freezeProviderRequestPolicy(
+  requestPolicy: ProviderRequestPolicy | null | undefined,
+): ProviderRequestPolicy | null | undefined {
+  if (!requestPolicy) return requestPolicy;
+  const defined = objectWithoutUndefined({ ...requestPolicy });
+  return Object.keys(defined).length > 0 ? Object.freeze(defined) : undefined;
 }
 
 function freezeModelIds(

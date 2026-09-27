@@ -31,6 +31,7 @@ import type {
 } from "@zcode/dynamic-workflow";
 import type { ActorTranscriptStore } from "./workflow-actor-transcript.js";
 import type { WorkflowConcurrencyPort } from "./workflow-concurrency-governor.js";
+import type { ProviderRateLimitPort } from "./provider-rate-limiter.js";
 import type { ActorModelActivity, WorkflowClock } from "./workflow-driver-concurrency.js";
 import type { ActorSessionQuiescence } from "./workflow-driver-quiescence.js";
 import type { WorkflowEscalationRegistry } from "./workflow-escalation-registry.js";
@@ -155,6 +156,14 @@ export interface AgentRuntimeWorkflowDriverDeps {
    * （v1 的 `acquireSlot` 已删）。
    */
   concurrency?: WorkflowConcurrencyPort;
+  /**
+   * per-provider 每分钟请求数限速。原样装进每个 actor 的准入端口（driver 侧见
+   * `createActorModelActivity`）。缺席即不限速。
+   *
+   * 它与 `concurrency` 是**两层正交**的闸门，不是同一个开关的两档：限速约束 provider 的配额，
+   * 并发约束进程同时在飞的请求数。顺序载荷——先等配额再抢槽，见 ModelRequestAdmission。
+   */
+  rateLimit?: ProviderRateLimitPort;
   /**
    * 本 run 的座位闸门：本 run
    * **自己**的并发上界中途被改低时，超出的子代理在下一个 turn step 前停住。在场时 driver 做两件

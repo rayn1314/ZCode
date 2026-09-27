@@ -82,7 +82,7 @@ const workflowRunSubagentViewSchema = z
     turn: z.number().int().nonnegative().optional(),
     toolCalls: z.number().int().nonnegative().optional(),
     lastTool: workflowRunLastToolSchema.optional(),
-    waitCause: z.enum(["slot", "backoff"]).optional(),
+    waitCause: z.enum(["slot", "backoff", "rate_limit"]).optional(),
     retryAfterMs: z.number().nonnegative().optional(),
     waitSince: z.number().optional(),
     parkedOn: z.string().optional(),
