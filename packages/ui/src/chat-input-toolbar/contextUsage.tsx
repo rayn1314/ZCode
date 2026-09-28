@@ -21,6 +21,7 @@ import {
   ContextTrigger,
 } from "@/components/ai-elements/context.js";
 import { cn } from "@/components/lib/utils.js";
+import { Button } from "@/components/ui/button.js";
 import { Progress } from "@/components/ui/progress.js";
 import { useOptionalTabStore } from "@/store/TabStoreProvider.js";
 import { isSettingsTab } from "@/store/tabStore.js";
@@ -236,9 +237,11 @@ export function ChatContextUsage({
   codingPlanUsageRemaining,
   startPlanBalance,
   taskUsage,
-  selectedProvider: _selectedProvider,
+  selectedProvider,
   intl,
   locale,
+  onSendCompressionCommand,
+  compressionDisabled,
 }: {
   codingPlanUsageRemaining?: ChatCodingPlanUsageRemainingConfig;
   startPlanBalance?: ChatStartPlanBalanceConfig;
@@ -299,6 +302,16 @@ export function ChatContextUsage({
     }
   }, []);
   const renderableTaskUsage = getRenderableTaskUsage(taskUsage);
+  // 「压缩」入口复用 /compact 的同一条命令链路：面板只把命令文本交给宿主，
+  // 运行/排队状态仍由会话快照投影，这里不复制一份压缩状态。
+  const compressionCommand = getContextCompressionCommand(selectedProvider);
+  const handleCompressContext = useCallback(() => {
+    // HoverCard 内按钮点击不会自动收起面板；先收起再派发，让用户直接看到压缩进度行。
+    runContextPanelActionWithClose({
+      action: () => onSendCompressionCommand?.(compressionCommand),
+      close: () => setContextOpen(false),
+    });
+  }, [compressionCommand, onSendCompressionCommand]);
   const codingPlanUsageRemainingWithClose = useMemo<
     ChatCodingPlanUsageRemainingConfig | undefined
   >(() => {
@@ -931,6 +944,28 @@ export function ChatContextUsage({
                 segments={progressSegments}
                 value={usagePercent * PERCENT_MAX}
               />
+              {/* 压缩入口贴住容量条：需要压缩的动机只来自这一段用量；
+                  面板不读会话运行态，点击后由宿主按 /compact 语义运行或排队。 */}
+              {onSendCompressionCommand ? (
+                <ControlHintTooltip
+                  title={intl.formatMessage({ id: "chat.contextUsage.compress" })}
+                  description={intl.formatMessage(
+                    { id: "chat.contextUsage.compressDescription" },
+                    { command: compressionCommand },
+                  )}
+                >
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    className="w-full"
+                    disabled={compressionDisabled === true}
+                    onClick={handleCompressContext}
+                  >
+                    {intl.formatMessage({ id: "chat.contextUsage.compress" })}
+                  </Button>
+                </ControlHintTooltip>
+              ) : null}
             </div>
           ) : null}
           {renderableTaskUsage && (breakdownSegments.length > 0 || cacheHitRateLabel) ? (
