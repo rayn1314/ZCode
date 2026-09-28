@@ -5,35 +5,101 @@
 - 定位问题时，未明确要求修改代码就先调查原因。结合源码、日志和运行时证据，区分已确认原因与待验证假设。
 - 保留与任务无关的本地改动，不自行恢复已移除的模块或内部依赖。
 
-## 命令与仓库结构
+## 常用命令
 
 开工前运行 `node scripts/check-workspace-freshness.mjs` 检查基线。Node 版本以 `mise.toml` 为准。
 
-以下命令从仓库根目录执行：
+以下命令从仓库根目录执行；向脚本传参统一写成 `pnpm <script> -- <args>`（与 `verify:pre-push` 保持一致）：
 
-| 用途             | 命令                                      |
-| ---------------- | ----------------------------------------- |
-| 类型检查         | `pnpm typecheck`                          |
-| Lint             | `pnpm lint` / `pnpm lint:fix`             |
-| 格式检查         | `pnpm fmt:check`                          |
-| 桌面开发         | `pnpm dev:desktop`                        |
-| Web 开发         | `pnpm dev:web`                            |
-| 提交前检查       | `pnpm verify:pre-push`（Lint 与架构检查） |
-| 架构检查         | `pnpm architecture:check --changed`       |
-| 模块阅读包       | `pnpm architecture:context <module-id>`   |
-| 未使用依赖与导出 | `pnpm knip`                               |
-| 导出引用查询     | `pnpm dep:refs --list-exports <file>`     |
+| 用途                     | 命令                                                                                        |
+| ------------------------ | ------------------------------------------------------------------------------------------- |
+| 类型检查（根 workspace） | `pnpm typecheck`                                                                            |
+| 类型检查（Agent CLI）    | `pnpm typecheck:cli`                                                                        |
+| Lint                     | `pnpm lint` / `pnpm lint:fix`                                                               |
+| 格式检查                 | `pnpm fmt:check`                                                                            |
+| 桌面开发                 | `pnpm dev:desktop`（test 环境：`pnpm dev:desktop:test`）                                    |
+| Web 开发                 | `pnpm dev:web`（只起服务端：`pnpm dev:server`）                                             |
+| 提交前检查               | `pnpm verify:pre-push`（Lint、架构检查、格式检查、类型检查）                                |
+| 架构检查（仅改动）       | `pnpm architecture:check -- --changed`                                                      |
+| 架构报告                 | `pnpm architecture:report`                                                                  |
+| 架构基线更新             | `pnpm architecture:baseline:update`（会改写 `.architecture-baseline.json`）                 |
+| 模块阅读包               | `pnpm architecture:context -- <module-id>`                                                  |
+| 依赖图                   | `pnpm dep:graph`                                                                            |
+| 未使用依赖与导出         | `pnpm knip`                                                                                 |
+| 导出引用查询             | `pnpm dep:refs <file>:<symbol>`；列出文件全部导出：`pnpm dep:refs -- --list-exports <file>` |
+
+覆盖范围：
+
+- 根 `pnpm typecheck` 只覆盖其 `tsconfig` 列表内的项目（rpc / provider / provider-node / shared / services / client / server / zcode-server-cli / ui / web 与 desktop host），**不含** `packages/formal-proof`、`packages/zcode-cua` 与 `apps/zcode-cli`。
+- `apps/zcode-cli` 是独立的 pnpm + turbo workspace（自带 `pnpm-lock.yaml`、`turbo.json`）；根级 Lint 与类型检查不覆盖它，必须单独执行。
+- 架构检查以 `.architecture-baseline.json` 为基线，`--changed` 只检查改动范围；遇到基线内的既有违规，不要顺手改动无关代码。
 
 测试入口以目标包当前的 `package.json` 和实际测试文件为准，不假定存在统一的单测或 E2E 命令。
 
-- `packages/desktop`：Electron main、host、renderer。
-- `packages/web`、`packages/server`：Web 客户端与服务端。
-- `packages/ui`：共享 React 组件、hooks 与 Zustand store。
-- `packages/services`：业务服务；`packages/rpc`：RPC 框架。
-- `packages/shared`：共享协议与类型；`packages/client`：Agent 客户端 SDK。
-- `apps/zcode-cli`：Agent CLI 与运行时。
-- `CONTEXT.md`：插件商店领域词汇；修改相关 UI 前阅读。
-- `DESIGN.md`：UI 设计规范；修改 UI 前阅读。
+## 仓库导航图
+
+顶层结构：
+
+- `packages/*`：根 workspace 的可复用包。
+- `apps/zcode-cli`：Agent CLI 与运行时，独立 workspace（子包职责见下）。
+- `scripts/*`：构建、开发启动、架构检查、发行与内置 provider 配置生成。
+- `config/provider/zcode-builtin.json`：内置 provider 配置源，参与 CLI 构建。
+- `harness/remote`、`third-party`、`patches`、`public`：远端测试 harness、第三方清单、依赖补丁与静态资源。
+- `CONTEXT.md`：领域词汇表；`DESIGN.md`：UI 设计规范；`architecture-policy.yaml`：架构规则来源。
+
+`packages/` 各包职责：
+
+| 包                 | 职责                                                                                                     |
+| ------------------ | -------------------------------------------------------------------------------------------------------- |
+| `shared`           | 跨包共享协议与类型；`src/zcode-protocol/` 是协议 schema 的单一导出入口，`src/platform.ts` 是平台能力接口 |
+| `rpc`              | VS Code 风格 IPC 抽象框架：channel、proxy、协议与日志/遥测中间件                                         |
+| `client`           | 客户端接入层：websocket、messageport、remoteServiceAccess                                                |
+| `provider`         | Provider 领域与配置服务：registry、resolver、config-service、模型选择                                    |
+| `provider-node`    | Provider 的 Node 端实现：配置仓储、内置 provider 物化与远端同步、运行时路径                              |
+| `model-option-map` | 模型选项映射 DSL：tokenizer、parser、compiler、evaluator、merge-patch                                    |
+| `services`         | 业务服务集合：settings、skills、subagents、mcp-sync、plugin-sync、credential、file、zcode-agent 等       |
+| `server`           | 服务端主体：`entry-stdio.ts` 与 `entry-http.ts` 两个入口，`remote/` 承载远端连接与部署                   |
+| `zcode-server-cli` | 远端/后台 Server 的安装、supervisor、release 管理与 CLI 命令（`bin: zcode`）                             |
+| `ui`               | 共享 React 组件、hooks 与 Zustand store                                                                  |
+| `web`              | Web 客户端入口（`src/main.tsx`，复用 `ui`）                                                              |
+| `desktop`          | Electron 桌面端：`src/` 下 main、host、preload、renderer、scheduler                                      |
+| `formal-proof`     | 独立 Vite 页面，形式化证明模型的可视化                                                                   |
+| `zcode-cua`        | Computer Use 的 API 兼容占位包：当前构建不含 Computer Use，运行时表面一律报告不可用并 fail closed        |
+
+`apps/zcode-cli/packages/` 子包归类：
+
+- 核心运行时链路：`core`、`bootstrap`、`adapters`、`contracts`、`shared-types`。
+- V4 协议网关与命令串行 admission 位于 `bootstrap/src/zcode-protocol-v4/`。
+- 旁支能力：`cli`、`i18n`、`debug`、`node-repl-host`、`dynamic-workflow`、`dynamic-workflow-runtime`、`bundled-skills`、`swift-bridge`、`browser-use-plugin`、`superpowers-plugin`。
+
+入口与关键数据流：
+
+| 环节                            | 位置                                                                       |
+| ------------------------------- | -------------------------------------------------------------------------- |
+| Desktop main 进程               | `packages/desktop/src/main/index.ts`                                       |
+| window-scoped Local Host        | `packages/desktop/src/host/index.ts`                                       |
+| Desktop renderer 入口           | `packages/desktop/src/renderer/src/main.tsx`                               |
+| Web 客户端入口                  | `packages/web/src/main.tsx`                                                |
+| 服务端 stdio / http 入口        | `packages/server/src/entry-stdio.ts`、`packages/server/src/entry-http.ts`  |
+| 协议 schema 单一入口            | `packages/shared/src/zcode-protocol/index.ts`                              |
+| V4 网关                         | `apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/v4-gateway.ts`    |
+| busy/running 输入串行 admission | `apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/command-inbox.ts` |
+| 远端 connection 唯一 owner      | `packages/desktop/src/host/windowRemoteConnectionRegistry.ts`              |
+| 权限协议 schema                 | `packages/shared/src/zcode-protocol/index.ts`（`zcodePermission*Schema`）  |
+
+两条实时链路的 `clientMode` 必须区分，改动 stream / snapshot / queue / 重连时同时验证：
+
+- `desktop-continuous`：桌面本地与 relay 链路，配套 role `trusted-host-relay`。
+- `web-remote-replayable`：手机远控的可恢复链路。
+
+两者在 `packages/server/src/stdio.ts`、`packages/server/src/http.ts`、`packages/zcode-server-cli/src/server-core/http.ts`、`packages/desktop/src/host/index.ts` 按 `clientMode` 分支。
+
+## spec 与文档落盘
+
+- 行为改动的 spec 就近放在主责包内：`packages/<包名>/spec/<主题>.md`（已有先例 `packages/server/spec/`）。目录不存在时按需创建。
+- 跨包变更只在主责包落一份，文首列出涉及的其它包，不要在多处复制同一份 spec。
+- spec 至少覆盖：背景与问题、设计决策、行为、所有权与不变式、失败语义、迁移边界。
+- 领域词汇统一写进 `CONTEXT.md`，UI 规范统一写进 `DESIGN.md`，不为同类内容另起文档。
 
 ## 实现与验证
 

@@ -1,8 +1,64 @@
-# ZCode 插件商店（Plugin Store）
+# ZCode 领域词汇
 
-插件设置页及其市场浏览/安装体验的领域词汇表。本文件统一定义商店相关术语，供页面、服务和文档使用。
+本文件统一定义 ZCode 的领域术语，供页面、服务和文档使用。新增或修改行为前先对照本表，避免同一概念出现多个名字。
 
-## Language
+## 核心域
+
+**Workspace（工作区）**:
+用户打开的本地项目目录，或通过 remote 接入的远端目标。
+_Avoid_: 项目、仓库（口语可用，文档统一"工作区"）
+
+**workspacePath**:
+workspace 的本地文件系统路径。用于文件操作、命令 cwd、Git 和路径展示。
+_Avoid_: 拿它当身份键
+
+**workspaceIdentity**:
+workspace 的身份键，用于去重、绑定、缓存、队列、持久化和请求关联的身份隔离。身份键统一为 `workspaceIdentity?.trim() || workspacePath`，本地保留路径 fallback；远端 identity 由 `packages/shared/src/remote-workspace-identity.ts` 的 `buildRemoteWorkspaceIdentity` / `parseRemoteWorkspaceIdentity` 构造和解析，不在业务代码里手写格式。
+_Avoid_: 远端链路只按路径匹配
+
+**Task（任务）**:
+可被调度、恢复和归档的工作单元，持久化在 `tasks-index.sqlite`。
+_Avoid_: 把一次会话当成一个任务
+
+**Session（会话）**:
+一次可恢复的对话与执行上下文，归属于某个 workspace；一个 workspace 下可有多个 session。
+_Avoid_: 与 Task 混用
+
+**Host（宿主）**:
+承载本地 workspace 会话运行时的进程。每个窗口一个 window-scoped Local Host，本地 workspace 共享该 Host。
+_Avoid_: 远端 Host、手机专用 Host
+
+**Remote Connection Registry（远端连接注册表）**:
+窗口内管理远端 workspace 连接的注册表，是全部远端 connection 的唯一 owner。远程 workspace 由它管理，不另建 Desktop Remote Host。
+_Avoid_: 与 Host 混为一谈
+
+**Attachment（挂载）**:
+客户端接入 Host 的会话级资源，运行时以 `attachmentId`（`base-<uuid>`）标识。手机远控连接桌面已有 Host attachment 并复用会话运行时。
+_Avoid_: 把 attachment 当成一份独立的快照或队列
+
+**Remote Session（远程会话）**:
+由 `remoteSessionId` 标识的远端连接会话，与 `workspaceIdentity` 一起贯穿远程链路传递。
+_Avoid_: 只按 workspacePath 关联远端请求
+
+**Owner / Lease（归属与租约）**:
+远端 connection 的归属关系，由窗口内的连接注册表持有。切换 workspace 时释放旧 ownership；最后一个 logical owner 取消后，迟到的成功结果必须立即释放，不能复活旧连接。
+_Avoid_: 多路径同时写入同一 connection
+
+**CommandInbox（命令收件箱）**:
+CLI/runtime 中对已接受的 busy/running 输入做 per-session FIFO 串行 admission 的组件，位于 `apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/command-inbox.ts`；可对过期命令给出 `"stale"` 裁决。Renderer 只保留未提交草稿与 pending optimistic overlay。
+_Avoid_: 在 Renderer 侧自行排队已提交的输入
+
+**clientMode（客户端模式）**:
+实时链路的语义开关，只有两个取值：`desktop-continuous`（桌面本地与 relay 的连续链路，配套 role `trusted-host-relay`）与 `web-remote-replayable`（手机远控的可恢复链路）。两者在 stream、snapshot、queue 和重连语义上不同。
+_Avoid_: 把两条链路当成同一套恢复语义
+
+**Product Identity（产品身份）**:
+官方与自建两套并排存在的产品身份，由编译期常量 `ZCODE_DATA_ROOT_SUFFIX` 派生数据根后缀。远端 Server 的代码安装根按身份隔离（保证连过去跑的是匹配的构建），数据根保持共享（历史属于"该环境"）。
+_Avoid_: 只隔离代码却共用后缀规则，或反过来隔离数据
+
+## 插件商店（Plugin Store）
+
+插件设置页及其市场浏览/安装体验的领域词汇。
 
 ### 市场与来源
 
