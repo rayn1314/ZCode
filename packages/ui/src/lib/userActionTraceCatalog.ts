@@ -82,7 +82,7 @@ export const SETTINGS_USER_ACTION_FEATURES = {
     "toggle_terminal_grouping",
     "toggle_changes_grouping",
   ],
-  "settings.task": ["toggle_auto_archive", "change_auto_archive_days"],
+  "settings.task": ["toggle_auto_archive", "change_auto_archive_days", "archive_stale_now"],
   "settings.storage": ["change_data_directory"],
   "settings.memory": ["toggle_memory", "refresh_memory", "change_memory_scope"],
   "settings.browser": [
@@ -129,7 +129,7 @@ function operationKindFor(featureId: string, action: string): UserActionOperatio
   }
   if (
     featureId.startsWith("settings.") &&
-    !["refresh_memory", "import_browser_data", "clear_cache"].includes(action)
+    !["refresh_memory", "import_browser_data", "clear_cache", "archive_stale_now"].includes(action)
   ) {
     return "preference";
   }

@@ -102,6 +102,7 @@ import {
   GeneralSectionContent,
   GeneralSectionHeader,
   resolveSettingsSectionForPlatform,
+  type TaskArchiveNowStatus,
 } from "./settingsPageHelpers.js";
 import { AppearanceSectionContent } from "./settingsCodePreview.js";
 import type { SettingsSectionId } from "@/lib/settingsNavigation.js";
@@ -113,13 +114,15 @@ import {
   type UserActionTrigger,
 } from "@/lib/userActionTelemetry.js";
 import type { SettingsUserActionFeatureId } from "@/lib/userActionTraceCatalog.js";
+import { useLocalWorkspaceScopes } from "@/hooks/useLocalWorkspaceScopes.js";
+import { logger } from "@/logger.js";
 
 function runSettingsActionAsync<T>(options: {
   featureId: SettingsUserActionFeatureId;
   action: string;
   trigger: UserActionTrigger;
   operation: () => Promise<T>;
-  completed: UserActionResult;
+  completed: UserActionResult | ((value: T) => UserActionResult);
   failureStage?: string;
 }): Promise<T> {
   return runUserActionAsync({
@@ -622,6 +625,9 @@ export function SettingsPage({
   const activeWorkspacePath = useTabStore((state) => state.activeWorkspacePath);
   const tabs = useTabStore((state) => state.tabs);
   const workspaceTabs = useMemo(() => tabs.filter(isWorkspaceTab), [tabs]);
+  // 手动归档只扫描当前窗口打开的本地工作区：与 grouped 视图自动归档同一口径，
+  // 远端 workspace 的 task 归各自 host 负责，不能误落到本机 host。
+  const localWorkspaceTabs = useLocalWorkspaceScopes({ workspaceTabs });
   // Settings 打开后 activeTab 会变成 settings，本地反查 activeTab 读 identity 会稳定丢失。
   // 这里改为读取 tabStore 维护的“最近激活 workspace identity”，让插件管理继续命中正确远端。
   const activeWorkspaceIdentity = useTabStore(
@@ -698,6 +704,9 @@ export function SettingsPage({
     useState(false);
   const [taskAutoArchiveEnabled, setTaskAutoArchiveEnabled] = useState(false);
   const [taskAutoArchiveOlderThanDays, setTaskAutoArchiveOlderThanDays] = useState(7);
+  // 「立即归档」按钮的唯一状态源：busy 与结果反馈都由它派生。
+  const [taskArchiveNowStatus, setTaskArchiveNowStatus] = useState<TaskArchiveNowStatus>("idle");
+  const [taskArchiveNowArchivedCount, setTaskArchiveNowArchivedCount] = useState(0);
   const [closeToTrayOnWindows, setCloseToTrayOnWindows] = useState(true);
   const [
     desktopChromiumHardwareAccelerationEnabled,
@@ -1059,6 +1068,39 @@ export function SettingsPage({
     },
     [services.settingService],
   );
+  const handleTaskArchiveNow = useCallback(async () => {
+    const workspaceScopes = localWorkspaceTabs.map((tab) => ({
+      workspacePath: tab.workspacePath,
+      workspaceIdentity: tab.workspaceIdentity,
+      workspacePurpose: tab.workspacePurpose,
+    }));
+    if (workspaceScopes.length === 0) {
+      setTaskArchiveNowStatus("no-workspace");
+      return;
+    }
+    setTaskArchiveNowStatus("running");
+    try {
+      // 保留时长由 host 侧读取同一份设置（taskAutoArchiveOlderThanDays）；手动触发是显式
+      // 用户动作，不受自动开关限制，host 返回统计供按钮反馈。
+      const result = await runSettingsActionAsync({
+        featureId: "settings.task",
+        action: "archive_stale_now",
+        trigger: "button",
+        operation: () =>
+          localHostServices.zcodeTaskService.archiveStaleTasksForWorkspaces({ workspaceScopes }),
+        completed: (value) => ({
+          resultSource: "platform_result",
+          valueAfter: String(value.archivedCount),
+        }),
+        failureStage: "task_archive_now",
+      });
+      setTaskArchiveNowArchivedCount(result.archivedCount);
+      setTaskArchiveNowStatus(result.archivedCount > 0 ? "archived" : "empty");
+    } catch (error) {
+      logger.error("[Settings] 手动归档旧任务失败", error);
+      setTaskArchiveNowStatus("error");
+    }
+  }, [localWorkspaceTabs, localHostServices.zcodeTaskService]);
   const handleCloseToTrayOnWindowsChange = useCallback(
     async (enabled: boolean) => {
       await runSettingsActionAsync({
@@ -1712,6 +1754,9 @@ export function SettingsPage({
                             }
                             taskAutoArchiveEnabled={taskAutoArchiveEnabled}
                             taskAutoArchiveOlderThanDays={taskAutoArchiveOlderThanDays}
+                            taskArchiveNowStatus={taskArchiveNowStatus}
+                            taskArchiveNowArchivedCount={taskArchiveNowArchivedCount}
+                            onTaskArchiveNow={handleTaskArchiveNow}
                             messageStreamShowReasoning={messageStreamShowReasoning}
                             messageStreamShowTodos={messageStreamShowTodos}
                             toolGroupingExploreEnabled={toolGroupingExploreEnabled}

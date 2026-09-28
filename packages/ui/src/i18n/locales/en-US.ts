@@ -2268,6 +2268,15 @@ const enUS: Record<string, string> = {
   "settings.taskAutoArchiveDays.option.7": "Archive after 7 days",
   "settings.taskAutoArchiveDays.option.14": "Archive after 14 days",
   "settings.taskAutoArchiveDays.option.30": "Archive after 30 days",
+  "settings.taskArchiveNow": "Archive now",
+  "settings.taskArchiveNowDescription":
+    "Manually scan the locally opened workspaces and archive eligible completed tasks (no unread, not pinned) using the retention window above.",
+  "settings.taskArchiveNowAction": "Archive now",
+  "settings.taskArchiveNowRunning": "Archiving…",
+  "settings.taskArchiveNowFeedbackArchived": "{count} tasks archived",
+  "settings.taskArchiveNowFeedbackEmpty": "No eligible old tasks",
+  "settings.taskArchiveNowFeedbackNoWorkspace": "No locally opened workspaces",
+  "settings.taskArchiveNowFeedbackError": "Archiving failed; try again later",
   "settings.dataBaseDir": "Data storage path",
   "settings.dataBaseDirDescription":
     "Root directory for app data (defaults to user home directory). Existing data will be copied to the new location. The .zcode/v2 suffix cannot be changed.",

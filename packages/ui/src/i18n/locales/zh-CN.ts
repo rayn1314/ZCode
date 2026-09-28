@@ -2130,6 +2130,15 @@ const zhCN: Record<string, string> = {
   "settings.taskAutoArchiveDays.option.7": "7 天后归档",
   "settings.taskAutoArchiveDays.option.14": "14 天后归档",
   "settings.taskAutoArchiveDays.option.30": "30 天后归档",
+  "settings.taskArchiveNow": "立即归档",
+  "settings.taskArchiveNowDescription":
+    "手动扫描当前打开的本地工作区，按上面的保留时长归档符合条件的已完成任务（无未读、未置顶）。",
+  "settings.taskArchiveNowAction": "立即归档",
+  "settings.taskArchiveNowRunning": "归档中…",
+  "settings.taskArchiveNowFeedbackArchived": "已归档 {count} 个任务",
+  "settings.taskArchiveNowFeedbackEmpty": "没有符合条件的旧任务",
+  "settings.taskArchiveNowFeedbackNoWorkspace": "当前没有打开的本地工作区",
+  "settings.taskArchiveNowFeedbackError": "归档失败，请稍后重试",
   "settings.dataBaseDir": "数据存储路径",
   "settings.dataBaseDirDescription":
     "应用数据的根目录（默认为用户主目录），修改后会将现有数据复制到新位置。路径后缀 .zcode/v2 不可更改。",

@@ -457,6 +457,21 @@ export interface IZCodeTaskService {
     olderThanDays: number;
   }): Promise<ZCodeTaskMeta[]>;
 
+  /**
+   * 设置页手动触发归档：按当前「归档保留时长」扫描给定工作区，归档符合条件的超期旧任务。
+   * 与自动归档共用同一后端核心；手动触发是显式用户动作，不受自动开关限制，返回统计供 UI 反馈。
+   */
+  archiveStaleTasksForWorkspaces(params: {
+    workspaceScopes: ZCodeTaskListWorkspaceScope[];
+  }): Promise<{
+    /** 本次实际归档的任务数 */
+    archivedCount: number;
+    /** 去重后的扫描工作区数 */
+    scannedWorkspaceCount: number;
+    /** 本次使用的保留时长（天） */
+    olderThanDays: number;
+  }>;
+
   /** 移除 workspace 时批量归档该 workspace 下所有未归档 task，包含 pinned task */
   archiveWorkspaceTasks(params: {
     workspacePath: string;

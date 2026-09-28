@@ -45,6 +45,41 @@ export { createSettingsPageConfig, resolveSettingsSectionForPlatform };
 const TASK_AUTO_ARCHIVE_DAY_OPTIONS = [3, 7, 14, 30] as const;
 const ZCODE_INTERACTION_BEHAVIOR_OPTIONS: readonly ZCodeInteractionBehavior[] = ["queue", "guide"];
 
+/**
+ * 「立即归档」按钮的状态机：按钮 busy 与结果反馈共用这一份状态，
+ * 避免 busy 与结果各记一处导致互相矛盾。
+ */
+export type TaskArchiveNowStatus =
+  | "idle"
+  | "running"
+  | "archived"
+  | "empty"
+  | "no-workspace"
+  | "error";
+
+/** 把按钮状态翻译成用户可读的结果反馈；idle/running 不显示历史结果。 */
+function resolveTaskArchiveNowFeedback(params: {
+  intl: ReturnType<typeof useZCodeIntl>["intl"];
+  status: TaskArchiveNowStatus;
+  archivedCount: number;
+}): string | undefined {
+  switch (params.status) {
+    case "archived":
+      return params.intl.formatMessage(
+        { id: "settings.taskArchiveNowFeedbackArchived" },
+        { count: params.archivedCount },
+      );
+    case "empty":
+      return params.intl.formatMessage({ id: "settings.taskArchiveNowFeedbackEmpty" });
+    case "no-workspace":
+      return params.intl.formatMessage({ id: "settings.taskArchiveNowFeedbackNoWorkspace" });
+    case "error":
+      return params.intl.formatMessage({ id: "settings.taskArchiveNowFeedbackError" });
+    default:
+      return undefined;
+  }
+}
+
 export function GeneralSectionContent({
   localePreference,
   interfaceMode = "coding",
@@ -74,6 +109,9 @@ export function GeneralSectionContent({
   setNotificationSoundEnabled,
   taskAutoArchiveEnabled,
   taskAutoArchiveOlderThanDays,
+  taskArchiveNowStatus = "idle",
+  taskArchiveNowArchivedCount = 0,
+  onTaskArchiveNow = async () => {},
   messageStreamShowReasoning,
   messageStreamShowTodos,
   toolGroupingExploreEnabled,
@@ -137,6 +175,10 @@ export function GeneralSectionContent({
   setNotificationSoundEnabled: (enabled: boolean) => void;
   taskAutoArchiveEnabled: boolean;
   taskAutoArchiveOlderThanDays: number;
+  /** 「立即归档」按钮状态；旧测试精简 props 渲染时按 idle 兜底。 */
+  taskArchiveNowStatus?: TaskArchiveNowStatus;
+  taskArchiveNowArchivedCount?: number;
+  onTaskArchiveNow?: () => Promise<void>;
   messageStreamShowReasoning: boolean;
   messageStreamShowTodos: boolean;
   toolGroupingExploreEnabled: boolean;
@@ -173,6 +215,11 @@ export function GeneralSectionContent({
 }) {
   const { intl } = useZCodeIntl();
   const hasServices = Boolean(useOptionalServices());
+  const taskArchiveNowFeedback = resolveTaskArchiveNowFeedback({
+    intl,
+    status: taskArchiveNowStatus,
+    archivedCount: taskArchiveNowArchivedCount,
+  });
   // 部分 SSR 单测会用精简 props 直接渲染本组件，新增终端设置项后旧 helper 未必同步传值。
   // 这里把运行时缺省值兜到“继承系统 profile”，避免 undefined.trim() 把无关测试打断。
   const [localTerminalFontFamily, setLocalTerminalFontFamily] = useState(terminalFontFamily);
@@ -850,6 +897,33 @@ export function GeneralSectionContent({
                 ))}
               </SelectContent>
             </Select>
+          }
+        />
+        <SettingsRow
+          label={intl.formatMessage({ id: "settings.taskArchiveNow" })}
+          description={intl.formatMessage({ id: "settings.taskArchiveNowDescription" })}
+          control={
+            <Button
+              type="button"
+              size="lg"
+              disabled={taskArchiveNowStatus === "running"}
+              data-testid="task-archive-now"
+              onClick={() => {
+                void onTaskArchiveNow();
+              }}
+            >
+              {intl.formatMessage({
+                id:
+                  taskArchiveNowStatus === "running"
+                    ? "settings.taskArchiveNowRunning"
+                    : "settings.taskArchiveNowAction",
+              })}
+            </Button>
+          }
+          detail={
+            taskArchiveNowFeedback ? (
+              <div className="text-ui-base text-foreground-subtle">{taskArchiveNowFeedback}</div>
+            ) : undefined
           }
         />
       </SettingsGroupCard>

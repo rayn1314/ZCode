@@ -1080,7 +1080,12 @@ export function createZCodeTaskServiceAdapter(
     });
   }
 
-  async function readTaskAutoArchiveConfig(): Promise<{
+  /**
+   * 读取归档设置：settingService 缺失或读取失败时返回 null，由调用方决定降级。
+   * enabled 只约束自动归档；olderThanDays 是自动/手动共用的唯一保留时长来源。
+   */
+  async function readTaskArchiveSettings(): Promise<{
+    enabled: boolean;
     olderThanDays: number;
   } | null> {
     if (!options.settingService) {
@@ -1088,16 +1093,51 @@ export function createZCodeTaskServiceAdapter(
     }
     try {
       const settings = await options.settingService.get();
-      if (!settings.taskAutoArchiveEnabled) {
-        return null;
-      }
       return {
+        enabled: settings.taskAutoArchiveEnabled === true,
         olderThanDays: settings.taskAutoArchiveOlderThanDays ?? 7,
       };
     } catch (error) {
-      logger.warn(undefined, "读取 task 自动归档设置失败，跳过本轮自动归档", error);
+      logger.warn(undefined, "读取 task 归档设置失败", error);
       return null;
     }
+  }
+
+  /**
+   * 超期归档核心：按 workspace key 去重后逐个工作区归档，并沿用
+   * overlay / meta / task_meta_changed 广播的既有收敛路径。
+   * 自动触发与设置页手动触发共用，避免出现第二条归档写入路径。
+   */
+  async function archiveStaleTasksAcrossWorkspaces(params: {
+    scopes: Array<{ workspacePath: string; workspaceIdentity?: string }>;
+    olderThanDays: number;
+  }): Promise<{ archivedTasks: ZCodeTaskMeta[]; scopedWorkspaceCount: number }> {
+    const seenWorkspaceKeys = new Set<string>();
+    const archivedTasks: ZCodeTaskMeta[] = [];
+    let scopedWorkspaceCount = 0;
+    for (const scope of params.scopes) {
+      const key = resolveWorkspaceKey(scope);
+      if (seenWorkspaceKeys.has(key)) {
+        continue;
+      }
+      seenWorkspaceKeys.add(key);
+      scopedWorkspaceCount += 1;
+      // 归档按工作区、过期时间和完成状态处理所有存量任务，包括列表隐藏的历史记录。
+      const archived = await taskIndexRepo.archiveStaleTasks({
+        workspacePath: scope.workspacePath,
+        workspaceIdentity: scope.workspaceIdentity,
+        olderThanDays: params.olderThanDays,
+      });
+      for (const task of archived) {
+        setOverlay(task, { archived: true });
+        rememberIndexedTaskMeta(task);
+        // 归属变更（自动/手动归档）：沿用 task_meta_changed 走 membership 重拉收敛；
+        // 先保持现状行为。
+        emitWorkspaceTaskListChanged(task, task, "task_meta_changed");
+      }
+      archivedTasks.push(...archived);
+    }
+    return { archivedTasks, scopedWorkspaceCount };
   }
 
   async function runWorkspaceTaskAutoArchive(
@@ -1106,37 +1146,18 @@ export function createZCodeTaskServiceAdapter(
     if (scopes.length === 0) {
       return;
     }
-    const config = await readTaskAutoArchiveConfig();
-    if (!config) {
+    const settings = await readTaskArchiveSettings();
+    if (!settings?.enabled) {
       return;
     }
-    const seenWorkspaceKeys = new Set<string>();
-    let archivedCount = 0;
-    for (const scope of scopes) {
-      const key = resolveWorkspaceKey(scope);
-      if (seenWorkspaceKeys.has(key)) {
-        continue;
-      }
-      seenWorkspaceKeys.add(key);
-      // 自动归档按工作区、过期时间和完成状态处理所有存量任务，包括列表隐藏的历史记录。
-      const archivedTasks = await taskIndexRepo.archiveStaleTasks({
-        workspacePath: scope.workspacePath,
-        workspaceIdentity: scope.workspaceIdentity,
-        olderThanDays: config.olderThanDays,
-      });
-      archivedCount += archivedTasks.length;
-      for (const task of archivedTasks) {
-        setOverlay(task, { archived: true });
-        rememberIndexedTaskMeta(task);
-        // 归属变更（自动归档）：沿用 task_meta_changed 走 membership 重拉收敛；
-        // 先保持现状行为。
-        emitWorkspaceTaskListChanged(task, task, "task_meta_changed");
-      }
-    }
-    if (archivedCount > 0) {
+    const { archivedTasks, scopedWorkspaceCount } = await archiveStaleTasksAcrossWorkspaces({
+      scopes,
+      olderThanDays: settings.olderThanDays,
+    });
+    if (archivedTasks.length > 0) {
       logger.info(
         undefined,
-        `按设置自动归档旧 task 数量=${archivedCount} olderThanDays=${config.olderThanDays}`,
+        `按设置自动归档旧 task 数量=${archivedTasks.length} 扫描工作区=${scopedWorkspaceCount} olderThanDays=${settings.olderThanDays}`,
       );
     }
   }
@@ -2455,17 +2476,34 @@ export function createZCodeTaskServiceAdapter(
     },
 
     async archiveStaleTasks(params): Promise<ZCodeTaskMeta[]> {
-      // stale archive API 和设置页自动归档保持一致，清理全部历史 provider。
-      const archivedTasks = await taskIndexRepo.archiveStaleTasks({
-        ...params,
+      // stale archive API 和设置页自动归档保持一致，清理全部历史 provider；
+      // 复用跨工作区归档核心，避免 overlay/meta/广播收敛出现第二份实现。
+      const { archivedTasks } = await archiveStaleTasksAcrossWorkspaces({
+        scopes: [
+          { workspacePath: params.workspacePath, workspaceIdentity: params.workspaceIdentity },
+        ],
+        olderThanDays: params.olderThanDays,
       });
-      for (const task of archivedTasks) {
-        setOverlay(task, { archived: true });
-        rememberIndexedTaskMeta(task);
-        // 同 runWorkspaceTaskAutoArchive：沿用 task_meta_changed 走 membership 重拉收敛。
-        emitWorkspaceTaskListChanged(task, task, "task_meta_changed");
-      }
       return archivedTasks;
+    },
+
+    async archiveStaleTasksForWorkspaces(params) {
+      // 手动触发是显式用户动作：自动开关关闭也执行；settingService 不可用时按默认保留时长兜底。
+      const settings = await readTaskArchiveSettings();
+      const olderThanDays = settings?.olderThanDays ?? 7;
+      const { archivedTasks, scopedWorkspaceCount } = await archiveStaleTasksAcrossWorkspaces({
+        scopes: params.workspaceScopes,
+        olderThanDays,
+      });
+      logger.info(
+        undefined,
+        `手动归档旧 task 数量=${archivedTasks.length} 扫描工作区=${scopedWorkspaceCount} olderThanDays=${olderThanDays}`,
+      );
+      return {
+        archivedCount: archivedTasks.length,
+        scannedWorkspaceCount: scopedWorkspaceCount,
+        olderThanDays,
+      };
     },
 
     async archiveWorkspaceTasks(params): Promise<ZCodeTaskMeta[]> {
