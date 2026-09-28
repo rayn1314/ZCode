@@ -1,10 +1,23 @@
 import { join } from "node:path";
 import { access } from "node:fs/promises";
+import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import type { StdioStream } from "@zcode/server/remote/backend.js";
 import { quotePosixPathArg } from "@zcode/server/remote/posixShell.js";
 import type { RemoteAssetNetworkPort } from "@zcode/server/remote/remoteAssetNetwork.js";
 
-export const REMOTE_BASE = "~/.zcode/server";
+/**
+ * 远端 Server 代码安装根：按产品身份后缀隔离。
+ *
+ * 与本地数据根同源（ZCODE_DATA_ROOT_SUFFIX）：官方空串 → 保持历史路径 `~/.zcode/server`；
+ * 自建（如 `-rayn`）→ `~/.zcode/server-rayn`。这样并排的两个产品各跑各的 node / server bundle /
+ * agents / tools / asset-cache / 部署锁，不会互相覆盖或出现「客户端比远端 Server 新」的能力错配。
+ *
+ * 注意：只隔离「代码」。远端的会话/凭据/设置数据根仍是 `~/.zcode`，历史保持连续。
+ */
+const REMOTE_SERVER_BASE_SUFFIX = ZCODE_DATA_ROOT_SUFFIX.trim();
+export const REMOTE_BASE = `~/.zcode/server${REMOTE_SERVER_BASE_SUFFIX}`;
+/** `ZCODE_SERVER_RUNTIME_ROOT` 的赋值形式：双引号内 `~` 不展开，必须用 `$HOME`。 */
+export const REMOTE_SERVER_RUNTIME_ROOT = `$HOME/.zcode/server${REMOTE_SERVER_BASE_SUFFIX}`;
 
 export interface RemoteAssetDeployOptions {
   /** 取消当前连接初始化；共享 cache 仍可独立完成，但不得继续写入远端 staging。 */

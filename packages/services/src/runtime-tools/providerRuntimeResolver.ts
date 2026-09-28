@@ -17,6 +17,17 @@ function resolveExistingPath(candidates: Array<string | null | undefined>): stri
   return null;
 }
 
+/**
+ * 远端 Server 的运行时根由 `ZCODE_SERVER_RUNTIME_ROOT` 注入（产品隔离后不再固定 `~/.zcode/server`）；
+ * 未设置时回退历史默认路径，保持官方渠道与本地开发行为不变。
+ */
+function resolveRuntimeRootAgentsDir(...segments: string[]): string {
+  const runtimeRoot = process.env.ZCODE_SERVER_RUNTIME_ROOT?.trim();
+  return runtimeRoot
+    ? resolvePath(runtimeRoot, "agents", ...segments)
+    : resolvePath(homedir(), ".zcode", "server", "agents", ...segments);
+}
+
 function resolvePlatformScopedBundledAgentRoots(moduleDir?: string): Array<string | null> {
   const platformKey = `${process.platform}-${process.arch}`;
   return [
@@ -59,7 +70,7 @@ export function findZCodeAgentRuntimeBinary(): string | null {
 
   const candidates = [
     packagedResourcesPath ? resolvePath(packagedResourcesPath, ...resourceSegments) : null,
-    resolvePath(homedir(), ".zcode", "server", "agents", ...resourceSegments),
+    resolveRuntimeRootAgentsDir(...resourceSegments),
     ...platformScopedRoots.map((root) =>
       root ? resolvePath(root, runtime.bundledResourceDir, ...entrySegments) : null,
     ),
@@ -87,7 +98,7 @@ export function findZCodeAgentRuntimeNodeBundle(): string | null {
 
   const candidates = [
     packagedResourcesPath ? resolvePath(packagedResourcesPath, ...resourceSegments) : null,
-    resolvePath(homedir(), ".zcode", "server", "agents", ...resourceSegments),
+    resolveRuntimeRootAgentsDir(...resourceSegments),
     ...platformScopedRoots.map((root) =>
       root ? resolvePath(root, runtime.bundledResourceDir, ...entrySegments) : null,
     ),

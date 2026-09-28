@@ -312,12 +312,38 @@ function resolveRemoteAssetCacheDir(localEnv: LocalRuntimeEnv = {}): string {
   return join(getElectronAppPath("userData"), "remote-assets-cache");
 }
 
+const LOCAL_REMOTE_ASSET_DIR_ENV = "ZCODE_REMOTE_ASSET_LOCAL_DIR";
+
+/**
+ * 显式配置的本地远端资产根（其下含 `releases/<version>/`，与 mock-cdn 同构）。
+ *
+ * 打包态同样生效：自建 / 离线场景用它替代公网 CDN，复用既有的“本地读取 + 上传部署”路径，
+ * 从而不必把 Linux 远端运行时塞回官方安装包，也不必自建 CDN。
+ */
+function resolveConfiguredLocalRemoteAssetDir(localEnv: LocalRuntimeEnv = {}): string | undefined {
+  const raw = resolveEnvValue(LOCAL_REMOTE_ASSET_DIR_ENV, localEnv);
+  return raw ? resolve(raw) : undefined;
+}
+
 export function resolveRemoteAssetDirs(
   options: ResolveRemoteCdnOptions = {},
   localEnv: LocalRuntimeEnv = {},
 ): RemoteAssetDirs {
   const remoteCdnBaseUrls = resolveRemoteCdnBaseUrls(options, localEnv);
   const remoteCdnBaseUrl = remoteCdnBaseUrls[0];
+  const remoteCacheDir = resolveRemoteAssetCacheDir(localEnv);
+
+  // 显式本地资产目录优先级最高，且**打包态也生效**。官方渠道不设该变量，故不受影响；
+  // 自建 / 离线场景据此完全绕开公网 CDN。
+  const configuredLocalDir = resolveConfiguredLocalRemoteAssetDir(localEnv);
+  if (configuredLocalDir) {
+    return {
+      mockCdnDir: configuredLocalDir,
+      remoteCdnBaseUrl,
+      remoteCdnBaseUrls,
+      remoteCacheDir,
+    };
+  }
 
   // remote 资源之前和 desktop 本地 provider 资源共用安装包内路径，
   // 结果打包后会把整套 Linux 远程运行时一起塞进 .app，和“remote 资源走 CDN / mock-cdn”的职责边界冲突。
@@ -329,7 +355,7 @@ export function resolveRemoteAssetDirs(
     return {
       remoteCdnBaseUrl,
       remoteCdnBaseUrls,
-      remoteCacheDir: resolveRemoteAssetCacheDir(localEnv),
+      remoteCacheDir,
     };
   }
 
@@ -338,7 +364,7 @@ export function resolveRemoteAssetDirs(
     ...(developmentMockCdnDir ? { mockCdnDir: developmentMockCdnDir } : {}),
     remoteCdnBaseUrl,
     remoteCdnBaseUrls,
-    remoteCacheDir: resolveRemoteAssetCacheDir(localEnv),
+    remoteCacheDir,
   };
 }
 
@@ -490,8 +516,9 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
   );
   const dataBaseDir = getDataBaseDir();
   const dataRootDir = getZCodeDataRootDir();
-  // 数据根被产品身份整体覆盖时（下游自建客户端，见 desktopDataBaseDirBootstrap），
-  // 必须显式下发：否则 Host 会按 {dataBaseDir}/.zcode 自行推算，落到与 Main 不同的目录。
+  // 数据根与官方默认根 `{dataBaseDir}/.zcode` 不一致（即带产品身份后缀的自建客户端）时必须显式下发：
+  // Agent CLI 是外部二进制，没有编译期身份后缀，缺了 ZCODE_DATA_ROOT 就会按 {dataBaseDir}/.zcode 自行推算，
+  // 把自建版的会话库、凭据和设置写回官方根，整体隔离失效。
   const overriddenDataRootDir = dataRootDir === join(dataBaseDir, ".zcode") ? null : dataRootDir;
   const rawInheritedEnv = {
     ...hostProcessLocalEnv,
@@ -510,6 +537,8 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
               rawInheritedEnv.ZCODE_CUA_HELPER_ALLOW_UNSIGNED_LOCAL?.trim().toLowerCase() ?? "",
             )
           ? rawInheritedEnv.ZCODE_CUA_BUNDLED_HELPER_APP_PATH?.trim() ||
+            // ZCODE_HOME 显式覆盖优先；兜底固定共享 `~/.zcode`——Helper 侧装在同一位置，
+            // 它不认产品身份后缀，这里跟随身份目录会让自建版找不到已安装的 Helper。
             join(
               rawInheritedEnv.ZCODE_HOME?.trim() || join(homedir(), ".zcode"),
               "computer-use",
