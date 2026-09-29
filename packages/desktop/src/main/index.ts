@@ -4,6 +4,7 @@ import "./desktopEarlyDataBaseDirBootstrap.js";
 import "./desktopEarlyChromiumHardwareAccelerationBootstrap.js";
 import { powerMonitor, powerSaveBlocker } from "electron";
 import { crashCapturePaths } from "./appCrashCaptureBootstrap.js";
+import { registerProcessLevelErrorCapture } from "./desktopProcessErrorCapture.js";
 import { armsInitPromise } from "./appARMSBootstrap.js";
 import {
   onLocalDatabaseStartupReady,
@@ -73,8 +74,7 @@ import {
   DEFAULT_ZCODE_ENDPOINT_ORIGIN,
   DEFAULT_LOCALE,
   ZCODE_VERSION,
-  ZCODE_TELEMETRY_ENABLED,
-  ZCODE_ARMS_RUM_ENDPOINT,
+  ZCODE_ARMS_RUM_ENABLED,
   buildZCodeEndpointUrls,
   resolveZCodeEndpointOrigin,
   shouldEnableE2ETestBridge,
@@ -274,9 +274,9 @@ if (!shouldUseElectronDefaultUserDataPath) {
 }
 process.title = runtimeApplicationName;
 
-process.on("unhandledRejection", (reason) => {
-  logger.error("unhandledRejection:", reason);
-});
+// JS 层致命异常兜底：此前未捕获异常走 Node 默认路径静默退出（无日志/无 dump/WER 无记录），
+// 注册后先落盘日志再退出，行为从「无声闪退」变为「有据可查的崩溃」。
+registerProcessLevelErrorCapture(logger);
 
 const iconPath =
   process.platform === "win32"
@@ -830,10 +830,7 @@ let disposeRendererActionTraceIpc: (() => void) | undefined;
 const armsUserIdentitySync = createArmsUserIdentitySync({
   deviceMid,
   // 采集停用时 SDK 未初始化，setConfig 会抛错。
-  setUser:
-    ZCODE_TELEMETRY_ENABLED && ZCODE_ARMS_RUM_ENDPOINT
-      ? (user) => armsRum.setConfig("user", user)
-      : () => {},
+  setUser: ZCODE_ARMS_RUM_ENABLED ? (user) => armsRum.setConfig("user", user) : () => {},
 });
 
 function extractOpenWorkspacePathFromDeepLinkUrl(url: string): string | null {
@@ -2206,7 +2203,7 @@ app.whenReady().then(async () => {
   void armsUserIdentitySync.refresh();
 
   // 未配置 ARMS 端点时不初始化上报 context，避免把空转误当成已启用。
-  if (ZCODE_TELEMETRY_ENABLED && ZCODE_ARMS_RUM_ENDPOINT) {
+  if (ZCODE_ARMS_RUM_ENABLED) {
     configureDesktopStabilityTelemetry({
       deviceMid,
       platform: process.platform,

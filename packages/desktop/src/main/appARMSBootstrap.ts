@@ -5,8 +5,8 @@ import armsRum from "@arms/rum-electron";
 import { ZCODE_AGENT_LIFECYCLE_LOG_MARKER } from "@zcode/shared/process-diagnostic";
 import {
   ZCODE_ARMS_RUM_ENDPOINT,
+  ZCODE_ARMS_RUM_ENABLED,
   ZCODE_VERSION,
-  ZCODE_TELEMETRY_ENABLED,
   mapZCodeEnvToArmsRumEnv,
 } from "@zcode/shared";
 import { ARMS_BROWSER_COLLECTORS, parseArmsViewName } from "../shared/armsRumShared.js";
@@ -264,5 +264,6 @@ function startArmsRum(): Promise<void> {
 }
 
 // 总开关关闭或端点未配置时不初始化 SDK。
-export const armsInitPromise: Promise<void> =
-  ZCODE_TELEMETRY_ENABLED && ZCODE_ARMS_RUM_ENDPOINT ? startArmsRum() : Promise.resolve();
+export const armsInitPromise: Promise<void> = ZCODE_ARMS_RUM_ENABLED
+  ? startArmsRum()
+  : Promise.resolve();

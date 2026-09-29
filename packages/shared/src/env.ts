@@ -83,6 +83,13 @@ export const ZCODE_TELEMETRY_REPORT_ENDPOINT =
 export const ZCODE_ARMS_RUM_ENDPOINT =
   typeof process !== "undefined" ? (process.env.ZCODE_ARMS_RUM_ENDPOINT ?? "") : "";
 
+/**
+ * 「ARMS RUM 将初始化」的唯一闸门：遥测总开关 + 端点已配置。
+ * crash-capture 用同一条件决定是否让远端 SDK 独占崩溃上报；两端条件一旦漂移，
+ * 就会出现「以为远端接管了、实际谁都没启动 crashpad」的诊断盲区。
+ */
+export const ZCODE_ARMS_RUM_ENABLED = ZCODE_TELEMETRY_ENABLED && ZCODE_ARMS_RUM_ENDPOINT !== "";
+
 /** 将本地运行态与编译期 ZCODE_ENV 映射为 ARMS 控制台识别的上报环境标签 */
 export function mapZCodeEnvToArmsRumEnv(runtimeEnv: ZCodeRuntimeEnv): ArmsRumEnv {
   return runtimeEnv !== "development" && ZCODE_ENV === "production" ? "prod" : "local";
