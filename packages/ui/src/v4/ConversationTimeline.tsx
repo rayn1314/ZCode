@@ -73,7 +73,6 @@ import {
   historyPrefetchTriggerPx,
   initialFollowing,
   isAtBottom,
-  prependScrollAdjustment,
   prependVirtualAnchorAdjustment,
   reconcileFollowingForContentAnchor,
   resolveFollowingAfterScroll,
@@ -486,11 +485,8 @@ function ConversationTimelineImpl({
   // 程序化写入（贴底/prepend 平移）后的回读值。贴底 effect 拿它对账未观察滚动
   // （滚动已发生、scroll 事件未派发），防止过期 following=true 把用户/测试的上滚拽回底部。
   const lastObservedScrollTopRef = useRef(0);
-  // prepend 锚定基线（上一 commit 的首行/总高度），见下方对账效应。
-  const prependAnchorRef = useRef<{
-    firstRowId: number | null;
-    totalSize: number;
-  }>({ firstRowId: null, totalSize: 0 });
+  // prepend 锚定基线：上一 commit 末的窗口首 unit 及其视口偏移，见下方对账效应。
+  const prependAnchorRef = useRef<PrependVirtualAnchor | null>(null);
   const pendingPrependVirtualAnchorRef = useRef<PrependVirtualAnchor | null>(null);
   const heightCacheRef = useRef<TimelineRowHeightCache | null>(null);
   if (heightCacheRef.current === null) {
@@ -736,7 +732,7 @@ function ConversationTimelineImpl({
       suppressAdjustment: suppressVirtualizerAdjustmentDuringRestoreRef.current,
       following: followingRef.current,
       contentWidthChanging: isContentWidthChanging(),
-      itemEnd: item.end,
+      itemStart: item.start,
       scrollTop: scrollRef.current?.scrollTop ?? 0,
     });
   };
@@ -1438,8 +1434,8 @@ function ConversationTimelineImpl({
   useLayoutEffect(() => {
     clearUserScrollIntent();
     heightCacheRef.current?.clear();
-    // prepend 锚定基线一并重置：rowId 跨会话可重复，禁止拿旧会话首行比较。
-    prependAnchorRef.current = { firstRowId: null, totalSize: 0 };
+    // prepend 锚定基线一并重置：unit key 跨会话可重复，禁止拿旧会话首 unit 比较。
+    prependAnchorRef.current = null;
     pendingPrependVirtualAnchorRef.current = null;
     // draft 默认吸底会留下旧 virtualizer.scrollOffset；在恢复写入派发 scroll 事件前，
     // 测高若继续按旧 offset 校正，会把刚恢复的历史位置重新推回 draft 的落点。
@@ -1552,51 +1548,61 @@ function ConversationTimelineImpl({
   ]);
 
   // prepend 锚定：loadOlder 前插历史行时平移 scrollTop，阅读位置不跳。
-  // 既有 turn key=turnId 且测量缓存不失效 → 前插只把总高度撑高 delta，scrollTop += delta
-  // 即恢复锚点（绘制前完成，无闪动）；本效应声明在会话切换效应之后，切换 commit 上
-  // 先重置基线再对账，防跨会话 rowId 误判为前插。
+  // 判定与恢复都基于「上一 commit 末的窗口首 unit（锚）」：
+  // - 锚 unit 现位于 index > 0 ⇒ 确有更早内容插到它前面（真前插）；
+  // - 目标视口偏移 = 锚 unit 在本 commit 的 start − 记录时的视口偏移（绝对目标，
+  //   同帧测高增量无论先于还是后于本效应落地都只计入一次，见 prependVirtualAnchorAdjustment）。
+  // loadOlder 触发瞬间保存的精确锚优先，其视口偏移更贴近用户触发时的阅读位置；
+  // 两条路径共用同一恢复函数。本效应声明在会话切换效应之后，切换 commit 上先重置
+  // 基线再对账，防跨会话 key 误判为前插。
   useLayoutEffect(() => {
-    const prev = prependAnchorRef.current;
-    const nextFirstRowId = rowsRef.current[0]?.rowId ?? null;
-    const nextTotalSize = virtualizer.getTotalSize();
+    const element = scrollRef.current;
+    const baseline = prependAnchorRef.current;
     const pendingRestore = pendingDetachedScrollRestoreRef.current;
     const pendingRestoreOwnsAnchor = pendingRestore?.key === scrollMemoryKey;
-    const didPrepend =
-      prev.firstRowId !== null && nextFirstRowId !== null && nextFirstRowId < prev.firstRowId;
+    // 前插判定：锚 unit 被更早内容挤到 index > 0；锚已不存在（-1）或仍居首（0）
+    // 都说明本 commit 没有前插，交给底部锚定/常规测高补偿处理。
+    const anchorIndex =
+      element && baseline
+        ? virtualizer.measurementsCache.findIndex((measurement) => measurement.key === baseline.key)
+        : -1;
     let viewportAdjustment: number | null = null;
-    if (didPrepend && !pendingRestoreOwnsAnchor && scrollRef.current) {
+    if (anchorIndex > 0 && !pendingRestoreOwnsAnchor && element) {
+      const nextAnchorMeasurement = virtualizer.measurementsCache[anchorIndex];
       const previousVirtualAnchor = pendingPrependVirtualAnchorRef.current;
-      const nextAnchorMeasurement = previousVirtualAnchor
+      const preciseAnchorMeasurement = previousVirtualAnchor
         ? virtualizer.measurementsCache.find(
             (measurement) => measurement.key === previousVirtualAnchor.key,
           )
         : undefined;
-      if (previousVirtualAnchor && nextAnchorMeasurement) {
+      if (previousVirtualAnchor && preciseAnchorMeasurement) {
         viewportAdjustment = prependVirtualAnchorAdjustment(
           previousVirtualAnchor,
           {
             key: previousVirtualAnchor.key,
             offsetTop: previousVirtualAnchor.offsetTop,
+            start: preciseAnchorMeasurement.start,
+          },
+          element.scrollTop,
+        );
+      } else if (baseline && nextAnchorMeasurement && !followingRef.current) {
+        // 兜底路径：以 commit 末基线做绝对恢复。following 时前插无意义（贴底 effect 收尾），
+        // 且基线可能记录于贴底动作之前，跳过避免用陈旧视口偏移做无谓平移。
+        viewportAdjustment = prependVirtualAnchorAdjustment(
+          baseline,
+          {
+            key: baseline.key,
+            offsetTop: baseline.offsetTop,
             start: nextAnchorMeasurement.start,
           },
-          scrollRef.current.scrollTop,
+          element.scrollTop,
         );
       }
     }
-    if (didPrepend) pendingPrependVirtualAnchorRef.current = null;
-    const adjustment = pendingRestoreOwnsAnchor
-      ? null
-      : (viewportAdjustment ??
-        prependScrollAdjustment({
-          prevFirstRowId: prev.firstRowId,
-          nextFirstRowId,
-          prevTotalSize: prev.totalSize,
-          nextTotalSize,
-        }));
-    if (adjustment !== null && scrollRef.current) {
-      const element = scrollRef.current;
+    if (anchorIndex > 0) pendingPrependVirtualAnchorRef.current = null;
+    if (viewportAdjustment !== null && element) {
       markLayoutScrollGuard();
-      element.scrollTop += adjustment;
+      element.scrollTop += viewportAdjustment;
       // 程序化平移同样入账，避免被下方贴底对账误读为「未观察滚动」。
       lastObservedScrollTopRef.current = element.scrollTop;
       syncTurnNavigatorViewport(element);
@@ -1607,12 +1613,19 @@ function ConversationTimelineImpl({
       // 用户 wheel/pointer 意图，handleScroll 仍会优先识别为 user，不夺回滚动权。
       notifyScrollObserversAfterCommit(element);
     }
-    // 待恢复的离底记忆拥有当前 commit 的坐标系；不能让 prepend 把临时 clamp 值再次
-    // 平移。恢复 effect 会在同一 commit 的下一帧按最终内容高度重放原始位置。
-    prependAnchorRef.current = {
-      firstRowId: nextFirstRowId,
-      totalSize: nextTotalSize,
-    };
+    // 记录本 commit 末的锚定基线：窗口首 unit 与「start − 当前 scrollTop」视口偏移
+    // （此刻 scrollTop 已含本 commit 的平移与测高结果）。待恢复的离底记忆拥有当前
+    // commit 的坐标系，恢复 effect 会在下一帧重放原始位置，下一 commit 会重新对账。
+    const firstUnit = virtualizedUnitsRef.current[0];
+    const firstMeasurement = virtualizer.measurementsCache[0];
+    prependAnchorRef.current =
+      element && firstUnit && firstMeasurement
+        ? {
+            key: firstUnit.key,
+            offsetTop: firstMeasurement.start - element.scrollTop,
+            start: firstMeasurement.start,
+          }
+        : null;
   });
 
   // 底部锚定：内容变化（新行 / 流式 delta / 动态测高修正 → totalSize 变化）时，

@@ -74,19 +74,25 @@ export function anchorActionAfterContentChange(
 
 /**
  * virtualizer 动态测高后的滚动补偿裁决。
+ *
+ * 判定对齐 @tanstack/virtual-core 的默认谓词（`item.start < scrollOffset`）：只要行的
+ * 起点在视口顶之上（含正跨过视口顶边的行）就必须补偿，否则行高变化会把视口内容整体
+ * 推移。历史实现只补偿「整行完全在视口上方」（itemEnd <= scrollTop），漏掉跨顶边行：
+ * 会话切换后全窗口处于估计高度重测期，用户首次上滑解除跟随，此后跨顶边行的测高增量
+ * 不补偿，视口内容被整体推移，形成「轻轻一滚就跑到很上面」再自行收敛的跳变。
  * 宽度 resize 会让多条消息在相邻帧分批测高；此时逐条补偿 scrollTop 会形成可见抖动。
  */
 export function shouldAdjustVirtualizerForItemSizeChange(input: {
   following: boolean;
   suppressAdjustment: boolean;
   contentWidthChanging: boolean;
-  itemEnd: number;
+  itemStart: number;
   scrollTop: number;
 }): boolean {
   if (input.suppressAdjustment || input.following || input.contentWidthChanging) {
     return false;
   }
-  return input.itemEnd <= input.scrollTop;
+  return input.itemStart < input.scrollTop;
 }
 
 /** 未观察滚动的判定容差：小于该值的 scrollTop 回退视为亚像素抖动，不算用户上滚。 */
@@ -185,12 +191,15 @@ export function initialFollowing(): boolean {
 // ── loadOlder：prepend 滚动锚定（虚拟滚动前插的经典坑）──
 //
 // 语义：向窗口顶部前插历史行时，用户正在读的行（锚点）在视口中的位置不得跳动。
-// 虚拟列表下前插只改总高度（既有 turn 按 turnId 缓存测量值，不重挂不重测），
-// 因此锚定恢复 = scrollTop 平移「前插内容撑高的那段」：
-//   scrollTop' = scrollTop + (nextTotalSize - prevTotalSize)
-// 前提：既有 render unit key 稳定（getItemKey=turnId）且同一帧内无其它测量修正——
-// prepend commit 里新行只有估计高度，后续 ResizeObserver 修正走 virtualizer
-// 的常规 shift 逻辑，不再经此函数。
+// 恢复方式是绝对目标而非增量：scrollTop' = next.start - previous.offsetTop。
+// - previous.offsetTop 是锚 unit「记录时刻」的视口偏移（measurement.start - 当时的
+//   scrollTop），来源有两种：loadOlder 触发瞬间（精确路径），或上一 commit 末的
+//   常规基线（兜底路径）；
+// - next.start 是锚 unit 在本 commit 的 measurement 起点。
+// 为什么用绝对目标：前插 commit 与同帧落地的测高修正都会改变锚 start 与 scrollTop。
+// 增量式平移（如旧的 nextTotalSize - prevTotalSize）在同帧测高先于平移落地时，会把
+// 该测高增量重复计入；绝对目标始终对齐「锚 unit 的当前 start」，测高先于或后于本
+// 函数落地都只计一次。
 
 export interface PrependVirtualAnchor {
   key: string;
@@ -203,7 +212,7 @@ export interface PrependVirtualAnchor {
  * 同一稳定 key 在 prepend 后需要施加的 scrollTop 修正量。
  *
  * 触发 loadOlder 到 rows 提交之间，恢复布局或 virtualizer 可能先改写
- * scrollTop；只叠加 measurement.start 的差值会把这段中间位移重复计入。以触发瞬间
+ * scrollTop；只叠加 measurement.start 的差值会把这段中间位移重复计入。以记录时刻
  * 保存的视口偏移计算绝对目标，再减实时 scrollTop，才能稳定恢复原阅读位置。
  */
 export function prependVirtualAnchorAdjustment(
@@ -220,30 +229,6 @@ export function prependVirtualAnchorAdjustment(
     return null;
   }
   return next.start - previous.offsetTop - currentScrollTop;
-}
-
-interface PrependAnchorInput {
-  /** 上一 commit 的窗口首行 rowId（null = 尚无行）。 */
-  prevFirstRowId: number | null;
-  /** 本 commit 的窗口首行 rowId（null = 行被清空）。 */
-  nextFirstRowId: number | null;
-  /** 上一 commit 的虚拟列表总高度。 */
-  prevTotalSize: number;
-  /** 本 commit 的虚拟列表总高度。 */
-  nextTotalSize: number;
-}
-
-/**
- * 前插后的 scrollTop 平移量。仅当「首行 rowId 变小」（真前插）时返回正平移；
- * 追加/替换/清空/首帧一律 null（不动滚动位置，交给底部锚定逻辑）。
- */
-export function prependScrollAdjustment(input: PrependAnchorInput): number | null {
-  if (input.prevFirstRowId === null || input.nextFirstRowId === null) {
-    return null;
-  }
-  if (input.nextFirstRowId >= input.prevFirstRowId) return null;
-  const delta = input.nextTotalSize - input.prevTotalSize;
-  return delta > 0 ? delta : null;
 }
 
 /** 顶部触发阈值：距顶小于该距离视为「到顶」，自动拉取更早一窗。 */
