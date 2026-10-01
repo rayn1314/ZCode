@@ -303,7 +303,7 @@ import {
   ZCodeProtocolRequestTimeoutError,
   type ZCodeProtocolClient,
 } from "./zcodeProtocolClient.js";
-import { getDataBaseDir } from "../paths.js";
+import { getZCodeDataRootDir } from "../paths.js";
 import {
   collectBrowserAmbientContext,
   type BrowserAmbientContextExecutor,
@@ -465,7 +465,9 @@ function savedWorkflowScopeParam(params: ZCodeAgentSavedWorkflowTarget): {
 }
 
 function ensurePluginManagementWorkspacePath(): string {
-  const workspacePath = join(getDataBaseDir(), ".zcode", PLUGIN_MANAGEMENT_WORKSPACE_DIR_NAME);
+  // 固定内部 cwd 必须落在身份数据根上：此前按 getDataBaseDir() 拼 ".zcode"，漏掉产品身份后缀，
+  // 并排安装的两个身份会共用同一个插件管理工作区。
+  const workspacePath = join(getZCodeDataRootDir(), PLUGIN_MANAGEMENT_WORKSPACE_DIR_NAME);
   // 插件管理是控制面能力，不能复用可能因真实 workspace 被删而 EPIPE 的会话进程。
   // 这里给它固定一个内部 cwd；真实 workspace 仍通过协议参数传给 CLI 做 workspace-scope 判定。
   mkdirSync(workspacePath, { recursive: true });

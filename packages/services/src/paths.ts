@@ -1,22 +1,20 @@
 /* path 规则集中维护：旧 task 快照与 provider 配置路径仍在这里收口。 */
-import { lstatSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, join, win32 } from "node:path";
 import { homedir } from "node:os";
-import { DATA_BASE_DIR_FORBIDDEN_WINDOWS_INSTALL_DIR_ERROR_CODE } from "@zcode/shared";
+import {
+  DATA_BASE_DIR_FORBIDDEN_WINDOWS_INSTALL_DIR_ERROR_CODE,
+  ZCODE_DATA_ROOT_ENV,
+  ZCODE_DATA_ROOT_SUFFIX,
+} from "@zcode/shared";
 
 let _dataBaseDir: string | null = null;
 let _dataRootDir: string | null = null;
 export const ZCODE_WINDOWS_APP_INSTALL_DIR_ENV = "ZCODE_WINDOWS_APP_INSTALL_DIR";
-/**
- * 数据根本身的覆盖（完整路径，不再拼 `.zcode`）。
- *
- * 宿主进程用它把不同产品身份指向各自的数据根：并排安装的客户端若共用 `{dataBaseDir}/.zcode`，
- * 会读写同一个会话库（cli/db/db.sqlite）、凭据和设置，会话列表互相可见并并发写同一个 SQLite。
- * 官方渠道不设该变量，路径与历史完全一致。
- */
-export const ZCODE_DATA_ROOT_ENV = "ZCODE_DATA_ROOT";
+/** env key 定义在 @zcode/shared（server 远端启动命令与本地 spawn env 同源拼写），此处转出保持既有引用。 */
+export { ZCODE_DATA_ROOT_ENV };
 const envDataBaseDir = process.env.ZCODE_DATA_BASE_DIR?.trim() || null;
 const envDataRootDir = process.env[ZCODE_DATA_ROOT_ENV]?.trim() || null;
 const defaultDataBaseDir = process.env.HOME?.trim() || homedir();
@@ -58,15 +56,88 @@ export function setDataRootDir(dir: string | null): void {
 }
 
 /**
- * {dataBaseDir}/.zcode
+ * 身份数据根在给定 base dir 下的位置：`{baseDir}/.zcode{suffix}`。
+ *
+ * 官方渠道后缀为空串（路径与历史一致）；自建客户端按产品身份加后缀，与官方并排安装时
+ * 各用各的会话库、凭据和设置。所有「从 base dir 推到数据根」的地方都必须走这里，
+ * 漏掉后缀就会把自建版的数据写回官方根。
+ */
+export function getDataRootDirForBaseDir(baseDir: string): string {
+  return join(baseDir, `.zcode${ZCODE_DATA_ROOT_SUFFIX}`);
+}
+
+/**
+ * {dataBaseDir}/.zcode{suffix}
  *
  * 优先返回 setDataRootDir() / ZCODE_DATA_ROOT 指定的完整根：同一台机器上并排安装的
  * 产品身份各有独立数据根，会话库、任务索引、凭据和设置都从这里派生。
+ * 两者都没有时按 base dir 拼后缀，保证带身份的构建不会回落到官方根。
  */
 export function getZCodeDataRootDir(): string {
   if (_dataRootDir) return _dataRootDir;
   if (envDataRootDir) return envDataRootDir;
-  return join(getDataBaseDir(), ".zcode");
+  return getDataRootDirForBaseDir(getDataBaseDir());
+}
+
+/**
+ * 用户 home 解析（不跟随 dataBaseDir）。
+ *
+ * ZCODE_DESKTOP_HOME_DIR 由独立桌面 Dev 实例注入，优先于常规 HOME：设置指针文件与
+ * 用户级资产都固定在 home 下，必须与 Dev 实例的 home 覆盖保持一致，否则 Dev 实例会读到真实用户的设置。
+ */
+export function resolveUserHomeDir(): string {
+  const envHome =
+    process.env.ZCODE_DESKTOP_HOME_DIR?.trim() ||
+    process.env.HOME?.trim() ||
+    process.env.USERPROFILE?.trim();
+  return envHome && envHome.length > 0 ? envHome : homedir();
+}
+
+/**
+ * 用户级 ZCode 目录名：`.zcode{suffix}`（自建版为 `.zcode-rayn`）。
+ *
+ * 仅用于必须按 home 定位、且按产品身份区分的目录（MCP 用户配置描述符等）；
+ * 共享类用户资产（skills/commands/plugins/AGENTS.md）不经过它——CLI 侧写死 `~/.zcode`，
+ * 桌面必须同源，否则 UI 与 Agent 看到的内容不一致。
+ */
+export const ZCODE_USER_DIR_NAME = `.zcode${ZCODE_DATA_ROOT_SUFFIX}`;
+
+/**
+ * 设置指针文件所在目录：`{home}/.zcode{suffix}/v2`。
+ *
+ * setting.json 是 bootstrap 指针：它记录 dataBaseDir（数据根的父目录），所以必须固定在
+ * 用户 home 下并按产品身份加后缀，不能跟着 dataBaseDir 走——否则改过数据根的下一次启动
+ * 就找不到这个文件，也就找不到数据根。官方渠道后缀为空串，路径与历史完全一致。
+ */
+export function getBootstrapSettingsDir(): string {
+  return join(resolveUserHomeDir(), `.zcode${ZCODE_DATA_ROOT_SUFFIX}`, "v2");
+}
+
+/** `{home}/.zcode{suffix}/v2/setting.json`：本产品身份唯一的设置文件，读写都只落这里。 */
+export function getBootstrapSettingsFile(): string {
+  return join(getBootstrapSettingsDir(), "setting.json");
+}
+
+/**
+ * bootstrap 读取链：身份文件优先，修复前遗留的官方共享文件兜底。
+ *
+ * 引入身份后缀之前，自建版把设置写进了官方共享文件 `{home}/.zcode/v2/setting.json`；
+ * 用户当时改过的 dataBaseDir 只有那份共享文件知道。身份文件不存在（或字段为空）时必须继续
+ * 读共享文件，否则旧用户的数据根会“消失”——数据还在磁盘上，但启动时找不到。
+ * 官方渠道两个路径相同，等于只读一个文件，行为不变。
+ */
+export function getBootstrapSettingsCandidateFiles(): string[] {
+  const identityFile = getBootstrapSettingsFile();
+  if (!ZCODE_DATA_ROOT_SUFFIX) {
+    return [identityFile];
+  }
+  return [identityFile, join(resolveUserHomeDir(), ".zcode", "v2", "setting.json")];
+}
+
+/** 启动早期读取设置的目标文件：身份文件存在就用它，否则用共享兜底文件；都不存在时返回身份文件（读不到即默认值）。 */
+export function resolveBootstrapSettingsFileForRead(): string {
+  const candidates = getBootstrapSettingsCandidateFiles();
+  return candidates.find((candidate) => existsSync(candidate)) ?? getBootstrapSettingsFile();
 }
 
 /** 非项目对话共享的真实工作目录；默认 ~/.zcode/workspace/default。 */
@@ -249,13 +320,14 @@ export function getLegacyDeletedTaskSessionSnapshotPath(
 }
 
 /**
- * Copy the .zcode/v2 data directory from one base dir to another.
+ * Copy the identity data directory (`{baseDir}/.zcode{suffix}/v2`) from one base dir to another.
  * Excludes setting.json and its transient atomic-write siblings — bootstrap
  * state must only live at the default homedir location.
  */
 export async function copyDataDirectory(oldBaseDir: string, newBaseDir: string): Promise<void> {
-  const oldDir = join(oldBaseDir, ".zcode", "v2");
-  const newDir = join(newBaseDir, ".zcode", "v2");
+  // 按产品身份加后缀：自建客户端只迁移自己的数据根，不能去动官方 {baseDir}/.zcode/v2。
+  const oldDir = join(getDataRootDirForBaseDir(oldBaseDir), "v2");
+  const newDir = join(getDataRootDirForBaseDir(newBaseDir), "v2");
   await cp(oldDir, newDir, {
     recursive: true,
     force: false,

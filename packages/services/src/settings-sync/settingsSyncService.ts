@@ -32,7 +32,6 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { parse as parseToml } from "smol-toml";
@@ -40,6 +39,7 @@ import { CommandFileParser } from "../commands/commandFileParser.js";
 import type { ISettingService } from "../setting/setting.js";
 import { createServiceLogger } from "../logger/serviceLogger.js";
 import { walkSkillMarkdownPaths } from "../skills/skillDiscoveryWalk.js";
+import { getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 import type { ISettingsSyncService } from "./settingsSync.js";
 
 const log = createServiceLogger("settings-sync");
@@ -416,15 +416,15 @@ const CLAUDE_PLUGIN_MANIFEST_PATH = [".claude-plugin", "plugin.json"] as const;
 const CODEX_PLUGIN_MANIFEST_PATH = [".codex-plugin", "plugin.json"] as const;
 const INLINE_PLUGIN_MARKETPLACE = "inline";
 
-function resolveUserHomeDir(): string {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-  return envHome && envHome.length > 0 ? envHome : homedir();
-}
-
 function getWorkspaceZcodeSkillRoot(workspacePath: string): string {
   return join(workspacePath, ".zcode", "skills");
 }
 
+/**
+ * 用户级资产根 `~/.zcode/...`：skills、commands、plugins、AGENTS.md 四类都由 CLI 写死 home
+ * （adapters/skills/roots.ts、adapters/commands/roots.ts、adapters/context/index.ts），
+ * 桌面沿用同一路径，保证同步结果对 Agent 立即可见；项目级仍固定 `{workspace}/.zcode/...`。
+ */
 function getUserZcodeSkillRoot(): string {
   return join(resolveUserHomeDir(), ".zcode", "skills");
 }
@@ -445,8 +445,9 @@ function getUserZcodePluginRoot(): string {
   return join(resolveUserHomeDir(), ".zcode", "plugins");
 }
 
+/** CLI config.json：CLI file-config.adapter 从数据根读（`{dataRoot}/cli/config.json`），桌面必须改同一份。 */
 function getUserZcodeCliConfigPath(): string {
-  return join(resolveUserHomeDir(), ".zcode", "cli", "config.json");
+  return join(getZCodeDataRootDir(), "cli", "config.json");
 }
 
 function getWorkspaceZcodeConfigPath(workspacePath: string): string {

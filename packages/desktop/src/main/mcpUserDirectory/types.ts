@@ -3,6 +3,7 @@
  */
 
 import type { CliMcpSource, McpFileFormat } from "@zcode/shared";
+import { ZCODE_USER_DIR_NAME } from "@zcode/services/node";
 
 /**
  * MCP 配置键名类型
@@ -22,7 +23,8 @@ export interface McpSourceDescriptor {
 export const MCP_SOURCE_DESCRIPTORS: McpSourceDescriptor[] = [
   {
     source: "zcodeagentmcp",
-    configDirSegments: [".zcode", "cli"],
+    // 用户级 MCP 配置按产品身份隔离（自建版 `~/.zcode-rayn/cli/config.json`）。
+    configDirSegments: [ZCODE_USER_DIR_NAME, "cli"],
     fileName: "config.json",
     format: "json",
     configKeyName: "mcp.servers",

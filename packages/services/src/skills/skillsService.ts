@@ -12,7 +12,6 @@ import {
 } from "node:fs/promises";
 import { existsSync, type Dirent } from "node:fs";
 import { createHash } from "node:crypto";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type {
@@ -29,6 +28,7 @@ import { DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS } from "@zcode/shared";
 import type { ISkillsService } from "./skills.js";
 import { SKILL_FILE_NAME, walkSkillMarkdownPaths } from "./skillDiscoveryWalk.js";
 import { readInstalledPluginRoots } from "#src/plugins/installedPluginRoots.js";
+import { getBootstrapSettingsDir, getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 
 interface DiscoverResult {
   skills: SkillSummary[];
@@ -47,9 +47,6 @@ interface ParsedFrontmatter {
 }
 
 const SKILL_META_FILE_NAME = "_meta.json";
-const SKILL_SETTINGS_DIR = join(resolveUserHomeDir(), ".zcode", "v2");
-const SKILL_CLI_SETTINGS_DIR = join(resolveUserHomeDir(), ".zcode", "cli");
-const SKILL_CLI_CONFIG_FILE = join(SKILL_CLI_SETTINGS_DIR, "config.json");
 const GIT_MARKER = ".git";
 const HOME_PREFIX = "~/";
 const ZCODE_OFFICIAL_PLUGIN_MARKETPLACE = "zcode-plugins-official";
@@ -60,9 +57,23 @@ const CODEX_PLUGIN_MANIFEST_PATH = join(".codex-plugin", "plugin.json");
 
 /** 对齐 apps/zcode-cli/packages/adapters/src/skills/index.ts:19 */
 const MAX_DESCRIPTION_LENGTH = 1024;
-function resolveUserHomeDir() {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-  return envHome && envHome.length > 0 ? envHome : homedir();
+
+/** 技能审计日志目录 `{home}/.zcode{suffix}/v2`：按产品身份隔离，且每次调用解析（不在导入时固化 home）。 */
+function getSkillAuditDir(): string {
+  return getBootstrapSettingsDir();
+}
+
+/**
+ * 用户级 CLI 配置目录：CLI file-config.adapter 从数据根读（`{dataRoot}/cli`），
+ * 桌面读写同一份，保证技能开关双方一致。
+ */
+function getSkillCliSettingsDir(): string {
+  return join(getZCodeDataRootDir(), "cli");
+}
+
+/** CLI config.json（技能开关落盘处）：与 CLI 数据根同源。 */
+function getSkillCliConfigFile(): string {
+  return join(getSkillCliSettingsDir(), "config.json");
 }
 
 interface SkillsServiceOptions {
@@ -79,7 +90,12 @@ function getWorkspaceAgentsSkillRoot(workspacePath: string): string {
   return join(workspacePath, ".agents", "skills");
 }
 
-/** ZCode Agent 用户级技能目录。 */
+/**
+ * ZCode Agent 用户级技能目录 `~/.zcode/skills`：与官方共享。
+ *
+ * CLI adapters/skills/roots.ts 把用户级技能根写死为 `{home}/.zcode/skills`，桌面改后缀
+ * 只会让 UI 与 Agent 看到不同的技能集合。
+ */
 function getUserZcodeSkillRoot(): string {
   return join(resolveUserHomeDir(), ".zcode", "skills");
 }
@@ -280,9 +296,9 @@ async function appendSkillsAuditLog(params: {
   workspaceIdentity?: string;
   activatedSkillNames: string[];
 }): Promise<void> {
-  await mkdir(SKILL_SETTINGS_DIR, { recursive: true });
+  await mkdir(getSkillAuditDir(), { recursive: true });
   await appendFile(
-    join(SKILL_SETTINGS_DIR, "skills-audit.log"),
+    join(getSkillAuditDir(), "skills-audit.log"),
     `${JSON.stringify({
       createdAt: Date.now(),
       workspacePath: params.workspacePath,
@@ -531,7 +547,7 @@ function normalizeSkillConfigPath(path: string): string {
 
 async function readCliConfigFile(): Promise<Record<string, unknown>> {
   try {
-    const raw = await readFile(SKILL_CLI_CONFIG_FILE, "utf-8");
+    const raw = await readFile(getSkillCliConfigFile(), "utf-8");
     const parsed = JSON.parse(raw) as unknown;
     return isObjectRecord(parsed) ? parsed : {};
   } catch {
@@ -579,8 +595,8 @@ async function writeSkillEnabledMap(next: Record<string, boolean>): Promise<void
   } else {
     delete config.skills;
   }
-  await mkdir(SKILL_CLI_SETTINGS_DIR, { recursive: true });
-  await writeFile(SKILL_CLI_CONFIG_FILE, `${JSON.stringify(config, null, 2)}\n`, "utf-8");
+  await mkdir(getSkillCliSettingsDir(), { recursive: true });
+  await writeFile(getSkillCliConfigFile(), `${JSON.stringify(config, null, 2)}\n`, "utf-8");
 }
 
 interface SkillRootDescriptor {
@@ -641,9 +657,11 @@ function readBooleanRecord(value: unknown): Record<string, boolean> {
 
 function readStorageDirFromConfig(config: Record<string, unknown>): string {
   const storage = isObjectRecord(config.storage) ? config.storage : {};
-  return typeof storage.dir === "string" && storage.dir.trim().length > 0
-    ? storage.dir
-    : "~/.zcode";
+  if (typeof storage.dir === "string" && storage.dir.trim().length > 0) {
+    return storage.dir;
+  }
+  // CLI 默认 storage.dir 就是数据根（contracts DEFAULT_RUNTIME_CONFIG），这里必须对齐。
+  return getZCodeDataRootDir();
 }
 
 function resolveConfigPath(path: string): string {

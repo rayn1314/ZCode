@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { access } from "node:fs/promises";
-import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
+import { SERVICE_AUTHORITY_MODE_ENV, ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import type { StdioStream } from "@zcode/server/remote/backend.js";
 import { quotePosixPathArg } from "@zcode/server/remote/posixShell.js";
 import type { RemoteAssetNetworkPort } from "@zcode/server/remote/remoteAssetNetwork.js";
@@ -12,12 +12,47 @@ import type { RemoteAssetNetworkPort } from "@zcode/server/remote/remoteAssetNet
  * 自建（如 `-rayn`）→ `~/.zcode/server-rayn`。这样并排的两个产品各跑各的 node / server bundle /
  * agents / tools / asset-cache / 部署锁，不会互相覆盖或出现「客户端比远端 Server 新」的能力错配。
  *
- * 注意：只隔离「代码」。远端的会话/凭据/设置数据根仍是 `~/.zcode`，历史保持连续。
+ * 远端数据根同样按后缀隔离（2026-09-30 起）：代码隔离挡不住 schema 错配——自建 server 写进
+ * 共享 provider 配置的新字段，会让读同一份文件的官方 server 在 strict 校验上直接失败。
+ * 派生规则与失败语义见 `packages/server/spec/remote-runtime-isolation.md`。
  */
 const REMOTE_SERVER_BASE_SUFFIX = ZCODE_DATA_ROOT_SUFFIX.trim();
 export const REMOTE_BASE = `~/.zcode/server${REMOTE_SERVER_BASE_SUFFIX}`;
 /** `ZCODE_SERVER_RUNTIME_ROOT` 的赋值形式：双引号内 `~` 不展开，必须用 `$HOME`。 */
 export const REMOTE_SERVER_RUNTIME_ROOT = `$HOME/.zcode/server${REMOTE_SERVER_BASE_SUFFIX}`;
+
+/**
+ * 远端数据根的 env 赋值（`ZCODE_DATA_ROOT="$HOME/.zcode<suffix>"`）。
+ *
+ * 纯函数派生以便契约测试覆盖官方 / 自建两个分支；仅自建（非空后缀）返回赋值，
+ * 官方返回 null——不注入时远端 server / agent 回落 `~/.zcode`，命令行与历史逐字节一致。
+ * agent 由 server 全量继承进程 env，无需单独注入。
+ */
+export function deriveRemoteDataRootEnvAssignment(dataRootSuffix: string): string | null {
+  const suffix = dataRootSuffix.trim();
+  if (!suffix) {
+    return null;
+  }
+  return `ZCODE_DATA_ROOT="$HOME/.zcode${suffix}"`;
+}
+
+export const REMOTE_DATA_ROOT_ENV_ASSIGNMENT =
+  deriveRemoteDataRootEnvAssignment(ZCODE_DATA_ROOT_SUFFIX);
+
+/**
+ * 远端 server 启动命令的固定 env 赋值段（白名单透传之前的部分）。
+ * 单点构造，保证「部署基址」与「运行时数据根」由同一常量派生。
+ */
+export function buildRemoteServerBaseEnvAssignments(): string[] {
+  const assignments = [
+    `${SERVICE_AUTHORITY_MODE_ENV}="desktop-attached-remote"`,
+    `ZCODE_SERVER_RUNTIME_ROOT="${REMOTE_SERVER_RUNTIME_ROOT}"`,
+  ];
+  if (REMOTE_DATA_ROOT_ENV_ASSIGNMENT) {
+    assignments.push(REMOTE_DATA_ROOT_ENV_ASSIGNMENT);
+  }
+  return assignments;
+}
 
 export interface RemoteAssetDeployOptions {
   /** 取消当前连接初始化；共享 cache 仍可独立完成，但不得继续写入远端 staging。 */

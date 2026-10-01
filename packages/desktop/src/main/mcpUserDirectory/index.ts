@@ -4,7 +4,7 @@
 
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { ZCODE_USER_DIR_NAME, resolveUserHomeDir } from "@zcode/services/node";
 import type {
   CliMcpSource,
   LoadCliMcpFromUserDirectoryRequest,
@@ -37,7 +37,8 @@ interface DirectoryMcpDescriptor {
 const ZCODE_MCP_DESCRIPTOR: DirectoryMcpDescriptor = {
   source: "zcodeagentmcp",
   directorySource: "zcode",
-  userConfigDirSegments: [".zcode", "cli"],
+  // 用户级 MCP 配置按产品身份隔离；项目级仍固定 `{workspace}/.zcode`。
+  userConfigDirSegments: [ZCODE_USER_DIR_NAME, "cli"],
   workspaceConfigDirSegments: [".zcode"],
   fileName: "config.json",
   format: "json",
@@ -58,11 +59,6 @@ const AGENTS_MCP_DESCRIPTOR: DirectoryMcpDescriptor = {
   format: "json",
   configKeyName: "mcpServers",
 };
-
-function resolveUserHomeDir(): string {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-  return envHome && envHome.length > 0 ? envHome : homedir();
-}
 
 const DIRECTORY_MCP_DESCRIPTORS: readonly DirectoryMcpDescriptor[] = [
   ZCODE_MCP_DESCRIPTOR,

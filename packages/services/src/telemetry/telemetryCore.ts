@@ -56,7 +56,6 @@ interface TelemetryCoreDependencies {
   arch?: string;
   releaseChannel?: string;
   osVersion?: string;
-  homeDir?: string;
   resolveZCodeEndpointOrigin?: () => Promise<string> | string;
   requestTimeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -125,17 +124,14 @@ function toLocalDateKey(timestamp: number, timeZone: string): string {
   return `${year}-${month}-${day}`;
 }
 
-function resolveTelemetryStateFile(homeDir?: string): string {
-  if (homeDir) {
-    return join(homeDir, ".zcode", "v2", "telemetry-state.json");
-  }
+// 遥测状态文件只从身份数据根派生：与 device/deviceMid 共用同一文件与锁。
+// 曾经存在的 homeDir 覆盖分支会绕过数据根写回官方 `.zcode`，导致并排安装的两个身份
+// 共用 daily-active 去重状态，已删除。
+function resolveTelemetryStateFile(): string {
   return join(getAppConfigDir(), "telemetry-state.json");
 }
 
-function resolveTelemetryLockFile(homeDir?: string): string {
-  if (homeDir) {
-    return join(homeDir, ".zcode", "v2", "telemetry-state.lock");
-  }
+function resolveTelemetryLockFile(): string {
   return join(getAppConfigDir(), "telemetry-state.lock");
 }
 
@@ -151,9 +147,9 @@ function isFreshDailyActiveInFlight(
   return timestamp - value.startedAt < DAILY_ACTIVE_IN_FLIGHT_TTL_MS;
 }
 
-async function readTelemetryState(homeDir?: string): Promise<TelemetryState> {
+async function readTelemetryState(): Promise<TelemetryState> {
   try {
-    const raw = await readFile(resolveTelemetryStateFile(homeDir), "utf-8");
+    const raw = await readFile(resolveTelemetryStateFile(), "utf-8");
     const parsed = JSON.parse(raw) as TelemetryState;
     return typeof parsed === "object" && parsed ? parsed : {};
   } catch {
@@ -161,8 +157,8 @@ async function readTelemetryState(homeDir?: string): Promise<TelemetryState> {
   }
 }
 
-async function writeTelemetryState(state: TelemetryState, homeDir?: string): Promise<void> {
-  const telemetryStateFile = resolveTelemetryStateFile(homeDir);
+async function writeTelemetryState(state: TelemetryState): Promise<void> {
+  const telemetryStateFile = resolveTelemetryStateFile();
   await mkdir(dirname(telemetryStateFile), { recursive: true });
   await writeFile(telemetryStateFile, JSON.stringify(state, null, 2), "utf-8");
 }
@@ -225,11 +221,8 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function withTelemetryStateLock<T>(
-  homeDir: string | undefined,
-  run: (state: TelemetryState) => Promise<T>,
-): Promise<T> {
-  const lockFile = resolveTelemetryLockFile(homeDir);
+async function withTelemetryStateLock<T>(run: (state: TelemetryState) => Promise<T>): Promise<T> {
+  const lockFile = resolveTelemetryLockFile();
   await mkdir(dirname(lockFile), { recursive: true });
 
   for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
@@ -245,7 +238,7 @@ async function withTelemetryStateLock<T>(
           }),
           "utf-8",
         );
-        const state = await readTelemetryState(homeDir);
+        const state = await readTelemetryState();
         return await run(state);
       } finally {
         await handle.close();
@@ -298,7 +291,6 @@ export function createTelemetryCore(dependencies: TelemetryCoreDependencies = {}
   const retrySleep = dependencies.sleep ?? sleep;
   const pendingReports = new Set<Promise<void>>();
   const deviceMidOptions: EnsureDeviceMidOptions = {
-    homeDir: dependencies.homeDir,
     randomUUID,
   };
 
@@ -565,31 +557,28 @@ export function createTelemetryCore(dependencies: TelemetryCoreDependencies = {}
           const timestamp = now();
           const today = toLocalDateKey(timestamp, context.clientTimezone);
           const userId = await loadUserId();
-          const pendingReport = await withTelemetryStateLock(
-            dependencies.homeDir,
-            async (state) => {
-              if (state.lastDailyActiveDate === today) {
-                return null;
-              }
+          const pendingReport = await withTelemetryStateLock(async (state) => {
+            if (state.lastDailyActiveDate === today) {
+              return null;
+            }
 
-              if (isFreshDailyActiveInFlight(state.dailyActiveInFlight, today, timestamp)) {
-                return null;
-              }
+            if (isFreshDailyActiveInFlight(state.dailyActiveInFlight, today, timestamp)) {
+              return null;
+            }
 
-              const eventId = randomUUID();
-              const deviceMid = await ensureDeviceMidInLockedState(state, deviceMidOptions);
-              // Bugfix: 之前 reportAppDailyActive 会在持锁状态下直接执行网络请求。
-              // 启动期 app_launch / app_daily_active / reportEvent 一旦并发，后来的调用会一直卡在锁外，
-              // 最终稳定打出 "Telemetry state lock timeout"。这里改成短锁写入 in-flight 标记，
-              // 锁外发送网络请求，成功后再短锁提交完成态，既保留跨实例去重，也不再把整个 telemetry 通道锁死。
-              state.dailyActiveInFlight = {
-                date: today,
-                startedAt: timestamp,
-              };
-              await writeTelemetryState(state, dependencies.homeDir);
-              return { eventId, deviceMid };
-            },
-          );
+            const eventId = randomUUID();
+            const deviceMid = await ensureDeviceMidInLockedState(state, deviceMidOptions);
+            // Bugfix: 之前 reportAppDailyActive 会在持锁状态下直接执行网络请求。
+            // 启动期 app_launch / app_daily_active / reportEvent 一旦并发，后来的调用会一直卡在锁外，
+            // 最终稳定打出 "Telemetry state lock timeout"。这里改成短锁写入 in-flight 标记，
+            // 锁外发送网络请求，成功后再短锁提交完成态，既保留跨实例去重，也不再把整个 telemetry 通道锁死。
+            state.dailyActiveInFlight = {
+              date: today,
+              startedAt: timestamp,
+            };
+            await writeTelemetryState(state);
+            return { eventId, deviceMid };
+          });
 
           if (!pendingReport) {
             return;
@@ -610,21 +599,21 @@ export function createTelemetryCore(dependencies: TelemetryCoreDependencies = {}
               pendingReport.deviceMid,
             );
           } catch (error) {
-            await withTelemetryStateLock(dependencies.homeDir, async (state) => {
+            await withTelemetryStateLock(async (state) => {
               if (state.dailyActiveInFlight?.date === today) {
                 delete state.dailyActiveInFlight;
-                await writeTelemetryState(state, dependencies.homeDir);
+                await writeTelemetryState(state);
               }
             });
             throw error;
           }
 
-          await withTelemetryStateLock(dependencies.homeDir, async (state) => {
+          await withTelemetryStateLock(async (state) => {
             state.lastDailyActiveDate = today;
             if (state.dailyActiveInFlight?.date === today) {
               delete state.dailyActiveInFlight;
             }
-            await writeTelemetryState(state, dependencies.homeDir);
+            await writeTelemetryState(state);
           });
         })(),
       );

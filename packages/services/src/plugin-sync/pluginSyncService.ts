@@ -12,7 +12,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {
   PluginSyncCandidate,
@@ -29,6 +29,7 @@ import {
 } from "./pluginSyncArchive.js";
 import { normalizePluginSyncRelativePath, resolvePluginSyncPathWithin } from "./pluginSyncPath.js";
 import { checkRemoteSyncDirectoriesWriteAccess } from "../remote-sync/remoteSyncWriteAccess.js";
+import { getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 
 interface PluginManifestInfo {
   name: string;
@@ -212,14 +213,20 @@ export function createPluginSyncService(options?: {
   };
 }
 
-function resolveUserHomeDir(): string {
-  return process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || homedir();
-}
-
+/**
+ * 用户 CLI config.json：CLI file-config.adapter 从数据根读（`{dataRoot}/cli/config.json`），
+ * 桌面必须改同一份，否则导入插件登记的 plugins.dirs 对 Agent 不可见。
+ */
 function getUserZcodeConfigPath(): string {
-  return join(resolveUserHomeDir(), ".zcode", "cli", "config.json");
+  return join(getZCodeDataRootDir(), "cli", "config.json");
 }
 
+/**
+ * 用户级插件目录 `~/.zcode/plugins`：与官方共享。
+ *
+ * 它只是被写进 `plugins.dirs` 的绝对路径（CLI 默认 dirs 为空、按配置里的路径加载），
+ * 归属由各产品身份自己的 config.json 决定，因此两版共用同一批插件文件不会串台。
+ */
 function getUserZcodePluginRoot(): string {
   return join(resolveUserHomeDir(), ".zcode", "plugins");
 }

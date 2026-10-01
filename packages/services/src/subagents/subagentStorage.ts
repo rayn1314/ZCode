@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
+import { getZCodeDataRootDir } from "../paths.js";
 
 const HOME_PREFIX = "~/";
 
@@ -29,12 +30,14 @@ export async function resolveSubagentStateFile(options?: SubagentStorageOptions)
 }
 
 export async function resolveZCodeStorageRoot(options?: SubagentStorageOptions): Promise<string> {
-  const config = await readUserCliConfig(options);
+  const config = await readUserCliConfig();
   const storage = isObjectRecord(config.storage) ? config.storage : {};
   const storageDir =
     typeof storage.dir === "string" && storage.dir.trim().length > 0
       ? storage.dir.trim()
-      : "~/.zcode";
+      : // CLI 默认 storage.dir 就是数据根（contracts DEFAULT_RUNTIME_CONFIG），桌面必须用同一个根，
+        // 否则 agents/、v2/agents-state.json 会写到 Agent 不读的目录。
+        getZCodeDataRootDir();
   return resolveConfigPath(storageDir, options);
 }
 
@@ -45,14 +48,10 @@ export function resolveConfigPath(path: string, options?: SubagentStorageOptions
   return isAbsolute(expanded) ? expanded : resolve(expanded);
 }
 
-async function readUserCliConfig(
-  options?: SubagentStorageOptions,
-): Promise<Record<string, unknown>> {
+async function readUserCliConfig(): Promise<Record<string, unknown>> {
   try {
-    const raw = await readFile(
-      join(resolveUserHomeDir(options), ".zcode", "cli", "config.json"),
-      "utf8",
-    );
+    // CLI config.json 从数据根读（file-config.adapter 的 DEFAULT_BASE_DIR），不是 home 下的固定目录。
+    const raw = await readFile(join(getZCodeDataRootDir(), "cli", "config.json"), "utf8");
     const parsed = JSON.parse(raw) as unknown;
     return isObjectRecord(parsed) ? parsed : {};
   } catch {

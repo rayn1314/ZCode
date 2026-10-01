@@ -20,23 +20,21 @@ const deviceMidCacheByStateFile = new Map<string, Promise<string>>();
 
 // `telemetry-state.json` 是设备身份文件沿用至今的磁盘文件名：CLI、Desktop、远端 server 都读写同一
 // 路径与字段，改名等于重置用户的设备身份，因此文件名保持不变。
-function resolveDeviceStateFile(homeDir?: string): string {
-  if (homeDir) {
-    return join(homeDir, ".zcode", "v2", "telemetry-state.json");
-  }
+//
+// 路径只从身份数据根派生（CLI/Desktop 由宿主注入同一数据根）：并排安装的产品身份各有自己的
+// 设备身份文件。曾经存在的 homeDir 覆盖分支会绕过数据根写回官方 `.zcode`，导致同一台机器
+// 两个身份共用 deviceMid，已删除。
+function resolveDeviceStateFile(): string {
   return join(getAppConfigDir(), "telemetry-state.json");
 }
 
-function resolveDeviceStateLockFile(homeDir?: string): string {
-  if (homeDir) {
-    return join(homeDir, ".zcode", "v2", "telemetry-state.lock");
-  }
+function resolveDeviceStateLockFile(): string {
   return join(getAppConfigDir(), "telemetry-state.lock");
 }
 
-async function readDeviceState(homeDir?: string): Promise<DeviceState> {
+async function readDeviceState(): Promise<DeviceState> {
   try {
-    const raw = await readFile(resolveDeviceStateFile(homeDir), "utf-8");
+    const raw = await readFile(resolveDeviceStateFile(), "utf-8");
     const parsed = JSON.parse(raw) as DeviceState;
     return typeof parsed === "object" && parsed ? parsed : {};
   } catch {
@@ -44,8 +42,8 @@ async function readDeviceState(homeDir?: string): Promise<DeviceState> {
   }
 }
 
-async function writeDeviceState(state: DeviceState, homeDir?: string): Promise<void> {
-  const deviceStateFile = resolveDeviceStateFile(homeDir);
+async function writeDeviceState(state: DeviceState): Promise<void> {
+  const deviceStateFile = resolveDeviceStateFile();
   await mkdir(dirname(deviceStateFile), { recursive: true });
   await writeFile(deviceStateFile, JSON.stringify(state, null, 2), "utf-8");
 }
@@ -108,11 +106,8 @@ function isProcessAlive(pid: number): boolean {
   }
 }
 
-async function withDeviceStateLock<T>(
-  homeDir: string | undefined,
-  run: (state: DeviceState) => Promise<T>,
-): Promise<T> {
-  const lockFile = resolveDeviceStateLockFile(homeDir);
+async function withDeviceStateLock<T>(run: (state: DeviceState) => Promise<T>): Promise<T> {
+  const lockFile = resolveDeviceStateLockFile();
   await mkdir(dirname(lockFile), { recursive: true });
 
   for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt += 1) {
@@ -127,7 +122,7 @@ async function withDeviceStateLock<T>(
           }),
           "utf-8",
         );
-        const state = await readDeviceState(homeDir);
+        const state = await readDeviceState();
         return await run(state);
       } finally {
         await handle.close();
@@ -155,7 +150,6 @@ async function withDeviceStateLock<T>(
 }
 
 export interface EnsureDeviceMidOptions {
-  homeDir?: string;
   randomUUID?: () => string;
 }
 
@@ -174,14 +168,14 @@ export async function ensureDeviceMidInLockedState(
   state: DeviceState,
   options: EnsureDeviceMidOptions,
 ): Promise<string> {
-  const deviceStateFile = resolveDeviceStateFile(options.homeDir);
+  const deviceStateFile = resolveDeviceStateFile();
   if (state.deviceMid) {
     return rememberDeviceMid(deviceStateFile, state.deviceMid);
   }
 
   const deviceMid = (options.randomUUID ?? createUuid)();
   state.deviceMid = deviceMid;
-  await writeDeviceState(state, options.homeDir);
+  await writeDeviceState(state);
   return rememberDeviceMid(deviceStateFile, deviceMid);
 }
 
@@ -193,13 +187,13 @@ export async function ensureDeviceMidInLockedState(
  * 与同机 CLI/Desktop 共享同一个文件、字段与锁。
  */
 export function ensureDeviceMid(options: EnsureDeviceMidOptions = {}): Promise<string> {
-  const deviceStateFile = resolveDeviceStateFile(options.homeDir);
+  const deviceStateFile = resolveDeviceStateFile();
   const cached = deviceMidCacheByStateFile.get(deviceStateFile);
   if (cached) {
     return cached;
   }
 
-  const pending = withDeviceStateLock(options.homeDir, async (state) =>
+  const pending = withDeviceStateLock(async (state) =>
     ensureDeviceMidInLockedState(state, options),
   ).catch((error) => {
     if (deviceMidCacheByStateFile.get(deviceStateFile) === pending) {

@@ -2,7 +2,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, lstat, mkdir, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type {
@@ -22,6 +21,7 @@ import {
   walkSkillMarkdownPaths,
 } from "../skills/skillDiscoveryWalk.js";
 import { checkRemoteSyncDirectoryWriteAccess } from "../remote-sync/remoteSyncWriteAccess.js";
+import { resolveUserHomeDir } from "../paths.js";
 
 const SKILL_FILE_NAME = "SKILL.md";
 const DEFAULT_MAX_ARCHIVE_BYTES = 20 * 1024 * 1024;
@@ -126,10 +126,12 @@ export function createSkillSyncService(options?: { maxArchiveBytes?: number }): 
   };
 }
 
-function resolveUserHomeDir(): string {
-  return process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || homedir();
-}
-
+/**
+ * 用户级技能根 `~/.zcode/skills`：与官方共享。
+ *
+ * CLI adapters/skills/roots.ts 把用户级技能根写死为 `{home}/.zcode/skills`，桌面改后缀隔离
+ * 只会让 UI 与 Agent 看到不同的技能集合；兼容目录 `~/.agents/skills` 同样保持共享。
+ */
 function getUserZcodeSkillRoot(): string {
   return join(resolveUserHomeDir(), ".zcode", "skills");
 }

@@ -9,7 +9,11 @@ import {
   NodeModelSelectionConfigRepository,
   PERSONAL_PROVIDER_CONFIG_FILE_NAME,
 } from "@zcode/provider-node";
-import { getAppConfigDir as resolveAppConfigDir } from "./paths.js";
+import {
+  ZCODE_DATA_ROOT_ENV,
+  getZCodeDataRootDir,
+  getAppConfigDir as resolveAppConfigDir,
+} from "./paths.js";
 import {
   buildLocalMediaPreviewUrl,
   isProviderProvisioningAccountCredentialKey,
@@ -61,8 +65,15 @@ export {
   setDataRootDir,
   getDataBaseDir,
   getZCodeDataRootDir,
+  getDataRootDirForBaseDir,
+  resolveUserHomeDir,
+  getBootstrapSettingsDir,
+  getBootstrapSettingsFile,
+  getBootstrapSettingsCandidateFiles,
+  resolveBootstrapSettingsFileForRead,
   getConversationWorkspaceDir,
   getAppConfigDir,
+  ZCODE_USER_DIR_NAME,
   getExportLogStageDir,
   getExportLogDir,
   getFeedbackRootDir,
@@ -1074,8 +1085,13 @@ export function resolveBundledCuaHelperAppPath(
 export { isOfficialCuaPluginEnabledForWorkspace };
 
 export function hasGlobalCliZCodeCuaServer(env: NodeJS.ProcessEnv = process.env): boolean {
-  const home = env.HOME?.trim() || homedir();
-  const configPath = join(home, ".zcode", "cli", "config.json");
+  // CLI 的 config.json 在数据根下（file-config.adapter），自建版即 `~/.zcode-rayn/cli/config.json`。
+  // 显式传入的 env 若带 ZCODE_DATA_ROOT，优先按它判定，保证与实际 Agent 环境一致。
+  const configPath = join(
+    env[ZCODE_DATA_ROOT_ENV]?.trim() || getZCodeDataRootDir(),
+    "cli",
+    "config.json",
+  );
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(configPath, "utf8"));
@@ -1807,6 +1823,8 @@ export function createLocalServices(options: {
     const socketPath = resolveBrokerSocketPath();
     // standaloneHelperCandidatePaths 未在上游 exports 白名单——此处按同一规则枚举安装候选
     //（dev-desktop → dev/ 前缀；app 名一律取 helperConstants，不写字面量）。
+    // ZCODE_HOME 显式覆盖优先（远端/测试）；兜底 `~/.zcode/computer-use` 与 CLI helperLauncher 的
+    // 安装根同源（helper 由 CLI/shared 侧安装，写死在 home 下，不随产品身份走）。
     const home = process.env.ZCODE_HOME?.trim() || join(homedir(), ".zcode");
     const baseRoot = join(home, "computer-use");
     // 安装布局见上游 helperLauncher.resolveCuaHelperInstallRoot：dev 是独立子根 `dev/` 且 app

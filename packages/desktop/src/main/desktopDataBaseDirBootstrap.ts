@@ -1,12 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { getDataBaseDir, setDataBaseDir, setDataRootDir } from "@zcode/services/node";
+import {
+  getBootstrapSettingsCandidateFiles,
+  getDataBaseDir,
+  getDataRootDirForBaseDir,
+  setDataBaseDir,
+  setDataRootDir,
+} from "@zcode/services/node";
 import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
-
-function resolveBootstrapSettingsFile(homePath: string = homedir()): string {
-  return join(homePath, ".zcode", "v2", "setting.json");
-}
 
 function extractBootstrapDataBaseDir(rawValue: unknown): string | null {
   if (!rawValue || typeof rawValue !== "object") {
@@ -22,19 +22,33 @@ function extractBootstrapDataBaseDir(rawValue: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+/**
+ * 读取链：身份文件优先，修复前遗留的官方共享文件兜底（见 paths.getBootstrapSettingsCandidateFiles）。
+ *
+ * 值级回退：身份文件里 dataBaseDir 为空（或文件不存在/读不通）时继续看下一个候选，
+ * 否则旧用户自定义的数据根会“消失”——数据还在磁盘上，但启动时按默认 home 找。
+ */
 function readBootstrapDataBaseDirFromDisk(
-  settingsFile: string = resolveBootstrapSettingsFile(),
+  candidates: readonly string[] = getBootstrapSettingsCandidateFiles(),
 ): string | null {
-  if (!existsSync(settingsFile)) {
-    return null;
+  for (const settingsFile of candidates) {
+    if (!existsSync(settingsFile)) {
+      continue;
+    }
+
+    try {
+      const dataBaseDir = extractBootstrapDataBaseDir(
+        JSON.parse(readFileSync(settingsFile, "utf-8")),
+      );
+      if (dataBaseDir) {
+        return dataBaseDir;
+      }
+    } catch {
+      // bootstrap 阶段只读不修：坏文件按“该候选为空”处理，继续看下一个候选。
+    }
   }
 
-  try {
-    const raw = readFileSync(settingsFile, "utf-8");
-    return extractBootstrapDataBaseDir(JSON.parse(raw));
-  } catch {
-    return null;
-  }
+  return null;
 }
 
 /**
@@ -52,7 +66,7 @@ function applyIdentityDataRoot(): void {
   if (!ZCODE_DATA_ROOT_SUFFIX) {
     return;
   }
-  setDataRootDir(join(getDataBaseDir(), `.zcode${ZCODE_DATA_ROOT_SUFFIX}`));
+  setDataRootDir(getDataRootDirForBaseDir(getDataBaseDir()));
 }
 
 export function applyEarlyDataBaseDirBootstrap(): string | null {

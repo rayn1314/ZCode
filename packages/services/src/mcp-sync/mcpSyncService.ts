@@ -1,7 +1,6 @@
 /* eslint-disable max-lines -- MCP 同步服务集中维护用户目录读写、远端导入和 filesystem 路径改写，拆分会增加远端配置同步回归面。 */
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join, posix, win32 } from "node:path";
 import type {
   LoadCliMcpFromUserDirectoryRequest,
@@ -19,6 +18,7 @@ import type {
   SettingsDirectorySource,
 } from "@zcode/shared";
 import type { IMcpSyncService } from "./mcpSync.js";
+import { ZCODE_USER_DIR_NAME, resolveUserHomeDir } from "../paths.js";
 import { checkRemoteSyncDirectoryWriteAccess } from "../remote-sync/remoteSyncWriteAccess.js";
 
 type McpConfigKeyName = "mcp.servers" | "mcpServers";
@@ -43,7 +43,8 @@ interface UserMcpRecord {
 const ZCODE_MCP_DESCRIPTOR: DirectoryMcpDescriptor = {
   source: "zcode",
   directorySource: "zcode",
-  userConfigDirSegments: [".zcode", "cli"],
+  // 用户级 MCP 配置按产品身份隔离；项目级仍固定 `{workspace}/.zcode`。
+  userConfigDirSegments: [ZCODE_USER_DIR_NAME, "cli"],
   workspaceConfigDirSegments: [".zcode"],
   fileName: "config.json",
   configKeyName: "mcp.servers",
@@ -143,10 +144,6 @@ export function createMcpSyncService(
       return await importMcpServers(params);
     },
   };
-}
-
-function resolveUserHomeDir(): string {
-  return process.env.HOME?.trim() || process.env.USERPROFILE?.trim() || homedir();
 }
 
 function buildDirectoryConfigPath(

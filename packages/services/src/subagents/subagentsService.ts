@@ -28,12 +28,12 @@ import { normalizeSubagentModelSelection } from "./subagentModelSelection.js";
 import { serializeSubagentMarkdown, parseSubagentMarkdown } from "./subagentMarkdown.js";
 import {
   resolveSubagentStateFile,
-  resolveUserHomeDir,
   resolveUserSubagentRoot,
   resolveWorkspaceSubagentRoot,
   resolveZCodeStorageRoot,
   type SubagentStorageOptions,
 } from "./subagentStorage.js";
+import { getZCodeDataRootDir } from "../paths.js";
 import type { ISubagentsService } from "./subagents.js";
 import { atomicWriteText } from "#src/fs/atomicFileUtils.js";
 import {
@@ -304,7 +304,7 @@ async function discoverPluginAgents(params: {
 }): Promise<PluginAgentDiscovery> {
   const storageRoot = await resolveZCodeStorageRoot(params.storageOptions);
   const cliStorageRoot = basename(storageRoot) === "cli" ? storageRoot : join(storageRoot, "cli");
-  const pluginConfig = await readPluginConfig(params.storageOptions);
+  const pluginConfig = await readPluginConfig();
   const records = await readEnabledPluginRecords(join(cliStorageRoot, "plugins"), pluginConfig);
   const parsedAgents: Array<{
     agent: AgentSummary;
@@ -394,9 +394,10 @@ async function discoverPluginAgents(params: {
   };
 }
 
-async function readPluginConfig(options?: SubagentStorageOptions): Promise<PluginConfigSummary> {
+async function readPluginConfig(): Promise<PluginConfigSummary> {
   try {
-    const configPath = join(resolveUserHomeDir(options), ".zcode", "cli", "config.json");
+    // CLI config.json 从数据根读（file-config.adapter），插件开关必须与 Agent 读同一份。
+    const configPath = join(getZCodeDataRootDir(), "cli", "config.json");
     const raw = await readFile(configPath, "utf-8");
     const parsed = JSON.parse(raw) as unknown;
     if (!isRecord(parsed)) return { enabledPlugins: {}, suppressedBuiltins: [] };

@@ -61,6 +61,7 @@ import {
   getDataBaseDir,
   getZCodeDataRootDir,
   normalizeRuntimeProcessEnv,
+  resolveBootstrapSettingsFileForRead,
   setDataBaseDir,
 } from "@zcode/services/node";
 import {
@@ -530,7 +531,9 @@ async function runBrowserCommandOnView(params: {
 let currentDesktopZoomLevel = 0;
 let currentDesktopWindowSize: DesktopWindowSize | undefined;
 const preloadPath = join(import.meta.dirname, "../preload/index.cjs");
-const settingsFile = join(homedir(), ".zcode", "v2", "setting.json");
+// 启动工作区恢复读设置指针文件：身份文件优先，修复前遗留的官方共享文件兜底（见 paths.getBootstrapSettingsCandidateFiles）。
+// 不能读 getAppConfigDir()：那个路径跟着 dataBaseDir 走，而 dataBaseDir 本身就记在这个文件里。
+const settingsFile = resolveBootstrapSettingsFileForRead();
 let activeAppShutdownPolicy = resolveAppShutdownPolicy("normal", process.platform);
 let activeAppShutdownKind: AppShutdownKind | null = null;
 const WINDOWS_AGENT_FORCE_KILL_TIMEOUT_MS = 2_000;

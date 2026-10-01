@@ -1,7 +1,6 @@
 /* oxlint-disable eslint(max-lines) -- 迁移期需要在一个门面里集中维护旧 task projection 到 ZCode session 的协议适配。 */
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   Emitter,
@@ -120,6 +119,7 @@ import type {
   ZCodeTaskTerminalOutcome,
 } from "../session/zcodeTaskService.js";
 import { createServiceLogger } from "#src/logger/serviceLogger.js";
+import { getZCodeDataRootDir } from "#src/paths.js";
 import {
   AUTOMATION_MUTATION_TOOL_NAMES,
   OFF_PEAK_MUTATION_TOOL_NAMES,
@@ -244,7 +244,9 @@ function formatZCodeAgentLogDate(now: Date): string {
 
 function resolveZCodeAgentCurrentLogFilePath(now = new Date()): string {
   const configuredLogDir = process.env.ZCODE_LOG_DIR?.trim();
-  const logDir = configuredLogDir || join(homedir(), ".zcode", "cli", "log");
+  // 日志目录跟随数据根（与 CLI 侧 getDefaultLogDir 的 resolveZCodeDataRoot 同规则）：
+  // 自建版数据根带身份后缀，写死 `~/.zcode/cli/log` 会读不到自己的 agent 日志。
+  const logDir = configuredLogDir || join(getZCodeDataRootDir(), "cli", "log");
   return join(logDir, `zcode-${formatZCodeAgentLogDate(now)}.jsonl`);
 }
 

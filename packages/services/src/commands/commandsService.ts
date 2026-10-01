@@ -1,7 +1,6 @@
 /* eslint-disable max-lines -- commandsService 需要集中处理目录来源优先级、读写和命令解析，拆分会削弱读取顺序的一致性 */
 import { access, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import {
   ZCODE_COMMAND_AGENT_SOURCE,
@@ -23,11 +22,7 @@ import { DEFAULT_ENABLED_OFFICIAL_PLUGIN_IDS } from "@zcode/shared";
 import type { ICommandsService } from "./commands.js";
 import { CommandFileParser, type CommandFileFormat } from "./commandFileParser.js";
 import { readInstalledPluginRoots } from "#src/plugins/installedPluginRoots.js";
-
-function resolveUserHomeDir() {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-  return envHome && envHome.length > 0 ? envHome : homedir();
-}
+import { getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 
 interface CommandAgentSourceDescriptor {
   agentSource: CommandAgentSource;
@@ -52,6 +47,9 @@ const CODEX_PLUGIN_MANIFEST_PATH = join(".codex-plugin", "plugin.json");
 const ZCODE_COMMAND_DESCRIPTOR: CommandAgentSourceDescriptor = {
   agentSource: "zcodeAgent",
   directorySource: "zcode",
+  // 用户级命令目录与 CLI 共享：CLI 侧固定读 `~/.zcode/commands`（adapters/commands/roots.ts
+  // 硬编码 .zcode，不认产品身份后缀），桌面必须跟随同一目录才与用户已装的命令一致；
+  // 项目级仍固定 `{workspace}/.zcode/commands`。
   userDirectorySegments: [".zcode", "commands"],
   workspaceDirectorySegments: [".zcode", "commands"],
   fileExtension: ".md",
@@ -86,7 +84,9 @@ function getUserCommandsRoot(agentSource?: CommandAgentSource): string {
 }
 
 function getUserCliConfigPath(): string {
-  return join(resolveUserHomeDir(), ".zcode", "cli", "config.json");
+  // CLI 的 config.json 位于 `{dataRoot}/cli/config.json`（file-config.adapter 按
+  // resolveZCodeDataRoot 拼装），改过的命令/插件开关随数据根隔离。
+  return join(getZCodeDataRootDir(), "cli", "config.json");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -201,9 +201,10 @@ function readBooleanRecord(value: unknown): Record<string, boolean> {
 
 function readStorageDirFromConfig(config: Record<string, unknown>): string {
   const storage = isRecord(config.storage) ? config.storage : {};
+  // 默认值与 CLI 契约一致：storage.dir 未显式配置时就是数据根本身（contracts/config）。
   return typeof storage.dir === "string" && storage.dir.trim().length > 0
     ? storage.dir
-    : "~/.zcode";
+    : getZCodeDataRootDir();
 }
 
 function readPluginConfigFromConfig(config: Record<string, unknown>): PluginConfigSummary {

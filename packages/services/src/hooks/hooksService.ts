@@ -1,6 +1,5 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import type {
   Hook,
@@ -20,6 +19,7 @@ import {
 } from "@zcode/shared/workspace-hook-discovery";
 import { parseWorkspaceHookTrustStoreContent } from "@zcode/shared/workspace-hook-trust-store-file";
 import { createServiceLogger, type ServiceLogger } from "#src/logger/serviceLogger.js";
+import { getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 import type { IHooksService } from "./hooks.js";
 import { atomicWriteWorkspaceHookConfig } from "./workspaceHookConfigMutation.js";
 import {
@@ -48,16 +48,14 @@ interface ZCodeConfigFile {
   [key: string]: unknown;
 }
 
-function resolveUserHomeDir(): string {
-  const envHome = process.env.HOME?.trim() || process.env.USERPROFILE?.trim();
-  return envHome && envHome.length > 0 ? envHome : homedir();
-}
-
 function getRootDir(source: SettingsDirectorySource, workspacePath?: string): string {
-  const baseDir = workspacePath ?? resolveUserHomeDir();
+  // 项目级固定 `{workspace}/.zcode`；用户级跟随 CLI 数据根——CLI 的 config.json 位于
+  // `{dataRoot}/cli/config.json`（file-config.adapter 按 resolveZCodeDataRoot 拼装），
+  // 自建版与官方各读各的 hooks 配置。
   if (source === "zcode") {
-    return workspacePath ? join(baseDir, ".zcode") : join(baseDir, ".zcode", "cli");
+    return workspacePath ? join(workspacePath, ".zcode") : join(getZCodeDataRootDir(), "cli");
   }
+  const baseDir = workspacePath ?? resolveUserHomeDir();
   return join(baseDir, source === "agents" ? ".agents" : ".claude");
 }
 
@@ -165,7 +163,10 @@ async function readPersistentWorkspaceHookTrustDigests(
       : isAbsolute(configured)
         ? resolve(configured)
         : resolve(home, configured)
-    : join(home, ".zcode");
+    : // CLI 侧未显式配置 storage.dir 时兜底固定共享 `~/.zcode`（见 CLI
+      // workspace-hook-trust-store.resolveWorkspaceHookTrustStorePath），
+      // 信任记录是 CLI 写出的共享事实，这里必须跟随同一位置才能读到。
+      join(home, ".zcode");
   const trustFilePath = join(storageRoot, "security", "workspace-hook-trust-v1.json");
 
   // 异步读取 + ENOENT 区分：不用 existsSync 预检——同步调用会阻塞服务

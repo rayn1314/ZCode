@@ -2,7 +2,6 @@ import { SocketProtocol, ChannelClient } from "@zcode/rpc";
 import type { IServiceAccessor } from "@zcode/services";
 import { RemoteServiceAccess } from "@zcode/client";
 import {
-  SERVICE_AUTHORITY_MODE_ENV,
   ZCODE_APP_VERSION_ENV,
   ZCODE_DESKTOP_CONTEXT_PROMPT_ENABLED_ENV,
   ZCODE_DYNAMIC_WORKFLOW_MODE_ENV,
@@ -16,7 +15,7 @@ import { wrapStdioStream } from "./stdio-socket.js";
 import { performHandshake } from "./handshake.js";
 import { deployServer } from "./deploy.js";
 import type { DeployOptions } from "./deploy.js";
-import { REMOTE_BASE, REMOTE_SERVER_RUNTIME_ROOT } from "./deployShared.js";
+import { REMOTE_BASE, buildRemoteServerBaseEnvAssignments } from "./deployShared.js";
 import { assertSupportedRemoteEnvironment } from "@zcode/server/remote/remotePlatformSupport.js";
 import { quotePosixShellArg } from "./posixShell.js";
 import { formatWslProxyForLog } from "./wslProxy.js";
@@ -361,10 +360,7 @@ function buildRemoteServerCommand(
   options: ConnectOptions | undefined,
   remoteRuntimeNetwork: RemoteRuntimeNetworkOptions | undefined,
 ): string {
-  const envParts = [
-    `${SERVICE_AUTHORITY_MODE_ENV}="desktop-attached-remote"`,
-    `ZCODE_SERVER_RUNTIME_ROOT="${REMOTE_SERVER_RUNTIME_ROOT}"`,
-  ];
+  const envParts = [...buildRemoteServerBaseEnvAssignments()];
   for (const [key, value] of Object.entries(
     pickRemoteRuntimeEnv(options?.remoteRuntimeEnv ?? {}),
   )) {

@@ -65,6 +65,14 @@ export const ZCODE_DATA_ROOT_SUFFIX =
   typeof __ZCODE_DATA_ROOT_SUFFIX__ !== "undefined" ? __ZCODE_DATA_ROOT_SUFFIX__.trim() : "";
 export const ZCODE_APP_VERSION_ENV = "ZCODE_APP_VERSION" as const;
 export const ZCODE_BUILD_COMMIT_ID_ENV = "ZCODE_BUILD_COMMIT_ID" as const;
+/**
+ * 数据根本身的覆盖 env key（完整路径，不再拼 `.zcode`）。
+ *
+ * 宿主进程与远端部署命令都用它把产品身份定向到各自的数据根；解析规则见
+ * services 的 paths.ts（`setDataRootDir > ZCODE_DATA_ROOT > {dataBaseDir}/.zcode`）。
+ * 常量放 shared：server 的远端启动命令与 services 的本地 spawn env 必须拼写同源。
+ */
+export const ZCODE_DATA_ROOT_ENV = "ZCODE_DATA_ROOT" as const;
 
 // ── 运行时环境变量（不经过编译打包，启动时从 process.env 读取） ──
 // 启用调试模式，值为 inspect-brk 的端口号，如 ZCODE_DEBUG=9230

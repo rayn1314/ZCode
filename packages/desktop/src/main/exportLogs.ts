@@ -24,6 +24,7 @@ import {
   getExportLogDir as getDefaultExportLogDir,
   getExportLogStageDir as getDefaultExportLogStageDir,
   getFeedbackLogArchiveDir as getDefaultFeedbackLogArchiveDir,
+  getZCodeDataRootDir,
 } from "@zcode/services/node";
 import { createAboutSnapshot, formatAboutDetail, readBuildMetadata } from "./about.js";
 import { logger } from "./logger.js";
@@ -33,7 +34,9 @@ function getZCodeDataDir() {
 }
 
 function getZCodeCliDir() {
-  return join(homedir(), ".zcode", "cli");
+  // CLI 的 cli/ 目录跟随数据根（与 CLI 侧 logging 适配器的 resolveZCodeDataRoot 同规则）：
+  // 自建版数据根带身份后缀，写死 `~/.zcode/cli` 会漏掉自己的日志。
+  return join(getZCodeDataRootDir(), "cli");
 }
 
 function getZCodeCliLogDir() {
@@ -46,6 +49,7 @@ function getZCodeCliLogDir() {
  * helperExitLogPathFor）。同目录下还有 `.tokens` broker 凭据，收集时必须按文件名白名单。
  */
 function getCuaHelperRunDir() {
+  // Helper/broker 侧的安装与运行目录写死共享 `~/.zcode`，不认产品身份后缀，这里必须跟随同一位置。
   return join(homedir(), ".zcode", "computer-use", "run");
 }
 
