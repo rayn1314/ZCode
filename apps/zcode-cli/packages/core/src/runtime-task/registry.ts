@@ -52,6 +52,12 @@ export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
   pendingMessages?: RuntimeTaskPendingMessage[];
   prompt?: string;
   /**
+   * runner 以前台模型覆盖（modelOverride）借跑本任务时为 true。这种运行没有
+   * background request waiter，requestBackground 只改快照、放行不了前台等待；
+   * 调用方（如 subagent 回复入队）必须据此如实报告协调者不可达，不能假装已转后台。
+   */
+  foregroundModelOverride?: boolean;
+  /**
    * workflow run 产物的序列化文本。TaskOutput 的投影只读得到 registry 条目（dwf 从不写
    * outputFile），所以产物必须在终态更新时就存到条目上。
    */

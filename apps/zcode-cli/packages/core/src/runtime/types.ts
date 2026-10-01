@@ -296,6 +296,17 @@ export interface EnqueueSubagentMessageInput {
   traceContext: TraceContext;
 }
 
+/**
+ * 入队后对协调者前台等待的处置结果。stale 分支丢弃消息时返回 undefined，
+ * 不产生任何处置语义。
+ */
+export interface EnqueueSubagentMessageResult {
+  /** 协调者此前前台等待该子代理，且已通过 requestBackground 释放这次等待。 */
+  foregroundWaitReleased: boolean;
+  /** 协调者仍前台等待、但该运行无法转后台（借用的前台模型覆盖），回复只能在运行结束后被读到。 */
+  foregroundWaitBusy?: boolean;
+}
+
 export interface MemoryRuntimeConfig {
   cliStorageRoot?: string;
   enabled?: boolean;

@@ -4,7 +4,10 @@ import type {
   CoordinatorResponseResult,
   SessionId,
 } from "@zcode/contracts";
-import type { EnqueueSubagentMessageInput } from "../runtime/types.js";
+import type {
+  EnqueueSubagentMessageInput,
+  EnqueueSubagentMessageResult,
+} from "../runtime/types.js";
 
 interface CreateCoordinatorResponsePortOptions {
   agentId: string;
@@ -12,9 +15,12 @@ interface CreateCoordinatorResponsePortOptions {
   childSessionId: SessionId;
   parentToolCallId?: string;
   createResponseId?: () => string;
-  // void 会接受 async callback；undefined 才能让类型系统守住同步入队 ack。
-  enqueue(input: EnqueueSubagentMessageInput): undefined;
+  // void 会接受 async callback；同步返回值让 port 能把协调者的前台等待处置如实回给子代理。
+  enqueue(input: EnqueueSubagentMessageInput): EnqueueSubagentMessageResult | undefined;
 }
+
+const BUSY_COORDINATOR_MESSAGE =
+  "Response was queued for the coordinator, but the coordinator is still blocked in a foreground wait for this run and cannot reply in real time; it will read this message when the run ends. Do not wait for a reply — finish or fail the task yourself.";
 
 export function createCoordinatorResponsePort(
   options: CreateCoordinatorResponsePortOptions,
@@ -23,7 +29,7 @@ export function createCoordinatorResponsePort(
     respond(request): CoordinatorResponseResult {
       const responseId = options.createResponseId?.() ?? `response_${randomUUID()}`;
       try {
-        options.enqueue({
+        const delivery = options.enqueue({
           responseId,
           agentId: options.agentId,
           agentType: options.agentType,
@@ -34,9 +40,20 @@ export function createCoordinatorResponsePort(
           message: request.message,
           traceContext: request.trace,
         });
+        if (delivery?.foregroundWaitBusy) {
+          return {
+            status: "success",
+            responseId,
+            coordinatorAttention: "busy",
+            message: BUSY_COORDINATOR_MESSAGE,
+          };
+        }
         return {
           status: "success",
           responseId,
+          ...(delivery?.foregroundWaitReleased
+            ? { coordinatorAttention: "released" as const }
+            : {}),
           message: "Response was queued for the coordinator.",
         };
       } catch (error) {

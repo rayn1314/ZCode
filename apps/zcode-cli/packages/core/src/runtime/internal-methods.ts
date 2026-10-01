@@ -54,6 +54,7 @@ import type {
   DrainedPendingInputDiagnostics,
   ForegroundPromotionLeaseMode,
   EnqueueSubagentMessageInput,
+  EnqueueSubagentMessageResult,
   ResumeSessionOptions,
   ResumeSessionResult,
   RunModelTextRequestOptions,
@@ -170,7 +171,7 @@ export interface AgentRuntimeCoreMethods {
     toolName?: string;
     traceContext: TraceContext;
   }): void;
-  enqueueSubagentMessage(input: EnqueueSubagentMessageInput): undefined;
+  enqueueSubagentMessage(input: EnqueueSubagentMessageInput): EnqueueSubagentMessageResult | undefined;
   drainPendingRuntimeCommandsForActiveLoop(): Promise<{
     backgroundSubagentResultConsumed: boolean;
     workflowResultConsumed: boolean;

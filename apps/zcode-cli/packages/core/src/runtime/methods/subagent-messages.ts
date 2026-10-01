@@ -2,9 +2,13 @@ import { createMessageId, traceContextToLogContext } from "../deps.js";
 import type { MessageId } from "../deps.js";
 import { createRuntimeCommandId, type SubagentMessageRuntimeCommand } from "../command-queue.js";
 import type { AgentRuntimeInternal } from "../internal.js";
-import type { EnqueueSubagentMessageInput } from "../types.js";
+import type {
+  EnqueueSubagentMessageInput,
+  EnqueueSubagentMessageResult,
+} from "../types.js";
 import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js";
 import { escapeXml } from "../../runtime-task/notification.js";
+import { isTerminalRuntimeTask } from "../../runtime-task/registry.js";
 
 function formatSubagentMessage(input: {
   agentId: string;
@@ -25,7 +29,7 @@ function formatSubagentMessage(input: {
 export function enqueueSubagentMessage(
   this: AgentRuntimeInternal,
   input: EnqueueSubagentMessageInput,
-): undefined {
+): EnqueueSubagentMessageResult | undefined {
   const branchGeneration =
     this.runtimeTaskRegistry.get(input.agentId)?.branchGeneration ?? this.branchGeneration;
   if (branchGeneration !== this.branchGeneration) {
@@ -71,7 +75,36 @@ export function enqueueSubagentMessage(
     summary: command.summary.slice(0, 200),
   });
   this.enqueueRuntimeCommand(command);
-  return undefined;
+  // 回复只有「协调者让出当前工具等待」之后才可能被读到。协调者若正前台 await 这个
+  // agent 的 Agent 工具（tool_use 与 tool_result 之间不能插 user 消息），唯一合法的
+  // 放行方式就是 requestBackground：Agent 工具先返回 async_launched，已入队的回复
+  // 随后在 prompt command 之后的 drain / mid-turn 注入被消费。必须先入队再转后台，
+  // 保证 Agent 结果返回时消息已经在队列里。
+  const task = this.runtimeTaskRegistry.get(input.agentId);
+  if (
+    !task ||
+    task.type !== "local_agent" ||
+    task.isBackgrounded ||
+    isTerminalRuntimeTask(task)
+  ) {
+    return undefined;
+  }
+  if (task.foregroundModelOverride === true) {
+    // 借用的前台模型覆盖（闲时轮）下 runner 的 Promise.race 不认 background 请求；
+    // requestBackground 只会改快照、放行不了等待，必须诚实报告 busy 而不是假装释放。
+    return { foregroundWaitReleased: false, foregroundWaitBusy: true };
+  }
+  if (!this.runtimeTaskRegistry.requestBackground(input.agentId)) {
+    return undefined;
+  }
+  this.logger?.info("Foreground agent wait released by subagent response", {
+    ...traceContextToLogContext(command.traceContext),
+    agentId: command.agentId,
+    event: "subagent.response.foreground_wait_released",
+    module: "core.runtime",
+    responseId: command.responseId,
+  });
+  return { foregroundWaitReleased: true };
 }
 
 export async function persistSubagentMessageCommand(

@@ -19,6 +19,7 @@ const RESPOND_TO_COORDINATOR_PROVIDER_OUTPUT_SCHEMA = {
   properties: {
     success: { type: "boolean" },
     message: { type: "string" },
+    coordinatorAttention: { type: "string", enum: ["released", "busy"] },
   },
   required: ["success", "message"],
   additionalProperties: false,
@@ -120,6 +121,14 @@ function formatRespondToCoordinatorModelContent(output: unknown): string {
   const continuation =
     "Continue the current task unless the coordinator explicitly changed or ended it.";
   if (result.status === "success") {
+    if (result.coordinatorAttention === "busy") {
+      // 协调者仍前台阻塞在本运行上，实时回复不可能到达；必须打破「排队=会有人回」的预期，
+      // 否则子代理会在等待协调者回话与继续干活之间无限打转（2026-10-01 鹈鹕任务实测死锁）。
+      return `Response ${result.responseId} was queued for the coordinator. ${result.message}`;
+    }
+    if (result.coordinatorAttention === "released") {
+      return `Response ${result.responseId} was queued for the coordinator; the coordinator's foreground wait was released and it will read this response next. ${continuation}`;
+    }
     return `Response ${result.responseId} was queued for the coordinator. ${continuation}`;
   }
   // 错误详情无长度上限，continuation 必须放在它之前，避免 resultBudget 截断关键指引。

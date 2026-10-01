@@ -177,6 +177,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       const { profile, request } = resolveAgentProfileForRequest(profiles, rawRequest);
       const lifecycle = createSubagentLifecycle(options, request, profile);
       const startedAt = new Date(lifecycle.startedAt);
+      const hasForegroundModelOverride = runOptions?.modelOverride !== undefined;
 
       registry.register(
         createRuntimeTaskSnapshot({
@@ -185,6 +186,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           request,
           startedAt,
           status: "running",
+          ...(hasForegroundModelOverride ? { foregroundModelOverride: true } : {}),
         }),
       );
       try {
@@ -201,7 +203,6 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         lifecycle.agentId,
         runOptions?.signal,
       );
-      const hasForegroundModelOverride = runOptions?.modelOverride !== undefined;
       if (hasForegroundModelOverride) {
         borrowedForegroundAgentIds.add(lifecycle.agentId);
       }
@@ -1447,6 +1448,7 @@ function createRuntimeTaskSnapshot(input: {
   request: SubagentRunRequest;
   startedAt: Date;
   status: RuntimeTaskSnapshot["status"];
+  foregroundModelOverride?: boolean;
 }): RuntimeTaskSnapshot {
   return {
     taskId: input.lifecycle.agentId,
@@ -1455,6 +1457,7 @@ function createRuntimeTaskSnapshot(input: {
     childSessionId: input.lifecycle.childSessionId,
     description: input.request.description,
     isBackgrounded: input.isBackgrounded,
+    ...(input.foregroundModelOverride ? { foregroundModelOverride: true } : {}),
     outputFile: input.lifecycle.outputFile,
     parentToolCallId: input.request.parentToolCallId,
     parentSessionId: input.request.sessionId,

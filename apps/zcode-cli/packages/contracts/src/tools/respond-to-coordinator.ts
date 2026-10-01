@@ -27,6 +27,13 @@ export const RespondToCoordinatorOutputSchema = z
     responseId: z.string(),
     message: z.string(),
     error: z.string().optional(),
+    /**
+     * 协调者对这条回复的实时可达性：
+     * - "released"：协调者此前正前台等待本子代理，已把该等待转后台，回复会被立即消费；
+     * - "busy"：协调者仍阻塞在本前台运行上且该运行无法转后台（借用的前台模型覆盖），
+     *   回复只会在运行结束后被读到，子代理不得等待回复。
+     */
+    coordinatorAttention: z.enum(["released", "busy"]).optional(),
   })
   .strict();
 
