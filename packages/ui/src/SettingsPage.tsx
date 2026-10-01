@@ -152,6 +152,10 @@ function SettingsUsageProviderTabs({
       id: "app" as const,
       label: intl.formatMessage({ id: "settings.usage.tab.appUsage" }),
     },
+    {
+      id: "ledger" as const,
+      label: intl.formatMessage({ id: "settings.usage.tab.ledger" }),
+    },
     ...codingPlanSources.map((source, index) => ({
       id: createSettingsUsageCodingPlanTabId(source.id),
       label: resolveSettingsUsageCodingPlanTabLabel({
@@ -581,6 +585,7 @@ export function SettingsPage({
   useEffect(() => {
     if (
       usageActiveTab === "app" ||
+      usageActiveTab === "ledger" ||
       usageActiveTab === "codingPlan" ||
       selectedUsageCodingPlanSource
     ) {
@@ -725,21 +730,21 @@ export function SettingsPage({
   const [hostPlatform, setHostPlatform] = useState("");
 
   useEffect(() => {
+    // 回退只针对「Coding Plan 跳转意图」；app/ledger 是本地能力 tab，永不参与回退。
     if (
-      !shouldFallbackSettingsUsageTabToApp({
-        activeTab: usageActiveTab === "app" ? "app" : "codingPlan",
+      usageActiveTab === "codingPlan" &&
+      shouldFallbackSettingsUsageTabToApp({
+        activeTab: "codingPlan",
         checkingCodingPlanTab: checkingUsageCodingPlanTab,
         loadingModelProviders: usageProviderSettingsLoading,
         showCodingPlanTab: showUsageCodingPlanTab,
       })
     ) {
-      return;
+      // 剩余额度入口会先写入 Coding Plan tab 意图，再打开设置页。
+      // 如果首帧 provider/entitlement 仍在加载就立刻回退，会让“更多”看起来只打开了 App Usage。
+      // 这里等数据确认没有套餐后再回退，避免空入口误导用户。
+      setUsageActiveTab("app");
     }
-
-    // 剩余额度入口会先写入 Coding Plan tab 意图，再打开设置页。
-    // 如果首帧 provider/entitlement 仍在加载就立刻回退，会让“更多”看起来只打开了 App Usage。
-    // 这里等数据确认没有套餐后再回退，避免空入口误导用户。
-    setUsageActiveTab("app");
   }, [
     checkingUsageCodingPlanTab,
     showUsageCodingPlanTab,

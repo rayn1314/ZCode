@@ -112,6 +112,8 @@ export const ServiceChannels = {
   ProviderProvisioningTarget: "provider-provisioning-target",
   /** 本地 usage 统计服务 */
   UsageStats: "usage-stats",
+  /** 用量账本：多数据根只读聚合（官方+自建数据根、WSL 桥接） */
+  UsageLedger: "usage-ledger",
   /** Coding Plan 订阅购买服务 */
   CodingPlanSubscription: "coding-plan-subscription",
   ClientConfig: "client-config",

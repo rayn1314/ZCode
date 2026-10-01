@@ -1,0 +1,72 @@
+# 用量账本（Usage Ledger）
+
+涉及包：`packages/services`（主责）、`packages/shared`（协议）、`packages/ui`（面板）、`packages/client`（远端代理声明）、`packages/desktop`（host 进程承载）。
+
+## 背景与问题
+
+自建版原有的「应用用量」统计只覆盖 host 自己的数据根，看不到 WSL 内会话、官方版数据根与其它自建身份的数据；外部工具「ZCode 用量账本」（Python 单文件版）证明了多数据源聚合的价值，但不属于产品本体。本功能把工具的读取能力与信息功能合并进设置页使用统计，作为第三个 tab「用量账本」，首个落地的能力就是官方版统计不到 WSL 的修正。
+
+「应用用量」面板本轮零改动；热力图/连续天数/工具统计的多源化合并留待二期。
+
+## 数据链路与所有权
+
+```
+LedgerPanel (ui/settings/usage-stats/ledger/)
+  → useLedgerStats (ui/hooks)
+  → IUsageLedgerService（services，ServiceChannels.UsageLedger = "usage-ledger"）
+  → host 进程 createUsageLedgerService（仅 packages/services/src/node.ts 注册）
+  → LedgerReader（ledgerReader.ts：编排；ledgerRoots.ts：根探测）
+      ├─ Windows 根：node:sqlite 只读直开 <root>/cli/db/db.sqlite（ledgerAggregate.ts）
+      └─ WSL 根（仅 win32）：ledgerWsl.ts 探测 + 送内嵌 Python（ledgerDumpScript.ts）进 WSL 执行，
+         stdout 回传单源聚合 JSON
+  → mergeLedgerPayloads（ledgerMerge.ts）多源合并
+  → calcLedgerCost（ledgerPrices.ts）逐模型计价
+```
+
+- 唯一状态所有者：host 侧 `LedgerReader`。UI 无本地聚合状态，只有筛选偏好（localStorage）。
+- 服务注册仅桌面本地 host（node.ts）；远端 workspace 不注册，`accessor.usageLedgerService` 为可选字段，`remoteServiceAccess` 上的 ProxyChannel 调用会 reject——UI 捕获后展示「当前环境不支持」空态（降级语义，不是错误）。
+
+## 数据根与来源 key
+
+| 来源           | key 格式              |
+| -------------- | --------------------- |
+| Windows 官方根 | `windows`             |
+| Windows 自建根 | `windows@<身份>`      |
+| WSL 官方根     | `wsl:<发行版>`        |
+| WSL 自建根     | `wsl:<发行版>@<身份>` |
+
+- 自建根判定：目录末段 `.zcode-<身份>`（ledgerRoots.ts `classifyLedgerRoot`）。
+- 官方根候选链：`ZCODE_HOME` → `~/.zcode` → `~/.config/zcode` → `%APPDATA%/zcode`；自建根扫 home 一层 `.zcode-*`（TTL 30s）；WSL 根用 `wsl.exe`（Running 发行版 + find 探测，TTL 300s，失败退避 60s）。
+- 主源 = host 自己的数据根，key 去重时后来者加 `#N` 后缀（dev 环境主源可能被归为 official，与真实官方根撞 key）。
+- 供应商显示名统一读各数据根自己的 `v2/provider_config.json`（ledgerProviderNames.ts），跨根筛选按显示名成立；**只读 providerId/providerName 两个字段，绝不读取、存储或输出任何凭据字段**。
+
+## 口径资产（与工具版本一致，两侧同轴）
+
+1. **token 包含关系**：cacheRead ⊂ input、reasoning ⊂ output；任何 token 合计只用 `input + output`。
+2. **费用**：逐模型计价再汇总 `input/1e6*pIn + output/1e6*pOut + cacheRead/1e6*pCache`；今天/本月/每日/模型/Agent/会话各视图都按 (维度, 模型) 分组取出后折叠，费用才能按维度归并。未定价模型显式记入 `unpricedCalls/unpricedModelIds`，不静默归零。
+3. **合并**（ledgerMerge.ts）：计数求和；均值（耗时/TTFT）按调用数加权；sessions/recent 重排截断；**费用只累加非 null**——某源没有价格表时混入 0 会让总数凭空少一截。
+4. **时间分桶**：全部参数化整数算术 `(COALESCE(started_at,0)+tzOffsetMs)/86400000`，不用 strftime/date 修饰符；WSL 侧 Python 用同一偏移（host 下发 `tzOffsetMinutes`），跨环境同一条时间轴。
+5. **范围**：today=本地今日 0 点起；7d/30d 含今日；all 上界取 now（`started_at <= NULL` 恒假，不能留 null）；custom 起止可交换，止日为次日 0 点 -1。
+
+## 只读不变式（硬约束）
+
+- SQLite 全程 `readOnly: true` + 短连接，每请求用完即关；**绝不持有长连接**——长读事务会阻碍主程序 WAL checkpoint。
+- SQL 全参数化；条件文本只用静态列名，无动态字符串进 SQL 文本。
+- WSL 侧绝不在 Windows 侧直开 WSL 的 SQLite 文件（跨文件系统 WAL 锁），一律把聚合脚本送进 WSL 执行、只回传 JSON；进程执行（spawn wsl.exe）全部隔离在 ledgerWsl.ts，参数走 `wsl.exe --` 直通模式 + base64url 编码传筛选值。
+- 日志不写凭据、不写明文 key。
+
+## 失败语义
+
+| 场景                                | 行为                                                               |
+| ----------------------------------- | ------------------------------------------------------------------ |
+| 主源（host 数据根）读取失败且被选中 | 抛错，UI 进入错误态（含库路径）                                    |
+| 其余源失败                          | `source.ok=false` + 截断错误信息，不挡页面；KPI 上方细条提示       |
+| WSL 探测/执行失败                   | 该 (distro, root) 退避 60s 后才重试                                |
+| 价格表缺失/损坏                     | `pricesLoaded=false`，费用相关输出为 null，UI 显示「未加载价格表」 |
+| 远端 workspace                      | 服务不存在，UI 展示不可用空态                                      |
+
+## 迁移边界
+
+- 基准价格表内置于 `ledgerPrices.ts`（`_meta.date` 标注基准日）；用户覆盖 `<数据根>/v2/usage-prices.json`（按小写模型名覆盖，损坏忽略）。自动同步价格基准不做。
+- CLI 写入侧 30 天保留策略不动：账本如实展示库内现有数据。
+- 筛选偏好（范围/供应商/模型/来源/刷新间隔/图表指标）存 localStorage `zcode.ledger.prefs.v1`，逐字段校验、损坏忽略；来源全选存 null（跟随未来新增数据根）。

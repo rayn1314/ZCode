@@ -3,8 +3,9 @@ import {
   CodingPlanUsagePanel,
   type CodingPlanUsageSource,
 } from "@/settings/usage-stats/CodingPlanUsagePanel.js";
+import { LedgerPanel } from "@/settings/usage-stats/ledger/LedgerPanel.js";
 
-export type UsageStatsSectionTab = "app" | "codingPlan" | `codingPlan:${string}`;
+export type UsageStatsSectionTab = "app" | "ledger" | "codingPlan" | `codingPlan:${string}`;
 
 export function UsageStatsSection({
   activeTab,
@@ -21,6 +22,10 @@ export function UsageStatsSection({
 }) {
   if (activeTab === "app") {
     return <AppUsagePanel />;
+  }
+
+  if (activeTab === "ledger") {
+    return <LedgerPanel />;
   }
 
   return (
