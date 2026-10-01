@@ -15,6 +15,7 @@ import {
 } from "@/settings/saved-workflows/savedWorkflowLaunchPrompt.js";
 import {
   useSavedWorkflowLauncher,
+  type SavedWorkflowLaunchModels,
   type SavedWorkflowLaunchTarget,
 } from "@/settings/saved-workflows/useSavedWorkflowLauncher.js";
 import { lastRunByWorkflowName } from "@/settings/saved-workflows/savedWorkflowRunHistory.js";
@@ -139,6 +140,7 @@ export function useSavedWorkflowGlobalGroup({
       entry: ZCodeSavedWorkflowEntry,
       args: Record<string, unknown>,
       target?: AutomationWorkspaceOption,
+      models?: SavedWorkflowLaunchModels,
     ) => {
       if (!target) return;
       const result = await launcher.launch(
@@ -146,7 +148,13 @@ export function useSavedWorkflowGlobalGroup({
           workspacePath: target.workspacePath,
           ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
         },
-        { name: entry.name, scope: "global", args },
+        {
+          name: entry.name,
+          scope: "global",
+          args,
+          ...(models?.sessionModel === undefined ? {} : { sessionModel: models.sessionModel }),
+          ...(models?.subagentModel === undefined ? {} : { subagentModel: models.subagentModel }),
+        },
       );
       // 成功：launcher 已切到新会话，关掉实参窗；失败留窗 + 行内错误（launcher.error）。
       if (result.ok) setLaunchEntry(null);

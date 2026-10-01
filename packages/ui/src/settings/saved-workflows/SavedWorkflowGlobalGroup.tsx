@@ -103,7 +103,7 @@ export function SavedWorkflowGlobalGroup(props: SavedWorkflowGlobalGroupProps) {
       pending={launchPending}
       error={launchError}
       onOpenChange={(open) => (open ? undefined : setLaunchEntry(null))}
-      onSubmit={(entry, args, target) => void launch(entry, args, target)}
+      onSubmit={(entry, args, target, models) => void launch(entry, args, target, models)}
     />
   );
   const moveDialog = (

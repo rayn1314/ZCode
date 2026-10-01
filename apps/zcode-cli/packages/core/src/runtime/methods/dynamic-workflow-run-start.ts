@@ -4,6 +4,7 @@ import {
   boundWorkflowLaunchMeta,
   createWorkflowPhaseAlongside,
   createWorkflowPhaseNames,
+  type ModelSelection,
   type SavedWorkflowScope,
   type TraceContext,
 } from "@zcode/contracts";
@@ -12,6 +13,7 @@ import {
   resolveSavedWorkflow,
   validateWorkflowArgs,
 } from "../../tool/handlers/saved-workflows/index.js";
+import { resolveModelReference } from "../../tool/handlers/model-reference.js";
 import {
   boundGraphOfAnalysis,
   displayOfAnalysis,
@@ -39,6 +41,7 @@ export type StartSavedWorkflowRunResult =
         | "invalid_args"
         | "compile_failed"
         | "session_busy"
+        | "model_unavailable"
         | "start_failed";
       message?: string;
     };
@@ -65,6 +68,8 @@ export async function startSavedWorkflowRun(
     name: string;
     scope?: SavedWorkflowScope;
     args?: Record<string, unknown>;
+    /** 子代理模型规范串 `providerId/modelId[$level]`；缺席 = 子代理跟随会话模型。 */
+    subagentModel?: string;
     traceContext?: TraceContext;
   },
 ): Promise<StartSavedWorkflowRunResult> {
@@ -117,6 +122,27 @@ export async function startSavedWorkflowRun(
         ...validated.errors.map((error) => `- ${error}`),
       ].join("\n"),
     };
+  }
+
+  // (1b) 子代理模型：GUI 传来的规范串先经模型目录解析成结构化选型。fail-closed——解不出来的
+  // 启动在任何持久化之前拒绝，绝不静默回落会话模型（那会让用户选的模型无声失效）。原因码与
+  // amendWorkflowRunSettings 的 model_unavailable 同一语义；解析诊断（候选清单等）对人有用，随
+  // message 走，回给启动窗行内展示。
+  let subagentModel: ModelSelection | undefined;
+  if (input.subagentModel !== undefined) {
+    const catalog = this.modelCatalogPort;
+    if (catalog === undefined) {
+      return {
+        ok: false,
+        reason: "model_unavailable",
+        message: `Cannot resolve subagent model '${input.subagentModel}': no model catalog on this host.`,
+      };
+    }
+    const resolution = resolveModelReference(input.subagentModel, catalog.listModels());
+    if (!resolution.ok) {
+      return { ok: false, reason: "model_unavailable", message: resolution.message };
+    }
+    subagentModel = resolution.selection;
   }
 
   // (2) 编译。任一诊断即拒绝——与 CreateWorkflow 对编不过脚本的处理同一条原则（弹一个注定失败的
@@ -176,6 +202,7 @@ export async function startSavedWorkflowRun(
       cwd,
       name: found.name,
       ...(hasArgs ? { args: validated.args } : {}),
+      ...(subagentModel === undefined ? {} : { subagentModel }),
       parentSessionId: this.sessionId,
       toolCallId,
       launchInputId,

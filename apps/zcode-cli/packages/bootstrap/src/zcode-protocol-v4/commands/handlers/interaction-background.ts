@@ -230,8 +230,9 @@ async function resumeWorkflowRun(
  * startSavedWorkflow：中枢直接启动一个已保存的工作流。
  * - 能力缺席（无 dwf 端口 / stub 宿主）→ 能力不支持错误（与 resume 家族同一条语义），GUI 原样显示
  *   「当前 agent 不支持直接启动」并回收空会话。
- * - 业务拒绝（invalid_name / not_found / invalid_args / compile_failed / session_busy / start_failed）
- *   以 `fault.command.savedWorkflowStartRejected.<reason>` 的 reasonCode 回 ACK；`message` 携带
+ * - 业务拒绝（invalid_name / not_found / invalid_args / compile_failed / session_busy /
+ *   model_unavailable / start_failed）以 `fault.command.savedWorkflowStartRejected.<reason>` 的
+ *   reasonCode 回 ACK；`message` 携带
  *   人可读诊断（编译诊断合并后有界截断），供实参窗行内展示。网关对携带 reasonCode 的领域错误
  *   原样上行、并把 `error.message` 收进 `ack.message`，UI 按词表分流——不用错误文本做流程判断。
  * - 成功以 `{ type: "startSavedWorkflow", runId, toolCallId }` 回 ACK.result（联工具卡 → 详情页）。
@@ -261,6 +262,9 @@ async function startSavedWorkflow(
     name: payload.name,
     ...(payload.scope === undefined ? {} : { scope: payload.scope }),
     ...(payload.args === undefined ? {} : { args: payload.args }),
+    ...(payload.subagentModel === undefined
+      ? {}
+      : { subagentModel: payload.subagentModel }),
   });
   if (!result.ok) throw new V4SavedWorkflowStartRejectedError(result.reason, result.message);
   return { type: "startSavedWorkflow", runId: result.runId, toolCallId: result.toolCallId };

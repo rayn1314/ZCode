@@ -14,6 +14,7 @@ import {
   amendWorkflowRunSettingsPayloadSchema,
   amendWorkflowRunSettingsResultSchema,
 } from "./workflow-run-settings-command.js";
+import { WORKFLOW_RUNS_LIMITS } from "./workflow-runs.js";
 import {
   workspaceHookReviewCommandTargetSchema,
   workspaceHookReviewDecisionSchema,
@@ -237,6 +238,11 @@ export const commandPayloadSchemas = {
     name: z.string().min(1),
     scope: z.enum(["project", "global"]).optional(),
     args: z.record(z.string(), z.unknown()).optional(),
+    // 子代理模型，规范串 `providerId/modelId[$level]`，来自启动窗的「子代理模型」选择器。
+    // 省略 = 子代理跟随会话模型（launch 会话若带 config.modelSelection，即它）。与
+    // amendWorkflowRunSettings.subagentModel 同一形制，但 start 语义没有「回到默认」，
+    // 所以不收 null。
+    subagentModel: z.string().min(1).max(WORKFLOW_RUNS_LIMITS.maxSubagentModelLength).optional(),
   }),
   // amendWorkflowRunSettings：run 卡 / 详情页的「配置」直接请 agent 以新设置修订 run，不经模型轮。载荷、结果与拒绝
   // 词表见 workflow-run-settings-command.ts；能力缺席 → V4CapabilityUnsupportedError。
@@ -261,13 +267,16 @@ export const commandTypeSchema = z.enum(
 // startSavedWorkflow 拒绝词表：
 // bootstrap handler 铸造 fault code，ui launcher 反查 i18n 文案，两侧共享此枚举避免漂移。
 // invalid_name / not_found：解析阶段；invalid_args：实参校验；compile_failed：analyzeScript 诊断；
-// session_busy：会话有活动 turn；start_failed：port.submit 之前的其它启动失败。
+// session_busy：会话有活动 turn；model_unavailable：subagentModel 经模型目录解不出来（与
+// workflowRunSettingsRejectionReasonSchema 的 model_unavailable 同一语义、同一命名）；start_failed：
+// port.submit 之前的其它启动失败。
 export const savedWorkflowStartRejectionReasonSchema = z.enum([
   "invalid_name",
   "not_found",
   "invalid_args",
   "compile_failed",
   "session_busy",
+  "model_unavailable",
   "start_failed",
 ]);
 export type SavedWorkflowStartRejectionReason = z.infer<

@@ -25,6 +25,7 @@ import {
 } from "@/settings/saved-workflows/savedWorkflowLaunchPrompt.js";
 import {
   useSavedWorkflowLauncher,
+  type SavedWorkflowLaunchModels,
   type SavedWorkflowLaunchTarget,
 } from "@/settings/saved-workflows/useSavedWorkflowLauncher.js";
 import { useSavedWorkflowProjectTargets } from "@/settings/saved-workflows/useSavedWorkflowProjectTargets.js";
@@ -159,35 +160,33 @@ export function SavedWorkflowProjectGroup({
   });
 
   const launch = useCallback(
-    async (entry: ZCodeSavedWorkflowEntry, args: Record<string, unknown>) => {
+    async (
+      entry: ZCodeSavedWorkflowEntry,
+      args: Record<string, unknown>,
+      models?: SavedWorkflowLaunchModels,
+    ) => {
       const result = await launcher.launch(launchTarget, {
         name: entry.name,
         scope: "project",
         args,
+        ...(models?.sessionModel === undefined ? {} : { sessionModel: models.sessionModel }),
+        ...(models?.subagentModel === undefined ? {} : { subagentModel: models.subagentModel }),
       });
       if (result.ok) {
-        // 成功：launcher 已切到新会话，关掉实参窗（无窗路径本就没开窗）。
+        // 成功：launcher 已切到新会话，关掉启动窗。
         setLaunchEntry(null);
       }
       return result;
     },
     [launchTarget, launcher],
   );
+  // 一律弹窗（含无实参项目档）：模型选择前置后，启动窗是每次手动启动的唯一入口。
   const handleRun = useCallback(
     (entry: ZCodeSavedWorkflowEntry) => {
-      if (entry.args && Object.keys(entry.args).length > 0) {
-        launcher.clearError();
-        setLaunchEntry(entry);
-        return;
-      }
-      // 无实参项目档：不弹窗，直接启动；失败以 toast 提示（窗外路径）。
-      void launch(entry, {}).then((result) => {
-        if (!result.ok) {
-          toast(intl.formatMessage({ id: `workflows.hub.launch.error.${result.error.reason}` }));
-        }
-      });
+      launcher.clearError();
+      setLaunchEntry(entry);
     },
-    [intl, launch, launcher],
+    [launcher],
   );
   const handleRevise = useCallback(
     (entry: ZCodeSavedWorkflowEntry) => {
@@ -312,8 +311,9 @@ export function SavedWorkflowProjectGroup({
       projectLabel={project.label}
       pending={launcher.pending}
       error={launcher.error}
+      modelCatalogTarget={project}
       onOpenChange={(open) => (open ? undefined : setLaunchEntry(null))}
-      onSubmit={(entry, args) => void launch(entry, args)}
+      onSubmit={(entry, args, _target, models) => void launch(entry, args, models)}
     />
   );
 

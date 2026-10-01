@@ -4,6 +4,7 @@
 // （实参窗行内 / toast），用户留在中枢。「失败在会话存在之前」（不变式 2）：createSession
 // 被拒时不发 start、不留会话；start 被拒时立即 deleteSession 收回刚建的空会话。
 import { useCallback, useRef, useState } from "react";
+import type { ModelSelection } from "@zcode/shared";
 import {
   SAVED_WORKFLOW_START_REJECTED_FAULT_PREFIX,
   savedWorkflowStartRejectionReasonSchema,
@@ -17,6 +18,16 @@ import {
 } from "@/v4/workspaceConnectionRegistry.js";
 import { logger } from "@/logger.js";
 
+/**
+ * 启动窗里用户前置选定的两项模型（都是可选：缺席 = 维持既有缺省语义）。
+ * `sessionModel` 落进 createSession 的 `config.modelSelection`；`subagentModel` 是规范串
+ * `providerId/modelId[$level]`，随 startSavedWorkflow 下发，引擎侧排在模型优先级最高位。
+ */
+export interface SavedWorkflowLaunchModels {
+  sessionModel?: ModelSelection;
+  subagentModel?: string;
+}
+
 /** 目标项目坐标（工作流所属项目，绝不取活动项目；不变式 7）；remoteSessionId 决定连接 endpoint。 */
 export interface SavedWorkflowLaunchTarget {
   workspacePath: string;
@@ -24,11 +35,13 @@ export interface SavedWorkflowLaunchTarget {
   remoteSessionId?: string;
 }
 
-/** 启动请求：name 由解析结果保证（不变式 6），scope 定向查找，args 已由实参窗收齐。 */
+/** 启动请求：name 由解析结果保证（不变式 6），scope 定向查找，args 已由实参窗收齐；模型两项见 {@link SavedWorkflowLaunchModels}。 */
 interface SavedWorkflowLaunchRequest {
   name: string;
   scope: "project" | "global";
   args: Record<string, unknown>;
+  sessionModel?: ModelSelection;
+  subagentModel?: string;
 }
 
 /** 错误原因 = 拒绝词表 ∪ 能力缺席 ∪ 兜底；直接映射 i18n key `workflows.hub.launch.error.<reason>`。 */
@@ -154,11 +167,16 @@ export function useSavedWorkflowLauncher(params: {
 
       let createdSessionId: string | null = null;
       try {
-        // ① 空会话：无 firstInput、无 config，用 runtime 缺省模型 / 模式（不复用 composer 草稿配置）。
+        // ① 空会话：无 firstInput；config 只带启动窗选定的会话模型（缺席 = runtime 缺省，维持旧语义）。
         const createAck = await lease.transport.sendCommand(
           createCommandEnvelope({
             type: "createSession",
-            payload: { workspaceId },
+            payload: {
+              workspaceId,
+              ...(request.sessionModel === undefined
+                ? {}
+                : { config: { modelSelection: request.sessionModel } }),
+            },
             sessionId: null,
           }),
         );
@@ -179,7 +197,7 @@ export function useSavedWorkflowLauncher(params: {
         }
         createdSessionId = createAck.result.sessionId;
 
-        // ② startSavedWorkflow：name / scope 定向查找 + 实参；无实参不带 args 键。
+        // ② startSavedWorkflow：name / scope 定向查找 + 实参 + 子代理模型；缺席字段不带键。
         const startAck = await lease.transport.sendCommand(
           createCommandEnvelope({
             type: "startSavedWorkflow",
@@ -187,6 +205,9 @@ export function useSavedWorkflowLauncher(params: {
               name: request.name,
               scope: request.scope,
               ...(Object.keys(request.args).length > 0 ? { args: request.args } : {}),
+              ...(request.subagentModel === undefined
+                ? {}
+                : { subagentModel: request.subagentModel }),
             },
             sessionId: createdSessionId,
           }),

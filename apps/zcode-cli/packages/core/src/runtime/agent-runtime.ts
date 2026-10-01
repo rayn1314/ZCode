@@ -544,6 +544,8 @@ export interface AgentRuntime {
     name: string;
     scope?: SavedWorkflowScope;
     args?: Record<string, unknown>;
+    /** 子代理模型规范串 `providerId/modelId[$level]`；缺席 = 子代理跟随会话模型。 */
+    subagentModel?: string;
     traceContext?: TraceContext;
   }): Promise<StartSavedWorkflowRunResult>;
   /**

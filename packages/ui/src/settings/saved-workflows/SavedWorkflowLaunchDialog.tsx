@@ -43,7 +43,14 @@ import {
   type SavedWorkflowArgField,
   type SavedWorkflowArgFieldError,
 } from "@/settings/saved-workflows/savedWorkflowArgsForm.js";
-import type { SavedWorkflowLaunchError } from "@/settings/saved-workflows/useSavedWorkflowLauncher.js";
+import {
+  SavedWorkflowLaunchModelFields,
+  useSavedWorkflowLaunchModels,
+} from "@/settings/saved-workflows/SavedWorkflowLaunchModelFields.js";
+import type {
+  SavedWorkflowLaunchError,
+  SavedWorkflowLaunchModels,
+} from "@/settings/saved-workflows/useSavedWorkflowLauncher.js";
 
 interface SavedWorkflowLaunchDialogProps {
   entry: ZCodeSavedWorkflowEntry | null;
@@ -59,7 +66,13 @@ interface SavedWorkflowLaunchDialogProps {
     entry: ZCodeSavedWorkflowEntry,
     args: Record<string, unknown>,
     target?: AutomationWorkspaceOption,
+    models?: SavedWorkflowLaunchModels,
   ) => void;
+  /**
+   * 模型清单的作用域（仅项目档）：所属项目的 workspace 坐标。全局档忽略此 prop——
+   * 清单跟着窗内「运行于」选中的目标走。窗关着时无论哪一档都不订阅（弹窗常驻挂载）。
+   */
+  modelCatalogTarget?: AutomationWorkspaceOption | null;
   /**
    * 「运行于」项目候选（仅全局工作流传入）。传入即渲染选择器；
    * 空数组表示没有本地项目可跑——渲染提示并禁用提交。undefined 时窗口与项目档逐字一致。
@@ -74,10 +87,11 @@ interface SavedWorkflowLaunchDialogProps {
 }
 
 /**
- * 实参窗：头部 = Workflow 图标 + 名字（mono）
- * + 作用域徽标 + 说明；「运行于」（全局档）；实参表；一句「将立即在 X 的新会话中运行」；主按钮
- * 「运行」。点「运行」= GUI 直接启动（无模型回合、无确认窗）：loading 期禁用，失败在行内错误区
- * 显示、窗口留着，成功由组关窗并切到新会话。无实参的项目档不弹本窗（组直接启动）。
+ * 启动窗：头部 = Workflow 图标 + 名字（mono）+ 作用域徽标 + 说明；「运行于」（全局档）；
+ * 会话模型 + 子代理模型（清单读不出来时整段退成一句话）；实参表；一句「将立即在 X 的新会话中
+ * 运行」；主按钮「运行」。点「运行」= GUI 直接启动（无模型回合、无确认窗）：loading 期禁用，
+ * 失败在行内错误区显示、窗口留着，成功由组关窗并切到新会话。项目档无实参也弹本窗——
+ * 模型选择前置后，这个窗是每次手动启动的唯一入口。
  */
 export function SavedWorkflowLaunchDialog({
   entry,
@@ -85,6 +99,7 @@ export function SavedWorkflowLaunchDialog({
   projectLabel,
   onOpenChange,
   onSubmit,
+  modelCatalogTarget,
   targets,
   defaultTargetKey,
   pending = false,
@@ -122,6 +137,14 @@ export function SavedWorkflowLaunchDialog({
   // 「将立即在 {project} 的新会话中运行」：全局档用选中的「运行于」项目名，项目档用所属项目名。
   const noteProject = selectedTarget?.label ?? projectLabel;
 
+  // 模型选择段：订阅、两个选择器的状态与派生值都在那里；这里只取提交用的两个值来发命令。
+  const models = useSavedWorkflowLaunchModels({
+    entry,
+    scope,
+    selectedTarget,
+    modelCatalogTarget,
+  });
+
   const scopeBadge = intl.formatMessage({
     id:
       scope === "global"
@@ -149,7 +172,12 @@ export function SavedWorkflowLaunchDialog({
       setErrors(collected.errors);
       return;
     }
-    onSubmit(entry, collected.args, selectedTarget);
+    onSubmit(entry, collected.args, selectedTarget, {
+      ...(models.sessionModel === undefined ? {} : { sessionModel: models.sessionModel }),
+      ...(models.subagentModelCanonical === undefined
+        ? {}
+        : { subagentModel: models.subagentModelCanonical }),
+    });
   };
 
   return (
@@ -202,6 +230,7 @@ export function SavedWorkflowLaunchDialog({
               )}
             </div>
           ) : null}
+          <SavedWorkflowLaunchModelFields models={models} pending={pending} />
           {fields.map((field) => {
             const fieldError = errors[field.name];
             const inputId = `workflow-arg-${field.name}`;

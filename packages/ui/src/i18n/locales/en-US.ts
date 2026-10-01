@@ -5198,6 +5198,11 @@ const enUS: Record<string, string> = {
   "workflows.hub.launch.scope.project": "Project",
   "workflows.hub.launch.scope.global": "Global",
   "workflows.hub.launch.note": "Starts right away in a new session in {project}",
+  "workflows.hub.launch.sessionModel": "Session model",
+  "workflows.hub.launch.subagentModel": "Subagent model",
+  "workflows.hub.launch.subagentModel.followSession": "Follow session model",
+  "workflows.hub.launch.modelUnavailable":
+    "The model catalog is unavailable; this run will start on the default model",
   "workflows.hub.launch.cancel": "Cancel",
   "workflows.hub.launch.submit": "Run",
   "workflows.hub.launch.error.required": "Required",
@@ -5208,6 +5213,7 @@ const enUS: Record<string, string> = {
   "workflows.hub.launch.error.invalid_args": "Some arguments are invalid",
   "workflows.hub.launch.error.compile_failed": "The workflow script did not compile",
   "workflows.hub.launch.error.session_busy": "The session is busy; try again",
+  "workflows.hub.launch.error.model_unavailable": "The subagent model is unavailable",
   "workflows.hub.launch.error.start_failed": "The workflow could not be started",
   "workflows.hub.launch.error.unsupported":
     "The current agent does not support running workflows directly",

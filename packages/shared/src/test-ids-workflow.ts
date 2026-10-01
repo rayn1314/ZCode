@@ -18,6 +18,10 @@ export const TID_WORKFLOW_LAUNCH_DIALOG = "workflow-launch-dialog";
 export const TID_WORKFLOW_LAUNCH_ARG = "workflow-launch-arg";
 export const TID_WORKFLOW_LAUNCH_TARGET = "workflow-launch-target";
 export const TID_WORKFLOW_LAUNCH_SUBMIT = "workflow-launch-submit";
+// 启动窗的两个模型选择器（会话模型 / 子代理模型）；子代理触发器后缀 -trigger。
+export const TID_WORKFLOW_LAUNCH_SESSION_MODEL = "workflow-launch-session-model";
+export const TID_WORKFLOW_LAUNCH_SUBAGENT_MODEL = "workflow-launch-subagent-model";
+export const TID_WORKFLOW_LAUNCH_MODEL_UNAVAILABLE = "workflow-launch-model-unavailable";
 // 直接启动：实参窗行内错误区。会话顶部长出的是普通的轮尾 run 卡。
 export const TID_WORKFLOW_LAUNCH_ERROR = "workflow-launch-error";
 // 轮尾 run 卡；后缀 = `${turnKey}-${toolCallId}`。

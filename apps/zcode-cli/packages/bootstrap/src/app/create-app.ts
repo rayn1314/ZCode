@@ -1260,6 +1260,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
               name: string;
               scope?: "project" | "global";
               args?: Record<string, unknown>;
+              /** 规范串 `providerId/modelId[$level]`；缺席 = 子代理跟随会话模型。 */
+              subagentModel?: string;
             }) => {
               await prepareUserExecutionBoundary({ traceContext });
               return await getRuntime().startSavedWorkflowRun({ ...input, traceContext });
