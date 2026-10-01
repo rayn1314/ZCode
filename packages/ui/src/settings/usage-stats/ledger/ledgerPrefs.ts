@@ -9,6 +9,9 @@ export const LEDGER_RANGES_UI: LedgerRange[] = ["today", "7d", "30d", "custom", 
 
 export const LEDGER_REFRESH_OPTIONS = [0, 10_000, 30_000, 60_000, 300_000] as const;
 
+/** 明细表翻页的每页条数选项；会话表与最近调用表共用一个偏好。 */
+export const LEDGER_PAGE_SIZE_OPTIONS = [20, 50, 100, 200] as const;
+
 export type LedgerDailyMetric = "tokens" | "calls" | "cost";
 export type LedgerDonutMetric = "calls" | "tokens" | "cost";
 
@@ -24,6 +27,8 @@ export interface LedgerPrefs {
   refreshIntervalMs: number;
   dailyMetric: LedgerDailyMetric;
   donutMetric: LedgerDonutMetric;
+  /** 明细表每页条数。 */
+  tablePageSize: number;
 }
 
 export const DEFAULT_LEDGER_PREFS: LedgerPrefs = {
@@ -36,6 +41,7 @@ export const DEFAULT_LEDGER_PREFS: LedgerPrefs = {
   refreshIntervalMs: 30_000,
   dailyMetric: "tokens",
   donutMetric: "calls",
+  tablePageSize: 50,
 };
 
 function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
@@ -50,6 +56,7 @@ export function loadLedgerPrefs(): LedgerPrefs {
     }
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const interval = Number(parsed.refreshIntervalMs);
+    const pageSize = Number(parsed.tablePageSize);
     return {
       range: oneOf(parsed.range, LEDGER_RANGES_UI, DEFAULT_LEDGER_PREFS.range),
       customStart: typeof parsed.customStart === "string" ? parsed.customStart : "",
@@ -64,6 +71,9 @@ export function loadLedgerPrefs(): LedgerPrefs {
         : DEFAULT_LEDGER_PREFS.refreshIntervalMs,
       dailyMetric: oneOf(parsed.dailyMetric, ["tokens", "calls", "cost"] as const, "tokens"),
       donutMetric: oneOf(parsed.donutMetric, ["calls", "tokens", "cost"] as const, "calls"),
+      tablePageSize: (LEDGER_PAGE_SIZE_OPTIONS as readonly number[]).includes(pageSize)
+        ? pageSize
+        : DEFAULT_LEDGER_PREFS.tablePageSize,
     };
   } catch {
     return { ...DEFAULT_LEDGER_PREFS };

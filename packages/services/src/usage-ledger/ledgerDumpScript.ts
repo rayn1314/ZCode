@@ -358,7 +358,7 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
             SELECT started_at, model_id, provider_id, agent, status, error_type,
                    input_tokens, output_tokens, cache_read_input_tokens,
                    duration_ms, time_to_first_token_ms
-            FROM model_usage {where_sql(conds)} ORDER BY started_at DESC LIMIT 100
+            FROM model_usage {where_sql(conds)} ORDER BY started_at DESC LIMIT 500
             """,
             args,
         ).fetchall():

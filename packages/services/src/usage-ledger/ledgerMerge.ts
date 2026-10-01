@@ -284,15 +284,16 @@ export function mergeLedgerPayloads(
     }
   }
 
-  // 合并后重排截断并打 src 标，让用户知道每行来自哪个数据源
+  // 合并后重排截断并打 src 标，让用户知道每行来自哪个数据源。
+  // 上限按 UI 翻页的数据池定（每页最多 200 × 多页），不再是一屏即止的小截断。
   const sessions = usable
     .flatMap((p) => p.sessions.map((s) => ({ ...s, src: p.sourceLabel })))
     .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
-    .slice(0, 50);
+    .slice(0, 500);
   const recent = usable
     .flatMap((p) => p.recent.map((r) => ({ ...r, src: p.sourceLabel })))
     .sort((a, b) => (b.timeMs ?? 0) - (a.timeMs ?? 0))
-    .slice(0, 100);
+    .slice(0, 500);
 
   const errorMap = new Map<string, number>();
   for (const p of usable) {

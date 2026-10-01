@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowDown, ArrowUp } from "lucide-react";
 import type { LedgerSnapshot } from "@zcode/shared";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
@@ -13,28 +13,39 @@ import {
   formatLedgerRelativeTime,
   shortenLedgerDirectory,
 } from "./ledgerFormat.js";
+import { LedgerTablePagination } from "./LedgerTablePagination.js";
 
 // 三个明细视图：会话表（可排序）、错误分布、最近调用表。
 // 表格遵守 DESIGN.md：text-ui-base、右对齐数值列、窄屏面板内横向滚动（不撑破页面）。
+// 两个明细表统一分页（每页条数可调、偏好记忆），滚动容器固定限高 + 内部滚动、表头吸顶——
+// 行数再多也不把整页撑长，翻页与页内滚动各管一层。
 
 type SortKey = "title" | "calls" | "tokens" | "cost" | "lastActiveMs";
+
+const TABLE_SCROLL_CLASS = "mt-3 max-h-[32rem] overflow-auto";
+const TH_STICKY_CLASS = "sticky top-0 z-1 bg-surface";
 
 export function LedgerSessionsTable({
   snapshot,
   locale,
   currency,
   nowTick,
+  pageSize,
+  onPageSizeChange,
 }: {
   snapshot: LedgerSnapshot;
   locale: string;
   currency: string;
   nowTick: number;
+  pageSize: number;
+  onPageSizeChange: (size: number) => void;
 }) {
   const { intl } = useZCodeIntl();
   const [sortKey, setSortKey] = useState<SortKey>("tokens");
   const [sortDesc, setSortDesc] = useState(true);
+  const [page, setPage] = useState(1);
 
-  const rows = useMemo(() => {
+  const sorted = useMemo(() => {
     const sessions = [...snapshot.sessions];
     const value = (s: LedgerSnapshot["sessions"][number]): number | string => {
       switch (sortKey) {
@@ -59,9 +70,18 @@ export function LedgerSessionsTable({
           : va - vb;
       return sortDesc ? -result : result;
     });
-    return sessions.slice(0, 50);
+    return sessions;
     // nowTick 变化触发相对时间重渲染
   }, [snapshot.sessions, sortKey, sortDesc, nowTick]);
+
+  // 快照、排序或页大小变化都回到第一页，避免停留在越界页
+  useEffect(() => {
+    setPage(1);
+  }, [snapshot.generatedAt, sortKey, sortDesc, pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
+  const current = Math.min(page, pageCount);
+  const rows = sorted.slice((current - 1) * pageSize, current * pageSize);
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) {
@@ -75,7 +95,7 @@ export function LedgerSessionsTable({
   const header = (key: SortKey, labelId: string, align: "left" | "right" = "right") => (
     <th
       scope="col"
-      className={`whitespace-nowrap px-3 py-2 font-medium text-foreground-subtle ${
+      className={`whitespace-nowrap px-3 py-2 font-medium text-foreground-subtle ${TH_STICKY_CLASS} ${
         align === "right" ? "text-right" : "text-left"
       }`}
     >
@@ -101,7 +121,7 @@ export function LedgerSessionsTable({
       <h3 className="text-ui-base font-medium text-foreground">
         {intl.formatMessage({ id: "settings.usage.ledger.sessionsTitle" })}
       </h3>
-      {rows.length === 0 ? (
+      {sorted.length === 0 ? (
         <div className="mt-3">
           <UsageEmptyState
             title={intl.formatMessage({ id: "settings.usage.emptyTitle" })}
@@ -109,12 +129,14 @@ export function LedgerSessionsTable({
           />
         </div>
       ) : (
-        <div className="mt-3 overflow-x-auto">
+        <div className={TABLE_SCROLL_CLASS}>
           <table className="w-full min-w-156 border-collapse text-ui-base">
             <thead>
               <tr className="border-b border-border">
                 {header("title", "settings.usage.ledger.sessions.title", "left")}
-                <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+                <th
+                  className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+                >
                   {intl.formatMessage({ id: "settings.usage.ledger.sessions.project" })}
                 </th>
                 {header("calls", "settings.usage.ledger.sessions.calls")}
@@ -169,6 +191,15 @@ export function LedgerSessionsTable({
           </table>
         </div>
       )}
+      {sorted.length > 0 ? (
+        <LedgerTablePagination
+          total={sorted.length}
+          page={current}
+          pageSize={pageSize}
+          onPage={setPage}
+          onPageSize={onPageSizeChange}
+        />
+      ) : null}
     </section>
   );
 }
@@ -213,14 +244,28 @@ export function LedgerRecentTable({
   snapshot,
   locale,
   currency,
+  pageSize,
+  onPageSizeChange,
 }: {
   snapshot: LedgerSnapshot;
   locale: string;
   currency: string;
+  pageSize: number;
+  onPageSizeChange: (size: number) => void;
 }) {
   const { intl } = useZCodeIntl();
-  const rows = snapshot.recent.slice(0, 100);
-  if (rows.length === 0) {
+  const [page, setPage] = useState(1);
+
+  const total = snapshot.recent.length;
+  // 快照或页大小变化回到第一页，避免停留在越界页
+  useEffect(() => {
+    setPage(1);
+  }, [snapshot.generatedAt, pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const current = Math.min(page, pageCount);
+  const rows = snapshot.recent.slice((current - 1) * pageSize, current * pageSize);
+  if (total === 0) {
     return null;
   }
 
@@ -229,35 +274,53 @@ export function LedgerRecentTable({
       <h3 className="text-ui-base font-medium text-foreground">
         {intl.formatMessage({ id: "settings.usage.ledger.recentTitle" })}
       </h3>
-      <div className="mt-3 overflow-x-auto">
+      <div className={TABLE_SCROLL_CLASS}>
         <table className="w-full min-w-220 border-collapse text-ui-base">
           <thead>
             <tr className="border-b border-border">
-              <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.time" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.source" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.model" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.agent" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.status" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.input" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.output" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.duration" })}
               </th>
-              <th className="whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle">
+              <th
+                className={`whitespace-nowrap px-3 py-2 text-right font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
+              >
                 {intl.formatMessage({ id: "settings.usage.ledger.recent.cost" })}
               </th>
             </tr>
@@ -326,6 +389,13 @@ export function LedgerRecentTable({
           </tbody>
         </table>
       </div>
+      <LedgerTablePagination
+        total={total}
+        page={current}
+        pageSize={pageSize}
+        onPage={setPage}
+        onPageSize={onPageSizeChange}
+      />
     </section>
   );
 }

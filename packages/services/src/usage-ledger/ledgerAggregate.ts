@@ -333,7 +333,7 @@ export function aggregateFromDb(
     `SELECT started_at AS timeMs, model_id AS mid, provider_id AS pid, agent, status,
             error_type AS errorType, input_tokens AS it, output_tokens AS ot,
             cache_read_input_tokens AS cr, duration_ms AS dur, time_to_first_token_ms AS ttft
-     FROM model_usage ${where} ORDER BY started_at DESC LIMIT 100`,
+     FROM model_usage ${where} ORDER BY started_at DESC LIMIT 500`,
     args,
   )) {
     const modelId = (r.mid as string | null) ?? null;

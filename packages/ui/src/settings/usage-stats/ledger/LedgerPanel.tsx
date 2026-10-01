@@ -307,9 +307,17 @@ export function LedgerPanel() {
         locale={locale}
         currency={currency}
         nowTick={nowTick}
+        pageSize={prefs.tablePageSize}
+        onPageSizeChange={(size) => update({ tablePageSize: size })}
       />
       <LedgerErrorSummary snapshot={snapshot} />
-      <LedgerRecentTable snapshot={snapshot} locale={locale} currency={currency} />
+      <LedgerRecentTable
+        snapshot={snapshot}
+        locale={locale}
+        currency={currency}
+        pageSize={prefs.tablePageSize}
+        onPageSizeChange={(size) => update({ tablePageSize: size })}
+      />
 
       <div className="flex flex-wrap items-center justify-between gap-2 text-ui-sm text-foreground-subtle">
         <span title={sources.map((s) => `${s.label} · ${s.rootPath}`).join("\n")}>
