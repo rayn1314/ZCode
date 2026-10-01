@@ -75,3 +75,11 @@ packages/desktop/.e2e-network-capture/
 # 显式保存的项目工作流定义，属于源码，要随仓库一起提交。
 .zcode/plans/
 .zcode/workflow-drafts/
+
+# desktop scheduler 协议的就地编译产物（应用运行期会重新生成）：源码是同目录的
+# schedulerProtocol.ts（纯类型定义），引用方全部 import type，类型经 .js→.ts 映射
+# 直接解析源码；编译出的 .js 只是 `export {}` 空壳，入库无价值。
+packages/desktop/src/scheduler/schedulerProtocol.js
+packages/desktop/src/scheduler/schedulerProtocol.js.map
+packages/desktop/src/scheduler/schedulerProtocol.d.ts
+packages/desktop/src/scheduler/schedulerProtocol.d.ts.map
