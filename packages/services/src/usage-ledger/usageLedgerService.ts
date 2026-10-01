@@ -1,5 +1,6 @@
-import type { LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
+import type { LedgerPriceSyncResult, LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
 import type { SpawnLike } from "./ledgerWsl.js";
+import { syncLedgerPriceBaseline } from "./ledgerPriceSync.js";
 import { LedgerPriceLoader } from "./ledgerPrices.js";
 import { LedgerReader } from "./ledgerReader.js";
 import type { IUsageLedgerService } from "./usageLedger.js";
@@ -14,15 +15,23 @@ export interface UsageLedgerServiceDependencies {
 export function createUsageLedgerService(
   dependencies: UsageLedgerServiceDependencies,
 ): IUsageLedgerService {
+  const priceLoader = new LedgerPriceLoader({ dataRootDir: dependencies.dataRootDir });
   const reader = new LedgerReader({
     dataRootDir: dependencies.dataRootDir,
     ...(dependencies.spawnImpl ? { spawnImpl: dependencies.spawnImpl } : {}),
-    priceLoader: new LedgerPriceLoader({ dataRootDir: dependencies.dataRootDir }),
+    priceLoader,
   });
 
   return {
     async getLedgerSnapshot(request: LedgerSnapshotRequest): Promise<LedgerSnapshot> {
       return reader.getSnapshot(request);
+    },
+    async syncLedgerPrices(): Promise<LedgerPriceSyncResult> {
+      const result = await syncLedgerPriceBaseline({ dataRootDir: dependencies.dataRootDir });
+      if (result.ok) {
+        priceLoader.invalidate();
+      }
+      return result;
     },
   };
 }

@@ -3,6 +3,7 @@ import type { LedgerSource } from "@zcode/shared";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useLedgerStats } from "@/hooks/useLedgerStats.js";
 import type { LedgerSnapshotRequest } from "@zcode/shared";
+import { Button } from "@/components/ui/button.js";
 import { UsageChartLoadBoundary } from "@/settings/usage-stats/UsageChartLoadBoundary.js";
 import { UsageStatsErrorNotice } from "@/settings/usage-stats/UsageStatsErrorNotice.js";
 import { UsageEmptyState } from "@/settings/usage-stats/usageStatsUiParts.js";
@@ -58,7 +59,39 @@ export function LedgerPanel() {
     ],
   );
 
-  const { snapshot, loading, error, unavailable, refresh } = useLedgerStats(request);
+  const { snapshot, loading, error, unavailable, refresh, syncPrices } = useLedgerStats(request);
+
+  // 价格基准手动同步：按钮 → 服务拉 models.dev 写同步层 → 刷新快照用新价。
+  const [priceSyncState, setPriceSyncState] = useState<"idle" | "syncing" | "success" | "error">(
+    "idle",
+  );
+  const [priceSyncError, setPriceSyncError] = useState<string | null>(null);
+  const handleSyncPrices = () => {
+    if (priceSyncState === "syncing") {
+      return;
+    }
+    setPriceSyncState("syncing");
+    setPriceSyncError(null);
+    void syncPrices().then((result) => {
+      if (!result) {
+        setPriceSyncState("error");
+        setPriceSyncError(intl.formatMessage({ id: "settings.usage.ledger.unavailableTitle" }));
+        return;
+      }
+      if (result.ok) {
+        setPriceSyncState("success");
+        void refresh();
+        // 成功态短暂展示后回到普通按钮；失败态保留到下次操作，让用户能读到原因
+        window.setTimeout(
+          () => setPriceSyncState((current) => (current === "success" ? "idle" : current)),
+          3_000,
+        );
+      } else {
+        setPriceSyncState("error");
+        setPriceSyncError(result.error ?? null);
+      }
+    });
+  };
 
   // 自动刷新：仅页面可见时轮询，切回可见立即刷新一次
   useEffect(() => {
@@ -284,6 +317,30 @@ export function LedgerPanel() {
             { id: "settings.usage.ledger.footerSources" },
             { count: availableSources.length },
           )}
+        </span>
+        <span className="flex items-center gap-1.5">
+          {intl.formatMessage(
+            { id: "settings.usage.ledger.footerPriceBaseline" },
+            { date: snapshot.priceMeta?.date ?? "—" },
+          )}
+          <Button
+            type="button"
+            variant="ghost"
+            size="xs"
+            disabled={priceSyncState === "syncing"}
+            onClick={handleSyncPrices}
+          >
+            {priceSyncState === "syncing"
+              ? intl.formatMessage({ id: "settings.usage.ledger.pricesSync.syncing" })
+              : priceSyncState === "success"
+                ? intl.formatMessage({ id: "settings.usage.ledger.pricesSync.success" })
+                : intl.formatMessage({ id: "settings.usage.ledger.pricesSync.button" })}
+          </Button>
+          {priceSyncState === "error" ? (
+            <span className="text-destructive" title={priceSyncError ?? undefined}>
+              {intl.formatMessage({ id: "settings.usage.ledger.pricesSync.failed" })}
+            </span>
+          ) : null}
         </span>
         <span>
           {intl.formatMessage(

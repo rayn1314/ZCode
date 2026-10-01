@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
+import type { LedgerPriceSyncResult, LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
 import { logger } from "@/logger.js";
 import { useServices } from "@/hooks/useServices.js";
 
@@ -28,6 +28,8 @@ export function useLedgerStats(request: LedgerSnapshotRequest): {
   error: string | null;
   unavailable: boolean;
   refresh: () => Promise<void>;
+  /** 手动同步价格基准；环境不支持时返回 null，由调用方降级提示。 */
+  syncPrices: () => Promise<LedgerPriceSyncResult | null>;
 } {
   const { usageLedgerService } = useServices();
   const [state, setState] = useState<LedgerStatsState>({
@@ -72,11 +74,24 @@ export function useLedgerStats(request: LedgerSnapshotRequest): {
     void fetchInternal();
   }, [fetchInternal, requestKey]);
 
+  const syncPrices = useCallback(async (): Promise<LedgerPriceSyncResult | null> => {
+    if (!usageLedgerService) {
+      return null;
+    }
+    try {
+      return await usageLedgerService.syncLedgerPrices();
+    } catch (error) {
+      logger.warn("[ledger] price sync failed:", getErrorMessage(error));
+      return { ok: false, error: getErrorMessage(error) };
+    }
+  }, [usageLedgerService]);
+
   return {
     snapshot: state.snapshot,
     loading: state.loading,
     error: state.error,
     unavailable: state.unavailable,
     refresh: fetchInternal,
+    syncPrices,
   };
 }

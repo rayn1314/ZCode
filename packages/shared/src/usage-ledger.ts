@@ -147,6 +147,17 @@ export const ledgerPriceMetaSchema = z.object({
 });
 export type LedgerPriceMeta = z.infer<typeof ledgerPriceMetaSchema>;
 
+/** 价格基准手动同步结果；ok=false 时旧基准原样保留，error 只供 UI 展示。 */
+export const ledgerPriceSyncResultSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().nullish(),
+  /** 本次写入的有价模型数。 */
+  modelCount: z.number().nullish(),
+  /** 同步后的基准日期（YYYY-MM-DD）。 */
+  date: z.string().nullish(),
+});
+export type LedgerPriceSyncResult = z.infer<typeof ledgerPriceSyncResultSchema>;
+
 export const ledgerOverviewSchema = z.object({
   calls: z.number(),
   completed: z.number(),

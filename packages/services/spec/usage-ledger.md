@@ -63,10 +63,12 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 | 其余源失败                          | `source.ok=false` + 截断错误信息，不挡页面；KPI 上方细条提示       |
 | WSL 探测/执行失败                   | 该 (distro, root) 退避 60s 后才重试                                |
 | 价格表缺失/损坏                     | `pricesLoaded=false`，费用相关输出为 null，UI 显示「未加载价格表」 |
+| 价格基准同步失败                    | 旧基准原样保留，页脚按钮旁显示「同步失败」，错误详情挂 tooltip     |
 | 远端 workspace                      | 服务不存在，UI 展示不可用空态                                      |
 
 ## 迁移边界
 
-- 基准价格表内置于 `ledgerPrices.ts`（`_meta.date` 标注基准日）；用户覆盖 `<数据根>/v2/usage-prices.json`（按小写模型名覆盖，损坏忽略）。自动同步价格基准不做。
+- 单价表分三层，后层覆盖前层：内置基准（`ledgerPrices.ts` 内 `_meta.date` 标注基准日）< 同步基准 `<数据根>/v2/usage-prices-baseline.json` < 用户覆盖 `<数据根>/v2/usage-prices.json`（按小写模型名覆盖，损坏忽略）。
+- **价格基准手动同步**（`ledgerPriceSync.ts`）：界面页脚「同步」按钮触发 `syncLedgerPrices`，拉 models.dev 公开目录（api.json）写入同步层；只写中间层，绝不改用户覆盖文件。同名模型被 30+ 渠道各报一次价，取价口径与内置基准一致：**厂商自营目录优先**（deepseek/zai/alibaba/moonshotai/openai/stepfun/xiaomi 等白名单），无官方价时取非零条目的众数（来源一致价），全零按免费档；基准日期取本机日期。网络/解析失败或模型数低于阈值时报错并保留旧文件。不做定时自动同步——估算口径何时变化由用户知情触发。
 - CLI 写入侧 30 天保留策略不动：账本如实展示库内现有数据。
 - 筛选偏好（范围/供应商/模型/来源/刷新间隔/图表指标）存 localStorage `zcode.ledger.prefs.v1`，逐字段校验、损坏忽略；来源全选存 null（跟随未来新增数据根）。

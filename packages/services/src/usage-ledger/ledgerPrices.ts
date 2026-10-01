@@ -2,9 +2,10 @@ import type { LedgerPriceMeta } from "@zcode/shared";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-// 单价表 = 内置公开基准 + 用户覆盖文件（同名模型用户赢）。
+// 单价表 = 内置公开基准 + 同步基准 + 用户覆盖文件（后写覆盖前者）。
 // 基准来自 models.dev 快照（单位：每百万 token），只用于估算；
-// 用户覆盖文件位于 <数据根>/v2/usage-prices.json，键为小写模型名。
+// 同步基准 <数据根>/v2/usage-prices-baseline.json 由界面「同步价格」按钮手动写入；
+// 用户覆盖文件位于 <数据根>/v2/usage-prices.json，键为小写模型名，永远优先。
 // `_` 开头的键是元信息，不算模型价格；文件缺失或损坏一律视为空，不影响出数。
 
 export interface ModelPrice {
@@ -19,6 +20,7 @@ export interface LedgerPriceTable {
 }
 
 export const LEDGER_USER_PRICES_FILE_NAME = "usage-prices.json";
+export const LEDGER_SYNCED_PRICES_FILE_NAME = "usage-prices-baseline.json";
 
 // 内置公开定价基准（models.dev 快照 2026-09-21），用户覆盖文件可逐模型改写。
 const BASELINE_LEDGER_PRICES: Record<string, unknown> = {
@@ -125,36 +127,42 @@ export class LedgerPriceLoader {
     },
   ) {}
 
-  /** 读价格表（带 30s 缓存）：内置基准 + <数据根>/v2/usage-prices.json 用户覆盖。 */
+  /** 读价格表（带 30s 缓存）：内置基准 < 同步基准 < 用户覆盖，逐层覆盖。 */
   async load(): Promise<LedgerPriceTable> {
     const now = (this.options.now ?? Date.now)();
     if (this.cache && now - this.cache.at < LedgerPriceLoader.TTL_MS) {
       return this.cache.table;
     }
     const readFileFn = this.options.readFile ?? readFile;
-    let baseline: { prices: Map<string, ModelPrice>; meta: LedgerPriceMeta | null };
-    let user: { prices: Map<string, ModelPrice>; meta: LedgerPriceMeta | null } = {
-      prices: new Map(),
-      meta: null,
+    const readLayer = async (fileName: string) => {
+      try {
+        return parsePriceJson(
+          await readFileFn(path.join(this.options.dataRootDir, "v2", fileName), "utf8"),
+        );
+      } catch {
+        // 层文件缺失或损坏视为空，不影响出数
+        return { prices: new Map<string, ModelPrice>(), meta: null } as {
+          prices: Map<string, ModelPrice>;
+          meta: LedgerPriceMeta | null;
+        };
+      }
     };
+    let baseline: { prices: Map<string, ModelPrice>; meta: LedgerPriceMeta | null };
     try {
       baseline = parsePriceJson(JSON.stringify(BASELINE_LEDGER_PRICES));
     } catch {
       baseline = { prices: new Map(), meta: null };
     }
-    try {
-      user = parsePriceJson(
-        await readFileFn(
-          path.join(this.options.dataRootDir, "v2", LEDGER_USER_PRICES_FILE_NAME),
-          "utf8",
-        ),
-      );
-    } catch {
-      // 用户文件缺失或损坏视为空，不影响出数
-    }
-    const prices = new Map([...baseline.prices, ...user.prices]);
-    const table: LedgerPriceTable = { prices, meta: user.meta ?? baseline.meta };
+    const synced = await readLayer(LEDGER_SYNCED_PRICES_FILE_NAME);
+    const user = await readLayer(LEDGER_USER_PRICES_FILE_NAME);
+    const prices = new Map([...baseline.prices, ...synced.prices, ...user.prices]);
+    const table: LedgerPriceTable = { prices, meta: user.meta ?? synced.meta ?? baseline.meta };
     this.cache = { at: now, table };
     return table;
+  }
+
+  /** 同步写入新基准后立即失效缓存，下一次快照即用新价。 */
+  invalidate(): void {
+    this.cache = null;
   }
 }

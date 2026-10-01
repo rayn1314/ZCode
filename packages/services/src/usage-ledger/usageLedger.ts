@@ -1,4 +1,4 @@
-import type { LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
+import type { LedgerPriceSyncResult, LedgerSnapshot, LedgerSnapshotRequest } from "@zcode/shared";
 import { ServiceChannels } from "@zcode/shared";
 import { createServiceDescriptor } from "../descriptors.js";
 
@@ -9,6 +9,8 @@ import { createServiceDescriptor } from "../descriptors.js";
  */
 export interface IUsageLedgerService {
   getLedgerSnapshot(request: LedgerSnapshotRequest): Promise<LedgerSnapshot>;
+  /** 手动同步价格基准（拉 models.dev 覆盖同步层；用户覆盖文件不被动，失败保留旧基准）。 */
+  syncLedgerPrices(): Promise<LedgerPriceSyncResult>;
 }
 
 export const IUsageLedgerService = createServiceDescriptor<IUsageLedgerService>(
