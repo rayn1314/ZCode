@@ -47,6 +47,7 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 3. **合并**（ledgerMerge.ts）：计数求和；均值（耗时/TTFT）按调用数加权；sessions/recent 重排后各截 **500 条**——这是 UI 翻页的数据池上限（单源 recent SQL 500、单源 sessions 200），明细表分页展示（每页 20/50/100/200 可调、偏好记忆），不再一屏平铺硬滚；**费用只累加非 null**——某源没有价格表时混入 0 会让总数凭空少一截。
 4. **时间分桶**：全部参数化整数算术 `(COALESCE(started_at,0)+tzOffsetMs)/86400000`，不用 strftime/date 修饰符；WSL 侧 Python 用同一偏移（host 下发 `tzOffsetMinutes`），跨环境同一条时间轴。
 5. **范围**：today=本地今日 0 点起；7d/30d 含今日；all 上界取 now（`started_at <= NULL` 恒假，不能留 null）；custom 起止可交换，止日为次日 0 点 -1。
+6. **模型 × 供应商明细**：models 按 (model_id, provider_id) 分组聚合，UI「模型与供应商」表整表分页展示（费用占比 = 单行费用 / 已计价费用合计，未定价行显示「--」），还原原 zcode-usage 工具页脚 tabs 区的模型表。
 
 ## 只读不变式（硬约束）
 

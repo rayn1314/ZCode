@@ -18,6 +18,7 @@ import { formatLedgerClock, formatLedgerDuration } from "./ledgerFormat.js";
 import { LedgerToolbar } from "./LedgerToolbar.js";
 import { LedgerFixedKpiStrip, LedgerHourlyStrip, LedgerKpiCards } from "./LedgerKpiCards.js";
 import { LedgerSessionsTable, LedgerRecentTable, LedgerErrorSummary } from "./LedgerTables.js";
+import { LedgerModelsTable } from "./LedgerModelsTable.js";
 
 // Recharts 初始化会在 Linux 容器阻断 renderer 启动（与 App Usage 相同的按需加载边界）。
 const LedgerTrendChart = lazy(() =>
@@ -302,6 +303,13 @@ export function LedgerPanel() {
         </UsageChartLoadBoundary>
       </div>
 
+      <LedgerModelsTable
+        snapshot={snapshot}
+        locale={locale}
+        currency={currency}
+        pageSize={prefs.tablePageSize}
+        onPageSizeChange={(size) => update({ tablePageSize: size })}
+      />
       <LedgerSessionsTable
         snapshot={snapshot}
         locale={locale}
