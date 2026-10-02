@@ -36,7 +36,7 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 | WSL 自建根     | `wsl:<发行版>@<身份>` |
 
 - 自建根判定：目录末段 `.zcode-<身份>`（ledgerRoots.ts `classifyLedgerRoot`）。
-- 官方根候选链：`ZCODE_HOME` → `~/.zcode` → `~/.config/zcode` → `%APPDATA%/zcode`；自建根扫 home 一层 `.zcode-*`（TTL 30s）；WSL 根用 `wsl.exe`（Running 发行版 + find 探测，TTL 300s，失败退避 60s）。
+- 官方根候选链：`ZCODE_HOME` → `~/.zcode` → `~/.config/zcode` → `%APPDATA%/zcode`；自建根扫 home 一层 `.zcode-*`（TTL 30s）；WSL 根用 `wsl.exe`（Running 发行版 + find 探测，TTL 300s；本次未确认到的已知源按 stale 保留灰显 30min）。
 - 主源 = host 自己的数据根，key 去重时后来者加 `#N` 后缀（dev 环境主源可能被归为 official，与真实官方根撞 key）。
 - 供应商显示名统一读各数据根自己的 `v2/provider_config.json`（ledgerProviderNames.ts），跨根筛选按显示名成立；**只读 providerId/providerName 两个字段，绝不读取、存储或输出任何凭据字段**。
 
@@ -57,14 +57,17 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 
 ## 失败语义
 
-| 场景                                | 行为                                                               |
-| ----------------------------------- | ------------------------------------------------------------------ |
-| 主源（host 数据根）读取失败且被选中 | 抛错，UI 进入错误态（含库路径）                                    |
-| 其余源失败                          | `source.ok=false` + 截断错误信息，不挡页面；KPI 上方细条提示       |
-| WSL 探测/执行失败                   | 该 (distro, root) 退避 60s 后才重试                                |
-| 价格表缺失/损坏                     | `pricesLoaded=false`，费用相关输出为 null，UI 显示「未加载价格表」 |
-| 价格基准同步失败                    | 旧基准原样保留，页脚按钮旁显示「同步失败」，错误详情挂 tooltip     |
-| 远端 workspace                      | 服务不存在，UI 展示不可用空态                                      |
+| 场景                                | 行                                                                                                                                 |
+| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| 主源（host 数据根）读取失败且被选中 | 抛错，UI 进入错误态（含库路径）                                                                                                    |
+| 其余源失败                          | `source.ok=false` + 截断错误信息，不挡页面；KPI 上方细条提示                                                                       |
+| WSL dump 失败                       | 该 (distro, root) 记入失败表并落 `warn` 日志；60s 退避内跳过聚合，但源**保留在 sources**（`ok=false`，error 注明「上次聚合失败」） |
+| WSL 发行版停止 / 探测瞬态失败       | 已知源按 stale 保留在 sources（`ok=false`，注明「未在运行」），30 分钟后移除；不重探停止的发行版（避免把 WSL 拉起）                |
+| 价格表缺失/损坏                     | `pricesLoaded=false`，费用相关输出为 null，UI 显示「未加载价格表」                                                                 |
+| 价格基准同步失败                    | 旧基准原样保留，页脚按钮旁显示「同步失败」，错误详情挂 tooltip                                                                     |
+| 远端 workspace                      | 服务不存在，UI 展示不可用空态                                                                                                      |
+
+**源可见性不变式**（`ledgerWslVisibility.ts`，纯函数 + 单测守护）：任何「暂时不可聚合」的 WSL 源都必须继续出现在 `snapshot.sources` 里灰显，绝不允许从来源列表凭空消失——否则用户看到的是统计无声丢失且无从排查。规则：退避窗口（60s）内跳过聚合但保留源；发行版停止/探测未确认的源保留 30 分钟。
 
 ## 迁移边界
 

@@ -13,6 +13,7 @@ import {
 import { aggregateFromDb } from "./ledgerAggregate.js";
 import type { AggregateContext } from "./ledgerAggregateSql.js";
 import { loadProviderNames, providerLabel } from "./ledgerProviderNames.js";
+import { createServiceLogger } from "../logger/serviceLogger.js";
 import {
   DB_REL_PATH,
   SELF_ROOTS_TTL_MS,
@@ -32,6 +33,7 @@ import {
 } from "./ledgerRange.js";
 import type { LedgerPriceTable } from "./ledgerPrices.js";
 import { listRunningWslDistros, probeWslDbRoots, runWslDump } from "./ledgerWsl.js";
+import { gateWslAggregation, mergeStaleWslRefs, type WslFailure } from "./ledgerWslVisibility.js";
 
 // node:sqlite 的引入方式与 tasksDatabase/startup.ts 一致：createRequire 规避构建器
 // 把 node:sqlite 改写成不存在的 npm sqlite 包（main 进程 ESM bundle 已踩过）。
@@ -46,14 +48,16 @@ const { DatabaseSync } = createRequire(import.meta.url)(
 // WSL 进程执行全部隔离在 ledgerWsl.ts（参数列表直通），本文件不直接创建进程。
 
 const WSL_PROBE_TTL_MS = 300_000;
-const WSL_BACKOFF_MS = 60_000;
 const WSL_DUMP_TIMEOUT_MS = 30_000;
 const MAX_TEXT_LEN = 200;
+
+const serviceLog = createServiceLogger("usage-ledger");
 
 export class LedgerReader {
   private selfRootsCache: { at: number; paths: string[] } | null = null;
   private wslCache: { at: number; refs: LedgerRootRef[] } | null = null;
-  private wslFailedAt = new Map<string, number>();
+  /** WSL 源上次聚合失败记录：退避窗口内跳过聚合，但源保留在 sources 里灰显。 */
+  private wslFailures = new Map<string, WslFailure>();
   private providerNamesCache = new Map<string, Map<string, string>>();
 
   constructor(private readonly options: LedgerReaderOptions) {}
@@ -104,26 +108,26 @@ export class LedgerReader {
     return `${distro}\u0000${rootPath}`;
   }
 
+  /** WSL 源聚合失败登记：退避窗口内不再发起 dump，源本身仍对 UI 可见。 */
+  private markWslFailed(distro: string, rootPath: string, error: string): void {
+    this.wslFailures.set(this.wslBackoffKey(distro, rootPath), { at: this.now(), error });
+  }
+
   private async detectWslRoots(): Promise<LedgerRootRef[]> {
     if (this.platform !== "win32") {
       return [];
     }
     const now = this.now();
-    const notBackingOff = (refs: LedgerRootRef[]): LedgerRootRef[] =>
-      refs.filter(
-        (ref) =>
-          now - (this.wslFailedAt.get(this.wslBackoffKey(ref.distro ?? "", ref.rootPath)) ?? 0) >
-          WSL_BACKOFF_MS,
-      );
     if (this.wslCache && now - this.wslCache.at < WSL_PROBE_TTL_MS) {
-      return notBackingOff(this.wslCache.refs);
+      return this.wslCache.refs;
     }
-    const refs: LedgerRootRef[] = [];
-    for (const distro of await listRunningWslDistros(this.options.spawnImpl)) {
+    const running = new Set(await listRunningWslDistros(this.options.spawnImpl));
+    const fresh: LedgerRootRef[] = [];
+    for (const distro of running) {
       for (const rootPath of await probeWslDbRoots(distro, this.options.spawnImpl)) {
         const { variant, identity } = classifyLedgerRoot(rootPath);
         const { key, label } = sourceKeyLabel("wsl", distro, variant, identity);
-        refs.push({
+        fresh.push({
           rootPath,
           dbPath: `${rootPath}/cli/db/db.sqlite`,
           providerConfigPath: `${rootPath}/v2/provider_config.json`,
@@ -137,12 +141,11 @@ export class LedgerReader {
         });
       }
     }
+    // 本次没再确认到的源（发行版停止、probe 瞬态失败）在 mergeStaleWslRefs 里保留
+    // 灰显形态，让这类抖动不再表现为来源行凭空消失。
+    const refs = mergeStaleWslRefs(this.wslCache?.refs ?? [], fresh, now);
     this.wslCache = { at: now, refs };
-    return notBackingOff(refs);
-  }
-
-  private markWslFailed(distro: string, rootPath: string): void {
-    this.wslFailedAt.set(this.wslBackoffKey(distro, rootPath), this.now());
+    return refs;
   }
 
   /** 全部账本数据根，主源（host 自己的数据根）排在最前。 */
@@ -310,6 +313,30 @@ export class LedgerReader {
 
     for (const root of roots) {
       const included = !selected || selected.has(root.key);
+      // WSL 源「暂时不可聚合」（退避内、发行版停止/探测未确认）时保留在 sources
+      // 里灰显（ok=false + 原因），绝不让来源行从列表里凭空消失。规则见 ledgerWslVisibility。
+      const gate = gateWslAggregation(
+        root,
+        root.kind === "wsl"
+          ? this.wslFailures.get(this.wslBackoffKey(root.distro ?? "", root.rootPath))
+          : undefined,
+        nowMs,
+      );
+      if (!gate.aggregate) {
+        sources.push({
+          key: root.key,
+          label: root.label,
+          kind: root.kind,
+          variant: root.variant,
+          identity: root.identity,
+          calls: 0,
+          ok: false,
+          error: gate.error,
+          included,
+          rootPath: root.rootPath,
+        });
+        continue;
+      }
       let payload: LedgerSourcePayload | null = null;
       try {
         if (root.kind === "wsl") {
@@ -322,10 +349,15 @@ export class LedgerReader {
           payload = this.aggregateLocal(root, ctx, names);
         }
       } catch (error) {
-        if (root.kind === "wsl" && root.distro) {
-          this.markWslFailed(root.distro, root.rootPath);
-        }
         const message = error instanceof Error ? error.message : String(error);
+        if (root.kind === "wsl" && root.distro) {
+          this.markWslFailed(root.distro, root.rootPath, message);
+          // 失败必须留痕：之前这条路径零日志，源在 UI 上无声消失后完全无从排查。
+          serviceLog.warn(
+            undefined,
+            `[ledger] WSL 数据源聚合失败，60s 内跳过重试 distro=${root.distro} root=${root.rootPath}: ${message}`,
+          );
+        }
         if (root.isPrimary && included) {
           // 主源是 host 自己的数据根：它读不到就没有可信页面，交给 UI 错误态
           throw new Error(`${message}（${root.dbPath}）`);

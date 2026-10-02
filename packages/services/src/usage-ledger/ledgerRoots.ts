@@ -23,6 +23,8 @@ export interface LedgerRootRef {
   /** 去重后的来源 key。 */
   key: string;
   label: string;
+  /** kind=wsl 专属：非空表示本次探测未确认到该源（发行版停止/瞬态失败），值是最后一次确认的时刻；仅供灰显不参与聚合。 */
+  staleAt?: number;
 }
 
 export interface LedgerReaderOptions {
