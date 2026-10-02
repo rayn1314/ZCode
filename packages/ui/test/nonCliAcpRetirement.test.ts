@@ -57,6 +57,14 @@ test("current question results work while Claude ACP text is no longer interpret
   assert.deepEqual(readAskUserQuestionAnswers({ output: { answers: { Choose: "Two" } } }), {
     Choose: "Two",
   });
+  // 运行时经 permission 流程把答案回填进 tool input（AskUserQuestion 实际执行输入），
+  // UI 必须能直接从这里读出答案，折叠块才不至于显示“未提供回答”。
+  const answeredInput = {
+    question: "Choose",
+    options: [{ label: "One" }, { label: "Two" }],
+    answers: { Choose: "One" },
+  };
+  assert.deepEqual(readAskUserQuestionAnswers({ input: answeredInput }), { Choose: "One" });
   for (const output of ['"Choose"="One"', { content: [{ text: '"Choose"="One"' }] }]) {
     assert.equal(readAskUserQuestionAnswers({ input, output }), undefined);
     assert.equal(readAskUserQuestionAnswers({ input, raw: { output } }), undefined);

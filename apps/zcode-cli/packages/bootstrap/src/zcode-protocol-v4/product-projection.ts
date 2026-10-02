@@ -3208,9 +3208,15 @@ export class ProductProjection {
 
   private onPermissionResolved(event: SessionEvent): ConversationDelta[] {
     const payload = event.payload as PermissionResolvedPayload;
+    const isDenied = payload.decision === "deny";
     return this.settlePermission(
       String(payload.toolCallId),
-      payload.decision === "deny" ? "cancelled" : "running",
+      isDenied ? "cancelled" : "running",
+      // AskUserQuestion 等交互工具把用户答案经 permission 流程回填进 modifiedInput，
+      // 模型收到的是这份修改后的输入。展示层必须同步投影它，否则 toolCallRow.input
+      // 始终是模型最初下发的参数（只有 questions 没有 answers），UI 折叠块读不到
+      // 答案，只能渲染“未提供回答”。
+      isDenied ? undefined : payload.modifiedInput,
     );
   }
 
@@ -3307,11 +3313,19 @@ export class ProductProjection {
     return changed ? [{ op: "state.updated", patch: { pendingInteractions } }] : [];
   }
 
-  private settlePermission(toolCallId: string, status: ToolCallRow["status"]): ConversationDelta[] {
+  private settlePermission(
+    toolCallId: string,
+    status: ToolCallRow["status"],
+    modifiedInput?: unknown,
+  ): ConversationDelta[] {
     const deltas: ConversationDelta[] = [];
     const row = this.findToolRow(toolCallId);
     if (row) {
       const next: ToolCallRow = { ...row, status };
+      if (modifiedInput !== undefined) {
+        next.input = modifiedInput;
+        next.inputText = stringifyToolInput(modifiedInput);
+      }
       delete next.approvalInteractionId;
       deltas.push({ op: "row.upserted", row: next });
     }
