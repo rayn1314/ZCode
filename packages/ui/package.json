@@ -60,7 +60,7 @@
     "marked": "16.4.2",
     "media-chrome": "^4.18.2",
     "motion": "^12.38.0",
-    "nanoid": "^5.1.7",
+    "nanoid": "^5.1.16",
     "pdfjs-dist": "5.4.296",
     "pinyin-pro": "3.29.4",
     "qrcode": "^1.5.4",

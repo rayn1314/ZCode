@@ -21,7 +21,7 @@
     "@zcode/services": "workspace:*",
     "@zcode/shared": "workspace:*",
     "hono": "^4.12.9",
-    "ws": "^8.20.0",
+    "ws": "^8.21.0",
     "yauzl": "^3.3.0",
     "zod": "4.6.5"
   },
