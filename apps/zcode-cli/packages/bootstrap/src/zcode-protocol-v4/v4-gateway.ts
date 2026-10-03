@@ -2717,6 +2717,17 @@ export class ConversationV4Gateway {
   }
 
   /**
+   * 按需冷恢复（跨会话投递入口）：把不在内存注册表的持久化会话拉成常驻 record。
+   * 与 subscribe 的冷恢复同源（同一 READY 单飞），但只做 activation + hydration、
+   * 不建立订阅。返回 false 表示恢复后仍不可达；恢复失败会向上抛，由调用方降级 mailbox。
+   */
+  async ensureSessionResident(sessionId: string): Promise<boolean> {
+    if (this.host.sessionExists(sessionId)) return true;
+    await this.ensureColdReadyPublisher(sessionId);
+    return this.host.sessionExists(sessionId);
+  }
+
+  /**
    * 内存诊断计数器。只读 size，不触碰状态。
    * detachedLive 用于观察子 session publisher 是否随父 session 释放。
    */

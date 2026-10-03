@@ -895,6 +895,11 @@ export function createZCodeAgentConnectionScope(
       }
       return base.onDynamicCuaPermissionObservation();
     },
+    onDynamicSessionMessageSendRequested() {
+      assertOpen();
+      // Host→main 的内部实时路由信号，不是 UI 消息面；任何 attachment 都不能消费。
+      return RpcEvent.None;
+    },
     onDynamicProcessResourceSample() {
       assertOpen();
       // CLI 资源样本只供远端 Desktop Host relay 回传 main；renderer/mobile attachment

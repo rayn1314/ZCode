@@ -18,6 +18,7 @@ import {
   EXIT_PLAN_MODE_TOOL_NAME,
   READ_SESSION_CONTEXT_TOOL_NAME,
   RESOLVE_WORKFLOW_QUESTION_TOOL_NAME,
+  SEND_MESSAGE_TOOL_NAME,
 } from "@zcode/contracts";
 
 /** AgentRuntimeConfig 的工具面切片。 */
@@ -43,6 +44,9 @@ const ACTOR_DISALLOWED_TOOLS: readonly string[] = [
   // 交给创建这条工作流的那一方；让另一个 actor 顺手作答，等于把它悄悄退化成 actor 之间的
   // 互相说服。actor 提问用 `escalate`（恒注册），作答只属于主会话。
   RESOLVE_WORKFLOW_QUESTION_TOOL_NAME,
+  // actor 走会话消息 denylist（spec D4）：跨会话投递由主协调面掌管，actor 不得越权向
+  // 任意会话发消息。显式入列以便将来 actor runtime 若继承到端口也不会漏出该工具。
+  SEND_MESSAGE_TOOL_NAME,
 ];
 
 /**

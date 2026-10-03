@@ -412,6 +412,9 @@ export const V4_NOTIFICATIONS = {
   localTtftFacts: "v4/telemetry/local-ttft",
   // 仅当前进程 live ToolCallResult 产生；历史与 replayable 链路不得补造。
   cuaPermissionObservation: "v4/cua/permission-observation",
+  // CLI→Host：跨进程会话消息已写 mailbox，请 Host 转 main 做实时路由（params 见
+  // v4SessionMessageSendRequestedParamsSchema）。同为 live sideband，不进 topic/replayable。
+  sessionMessageSendRequested: "v4/session/message-send-requested",
 } as const;
 
 /** 3.3.6 SSH 历史任务归属证明与 sessions-index 冷种子共享同一有界窗口。 */

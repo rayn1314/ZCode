@@ -77,6 +77,10 @@ export async function createWorkspaceZCodeApp(
     ...options,
     platform: context.deps.platform,
     providerRuntimeHeadersPort,
+    // 跨会话消息能力：进程级 mailbox 收件箱与投递端口在此注入（与 sessionMailboxPort 同处）。
+    // 这是所有 workspace app 的唯一装配入口，父/子 runtime 因此共享同一份端口实例。
+    ...(context.sessionMailboxPort ? { sessionMailboxPort: context.sessionMailboxPort } : {}),
+    ...(context.sessionMessagePort ? { sessionMessagePort: context.sessionMessagePort } : {}),
     runtimeConfig: {
       ...options.runtimeConfig,
       // createZCodeApp 会把 workingDirectory 规范化为执行 cwd。把协议入口的

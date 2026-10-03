@@ -1175,42 +1175,9 @@ function createReportingRemoteZCodeTaskService<T extends object>(
 ): T {
   const workspaceProxyState = createHostRemoteWorkspaceProxyState();
 
-  function forwardSessionMessageRequest(request: unknown): void {
-    parentPort?.postMessage({
-      type: HostResponseTypes.SessionMessageSendRequested,
-      request,
-    });
-  }
-
-  function subscribeSessionMessageRequests(target: T, meta: ZCodeTaskMeta): void {
-    const onDynamicWorkspaceEvent = Reflect.get(target, "onDynamicWorkspaceEvent");
-    if (typeof onDynamicWorkspaceEvent !== "function") {
-      return;
-    }
-    const subscribe = onDynamicWorkspaceEvent.call(target, {
-      workspacePath: meta.workspacePath,
-      ...(meta.workspaceIdentity ? { workspaceIdentity: meta.workspaceIdentity } : {}),
-    });
-    if (typeof subscribe !== "function") {
-      return;
-    }
-    workspaceProxyState.ensureWorkspaceSubscription(meta, () =>
-      subscribe((event: unknown) => {
-        if (
-          typeof event === "object" &&
-          event !== null &&
-          (event as { type?: unknown }).type === "workspace_session_message_send_requested"
-        ) {
-          forwardSessionMessageRequest((event as { request?: unknown }).request);
-        }
-      }),
-    );
-  }
-
   function rememberTaskMeta(result: unknown): void {
     if (isZCodeTaskMeta(result)) {
       workspaceProxyState.rememberTaskMeta(result);
-      subscribeSessionMessageRequests(service, result);
       parentPort?.postMessage({
         type: HostResponseTypes.SessionRouteAnnounce,
         route: {

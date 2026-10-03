@@ -368,6 +368,7 @@ import { TaskIndexRepo } from "./session/taskIndexRepo.js";
 import { createBotsService } from "./bots/botsService.js";
 import { createBotRemoteWorkspaceService } from "./bots/botRemoteWorkspaceBridge.js";
 import type { SessionMessageSendRequested } from "#src/session/sessionMailbox.js";
+import { createNodeSessionMessageMailbox } from "#src/session/sessionMailboxStore.js";
 import { createFileWatcherService } from "./fileWatcher/fileWatcherService.js";
 import { createOAuthService } from "./oauth/oauthService.js";
 import { isCurrentOAuthCredentialRequest } from "#src/oauth/oauthUnauthorizedRequest.js";
@@ -2351,12 +2352,16 @@ export function createLocalServices(options: {
     commitMessageGenerator: gitCommitMessageGenerator,
   });
   // task wrapper 由 ZCode task service adapter 提供；核心 session 状态由 ZCode agent server 维护。
+  // 跨进程会话消息的目标侧收件箱：Host 与 CLI 读写同一棵 mailbox 目录树（规则见 @zcode/shared）。
+  const sessionMessageMailbox = createNodeSessionMessageMailbox();
   const zcodeTaskService = createZCodeTaskServiceAdapter({
     zcodeAgentService,
     taskIndexRepo,
     taskIndexSyncer: zcodeTaskIndexSyncer,
     settingService,
     cuaProductMcpServerResolver,
+    sessionMessageMailbox,
+    forwardSessionMessageSendRequested: options?.forwardSessionMessageSendRequested,
   });
   const botRemoteWorkspaceService = createBotRemoteWorkspaceService({
     parentPort: options?.parentPort,

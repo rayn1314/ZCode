@@ -1,10 +1,41 @@
-import type { ConfigResult } from "@zcode/adapters/config";
+import { resolvePath, type ConfigResult } from "@zcode/adapters/config";
+import { createNodeSessionMailboxAdapter } from "@zcode/adapters/mailbox";
 import { detectLocale, resolveLocale } from "@zcode/i18n";
-import type { RuntimeConfigPatch, SupportedLocale, UiLocale } from "@zcode/contracts";
+import {
+  DEFAULT_SESSION_MAILBOX_ROOT,
+  SESSION_MAILBOX_ROOT_ENV,
+} from "@zcode/shared";
+import type {
+  RuntimeConfigPatch,
+  SessionMailboxPort,
+  SupportedLocale,
+  UiLocale,
+} from "@zcode/contracts";
 import type { ZCodeAppOptions } from "./types.js";
 
+/** 显式关闭值：只有 0/false（大小写、空白容忍）才关；未设置一律视为开启。 */
+const MESSAGE_DISABLED_VALUES = new Set(["0", "false"]);
+
+/**
+ * 消息与 mailbox 能力默认开启（spec 阶段 3）：`ZCODE_MESSAGE_ENABLED` 不再需要显式置 1，
+ * 只有显式设为 `0`/`false` 才关闭，用于排障与灰度回退。
+ */
 export function isMessageEnabled(env: NodeJS.ProcessEnv): boolean {
-  return env.ZCODE_MESSAGE_ENABLED === "1" || env.ZCODE_MESSAGE_ENABLED === "true";
+  const raw = env.ZCODE_MESSAGE_ENABLED?.trim().toLowerCase();
+  return raw === undefined || !MESSAGE_DISABLED_VALUES.has(raw);
+}
+
+/**
+ * 按开关解析 mailbox 适配器。关闭时返回 undefined，调用方据此把端口与收件箱一并缺席；
+ * 开启时统一在此解析 root，app 侧收件箱与进程级投递端口共用同一棵目录树。
+ */
+export function createSessionMailboxPortFromEnv(
+  env: NodeJS.ProcessEnv,
+): SessionMailboxPort | undefined {
+  if (!isMessageEnabled(env)) return undefined;
+  return createNodeSessionMailboxAdapter({
+    rootDir: resolvePath(env[SESSION_MAILBOX_ROOT_ENV] ?? DEFAULT_SESSION_MAILBOX_ROOT),
+  });
 }
 
 export function createConfigCliOverrides(options: ZCodeAppOptions): RuntimeConfigPatch | undefined {

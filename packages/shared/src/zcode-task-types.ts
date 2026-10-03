@@ -154,8 +154,7 @@ export interface ZCodeCancelTaskCommandResult {
 export type ZCodeWorkspaceEvent =
   | ZCodeWorkspaceSlashCommandsUpdate
   | ZCodeWorkspaceConfigOptionsUpdate
-  | ZCodeWorkspaceTaskListChanged
-  | ZCodeWorkspaceSessionMessageSendRequested;
+  | ZCodeWorkspaceTaskListChanged;
 
 export interface ZCodeWorkspaceSlashCommandsUpdate {
   type: "workspace_slash_commands_update";
@@ -187,20 +186,6 @@ export interface ZCodeWorkspaceTaskListChanged {
   taskMeta?: ZCodeTaskMeta;
   /** Host 已确认该终态应制造后台未读；普通 status/resume/snapshot 收敛不得携带。 */
   unreadSignal?: "background_terminal";
-}
-
-export interface ZCodeWorkspaceSessionMessageSendRequested {
-  type: "workspace_session_message_send_requested";
-  workspacePath: string;
-  workspaceIdentity?: string;
-  request: {
-    content: string;
-    createdAt: string;
-    fromSessionId: string;
-    messageId: string;
-    requestId: string;
-    toSessionId: string;
-  };
 }
 
 // ---- 错误 ----

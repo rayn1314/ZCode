@@ -93,6 +93,8 @@ import {
   resolveV4InteractionRegistryOptionsFromEnv,
 } from "../zcode-protocol-v4/interaction-registry.js";
 import { createConversationV4Gateway } from "./v4-bridge.js";
+import { createSessionMailboxPortFromEnv } from "../app/app-config-options.js";
+import { createBootstrapSessionMessagePort } from "./session-message-wiring.js";
 import { createSessionResidentPoolHost } from "./session-residency.js";
 import {
   DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT,
@@ -265,6 +267,17 @@ export class ZCodeProtocolAgentServer {
     };
     // v4 通道：gateway 闭包持有 context 做帧出口与命令副作用，构造完立即挂回。
     this.context.v4Gateway = createConversationV4Gateway(this.context);
+    // 跨会话投递端口：进程级一份，闭包持有 sessions/gateway/冷恢复/mailbox。
+    // 开关默认开启（显式 ZCODE_MESSAGE_ENABLED=0/false 才关闭）；关闭时端口与 mailbox 双双缺席，
+    // SendMessage 的 `sess_*` 分支明确报能力缺失，不静默降级。
+    const sessionMailboxPort = createSessionMailboxPortFromEnv(deps.env ?? process.env);
+    if (sessionMailboxPort) {
+      this.context.sessionMailboxPort = sessionMailboxPort;
+      this.context.sessionMessagePort = createBootstrapSessionMessagePort(
+        this.context,
+        sessionMailboxPort,
+      );
+    }
     this.browserControlPort = createProtocolBrowserControlBroker(this.context);
     const sessionResidentTargetCount =
       deps.sessionResidentPoolOptions?.targetCount ?? deps.sessionResidentTargetCount;

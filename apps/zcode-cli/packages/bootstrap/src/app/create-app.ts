@@ -13,7 +13,6 @@ import { createNodeFileSystemAdapter } from "@zcode/adapters/fs";
 import { createNodeWebFetchHttpClientAdapter } from "@zcode/adapters/http";
 import { createJimpImageProcessorAdapter } from "@zcode/adapters/image";
 import { createPopplerPdfDocumentAdapter } from "@zcode/adapters/pdf";
-import { createNodeSessionMailboxAdapter } from "@zcode/adapters/mailbox";
 import { createNodeContextSourceAdapter } from "@zcode/adapters/context";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
 import { createMcpAdapter } from "@zcode/adapters/mcp";
@@ -51,7 +50,7 @@ import type {
 } from "./types.js";
 import {
   createConfigCliOverrides,
-  isMessageEnabled,
+  createSessionMailboxPortFromEnv,
   resolveEffectiveLocale,
   resolveEffectiveConfigResult,
 } from "./app-config-options.js";
@@ -356,16 +355,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         videoCacheRootDir: join(storageRoot, "cli", "video-cache"),
       });
     const imageProcessorPort = options.imageProcessorPort ?? createJimpImageProcessorAdapter();
-    const messageEnabled = isMessageEnabled(options.env ?? process.env);
     const sessionMailboxPort =
-      options.sessionMailboxPort ??
-      (messageEnabled
-        ? createNodeSessionMailboxAdapter({
-            rootDir: resolvePath(
-              (options.env ?? process.env).ZCODE_MAILBOX_ROOT ?? "~/.zcode/mailbox",
-            ),
-          })
-        : undefined);
+      options.sessionMailboxPort ?? createSessionMailboxPortFromEnv(options.env ?? process.env);
     markStorageAdaptersInitialized({
       cliStorageRoot,
       hasInjectedArtifactStore: options.artifactStore !== undefined,
@@ -745,6 +736,9 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       eventStore: options.eventStore ?? createInMemorySessionEventStore(),
       sessionStore,
       sessionMailboxPort,
+      // 跨会话投递端口（bootstrap 进程级一份，经 createWorkspaceZCodeApp 注入）。
+      // 缺席即能力缺席：SendMessage 的 `sess_*` 分支明确失败，不静默降级。
+      sessionMessagePort: options.sessionMessagePort,
       logger,
       executionPort,
       workspaceHookAdmission: workspaceHookRuntimeSecurity?.admission,

@@ -112,6 +112,7 @@ import {
   type ZCodeToolExecResource,
   type ZCodePluginOperationProgressNotification,
   type ZCodeTaskMode,
+  v4SessionMessageSendRequestedParamsSchema,
 } from "@zcode/shared";
 import { createServiceLogger } from "#src/logger/serviceLogger.js";
 import { createOfficialMcpIssuanceAudit } from "#src/official-mcp/officialMcpIssuanceAudit.js";
@@ -193,6 +194,7 @@ import type {
   ZCodeAgentListMcpServerStatusesParams,
   ZCodeAgentWorkspaceTarget,
   ZCodeAgentCuaPermissionObservation,
+  ZCodeAgentSessionMessageSendRequested,
   ZCodeAgentCreateAutomationParams,
   ZCodeAgentUpdateAutomationParams,
   ZCodeAgentAutomationIdParams,
@@ -1137,6 +1139,8 @@ export function createZCodeAgentService(
   const localTtftFactsEmitter = new Emitter<{ workspaceKey: string; facts: LocalTtftFacts }>();
   const conversationTelemetryFactEmitters = new Map<string, Emitter<ConversationTelemetryFact>>();
   const cuaPermissionObservationEmitter = new Emitter<ZCodeAgentCuaPermissionObservation>();
+  // CLI→Host 跨进程会话消息上报：window 级 sideband，由 task adapter 转 main。
+  const sessionMessageSendRequestedEmitter = new Emitter<ZCodeAgentSessionMessageSendRequested>();
   // sessions-index 帧 fan-out：与 conversation 同一 conversationFrame 通知，按 topic 前缀分流到此 emitter。
   const sessionsIndexFrameEmitters = new Map<string, Emitter<SessionsIndexTopicWireCandidate>>();
   // workspace-config 帧 fan-out：配置目录活性（task-index syncer 消费），同一通知按前缀分流。
@@ -2051,6 +2055,29 @@ export function createZCodeAgentService(
               issues: parsed.error.issues.map((issue) => ({
                 code: issue.code,
                 message: issue.message,
+                path: issue.path.join("."),
+              })),
+              workspaceKey: resolveWorkspaceKey(workspace),
+            });
+          }
+          return;
+        }
+
+        if (message.method === V4_NOTIFICATIONS.sessionMessageSendRequested) {
+          // 源 CLI 已把持久副本写进目标 mailbox，这里只负责转给 Host，不在这里重写消息。
+          const parsed = v4SessionMessageSendRequestedParamsSchema.safeParse(message.params);
+          if (parsed.success) {
+            sessionMessageSendRequestedEmitter.fire({
+              request: parsed.data.request,
+              workspacePath: workspace.workspacePath,
+              ...(workspace.workspaceIdentity
+                ? { workspaceIdentity: workspace.workspaceIdentity }
+                : {}),
+            });
+          } else {
+            logger.warn(undefined, "丢弃无效 v4 跨进程会话消息上报", {
+              issues: parsed.error.issues.map((issue) => ({
+                code: issue.code,
                 path: issue.path.join("."),
               })),
               workspaceKey: resolveWorkspaceKey(workspace),
@@ -3218,6 +3245,7 @@ export function createZCodeAgentService(
     conversationTelemetryFactEmitters.clear();
     localTtftFactsEmitter.dispose();
     cuaPermissionObservationEmitter.dispose();
+    sessionMessageSendRequestedEmitter.dispose();
     for (const emitter of workspaceConfigFrameEmitters.values()) {
       emitter.dispose();
     }
@@ -5488,6 +5516,10 @@ export function createZCodeAgentService(
 
     onDynamicCuaPermissionObservation() {
       return cuaPermissionObservationEmitter.event;
+    },
+
+    onDynamicSessionMessageSendRequested() {
+      return sessionMessageSendRequestedEmitter.event;
     },
 
     // ── sessions-index 通道（列表活性）：复用 conversationSubscribe RPC，

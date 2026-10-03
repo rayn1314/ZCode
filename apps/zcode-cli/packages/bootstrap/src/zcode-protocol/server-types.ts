@@ -6,6 +6,8 @@ import {
   type McpPort,
   type SessionEventStorePort,
   type SessionId,
+  type SessionMailboxPort,
+  type SessionMessagePort,
   type SessionTaskType,
   type SessionStorePort,
   type TraceContext,
@@ -147,6 +149,10 @@ export interface ZCodeProtocolAgentServerContext {
   // v4 前向命令 resolveInteraction 与反向请求（permission/AskUserQuestion）的汇合点。
   // broker 注册 deferred、v4 命令面投递应答（同一实例经 binder 注入 V4CommandCoreHost）。
   v4Interactions: V4InteractionRegistry;
+  // 进程级跨会话投递端口与收件箱适配器（spec D3）。开关关闭时两者都缺席；
+  // 注入每个 workspace app 的 runtime，成为 SendMessage `sess_*` 的唯一写路径。
+  sessionMessagePort?: SessionMessagePort;
+  sessionMailboxPort?: SessionMailboxPort;
   // 单 CLI resident session 池。冷恢复入口经 waitForDeactivation 等待旧 app.close 收尾，
   // 协议请求则持有 operation lease，禁止异步 handler 与容量回收交错。
   sessionResidentPool?: SessionResidentPool;

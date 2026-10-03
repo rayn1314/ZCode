@@ -92,6 +92,8 @@ interface SessionMessageRequest {
   messageId: string;
   requestId: string;
   toSessionId: string;
+  /** 来源身份，跨进程路由原样透传，不参与路由裁决。 */
+  senderKind?: "session" | "subagent";
 }
 
 interface SessionMessageDeliveryResult {

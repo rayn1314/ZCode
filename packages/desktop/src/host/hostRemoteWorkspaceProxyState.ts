@@ -22,10 +22,6 @@ interface HostRemoteWorkspaceContext {
 export function createHostRemoteWorkspaceProxyState(): {
   rememberTaskMeta: (meta: HostRemoteTaskMeta) => void;
   getTaskMeta: (taskId: string) => HostRemoteTaskMeta | undefined;
-  ensureWorkspaceSubscription: (
-    context: HostRemoteWorkspaceContext,
-    subscribe: () => IDisposable,
-  ) => boolean;
   trackTaskReady: (
     taskId: string,
     context: HostRemoteWorkspaceContext,
@@ -36,7 +32,6 @@ export function createHostRemoteWorkspaceProxyState(): {
   clearWorkspace: (context: HostRemoteWorkspaceContext) => void;
 } {
   const taskMetaById = new Map<string, HostRemoteTaskMeta>();
-  const workspaceSubscriptions = new Map<string, IDisposable>();
   const taskReadySubscriptions = new Map<
     string,
     { workspaceKey: string; disposable: IDisposable }
@@ -58,15 +53,6 @@ export function createHostRemoteWorkspaceProxyState(): {
 
     getTaskMeta(taskId) {
       return taskMetaById.get(taskId);
-    },
-
-    ensureWorkspaceSubscription(context, subscribe) {
-      const workspaceKey = resolveWorkspaceKey(context);
-      if (workspaceSubscriptions.has(workspaceKey)) {
-        return false;
-      }
-      workspaceSubscriptions.set(workspaceKey, subscribe());
-      return true;
     },
 
     trackTaskReady(taskId, context, subscribe, onReady) {
@@ -92,8 +78,6 @@ export function createHostRemoteWorkspaceProxyState(): {
 
     clearWorkspace(context) {
       const workspaceKey = resolveWorkspaceKey(context);
-      workspaceSubscriptions.get(workspaceKey)?.dispose();
-      workspaceSubscriptions.delete(workspaceKey);
 
       for (const [taskId, meta] of taskMetaById) {
         if (resolveWorkspaceKey(meta) === workspaceKey) {

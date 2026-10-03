@@ -189,6 +189,22 @@ export interface ZCodeAgentRuntimeLifecycleEvent extends ZCodeAgentWorkspaceTarg
 export type ZCodeAgentCuaPermissionObservation = CuaPermissionObservation &
   ZCodeAgentWorkspaceTarget;
 
+/**
+ * CLI 上报的跨进程会话消息请求（原 CLI 已把持久副本写进目标 mailbox）。
+ * 仅 live sideband：services 收到后转 main 做实时路由，不进 conversation topic / replayable。
+ */
+export interface ZCodeAgentSessionMessageSendRequested extends ZCodeAgentWorkspaceTarget {
+  request: {
+    content: string;
+    createdAt: string;
+    fromSessionId: string;
+    messageId: string;
+    requestId: string;
+    toSessionId: string;
+    senderKind?: "session" | "subagent";
+  };
+}
+
 export interface ZCodeAgentCreateSessionParams extends ZCodeAgentWorkspaceTarget {
   sessionId?: string;
   sessionTraceId?: TraceId;
@@ -818,6 +834,11 @@ export interface IZCodeAgentService {
   ): Event<ConversationTelemetryFact>;
   /** 当前窗口全部本地 live task 的 CUA 权限观察；历史、远程与 replayable 不在此事件面。 */
   onDynamicCuaPermissionObservation(): Event<ZCodeAgentCuaPermissionObservation>;
+  /**
+   * CLI 上报的跨进程会话消息请求（源 CLI 已写 mailbox）。window 级 live sideband，
+   * 由 task adapter 转 Host → main 实时路由；不在 conversation topic / 快照 / replayable 里。
+   */
+  onDynamicSessionMessageSendRequested(): Event<ZCodeAgentSessionMessageSendRequested>;
   // ── sessions-index 通道（列表活性）──
   subscribeSessionsIndexV4(
     params: ZCodeAgentSessionsIndexSubscribeParams,

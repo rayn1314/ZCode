@@ -70,6 +70,7 @@ import type {
   SessionGoal,
   SessionId,
   SessionMailboxPort,
+  SessionMessagePort,
   SessionStorePort,
   SkillLoadOutcome,
   SkillPort,
@@ -134,6 +135,11 @@ export interface ZCodeAppOptions {
   eventStore?: SessionEventStorePort;
   sessionStore?: SessionStorePort;
   sessionMailboxPort?: SessionMailboxPort;
+  /**
+   * 跨会话投递端口（bootstrap 实现）。协议服务器按 workspace 注入进程级同一实例；
+   * core 只依赖端口做 `sess_*` 寻址的 SendMessage，缺席即能力缺席。
+   */
+  sessionMessagePort?: SessionMessagePort;
   inputHistoryStore?: InputHistoryStorePort;
   modelAdapter?: AiSdkModelAdapter;
   /** Worker 进程拥有的 Registry；App 只借用，不负责释放。 */

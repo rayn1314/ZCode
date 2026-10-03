@@ -352,7 +352,21 @@ export const sessionMessageRequestSchema = z.object({
   messageId: nonEmptyStringSchema,
   requestId: nonEmptyStringSchema,
   toSessionId: nonEmptyStringSchema,
+  // 来源身份（spec D4）：跨进程链路必须保留，否则目标侧注入/回写会退化成 session。
+  // 旧提交端缺省不传，读取方按 session 处理，因此可选不破坏兼容。
+  senderKind: z.enum(["session", "subagent"]).optional(),
 });
+
+/**
+ * CLI→Host 的跨进程会话消息上报（v4 通知 params）。源 CLI 写完 mailbox 后上报，
+ * Host services 直接转 main 实时路由到目标 Host，不进入 conversation topic / 快照 / replayable。
+ */
+export const v4SessionMessageSendRequestedParamsSchema = z
+  .object({ request: sessionMessageRequestSchema })
+  .strict();
+export type V4SessionMessageSendRequestedParams = z.infer<
+  typeof v4SessionMessageSendRequestedParamsSchema
+>;
 
 export const sessionMessageDeliveryResultSchema = z.object({
   error: z.string().optional(),

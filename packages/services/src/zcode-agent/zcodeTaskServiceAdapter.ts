@@ -127,6 +127,7 @@ import {
 import type { ISettingService } from "#src/setting/setting.js";
 import type {
   SessionMessageDeliveryResult,
+  SessionMessageMailboxPort,
   SessionMessageSendRequested,
 } from "#src/session/sessionMailbox.js";
 import { TaskIndexRepo } from "#src/session/taskIndexRepo.js";
@@ -183,6 +184,18 @@ interface CreateZCodeTaskServiceAdapterOptions {
   taskIndexSyncer: ZCodeTaskIndexSyncer;
   settingService?: Pick<ISettingService, "get">;
   cuaProductMcpServerResolver?: CuaProductMcpServerResolver;
+  /**
+   * 目标侧收件箱：main 路由到的 Host 用它落盘兜底 + 按 messageId 去重。
+   * 缺省（消息能力被显式关闭）时不可达目标只能返回失败，不能假装成功。
+   */
+  sessionMessageMailbox?: SessionMessageMailboxPort;
+  /**
+   * 源侧触发通道：把 CLI 上报的跨进程发送请求转给 main（Host 里接到 parentPort）。
+   * 传入即证明这条链路接了生产者；未接线时该能力静默不可用（不是死参数）。
+   */
+  forwardSessionMessageSendRequested?: (
+    request: SessionMessageSendRequested,
+  ) => Promise<void> | void;
 }
 
 interface TaskTarget {
@@ -224,6 +237,41 @@ function sameModelSelection(
     left?.options?.reasoningLevel === right?.options?.reasoningLevel
   );
 }
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function escapeSessionMessageAttr(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+}
+
+/**
+ * 实时投递注入文本：与 CLI 侧 `BootstrapSessionMessagePort` 的 `<session-message>` 信封
+ * 同属性名（source/from_session/sender_kind），接收侧模型无需区分 mailbox 与实时两条通路。
+ */
+function formatSessionMessageDeliveryText(request: SessionMessageSendRequested): string {
+  return [
+    `<session-message source="session-message" message_id="${escapeSessionMessageAttr(request.messageId)}" from_session="${escapeSessionMessageAttr(request.fromSessionId)}" sender_kind="${escapeSessionMessageAttr(request.senderKind ?? "session")}" created_at="${escapeSessionMessageAttr(request.createdAt)}">`,
+    request.content,
+    "</session-message>",
+  ].join("\n");
+}
+
+/** 回执文本：明确标注为通知，模型按参考信息处理，不当作新的用户指令。 */
+function formatSessionMessageResultText(result: SessionMessageDeliveryResult): string {
+  const outcome =
+    result.status === "success"
+      ? "delivered (or stored in the target mailbox)"
+      : `failed: ${result.error ?? "unknown error"}`;
+  return [
+    `<session-message source="delivery-result" message_id="${escapeSessionMessageAttr(result.messageId)}" request_id="${escapeSessionMessageAttr(result.requestId)}">`,
+    `Delivery of message ${result.messageId} to another session ${outcome}.`,
+    "For reference only. No action is required.",
+    "</session-message>",
+  ].join("\n");
+}
+
 const MAX_LIVE_TOOL_PROJECTION_TASKS = 128;
 const MAX_LIVE_TOOL_PROJECTION_TOOLS_PER_TASK = 2000;
 
@@ -489,6 +537,184 @@ export function createZCodeTaskServiceAdapter(
         workspacePath: target.workspacePath,
       });
       throw error;
+    }
+  }
+
+  /**
+   * 目标侧实时投递（spec 阶段 3）。统一用 `guide`，不按活动回合切换 guide/startNow：
+   * `startNow` 在 CLI admission 里走 forceStartNow 分支，会 `preemptActiveTurnAndWait` 抢占并
+   * 中止正在跑的回合（session-flow.ts）；而本层判定"是否空闲"只能靠 `activePromptInputIds`
+   * 这一事件投影——它是滞后投影、不是 runtime 权威真相，跨进程存在"轮已起、事件未到"的竞态，
+   * 误判会把目标正在跑的回合打断。`guide` 由目标 CLI 自己的 admission 裁决：忙且可引导 →
+   * steered；忙且不可引导 → 排队；空闲 → 开新轮，同样完成注入/唤醒，却从不抢占。
+   * 目标不在本 Host（v4 被拒 / 命令抛错）时退回 mailbox 兜底，返回 success 表示"已持久化"，
+   * 只有 mailbox 也写不进去才返回 failed——不静默丢弃，也不假装投递成功。
+   */
+  async function deliverSessionMessageToTarget(
+    request: SessionMessageSendRequested,
+  ): Promise<SessionMessageDeliveryResult> {
+    const target = taskTargets.get(request.toSessionId);
+    if (!target) {
+      return await storeSessionMessage(request, "target session is not loaded in this host");
+    }
+
+    // 仅供诊断：投影可能滞后，明确不作为投递分档依据（见函数头注释）。
+    const activeTurnProjection = activePromptInputIds.has(taskKey(target));
+    try {
+      const ack = await options.zcodeAgentService.sendConversationCommandV4({
+        workspacePath: target.workspacePath,
+        workspaceIdentity: target.workspaceIdentity,
+        ...(target.remoteSessionId ? { remoteSessionId: target.remoteSessionId } : {}),
+        envelope: createHostCommandEnvelope({
+          type: "sendText",
+          payload: {
+            text: formatSessionMessageDeliveryText(request),
+            requestedDelivery: "guide",
+          },
+          sessionId: target.taskId,
+          // requestId 作为幂等键：跨进程重投由 CommandInbox 去重，不会二次注入。
+          commandId: request.requestId,
+        }),
+      });
+      assertV4CommandAckOk("sendText", ack, `session-message to=${target.taskId}`);
+    } catch (error) {
+      logger.warn(undefined, "会话消息实时投递失败，退回 mailbox", {
+        error: error instanceof Error ? error.message : String(error),
+        messageId: request.messageId,
+        requestId: request.requestId,
+        toSessionId: request.toSessionId,
+      });
+      return await storeSessionMessage(request, `v4 delivery failed: ${errorText(error)}`);
+    }
+
+    // 实时命中后清掉源侧落的持久副本，否则同一条消息会被 live 注入 + 下次 drain 投递两次。
+    // 消费失败只意味着可能重复投递一次，不影响"已送达"，因此不把交付判成失败。
+    try {
+      await options.sessionMessageMailbox?.consume({
+        sessionId: request.toSessionId,
+        messageId: request.messageId,
+      });
+    } catch (error) {
+      logger.warn(undefined, "会话消息实时投递后清理 mailbox 副本失败", {
+        error: error instanceof Error ? error.message : String(error),
+        messageId: request.messageId,
+        toSessionId: request.toSessionId,
+      });
+    }
+
+    logger.info(undefined, "会话消息实时投递成功", {
+      activeTurnProjection,
+      delivery: "guide",
+      messageId: request.messageId,
+      requestId: request.requestId,
+      toSessionId: request.toSessionId,
+    });
+    return {
+      messageId: request.messageId,
+      requestId: request.requestId,
+      sessionId: request.fromSessionId,
+      status: "success",
+    };
+  }
+
+  /** 不可达兜底：落 mailbox 供目标 CLI 下次自醒 drain；写不进去就如实返回失败。 */
+  async function storeSessionMessage(
+    request: SessionMessageSendRequested,
+    reason: string,
+  ): Promise<SessionMessageDeliveryResult> {
+    const mailbox = options.sessionMessageMailbox;
+    if (!mailbox) {
+      return {
+        error: `session mailbox is not configured; message was not delivered: ${reason}`,
+        messageId: request.messageId,
+        requestId: request.requestId,
+        sessionId: request.fromSessionId,
+        status: "failed",
+      };
+    }
+    try {
+      await mailbox.deliver({
+        version: 1,
+        messageId: request.messageId,
+        fromSessionId: request.fromSessionId,
+        toSessionId: request.toSessionId,
+        content: request.content,
+        createdAt: request.createdAt,
+        ...(request.senderKind ? { senderKind: request.senderKind } : {}),
+      });
+    } catch (error) {
+      return {
+        error: `session mailbox write failed: ${errorText(error)} (${reason})`,
+        messageId: request.messageId,
+        requestId: request.requestId,
+        sessionId: request.fromSessionId,
+        status: "failed",
+      };
+    }
+    logger.info(undefined, "会话消息已落入目标 mailbox，等待其下次 drain", {
+      messageId: request.messageId,
+      reason,
+      toSessionId: request.toSessionId,
+    });
+    return {
+      messageId: request.messageId,
+      requestId: request.requestId,
+      sessionId: request.fromSessionId,
+      status: "success",
+    };
+  }
+
+  /**
+   * 投递回执投回源会话（spec 阶段 3）。回执是补充通知而非用户输入：
+   * 发送侧工具（SendMessage）本身已同步拿到投递结果，回执只是让源会话在后续回合里
+   * 顺带知道"消息已送达"，不承担唤醒职责。
+   * 因此**只在源会话正在跑回合时用 `guide` 注入**：当前 v4 admission 没有"只追加不唤醒"
+   * 的投递位——空闲会话无论 `guide`/`queue` 都会开新一轮，把空闲源会话唤醒得不偿失
+   * （用户可能并不在场，凭空多跑一轮）。空闲时直接跳过并记日志。
+   * 源会话不在本 Host（已冷/已关）时同样只记日志——回执是尽力而为，不作为投递失败。
+   */
+  async function deliverSessionMessageReceipt(result: SessionMessageDeliveryResult): Promise<void> {
+    const source = taskTargets.get(result.sessionId);
+    if (!source) {
+      logger.warn(undefined, "会话消息回执的源会话不在本 Host，丢弃回执", {
+        messageId: result.messageId,
+        requestId: result.requestId,
+        sessionId: result.sessionId,
+        status: result.status,
+      });
+      return;
+    }
+    // 只认"正在跑回合"这一个投影条件；投影判定为忙才注入，宁少勿多（绝不因回执唤醒空闲会话）。
+    if (!activePromptInputIds.has(taskKey(source))) {
+      logger.info(undefined, "源会话空闲，跳过会话消息回执", {
+        messageId: result.messageId,
+        requestId: result.requestId,
+        sessionId: result.sessionId,
+        status: result.status,
+      });
+      return;
+    }
+    try {
+      await options.zcodeAgentService.sendConversationCommandV4({
+        workspacePath: source.workspacePath,
+        workspaceIdentity: source.workspaceIdentity,
+        ...(source.remoteSessionId ? { remoteSessionId: source.remoteSessionId } : {}),
+        envelope: createHostCommandEnvelope({
+          type: "sendText",
+          payload: {
+            text: formatSessionMessageResultText(result),
+            requestedDelivery: "guide",
+          },
+          sessionId: source.taskId,
+        }),
+      });
+    } catch (error) {
+      logger.warn(undefined, "会话消息回执投递失败", {
+        error: errorText(error),
+        messageId: result.messageId,
+        requestId: result.requestId,
+        sessionId: result.sessionId,
+      });
     }
   }
 
@@ -1752,9 +1978,30 @@ export function createZCodeTaskServiceAdapter(
     });
   });
 
+  /**
+   * 源侧触发通道：CLI 写完 mailbox 后经 v4 通知上报，adapter 转给 Host（parentPort → main）。
+   * 没有该上报通道时（未注入 forwardSessionMessageSendRequested）只留 mailbox，
+   * 这正是阶段 2 的降级语义，不报错也不假装实时可达。
+   */
+  const sessionMessageSendRequestedDisposable =
+    options.zcodeAgentService.onDynamicSessionMessageSendRequested?.()?.((event) => {
+      const forward = options.forwardSessionMessageSendRequested;
+      if (!forward) return;
+      void Promise.resolve(forward(event.request)).catch((error) => {
+        logger.warn(undefined, "跨进程会话消息上报 main 失败", {
+          error: errorText(error),
+          messageId: event.request.messageId,
+          requestId: event.request.requestId,
+          toSessionId: event.request.toSessionId,
+          workspaceKey: resolveWorkspaceKey(event),
+        });
+      });
+    });
+
   function disposeLocalTaskState(): void {
     taskIndexTerminalDisposable.dispose();
     taskIndexReadyDisposable.dispose();
+    sessionMessageSendRequestedDisposable?.dispose();
     taskIndexRepo.close();
     for (const emitter of taskEmitters.values()) emitter.dispose();
     for (const emitter of globalTaskEmitters.values()) emitter.dispose();
@@ -1962,14 +2209,14 @@ export function createZCodeTaskServiceAdapter(
       });
     },
 
-    async deliverSessionMessage(
-      _request: SessionMessageSendRequested,
+    deliverSessionMessage(
+      request: SessionMessageSendRequested,
     ): Promise<SessionMessageDeliveryResult> {
-      unsupported("deliverSessionMessage");
+      return deliverSessionMessageToTarget(request);
     },
 
-    async sendSessionMessageDeliveryResult(): Promise<void> {
-      unsupported("sendSessionMessageDeliveryResult");
+    async sendSessionMessageDeliveryResult(result: SessionMessageDeliveryResult): Promise<void> {
+      await deliverSessionMessageReceipt(result);
     },
 
     async enqueueTaskCommand(params): Promise<ZCodeEnqueueTaskCommandResult> {
