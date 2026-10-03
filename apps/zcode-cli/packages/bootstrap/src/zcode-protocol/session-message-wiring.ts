@@ -60,7 +60,10 @@ function sendViaV4(
     .handleCommand({
       clientId: SESSION_MESSAGE_CLIENT_ID,
       commandId: input.commandId,
-      issuedAt: new Date().toISOString(),
+      // `commandEnvelopeSchema.issuedAt` 是 epoch 毫秒（timestampSchema = z.number()）。
+      // 这里曾传 ISO 字符串：parseCommandEnvelope 第一步即判非法 → ACK rejected/proto.invalidPayload
+      // → 投递层按设计降级写 mailbox 并返回 stored，目标会话永远得不到唤醒（且不报错）。
+      issuedAt: Date.now(),
       payload: {
         requestedDelivery: input.requestedDelivery,
         text: input.text,

@@ -7,7 +7,7 @@ import {
   type SessionMailboxPort,
   type SessionMessageDeliveryRequest,
 } from "@zcode/contracts";
-import type { CommandEnvelope } from "@zcode/shared/zcode-protocol-v4";
+import { parseCommandEnvelope, type CommandEnvelope } from "@zcode/shared/zcode-protocol-v4";
 import {
   BootstrapSessionMessagePort,
   resolveV4SendResult,
@@ -348,7 +348,9 @@ test("wiring builds a sendText command envelope for a resident target", async ()
   const envelope = fixture.envelopes[0] as {
     clientId: string;
     commandId: string;
-    issuedAt: string;
+    // 信封契约要求 epoch 毫秒（`commandEnvelopeSchema.issuedAt`）。此前这里是 string，
+    // 与真实契约不一致，正是 ISO 字符串 bug 长期未被测试发现的原因。
+    issuedAt: number;
     payload: { requestedDelivery: string; text: string };
     sessionId: string;
     type: string;
@@ -360,6 +362,33 @@ test("wiring builds a sendText command envelope for a resident target", async ()
   assert.equal(envelope.payload.requestedDelivery, "guide");
   assert.match(envelope.payload.text, /<session-message /);
   assert.equal(fixture.stored.length, 0);
+});
+
+// 契约回归：wiring 产出的信封必须能被真实 parseCommandEnvelope 接受。
+// 曾经 issuedAt 传 ISO 字符串，commandEnvelopeSchema 首步就判非法 → ACK
+// rejected/proto.invalidPayload → 投递层按设计降级写 mailbox 返回 stored，
+// 目标会话永远得不到唤醒。这里直接喂真实解析器，覆盖带 sessionMessageChain 的路径。
+test("wiring 构造的信封（含 sessionMessageChain）通过真实 parseCommandEnvelope", async () => {
+  const fixture = createWiringFixture({ resident: true, active: true });
+  const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
+  const chain = { hop: 2, originMessageId: "msg_root" };
+  await port.deliver(createRequest({ sessionMessageChain: chain }));
+
+  assert.equal(fixture.envelopes.length, 1);
+  const parsed = parseCommandEnvelope(fixture.envelopes[0]);
+  if (!parsed.ok) {
+    assert.fail(`wiring 信封未通过 parseCommandEnvelope：${parsed.error.message}`);
+  }
+  assert.equal(parsed.envelope.type, "sendText");
+  assert.equal(parsed.envelope.sessionId, "sess_target");
+  assert.equal(typeof parsed.envelope.issuedAt, "number");
+  assert.ok(Number.isFinite(parsed.envelope.issuedAt));
+  // issuedAt 是客户端时钟（仅遥测），但必须是毫秒数而不是 ISO 字符串。
+  assert.ok(Math.abs(Date.now() - parsed.envelope.issuedAt) < 60_000);
+  assert.deepEqual(
+    (parsed.envelope.payload as { sessionMessageChain?: unknown }).sessionMessageChain,
+    chain,
+  );
 });
 
 test("wiring：链必须显式进 sendText payload（zod object 会静默剥离未知键）", async () => {
