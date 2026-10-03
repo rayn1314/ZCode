@@ -229,6 +229,17 @@ export { IOAuthService } from "./oauth/oauth.js";
 export { IUsageStatsService } from "./usage-stats/usageStats.js";
 export { IUsageLedgerService } from "./usage-ledger/usageLedger.js";
 
+// 身份数据迁移（跨本机数据根按域搬运）：接口/描述符 browser-safe；
+// 工厂与逐域文件系统实现只在 @zcode/services/node 暴露。
+export { IMigrationService } from "./migration/migration.js";
+export type {
+  MigrationDomainId,
+  MigrationDomainResult,
+  MigrationDomainSummary,
+  MigrationScanResult,
+  MigrationSourceRoot,
+} from "./migration/migration.js";
+
 // Storage（资源管理器「存储」tab）：数据类型在 @zcode/shared；这里只导出服务接口与卷分组纯函数
 export type { IStorageService } from "./storage/contract.js";
 

@@ -1,4 +1,5 @@
 import {
+  ArrowRightLeft,
   Monitor,
   Moon,
   Settings,
@@ -149,6 +150,13 @@ const BASE_SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     icon: FileSearch,
     titleId: "settings.workspaceFileSearch.title",
     groupId: "basics",
+  },
+  // 「数据迁移」紧邻「使用统计」：同属数据与统计组，用户在这里处理"数据搬进来 / 用了多少"两件事。
+  {
+    id: "migration",
+    icon: ArrowRightLeft,
+    titleId: "settings.migration.title",
+    groupId: "dataAndStats",
   },
   {
     id: "usage",

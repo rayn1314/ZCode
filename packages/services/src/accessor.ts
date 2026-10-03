@@ -40,6 +40,7 @@ import type { IPromptAttachmentTransferService } from "./prompt-attachment-trans
 import type { IWindowControllerService } from "./window-controller/windowController.js";
 import type { IOnboardingRecordService } from "./onboarding/onboardingRecord.js";
 import type { IConversationShareService } from "./conversation-share/conversationShare.js";
+import type { IMigrationService } from "./migration/migration.js";
 
 /** UI 层消费的统一服务接口 */
 export interface IServiceAccessor {
@@ -72,6 +73,8 @@ export interface IServiceAccessor {
   readonly usageStatsService: IUsageStatsService;
   /** 用量账本：仅桌面本地 host 提供；远端 workspace 无此服务，UI 需降级。 */
   readonly usageLedgerService?: IUsageLedgerService;
+  /** 身份数据迁移：仅桌面本地 host 提供；旧 server wire / 测试 double 可暂不提供。 */
+  readonly migrationService?: IMigrationService;
   readonly codingPlanSubscriptionService: ICodingPlanSubscriptionService;
   readonly clientConfigService: IClientConfigService;
   readonly clientScenesService: IClientScenesService;

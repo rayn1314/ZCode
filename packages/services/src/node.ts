@@ -12,6 +12,7 @@ import {
   ZCODE_DATA_ROOT_ENV,
   getZCodeDataRootDir,
   getAppConfigDir as resolveAppConfigDir,
+  resolveUserHomeDir,
 } from "./paths.js";
 import {
   buildLocalMediaPreviewUrl,
@@ -357,6 +358,9 @@ import { createOnboardingRecordService } from "./onboarding/onboardingRecordServ
 import { createLegacyTeamOrganizationResolver } from "./model-provider/legacyTeamOrganizationResolver.js";
 import { createObservableSettingService } from "./setting/observableSettingService.js";
 import { createCredentialService } from "./credential/credentialService.js";
+import { createCredentialCipherProvider } from "./credential/providers/credentialCipherProvider.js";
+import { IMigrationService } from "./migration/migration.js";
+import { createMigrationService } from "./migration/migrationService.js";
 import { createBroadcastService } from "./broadcast/broadcastService.js";
 import { createZCodeAgentService } from "./zcode-agent/zcodeAgentService.js";
 import type { ZCodeAgentCommandResolver } from "./zcode-agent/zcodeAgentProcessManager.js";
@@ -2478,6 +2482,17 @@ export function createLocalServices(options: {
   // 注册链上的懒工厂（如 OffPeak）会各自创建 tasks-index sqlite repo；先收集到本数组，
   // services 集合建好后在 return 前统一登记进 sharedSqliteRepos 侧表
   const sqliteReposToClose: Array<{ close(): void }> = [];
+  // 身份数据迁移：目标根即当前身份数据根；凭据解密用与 credentialService 同源的机器派生密钥
+  // （不含产品身份，因此同机上源身份密文可被解出明文，再由目标侧重新加密落盘）。
+  const migrationService = createMigrationService({
+    homeDir: resolveUserHomeDir(),
+    env: process.env,
+    appDataDir: process.env.APPDATA,
+    dataRootDir: getZCodeDataRootDir(),
+    settingService,
+    credentialService,
+    cipher: createCredentialCipherProvider(),
+  });
   const services = new ServiceCollection()
     .register(IFileService, fileService)
     .register(IMediaPreviewService, mediaPreviewService)
@@ -2522,6 +2537,7 @@ export function createLocalServices(options: {
       }),
     )
     .register(IUsageLedgerService, createUsageLedgerService({ dataRootDir: getZCodeDataRootDir() }))
+    .register(IMigrationService, migrationService)
     .register(ICodingPlanSubscriptionService, codingPlanSubscriptionService)
     .register(
       IClientConfigService,

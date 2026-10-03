@@ -149,8 +149,9 @@ mailbox 是唯一「既是数据、又是传输通道」的目录，其有效边
 - **用户级工作流库位置变更**：两代定义的全局根都从 `{home}/.zcode/workflows` 改成
   `{dataRoot}/workflows`（自建身份即 `{home}/.zcode{suffix}/workflows`）：动态工作流
   （`.dwf.ts`，list/get/save/move/delete 全链）与 legacy 脚本（`.workflow.js`，按名查找）。
-  自建身份下旧的 `~/.zcode/workflows/*` 不会被自动拾取，也不会被搬运——搬过去等于把一个
-  身份的脚本塞进另一个身份。需要时由用户自行复制到身份根；官方身份路径逐字节不变。
+  自建身份下旧的 `~/.zcode/workflows/*` 不会被自动拾取，也不会被自动搬运——搬过去等于把一个
+  身份的脚本塞进另一个身份。需要时可在设置 → 数据迁移里按域完成（见
+  `packages/services/spec/identity-data-migration.md`）；官方身份路径逐字节不变。
 - **凭据库 / 设备标识的显式 `baseDir` 分支**：`resolveSharedZCodeCredentialsPath` 与
   `ensureCliDeviceMid` 在调用方显式传 `baseDir` 时原先自行拼 `{baseDir}/.zcode`（丢后缀），
   现统一走 `resolveIdentityDataRoot({ baseDir })`。当前无生产调用方走该分支（都只传 `env`），
@@ -163,9 +164,12 @@ mailbox 是唯一「既是数据、又是传输通道」的目录，其有效边
   `scripts/product-identity.d.mts` 提供类型（照 `target-platform.d.mts` 的既有做法，否则 desktop
   main 这类被 TS 直接引用的地方会报 TS7016）。已有部署不受影响：官方后缀为空，路径与命令逐字节
   不变。
-- 历史数据迁移见 `E:\ZCode-dev\README.md`（robocopy 全量 + SQLite `VACUUM INTO` 快照；
-  凭据不搬，首次启动重新登录）。`copyDataDirectory` 只迁移 `{base}/.zcode{suffix}/v2`，
-  跳过 `setting.json*`（bootstrap 中间态）与符号链接。
+- **按域数据迁移**：设置 → 数据与统计 → 数据迁移提供官方版 / 自建版之间的按域搬运（设置、
+  服务商配置、凭据、会话与任务历史、用户级工作流、hooks 声明），来源根自动探测且不写死官方。
+  目标已存在的数据永不被覆盖（逐项跳过或整域跳过），hook 信任记录不搬、需在目标身份重新授权。
+  规则见 `packages/services/spec/identity-data-migration.md`。`copyDataDirectory` 只迁移
+  `{base}/.zcode{suffix}/v2`，跳过 `setting.json*`（bootstrap 中间态）与符号链接，与本节迁移是
+  两条独立通路（前者改数据根指针，后者搬内容）。
 - 远端（WSL / SSH）与本地同源：**代码安装根与数据根都按身份后缀隔离**（2026-09-30 起数据根
   也隔离，原先只隔离代码导致共享数据上的 schema 错配炸掉官方 server），见
   `packages/server/spec/remote-runtime-isolation.md`。

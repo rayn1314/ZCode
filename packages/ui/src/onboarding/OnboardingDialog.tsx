@@ -5,6 +5,7 @@ import { useClaudeSessionMigration } from "@/hooks/useClaudeSessionMigration.js"
 import { useConfirmDialog } from "@/hooks/useConfirmDialog.js";
 import { useSettingsSync } from "@/hooks/useSettingsSync.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { setPendingSettingsSection } from "@/lib/settingsNavigation.js";
 import { getPathLeaf } from "@/lib/path.js";
 import { logger } from "@/logger.js";
 import {
@@ -25,6 +26,7 @@ import {
 } from "@/onboarding/OnboardingFlowParts.js";
 import { OnboardingAgentsFileStep } from "@/onboarding/OnboardingAgentsFileStep.js";
 import { useZCodeStore } from "@/store/StoreProvider.js";
+import { useTabStore } from "@/store/TabStoreProvider.js";
 import {
   shouldAutoScanOnboardingSessions,
   useOnboardingMigration,
@@ -64,6 +66,7 @@ export function OnboardingDialog(props: {
   });
   const onboardingDialogRequested = useZCodeStore((state) => state.onboardingDialogRequested);
   const clearOnboardingDialogRequest = useZCodeStore((state) => state.clearOnboardingDialogRequest);
+  const openSettingsTab = useTabStore((state) => state.openSettingsTab);
   const [view, setView] = useState<OnboardingView>("welcome");
   const [wizardStep, setWizardStep] = useState<OnboardingWizardStep>("session");
   const [selectedWorkspacePaths, setSelectedWorkspacePaths] = useState<string[]>([]);
@@ -479,6 +482,13 @@ export function OnboardingDialog(props: {
             onOpenMigration={() => {
               setView("wizard");
               setWizardStep("session");
+            }}
+            onOpenIdentityMigration={() => {
+              // 引导弹窗里拿不到 App 的 handleOpenSettingsSection 回调，
+              // 直接复用同一条意图 + 打开设置 tab 的路径，语义与 App 侧一致。
+              settingsSync.actions.close();
+              setPendingSettingsSection("migration");
+              openSettingsTab();
             }}
           />
         ) : (

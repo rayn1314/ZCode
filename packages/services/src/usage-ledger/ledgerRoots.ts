@@ -1,9 +1,20 @@
 import { existsSync } from "node:fs";
-import { readdir, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { LedgerSourceKind, LedgerSourceVariant } from "@zcode/shared";
 import type { LedgerPriceLoader } from "./ledgerPrices.js";
 import type { SpawnLike } from "./ledgerWsl.js";
+import {
+  detectOfficialRoot as detectOfficialRootFor,
+  scanSelfRootCandidates as scanSelfRootCandidatesFor,
+  type MachineDataRootEnv,
+} from "../data-roots/machineDataRoots.js";
+
+// 数据根探测（官方根候选链、自建根扫描、官方/自建归类）已收成单源：
+// `../data-roots/machineDataRoots.js`。这里只保留账本领域自己的东西——
+// 账本要求的相对路径（`cli/db/db.sqlite`）、TTL 常量、来源 key/标签与引用结构，
+// 并以账本自己的 relPath 适配单源探测，账本调用点保持零改动。
+// 迁移域复用同一份探测，但按各域自己的相对路径判定根是否可用。
 
 export const DB_REL_PATH = path.join("cli", "db", "db.sqlite");
 export const SELF_ROOTS_TTL_MS = 30_000;
@@ -41,13 +52,12 @@ export interface LedgerReaderOptions {
   priceLoader: LedgerPriceLoader;
 }
 
-export interface LedgerRootEnv {
-  homeDir: string;
-  appDataDir?: string;
-  env: Record<string, string | undefined>;
-  now: () => number;
-  existsImpl?: typeof existsSync;
-}
+/**
+ * 探测环境：单源定义的机器数据根环境 + 账本自己的探测 TTL 时钟。
+ *
+ * `now` 只有账本消费（`SELF_ROOTS_TTL_MS` 缓存），因此留在账本侧，不塞进单源模块。
+ */
+export type LedgerRootEnv = MachineDataRootEnv & { now: () => number };
 
 function baseKeyLabel(
   kind: LedgerSourceKind,
@@ -71,60 +81,14 @@ export function sourceKeyLabel(
   return { key: base, label: baseLabel };
 }
 
-/** 按目录名区分官方版与自建版数据根：末段形如 .zcode-<身份> 判自建。 */
-export function classifyLedgerRoot(rootPath: string): {
-  variant: LedgerSourceVariant;
-  identity: string;
-} {
-  const name =
-    rootPath
-      .replace(/[\\/]+$/, "")
-      .split(/[\\/]/)
-      .pop() ?? "";
-  if (name.startsWith(".zcode-") && name.length > ".zcode-".length) {
-    return { variant: "self", identity: name.slice(".zcode-".length) };
-  }
-  return { variant: "official", identity: "" };
-}
+export { classifyLedgerRoot } from "../data-roots/machineDataRoots.js";
 
-function hasDb(env: LedgerRootEnv, rootPath: string): boolean {
-  return env.existsImpl
-    ? env.existsImpl(path.join(rootPath, DB_REL_PATH))
-    : existsSync(path.join(rootPath, DB_REL_PATH));
-}
-
-/** 官方版根目录候选链：ZCODE_HOME → 常见安装位置。全部落空返回 null。 */
+/** 官方版根目录候选链：ZCODE_HOME → 常见安装位置；按账本的库路径判定。 */
 export function detectOfficialRoot(env: LedgerRootEnv): string | null {
-  const envHome = env.env.ZCODE_HOME;
-  if (envHome && hasDb(env, envHome)) {
-    return path.resolve(envHome);
-  }
-  const candidates = [
-    path.join(env.homeDir, ".zcode"),
-    path.join(env.homeDir, ".config", "zcode"),
-    path.join(env.appDataDir ?? path.join(env.homeDir, "AppData", "Roaming"), "zcode"),
-  ];
-  const found = candidates.find((c) => hasDb(env, c));
-  return found ? path.resolve(found) : null;
+  return detectOfficialRootFor(env, DB_REL_PATH);
 }
 
-/** 扫 home 下 .zcode-<身份> 形态、装着库的自建版数据根。TTL 缓存由调用方持有。 */
+/** 扫 home 下 .zcode-<身份> 形态、装着账本库的自建版数据根。TTL 缓存由调用方持有。 */
 export async function scanSelfRootCandidates(env: LedgerRootEnv): Promise<string[]> {
-  const paths: string[] = [];
-  try {
-    const entries = await readdir(env.homeDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (!entry.isDirectory() || !entry.name.startsWith(".zcode-")) {
-        continue;
-      }
-      const rootPath = path.join(env.homeDir, entry.name);
-      if (hasDb(env, rootPath)) {
-        paths.push(rootPath);
-      }
-    }
-  } catch {
-    // home 不可读时视作没有自建根
-  }
-  paths.sort();
-  return paths;
+  return scanSelfRootCandidatesFor(env, DB_REL_PATH);
 }

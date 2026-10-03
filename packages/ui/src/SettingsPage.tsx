@@ -74,6 +74,7 @@ import { BrowserSettingsSection } from "@/settings/BrowserSettingsSection.js";
 import { ComputerUseSection } from "@/settings/ComputerUseSection.js";
 import { ShortcutSettingsSection } from "@/settings/ShortcutSettingsSection.js";
 import { MigrationSection } from "@/settings/MigrationSection.js";
+import { DataMigrationPanel } from "@/settings/identity/DataMigrationPanel.js";
 import { SETTINGS_FRAME_CONTENT_CLASSNAME } from "@/settings/SettingsPageParts.js";
 import {
   SettingsBreadcrumbProvider,
@@ -1927,11 +1928,20 @@ export function SettingsPage({
                             }}
                           />
                         ) : activeSection === "migration" ? (
-                          <MigrationSection
-                            workspacePath={activeWorkspacePath}
-                            workspaceIdentity={activeWorkspaceIdentity}
-                            isDesktop={isDesktop}
-                          />
+                          <div className="space-y-6">
+                            {/* 身份数据迁移（跨 ZCode 身份数据根）在上，Claude Code 会话迁移在下。 */}
+                            <ServiceProvider services={localHostServices}>
+                              {/* 迁移探测并搬的是「本机」的其它身份数据根（与用量账本同一份探测）。
+                                  远端 workspace 激活时若注入远端 Host，面板会列出远端机器的数据根，
+                                  与本机迁移的语义不符，因此固定用本地 Host。 */}
+                              <DataMigrationPanel />
+                            </ServiceProvider>
+                            <MigrationSection
+                              workspacePath={activeWorkspacePath}
+                              workspaceIdentity={activeWorkspaceIdentity}
+                              isDesktop={isDesktop}
+                            />
+                          </div>
                         ) : activeSection === "usage" ? (
                           <UsageStatsSection
                             activeTab={usageActiveTab}

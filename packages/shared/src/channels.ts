@@ -151,6 +151,8 @@ export const ServiceChannels = {
   OffPeakTask: "off-peak-task",
   /** Onboarding 完成记录服务（本地持久化，后续上传服务器） */
   OnboardingRecord: "onboarding-record",
+  /** 身份数据迁移：跨本机数据根（官方 / 自建）按域搬运设置、凭据、会话等 */
+  Migration: "migration",
 } as const;
 
 export type ServiceChannelName = (typeof ServiceChannels)[keyof typeof ServiceChannels];

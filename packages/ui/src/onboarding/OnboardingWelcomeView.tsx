@@ -1,10 +1,14 @@
-import { ArrowRightIcon } from "lucide-react";
+import { ArrowRightIcon, ArrowRightLeftIcon } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { ZCodeAboutLogo } from "@/components/ui/ZCodeAboutLogo.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { OnboardingWelcomeAsciiVisual } from "@/onboarding/OnboardingWelcomeAsciiVisual.js";
 
-export function OnboardingWelcomeView(props: { onStart: () => void; onOpenMigration: () => void }) {
+export function OnboardingWelcomeView(props: {
+  onStart: () => void;
+  onOpenMigration: () => void;
+  onOpenIdentityMigration: () => void;
+}) {
   const { intl } = useZCodeIntl();
 
   return (
@@ -50,6 +54,17 @@ export function OnboardingWelcomeView(props: { onStart: () => void; onOpenMigrat
             >
               {intl.formatMessage({ id: "onboarding.welcome.migrate" })}
               <ArrowRightIcon className="size-4" />
+            </Button>
+            {/* 身份数据迁移：视觉层级低于上两个入口，落到设置页该节继续操作。 */}
+            <Button
+              type="button"
+              size="lg"
+              variant="ghost"
+              className="h-10 w-full justify-between text-ui-base"
+              onClick={props.onOpenIdentityMigration}
+            >
+              {intl.formatMessage({ id: "onboarding.welcome.identityMigrate" })}
+              <ArrowRightLeftIcon className="size-4" />
             </Button>
           </div>
         </div>

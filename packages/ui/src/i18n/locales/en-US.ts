@@ -2299,7 +2299,7 @@ const enUS: Record<string, string> = {
   "sidebar.settings.theme.zai-light": "Light theme",
   "sidebar.settings.theme.zai-dark": "Dark theme",
   "sidebar.settings.theme.dark": "Dark theme",
-  "settings.migration.title": "Migration",
+  "settings.migration.title": "Data Migration",
   "settings.migration.sectionTitle": "Claude History Migration",
   "settings.migration.sectionDescription":
     "Scan native Claude Code history on this machine, optionally filter by workspace and activity window, then import the selected sessions into their matching ZCode task lists.",
@@ -2353,6 +2353,63 @@ const enUS: Record<string, string> = {
   "settings.migration.failedTitle": "Failures",
   "settings.migration.reason.session_not_found_or_workspace_mismatch":
     "The source session was not found, or it no longer matches the current workspace filter.",
+  "settings.migration.zcode.title": "Identity data migration",
+  "settings.migration.zcode.description":
+    "Copy data from another ZCode identity data root on this machine into the current identity. Existing target data is never overwritten.",
+  "settings.migration.zcode.unsupportedTitle": "Data migration is not supported here",
+  "settings.migration.zcode.unsupportedDescription":
+    "The connected server does not register identity data migration (remote host or older build). Use this feature in the local desktop environment.",
+  "settings.migration.zcode.sourceLabel": "Source data root",
+  "settings.migration.zcode.rediscover": "Detect again",
+  "settings.migration.zcode.emptySource": "No other ZCode data root detected",
+  "settings.migration.zcode.scanning": "Scanning…",
+  "settings.migration.zcode.scanFailedTitle": "Scan failed",
+  "settings.migration.zcode.retry": "Retry",
+  "settings.migration.zcode.domainsTitle": "Migratable content",
+  "settings.migration.zcode.selectAll": "Select all",
+  "settings.migration.zcode.clearSelection": "Select none",
+  "settings.migration.zcode.itemCount": "{count} items",
+  "settings.migration.zcode.conflict.overwrite":
+    "{count} differ from current values and will be overwritten",
+  "settings.migration.zcode.conflict.skip": "{count} already exist and will be skipped",
+  "settings.migration.zcode.sessionsWarning":
+    "Migrating sessions across versions may be incompatible. Back up first.",
+  "settings.migration.zcode.skipReason": "The source has no data for this",
+  "settings.migration.zcode.notMigratableTitle": "Not migrated",
+  "settings.migration.zcode.notMigratableClaudeHint":
+    "Claude Code session migration is not listed here; it is provided separately below in this section.",
+  "settings.migration.zcode.start": "Start migration",
+  "settings.migration.zcode.rescan": "Rescan",
+  "settings.migration.zcode.progress": "Migrating: step {current}/{total}",
+  "settings.migration.zcode.resultTitle": "Migration finished",
+  "settings.migration.zcode.resultFailedTitle": "Migration finished with failures",
+  "settings.migration.zcode.resultSummary":
+    "Succeeded {imported} / skipped {skipped} / failed {failed}",
+  "settings.migration.zcode.domainResult":
+    "Succeeded {imported} / skipped {skipped} / failed {failed} (click for details)",
+  "settings.migration.zcode.noDetails": "No per-item details.",
+  "settings.migration.zcode.toastSuccess":
+    "Migration finished: succeeded {imported} / skipped {skipped} / failed {failed}",
+  "settings.migration.zcode.toastFailed":
+    "Migration finished with failures: succeeded {imported} / skipped {skipped} / failed {failed}",
+  "settings.migration.zcode.domain.appSettings.title": "Interface and general settings",
+  "settings.migration.zcode.domain.appSettings.policy":
+    "Copies explicit preferences only (language, terminal, proxy); skips data-root pointer and machine state.",
+  "settings.migration.zcode.domain.providerConfig.title": "Provider config",
+  "settings.migration.zcode.domain.providerConfig.policy":
+    "Written only after validation; skipped entirely if the target already has it.",
+  "settings.migration.zcode.domain.credentials.title": "Login credentials",
+  "settings.migration.zcode.domain.credentials.policy":
+    "Fills in missing credentials one by one; existing ones are skipped.",
+  "settings.migration.zcode.domain.sessions.title": "Sessions and task history",
+  "settings.migration.zcode.domain.sessions.policy":
+    "Fills missing content from the whole database; anything already present is skipped.",
+  "settings.migration.zcode.domain.workflows.title": "User workflows",
+  "settings.migration.zcode.domain.workflows.policy":
+    "Copies file by file; same-name files are skipped.",
+  "settings.migration.zcode.domain.hookDeclarations.title": "Hook declarations",
+  "settings.migration.zcode.domain.hookDeclarations.policy":
+    "Merges declarations by event; same-name entries are skipped. Trust records must be re-approved in the target identity.",
   "settings.usageTitle": "Usage stats",
   "settings.usageDescription":
     "Review rough activity and model usage aggregated from local sessions.",
@@ -4562,9 +4619,10 @@ const enUS: Record<string, string> = {
   "onboarding.welcome.eyebrow": "First run setup",
   "onboarding.welcome.title": "Welcome to ZCode",
   "onboarding.welcome.start": "Start ZCode",
-  "onboarding.welcome.migrate": "Migration Guide",
+  "onboarding.welcome.migrate": "Import from Claude Code",
+  "onboarding.welcome.identityMigrate": "Migrate data from official ZCode",
   "onboarding.welcome.helper":
-    "Import existing tool settings now, or skip and continue later from Settings.",
+    "Import existing tool settings now, or migrate data from the official ZCode; you can also skip and continue later from Settings.",
   "onboarding.step.session": "Sessions",
   "onboarding.step.skillsImport": "Skills",
   "onboarding.step.mcpImport": "MCP servers",
