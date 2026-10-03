@@ -128,6 +128,22 @@ export interface ExploreSubagentPortOptions {
   logger?: Logger;
 }
 
+/**
+ * 闲时轮（借用前台模型）禁止后台。Agent 默认语义已是后台，此时不能报错，只能降级为前台
+ * （等同 wait:true）。沿用旧文案，让模型与用户都能看见这次没有真的后台执行。
+ */
+const BACKGROUND_DENIED_FOREGROUND_NOTICE =
+  "Idle-time tasks do not support background agents. This agent ran in the foreground (equivalent to wait: true) instead.";
+
+/** 降级说明追加在子代理正文之后，避免覆盖它自己的最终回复。 */
+function withBackgroundDeniedNotice(output: AgentOutput): AgentOutput {
+  if (output.status !== "completed") return output;
+  return {
+    ...output,
+    content: [...output.content, { text: BACKGROUND_DENIED_FOREGROUND_NOTICE, type: "text" }],
+  };
+}
+
 export function createExploreSubagentPort(options: ExploreSubagentPortOptions): SubagentPort {
   const registry = options.runtimeTaskRegistry ?? new InMemoryRuntimeTaskRegistry();
   const abortControllers = new Map<string, AbortController>();
@@ -144,24 +160,46 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
     ): Promise<AgentOutput> {
       const { profile, request } = resolveAgentProfileForRequest(profiles, rawRequest);
       const executionRequest = toSubagentExecutionRequest(request);
-      const backgroundRequested =
-        rawRequest.runInBackground === true || profile.background === true;
-      if (backgroundRequested) {
-        if (launchOptions?.modelOverride?.background === "deny") {
-          // 单次执行的模型与动态鉴权不能脱离父 loop 生命周期进入后台。
-          throw createCoreError(
-            CoreErrorType.ToolExecutionFailed,
-            "Idle-time tasks do not support background agents. Run this agent in the foreground.",
-            {
-              context: {
-                code: AgentErrorCode.BACKGROUND_UNAVAILABLE,
-                agentType: rawRequest.agentType,
-                parentToolCallId: rawRequest.parentToolCallId,
-              },
-              recoverable: true,
+      const waitRequested = rawRequest.wait === true;
+      const profileRequestsBackground = profile.background === true;
+      const backgroundDenied = launchOptions?.modelOverride?.background === "deny";
+      if (profileRequestsBackground && backgroundDenied) {
+        // profile 显式配置的后台 + 闲时轮借用前台模型是硬冲突：保持 BACKGROUND_UNAVAILABLE，
+        // 不用「前台化」静默改写配置语义（spec 失败语义：文案不变）。
+        throw createCoreError(
+          CoreErrorType.ToolExecutionFailed,
+          "Idle-time tasks do not support background agents. Run this agent in the foreground.",
+          {
+            context: {
+              code: AgentErrorCode.BACKGROUND_UNAVAILABLE,
+              agentType: rawRequest.agentType,
+              parentToolCallId: rawRequest.parentToolCallId,
             },
-          );
+            recoverable: true,
+          },
+        );
+      }
+      // 默认派发即句柄：只有显式 wait:true 才前台等待；profile 显式要求后台时仍后台。
+      const backgroundRequested = !waitRequested || profileRequestsBackground;
+      if (backgroundRequested) {
+        if (backgroundDenied) {
+          // 走到这里后台只可能来自「默认」（profile 显式后台上面已拒绝）。闲时轮不能后台，
+          // 但默认路径若报错会让闲时每一发 Agent 都失败，只能降级为前台（等同 wait:true），
+          // 并把降级如实写进结果与日志。
+          options.logger?.warn(BACKGROUND_DENIED_FOREGROUND_NOTICE, {
+            ...traceContextToLogContext(request.trace),
+            agentType: request.agentType,
+            event: "subagent.background.downgraded",
+            module: "core.subagent",
+            parentToolCallId: request.parentToolCallId,
+            status: "started",
+          });
+          return withBackgroundDeniedNotice(await port.run(executionRequest, launchOptions));
         }
+        // 后台路径有意不带 `callModelSelection`（调用级 `Agent.model`）：`start` 只接普通
+        // Model 继承，没有「选型」通道，SendMessage 复活同样没有。这是记录在案的不对称——
+        // 调用级模型只在本次前台 run 生效，工具描述与 contracts 的 `callModelSelection` 都
+        // 明说了这一点，不要让两处看起来一致。
         return port.start(executionRequest, {
           signal: launchOptions?.signal,
           ...(launchOptions?.model ? { model: launchOptions.model } : {}),
@@ -227,6 +265,10 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           signal: taskAbort.signal,
           ...(runOptions?.model ? { model: runOptions.model } : {}),
           ...(runOptions?.modelOverride ? { modelOverride: runOptions.modelOverride } : {}),
+          // 前台通道是调用级 `Agent.model` 唯一的去处（后台 start 与复活都不带它）。
+          ...(runOptions?.callModelSelection
+            ? { callModelSelection: runOptions.callModelSelection }
+            : {}),
         },
         {
           reportActivity: activityWatchdog.reportActivity,
@@ -794,7 +836,7 @@ function normalizeAgentTypeForMatch(agentType: string): string | undefined {
 }
 
 function toSubagentExecutionRequest(request: SubagentLaunchRequest): SubagentRunRequest {
-  const { runInBackground: _runInBackground, ...executionRequest } = request;
+  const { wait: _wait, ...executionRequest } = request;
   return executionRequest;
 }
 

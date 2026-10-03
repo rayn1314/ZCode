@@ -8,6 +8,9 @@ export * from "./pdf-document.port.js";
 export * from "./permission.port.js";
 export * from "./session.port.js";
 export * from "./session-mailbox.port.js";
+// 跨会话投递端口：core 只依赖它，实现由 bootstrap 注入；漏掉这行消费方拿不到
+// SessionMessagePort / 三档 status 类型，投递接线会静默失配。
+export * from "./session-message.port.js";
 export * from "./session-store.port.js";
 export * from "./tool-artifact-store.port.js";
 export * from "./subagent.port.js";

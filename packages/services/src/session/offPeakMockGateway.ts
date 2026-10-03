@@ -604,19 +604,10 @@ const FOREGROUND_SUBAGENT_SCENARIO = {
       },
     },
   ],
+  // 只保留一条：Agent 输入层的 run_in_background 已删除，调用级「显式请求后台」不复存在——
+  // 默认即后台，闲时轮会降级为前台（见 core/spec/subagent-session-messaging.md D1），
+  // 因此「显式后台被拒绝」只能在 profile 显式声明 background 这一条通道上验证。
   backgrounds: [
-    {
-      stage: "unexpected-background-explicit",
-      marker: "E2E_OFFPEAK_SUBAGENT_BACKGROUND_EXPLICIT",
-      toolId: "toolu_e2e_offpeak_background_explicit",
-      input: {
-        description: "Verify explicit background rejection",
-        prompt:
-          "E2E_OFFPEAK_SUBAGENT_BACKGROUND_EXPLICIT: this child must never reach the provider.",
-        run_in_background: true,
-        subagent_type: "general-purpose",
-      },
-    },
     {
       stage: "unexpected-background-profile",
       marker: "E2E_OFFPEAK_SUBAGENT_BACKGROUND_PROFILE",

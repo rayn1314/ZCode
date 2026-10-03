@@ -15,6 +15,8 @@ import type { ZCodeSessionEndedSubagent, ZCodeSessionRunningSubagent } from "@zc
 
 const SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task", "subagent"]);
 const CANCELLATION_PATTERN = /abort|cancel|interrupt|stop/i;
+/** 后台 launch 的纯文本 ACK 首行；持久化输出不是 JSON 时靠它识别后台启动。 */
+const ASYNC_AGENT_LAUNCH_ACK_MARKER = "Async agent launched successfully";
 
 interface SubagentCandidate {
   agentId?: string;
@@ -190,7 +192,11 @@ function candidateFromToolPart(
     "Subagent";
   return {
     childSessionId,
-    runInBackground: input.run_in_background === true,
+    // 读取面按输出判定：Agent 默认后台，输入里的 run_in_background 已删除，历史记录也不再可信；
+    // 后台启动的输出要么是 status:"async_launched" 的 JSON，要么是纯文本 launch ACK。
+    runInBackground:
+      stringField(output ?? {}, "status") === "async_launched" ||
+      (completedOutput?.includes(ASYNC_AGENT_LAUNCH_ACK_MARKER) ?? false),
     part,
     output,
     agentId: agentId ?? part.callID,

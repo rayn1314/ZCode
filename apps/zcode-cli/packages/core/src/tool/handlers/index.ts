@@ -10,6 +10,7 @@ import {
   LIST_MODELS_TOOL_NAME,
   LIST_SAVED_WORKFLOWS_TOOL_NAME,
   LIST_WORKFLOW_RUNS_TOOL_NAME,
+  LIST_AGENTS_TOOL_NAME,
   RESOLVE_WORKFLOW_QUESTION_TOOL_NAME,
   RESUME_WORKFLOW_RUN_TOOL_NAME,
   SAVE_WORKFLOW_TOOL_NAME,
@@ -51,6 +52,7 @@ import {
 } from "./plan-mode.js";
 import { askUserQuestionToolEntry } from "./ask-user-question.js";
 import { sendMessageToolEntry } from "./send-message.js";
+import { listAgentsToolEntry } from "./list-agents.js";
 import { respondToCoordinatorToolEntry } from "./respond-to-coordinator.js";
 import { createSubmitResultToolEntry, submitResultToolEntry } from "./submit-result.js";
 import { escalateToolEntry } from "./escalate.js";
@@ -95,6 +97,9 @@ export const builtInTools: ToolEntry[] = [
   exitPlanModeToolEntry,
   askUserQuestionToolEntry,
   sendMessageToolEntry,
+  // 子代理协作面：列出本会话派出的子代理。注册门与 Agent 同款（includeAgent），
+  // 所以子代理运行时（subagents.enabled=false，无 subagentPort）拿不到它。
+  listAgentsToolEntry,
   respondToCoordinatorToolEntry,
   submitResultToolEntry,
   // actor 的升级通道。与 submit_result 完全同构：
@@ -215,6 +220,11 @@ export function registerBuiltInTools(
       continue;
     }
     if (isSubagentDispatchToolName(entry.metadata.name) && options.includeAgent !== true) {
+      continue;
+    }
+    // 与 Agent 同门：父会话（有 subagentPort）才有本会话的子代理注册表可列。
+    // 极性是「只有 true 才注册」，两个注册入口都显式传 includeAgent，不会出现刷新时被加回。
+    if (entry.metadata.name === LIST_AGENTS_TOOL_NAME && options.includeAgent !== true) {
       continue;
     }
     if (entry.metadata.name === "Skill" && options.includeSkill === false) {

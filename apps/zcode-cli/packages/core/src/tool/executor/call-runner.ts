@@ -403,6 +403,7 @@ async function executeToolCallImpl(
       },
       skillPort: deps.skillPort,
       subagentPort: deps.subagentPort,
+      sessionMessagePort: deps.sessionMessagePort,
       coordinatorResponsePort: deps.coordinatorResponsePort,
       workflowSubmitPort: deps.workflowSubmitPort,
       workflowEscalatePort: deps.workflowEscalatePort,

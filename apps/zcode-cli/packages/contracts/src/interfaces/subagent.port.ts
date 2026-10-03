@@ -31,10 +31,25 @@ export interface SubagentRunOptions {
     requestDependencies?: ModelRequestDependencies;
     background: "deny";
   };
+  /**
+   * 调用级（一次 Agent 调用）的子代理选型：`Agent` 的 `model` 经 `resolveInput` 归一后的规范形。
+   *
+   * **只活一次**：由 handler 放进本次 launch options，绝不回写 Settings / profile / turn 状态。
+   * 解析顺序见 `core/src/runtime/helpers/subagent-selection.ts`：
+   * `modelOverride(turn) > callModelSelection(调用级) > profile > 父模型`。
+   *
+   * 只有前台 `run` 通道携带它：后台 `start` 与 SendMessage 复活都没有选型通道（见 runner.launch
+   * 的注释），这是记录在案的不对称，不要让描述假装一致。
+   */
+  callModelSelection?: ModelSelection;
 }
 
 export interface SubagentLaunchRequest extends SubagentRunRequest {
-  runInBackground?: boolean;
+  /**
+   * 只有显式 true 才前台同步等待子代理完成；缺省走后台启动（派发即句柄，立即返回句柄）。
+   * profile 显式声明 background 时仍会后台——分叉判据只在 runner 的 launch 里维护。
+   */
+  wait?: boolean;
 }
 
 export type SubagentLaunchOptions = SubagentRunOptions;

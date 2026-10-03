@@ -47,7 +47,7 @@ import {
   describeWorkflowConcurrencyLimit,
   resolveTraceContext,
 } from "./create-workflow.js";
-import { describeWorkflowSubagentModel, parseWorkflowSubagentModel } from "./model-reference.js";
+import { describeWorkflowSubagentModel, parseSubagentModelSelection } from "./model-reference.js";
 import { boundGraphOfAnalysis, displayOfAnalysis } from "./workflow-analysis-display.js";
 import { recordAuthoredWorkflowDraft } from "./workflow-draft-read-state.js";
 import { resolveWorkflowDraftName, writeWorkflowDraft } from "./workflow-drafts.js";
@@ -231,7 +231,10 @@ async function amendResolvedWorkflow(
       // 同上：三态已在 resolveInput 归一成「一个规范形或没有」，`null` 在这里只可能来自绕过
       // 归一化的调用方，与缺席同义（端口不收它）。
       ...(() => {
-        const subagentModel = parseWorkflowSubagentModel(parsed.subagent_model ?? undefined);
+        const subagentModel = parseSubagentModelSelection(
+          parsed.subagent_model ?? undefined,
+          "workflow subagent_model",
+        );
         return subagentModel === undefined ? {} : { subagentModel };
       })(),
       // 这一次修订的脚本文件。缺席即草稿写不

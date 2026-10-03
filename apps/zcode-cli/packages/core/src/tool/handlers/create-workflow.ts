@@ -32,7 +32,7 @@ import {
   resolveCreateWorkflowInput,
   validateCreateWorkflowSource,
 } from "./create-workflow-source.js";
-import { describeWorkflowSubagentModel, parseWorkflowSubagentModel } from "./model-reference.js";
+import { describeWorkflowSubagentModel, parseSubagentModelSelection } from "./model-reference.js";
 import { boundGraphOfAnalysis, displayOfAnalysis } from "./workflow-analysis-display.js";
 import { recordAuthoredWorkflowDraft } from "./workflow-draft-read-state.js";
 import { resolveWorkflowDraftName, writeWorkflowDraft } from "./workflow-drafts.js";
@@ -171,7 +171,10 @@ const createWorkflowHandler: ToolHandler = async (input, context) => {
       // 所以这里只是把那个字符串拆回结构化选型。缺席即继承会话模型，不造空壳键——端口按
       // 「字段在场 = 这次 run 显式选过模型」读它。
       ...(() => {
-        const subagentModel = parseWorkflowSubagentModel(parsed.subagent_model);
+        const subagentModel = parseSubagentModelSelection(
+          parsed.subagent_model,
+          "workflow subagent_model",
+        );
         return subagentModel === undefined ? {} : { subagentModel };
       })(),
       // 脚本的家随提交走进 `run-launched`，终态通知与 `GetWorkflowRun` 再从那里读回来。草稿写不下去时字段整个缺席：

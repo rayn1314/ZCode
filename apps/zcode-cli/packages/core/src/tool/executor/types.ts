@@ -22,6 +22,7 @@ import type {
   PermissionBrokerPort,
   SessionEvent,
   SessionId,
+  SessionMessagePort,
   SessionModePort,
   SessionStorePort,
   SkillPort,
@@ -99,6 +100,8 @@ export interface ToolExecutorOptions {
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /** 跨会话投递端口；透传到 ToolExecutionContext 供 SendMessage 的 `sess_*` 寻址。 */
+  sessionMessagePort?: SessionMessagePort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */
@@ -205,6 +208,8 @@ export interface ToolExecutorDeps {
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /** 跨会话投递端口；透传到 ToolExecutionContext 供 SendMessage 的 `sess_*` 寻址。 */
+  sessionMessagePort?: SessionMessagePort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */

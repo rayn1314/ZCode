@@ -24,6 +24,7 @@ import type {
   SessionId,
   SessionEvent,
   SessionModePort,
+  SessionMessagePort,
   SessionStorePort,
   SkillPort,
   SkillTelemetryMetadata,
@@ -159,6 +160,8 @@ export interface ToolExecutionContext {
   subagentModelOverride?: SubagentRunOptions["modelOverride"];
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /** 跨会话投递端口（`SendMessage` 的 `sess_*` 寻址）；缺席即能力缺席，handler 明确失败。 */
+  sessionMessagePort?: SessionMessagePort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   /** 工作流 actor 提交终态结果并等待引擎裁决的端口；仅在 workflow actor 会话注入。 */
   workflowSubmitPort?: WorkflowSubmitPort;

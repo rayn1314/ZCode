@@ -1,5 +1,5 @@
 // ============================================================
-// 模型引用的解析（`subagent_model` 的字符串 → 一次选型）
+// 模型引用的解析（调用级模型名的字符串 → 一次选型）
 // ============================================================
 //
 // 纯函数、零 I/O：宿主事实由 `ModelCatalogPort` 递进来（contracts 的
@@ -7,8 +7,9 @@
 // 三档匹配、大小写、档位校验与「解不出来时说什么」是这套里唯一会被反复改动的地方，
 // 而它们一旦和端口实现搅在一起就只能靠集成测试去钉。
 //
-// 调用点只有一个：`CreateWorkflow` / `AmendWorkflow` 的 `resolveInput`。解析必须发生在
-// 确认窗**之前**——窗上显示的是将要生效的那个模型，而解不出来的调用根本不该开窗。
+// 调用点是各工具的 `resolveInput`：`CreateWorkflow` / `AmendWorkflow` 的 `subagent_model`
+// 与 `Agent` 的 `model`（两者同形，共用同一个解析器）。解析必须发生在确认窗**之前**——
+// 窗上显示的是将要生效的那个模型，而解不出来的调用根本不该开窗。
 
 import type { ModelCatalogEntry, ModelSelection } from "@zcode/contracts";
 import {
@@ -86,19 +87,22 @@ export function resolveModelReference(
 }
 
 /**
- * 归一化后的 `subagent_model` → 结构化选型。**只用在 handler 里**：走到那里的字符串已经过
+ * 归一化后的调用级模型名 → 结构化选型。**只用在 handler 里**：走到那里的字符串已经过
  * `resolveInput` 的解析，所以解不开只可能是有人绕过了归一化——那是接线故障，按接线故障喊出来，
  * 而不是静默把用户要的模型丢掉（子代理会安静地跑在会话模型上，没人看得出来）。
+ *
+ * `source` 是出错时点名的那个字段（`workflow subagent_model` / `agent model`）：能绕过归一化的
+ * 接线故障排查者，需要知道该去哪个工具的调用链上看。
  */
-export function parseWorkflowSubagentModel(canonical: string | undefined): ModelSelection | undefined {
+export function parseSubagentModelSelection(
+  canonical: string | undefined,
+  source: string,
+): ModelSelection | undefined {
   if (canonical === undefined) return undefined;
   try {
     return parseModelPickerValue(canonical);
   } catch (cause) {
-    throw new Error(
-      `workflow subagent_model reached the handler un-canonicalised: ${canonical}`,
-      { cause },
-    );
+    throw new Error(`${source} reached the handler un-canonicalised: ${canonical}`, { cause });
   }
 }
 

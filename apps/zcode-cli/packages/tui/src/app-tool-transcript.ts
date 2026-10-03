@@ -317,7 +317,9 @@ function agentDetails(record: Record<string, unknown>): string[] {
   return compactLines([
     fieldLine(record, "description"),
     fieldLine(record, "subagent_type"),
-    booleanField(record, "run_in_background") ? "background: true" : undefined,
+    // Agent 默认后台执行，只有显式 wait:true 才是前台阻塞（也是会让人等待的例外），
+    // 因此淡出输入里的 run_in_background，改标 wait。
+    booleanField(record, "wait") ? "wait: true" : undefined,
     previewLine(record, "prompt"),
   ]);
 }

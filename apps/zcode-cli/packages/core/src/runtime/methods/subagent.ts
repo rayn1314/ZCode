@@ -101,11 +101,13 @@ export function createDefaultSubagentPort(
         profileSelection: request.profile.modelSelection,
         parentSelection: this.getSessionModelSelection(),
         overrideSelection: options?.modelOverride?.selection,
+        // 调用级 `Agent.model`：只在本次 spawn 有效，已在 resolveInput 解析成规范形。
+        callSelection: options?.callModelSelection,
         resolveSelection: deps.resolveEffectiveModelSelection,
       });
       const modelOverride = options?.modelOverride;
       const inheritedModel = !modelOverride && !hasConcreteModel ? options?.model : undefined;
-      // Core Server override 优先于持久化 profile 与父模型继承，但仍只是标准 Selection。
+      // Core Server override / 调用级选型 优先于持久化 profile 与父模型继承，但仍只是标准 Selection。
       const childSelection = inheritedModel
         ? modelSelectionFromActiveModel(inheritedModel)
         : profileChildSelection;
@@ -295,6 +297,9 @@ export function createDefaultSubagentPort(
           agentTelemetryCausationMode: request.background ? "linked_root" : "child",
           eventStore: this.eventStore,
           sessionStore: deps.sessionStore,
+          // 子代理也获得跨会话投递端口，因此可用 SendMessage 发 `sess_*`（树外/任意会话）；
+          // subagents.enabled:false 仍关闭 Agent/Task，子代理不能套娃。
+          sessionMessagePort: deps.sessionMessagePort,
           // 子 runtime 继承父的模型请求准入端口：subagent 的请求 provider 同样看得见，
           // 它们该与父一样喂治理器信号（父是 observer 则子也是 observer）。
           modelRequestAdmission: this.modelRequestAdmission,

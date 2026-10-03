@@ -51,7 +51,11 @@ function registerRuntimeBuiltInTools(runtime: AgentRuntimeInternal, deps: AgentR
     bashTimeoutPolicy: runtime.config.bashTimeoutPolicy,
     includeSkill: Boolean(runtime.skillPort),
     includeAgent: Boolean(runtime.subagentPort),
-    includeSendMessage: runtime.subagentPort?.sendMessage !== undefined,
+    // SendMessage 有两条寻址通路：本会话子代理（subagentPort）与任意会话（sessionMessagePort）。
+    // 任一端口在场即注册——子代理 runtime 没有子代理注册表，但仍可经 sessionMessagePort 发 `sess_*`。
+    // Agent/Task 的门（includeAgent）保持不变：子代理仍不能套娃。
+    includeSendMessage:
+      runtime.subagentPort?.sendMessage !== undefined || deps.sessionMessagePort !== undefined,
     includeRespondToCoordinator:
       runtime.config.taskType === "subagent_child" && Boolean(deps.coordinatorResponsePort),
     // submit_result 只在注入了 workflowSubmitPort 的 workflow actor 会话注册。以端口存在为门，
@@ -184,6 +188,7 @@ function createRuntimeToolExecutor(
     nativeSearchEnhancementsEnabled: runtime.config.nativeSearchEnhancementsEnabled,
     skillPort: deps.skillPort,
     subagentPort: runtime.subagentPort,
+    sessionMessagePort: deps.sessionMessagePort,
     coordinatorResponsePort: deps.coordinatorResponsePort,
     workflowSubmitPort: deps.workflowSubmitPort,
     workflowEscalatePort: deps.workflowEscalatePort,

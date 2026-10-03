@@ -5,6 +5,8 @@ import { isSubagentColor } from "@/lib/subagentColors.js";
 type AgentIntl = ReturnType<typeof useZCodeIntl>["intl"];
 type AgentToolCall = ToolCallBlockRenderContext["toolCallNode"]["toolCall"];
 const DEFAULT_AGENT_TYPE_LABEL = "general-purpose";
+/** 后台 launch 的纯文本 ACK 首行；输出不是 JSON 时靠它识别后台启动。 */
+const ASYNC_AGENT_LAUNCH_ACK_MARKER = "Async agent launched successfully";
 
 export function formatAgentMessage(intl: AgentIntl, id: string, fallback: string) {
   const message = intl.formatMessage({ id });
@@ -169,14 +171,19 @@ export function readBackgroundAgentInfo(toolCall: AgentToolCall) {
   const taskNotification =
     zcode && isPlainRecord(zcode.taskNotification) ? zcode.taskNotification : null;
   const backgroundAgent = zcodeBackgroundAgent;
-  const input = isPlainRecord(toolCall.input) ? toolCall.input : null;
   const outputText = readTextFromUnknown(toolCall.output);
   const outputFile =
     (taskNotification && readStringField(taskNotification, ["outputFile", "output_file"])) ??
     (backgroundAgent && readStringField(backgroundAgent, ["outputFile", "output_file"])) ??
     outputText?.match(/output_file:\s*([^\s]+)/i)?.[1];
 
-  if (input?.run_in_background !== true && input?.runInBackground !== true && !outputFile) {
+  // 读取面只看输出：Agent 默认后台，输入里已没有 run_in_background 可读；历史记录（含该旧键）
+  // 也一律按输出判定。后台启动的输出是 status:"async_launched" 的 JSON 或纯文本 launch ACK。
+  const outputRecord = isPlainRecord(toolCall.output) ? toolCall.output : null;
+  const launchedInBackground =
+    (outputRecord ? readStringField(outputRecord, ["status"]) === "async_launched" : false) ||
+    (outputText?.includes(ASYNC_AGENT_LAUNCH_ACK_MARKER) ?? false);
+  if (!launchedInBackground && !outputFile) {
     return null;
   }
 

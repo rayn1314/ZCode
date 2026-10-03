@@ -61,6 +61,7 @@ import type {
   SessionId,
   SessionTaskType,
   SessionMailboxPort,
+  SessionMessagePort,
   SessionProjection,
   SessionStorePort,
   ContextSourcePort,
@@ -325,6 +326,11 @@ export interface AgentRuntimeDeps {
   eventStore: SessionEventStorePort;
   sessionStore?: SessionStorePort;
   sessionMailboxPort?: SessionMailboxPort;
+  /**
+   * 跨会话投递端口（bootstrap 实现）。core 只依赖端口做 `sess_*` 寻址的 SendMessage；
+   * 缺席即能力缺席，handler 明确失败，不静默降级。子代理 runtime 由父 runtime 继承注入。
+   */
+  sessionMessagePort?: SessionMessagePort;
   modelFactory: RuntimeModelFactory;
   /** 可选宿主能力：解析未来执行的显式意图；不用于修改已冻结 Model。 */
   resolveEffectiveModelSelection?: (selection: ModelSelection) => EffectiveModelSelectionResult;

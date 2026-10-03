@@ -1,18 +1,33 @@
 import {
-  CoreErrorType,
   SEND_MESSAGE_TOOL_NAME,
   SendMessageInputJsonSchema,
   SendMessageInputSchema,
   SendMessageOutputSchema,
-  createCoreError,
   type SendMessageInput,
   type SendMessageOutput,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryResult,
+  type SessionMessageSenderKind,
   type TraceContext,
 } from "@zcode/contracts";
-import type { ToolEntry, ToolHandler } from "../types.js";
+import type {
+  ToolEntry,
+  ToolExecutionContext,
+  ToolHandler,
+  ToolHandlerFailure,
+} from "../types.js";
 import { assertNotOffPeakTurn } from "./off-peak.js";
 
 const MAX_SEND_MESSAGE_MODEL_BYTES = 4096;
+/** 两类收件人前缀：与 D2 的寻址约定一致，不解析 title/alias。 */
+const AGENT_RECIPIENT_PREFIX = "agent_";
+const SESSION_RECIPIENT_PREFIX = "sess_";
+/** 与 workflow 内省工具同款：判别键在 message 前缀，码本身不进模型。 */
+const SEND_MESSAGE_FAILURE_CODE = {
+  RECIPIENT_INVALID: 1,
+  SUBAGENT_REGISTRY_UNAVAILABLE: 2,
+  SESSION_MESSAGE_UNAVAILABLE: 3,
+} as const;
 /**
  * SendMessage 续跑已完成子 Agent 走
  * resumeTerminalAgentInBackground，不携带闲时轮的 subagentModelOverride，子 Agent 按父会话
@@ -25,13 +40,18 @@ const OFF_PEAK_SEND_MESSAGE_HINT =
 const SEND_MESSAGE_PROVIDER_DESCRIPTION = [
   "# SendMessage",
   "",
-  "Send a message to another agent.",
+  "Send a message to another agent or to any session.",
   "",
   "```json",
   '{"to": "agent_<uuid>", "summary": "assign task 1", "message": "start on task #1"}',
   "```",
   "",
-  "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox. Refer to local agents by the `agentId` returned in the Agent spawn result. To resume a completed agent, use its `agentId`; it resumes in the background and you'll be notified when it finishes.",
+  "Recipients, by `to` prefix:",
+  "- `agent_<uuid>`: a subagent this session spawned; use the `agentId` from the Agent result. The message is steered into its active turn, queued for its next tool round, or resumes a settled agent in the background.",
+  "- `sess_*`: any session by its ID (for a subagent, `sess_subagent_<uuid>`). Cross-session delivery reports how it landed: `steered` (injected into the target's running turn), `woken` (opened a new turn for an idle or cold session), or `stored` (target unreachable; kept in its mailbox for the next drain). You cannot send to your own session ID.",
+  "- Any other value is rejected. Address sessions by their `sess_*` ID, not by title.",
+  "",
+  "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox.",
 ].join("\n");
 
 const SEND_MESSAGE_TOOL_OUTPUT_SCHEMA = {
@@ -52,18 +72,34 @@ const sendMessageHandler: ToolHandler = async (input, context) => {
     recoverable: true,
   });
 
+  // 统一寻址按前缀分流：`agent_*` 是本会话子代理注册表的便捷别名，`sess_*` 交给跨会话端口。
+  // 不解析 title/alias——会话一律用主键寻址（spec D2）。
+  if (parsed.to.startsWith(AGENT_RECIPIENT_PREFIX)) {
+    return sendToLocalSubagent(parsed, context);
+  }
+  if (parsed.to.startsWith(SESSION_RECIPIENT_PREFIX)) {
+    return sendToSession(parsed, context);
+  }
+  return invalidRecipientFailure(parsed.to);
+};
+
+/**
+ * `agent_*`：沿用既有子代理投递（三态 queued/steered/resumed_background）。
+ * 子代理 runtime 没有本会话子代理注册表，此处必须明确失败，而不是静默当作成功。
+ */
+async function sendToLocalSubagent(
+  parsed: SendMessageInput,
+  context: ToolExecutionContext,
+): Promise<SendMessageOutput | ToolHandlerFailure> {
   if (!context.subagentPort?.sendMessage) {
-    throw createCoreError(
-      CoreErrorType.ConfigurationError,
-      "Subagent port is not configured for SendMessage",
-      {
-        context: {
-          toolCallId: context.toolCallId,
-          toolName: SEND_MESSAGE_TOOL_NAME,
-        },
-        recoverable: false,
-      },
-    );
+    return {
+      result: false,
+      errorCode: SEND_MESSAGE_FAILURE_CODE.SUBAGENT_REGISTRY_UNAVAILABLE,
+      message:
+        `subagent_registry_unavailable: this runtime has no in-memory subagent registry, ` +
+        `so it cannot address the local subagent "${parsed.to}". ` +
+        "Address a session by its `sess_*` ID instead, or call this tool from the session that spawned the agent.",
+    };
   }
 
   return context.subagentPort.sendMessage(
@@ -80,10 +116,88 @@ const sendMessageHandler: ToolHandler = async (input, context) => {
     },
     { signal: context.abortSignal },
   ) satisfies Promise<SendMessageOutput>;
-};
+}
+
+/**
+ * `sess_*`：走跨会话投递端口，把实际落地方式（steered/woken/stored）如实映射到输出，
+ * 不因调用未抛错就报成功。端口缺席或自投递都明确失败。
+ */
+async function sendToSession(
+  parsed: SendMessageInput,
+  context: ToolExecutionContext,
+): Promise<SendMessageOutput | ToolHandlerFailure> {
+  if (parsed.to === context.sessionId) {
+    return {
+      result: false,
+      errorCode: SEND_MESSAGE_FAILURE_CODE.RECIPIENT_INVALID,
+      message:
+        `invalid_recipient: "${parsed.to}" is the sending session itself; ` +
+        "SendMessage cannot deliver a message to its own session. Target a different session or a local subagent.",
+    };
+  }
+
+  const port = context.sessionMessagePort;
+  if (!port) {
+    return {
+      result: false,
+      errorCode: SEND_MESSAGE_FAILURE_CODE.SESSION_MESSAGE_UNAVAILABLE,
+      message:
+        `session_message_unavailable: this runtime has no cross-session delivery port, ` +
+        `so it cannot deliver to "${parsed.to}". This is a capability gap, not a delivered message.`,
+    };
+  }
+
+  const messageId = `msg_${crypto.randomUUID()}`;
+  const request: SessionMessageDeliveryRequest = {
+    toSessionId: parsed.to,
+    content: parsed.message,
+    messageId,
+    // 身份由发送方 runtime 填充，接收方只读（spec D4）：子代理 runtime 标附属身份。
+    fromSessionId: context.sessionId,
+    senderKind: resolveSenderKind(context),
+    createdAt: new Date().toISOString(),
+  };
+  const result = await port.deliver(request, { signal: context.abortSignal });
+
+  return {
+    status: "success",
+    messageId: result.messageId,
+    delivery: result.status,
+    message: formatSessionDeliveryMessage(result),
+  } satisfies SendMessageOutput;
+}
+
+function invalidRecipientFailure(to: string): ToolHandlerFailure {
+  return {
+    result: false,
+    errorCode: SEND_MESSAGE_FAILURE_CODE.RECIPIENT_INVALID,
+    message:
+      `invalid_recipient: "${to}" is not a valid recipient. ` +
+      "Use `agent_<uuid>` for a subagent this session spawned, or `sess_*` for any session.",
+  };
+}
+
+/**
+ * `taskType === "subagent_child"` 在工具上下文里投影为 `runtimeScope === "subagent"`
+ * （与 runtime-tools.ts 的判据同源）。据此标注附属身份；其余会话是独立身份。
+ */
+function resolveSenderKind(context: ToolExecutionContext): SessionMessageSenderKind {
+  return context.runtimeScope === "subagent" ? "subagent" : "session";
+}
+
+function formatSessionDeliveryMessage(result: SessionMessageDeliveryResult): string {
+  switch (result.status) {
+    case "steered":
+      return `Message ${result.messageId} was steered into the active turn of session ${result.toSessionId}.`;
+    case "woken":
+      return `Message ${result.messageId} woke idle session ${result.toSessionId} into a new turn.`;
+    case "stored":
+      return `Session ${result.toSessionId} is unreachable right now; message ${result.messageId} was stored in its mailbox for the next drain.`;
+  }
+}
 
 export const sendMessageToolEntry: ToolEntry = {
-  capability: "Send a short message to a local agent",
+  capability: "Send a short message to a local agent or another session",
   metadata: {
     name: SEND_MESSAGE_TOOL_NAME,
     description: SEND_MESSAGE_PROVIDER_DESCRIPTION,
@@ -104,7 +218,7 @@ export const sendMessageToolEntry: ToolEntry = {
   runtimeOutputSchema: SendMessageOutputSchema,
   permission: {
     permission: "agent.message.send",
-    reason: "SendMessage writes a message to a local agent queue",
+    reason: "SendMessage writes a message to a local agent queue or delivers it to another session",
     riskLevel: "low",
     sideEffectScope: "session",
     needsApproval: false,

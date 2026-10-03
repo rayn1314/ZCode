@@ -15,6 +15,9 @@ export * from "./glob.js";
 export * from "./grep.js";
 export * from "./webfetch.js";
 export * from "./agent.js";
+// 子代理协作面：名字常量被 core 的工具注册与 skip 门读走，漏掉这行消费方拿不到
+// schema 与 LIST_AGENTS_TOOL_NAME，注册门会静默失效（照 resume-workflow-run 的同款注释）。
+export * from "./list-agents.js";
 export * from "./skill.js";
 export * from "./todo.js";
 export * from "./automation.js";

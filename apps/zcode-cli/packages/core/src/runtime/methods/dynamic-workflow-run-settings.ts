@@ -13,7 +13,7 @@ import {
   resolveAmendSubagentModelChoice,
 } from "../../tool/handlers/amend-workflow-resolve.js";
 import { resolveKeptScriptFile } from "../../tool/handlers/amend-workflow-source.js";
-import { parseWorkflowSubagentModel } from "../../tool/handlers/model-reference.js";
+import { parseSubagentModelSelection } from "../../tool/handlers/model-reference.js";
 import {
   boundGraphOfAnalysis,
   displayOfAnalysis,
@@ -198,7 +198,7 @@ export async function amendWorkflowRunSettings(
   const toolCallId = `settings-${randomUUID()}`;
   const phaseNames = createWorkflowPhaseNames(graph);
   const phaseAlongside = phaseNames === undefined ? undefined : createWorkflowPhaseAlongside(graph);
-  const subagentModel = parseWorkflowSubagentModel(next.subagentModel);
+  const subagentModel = parseSubagentModelSelection(next.subagentModel, "workflow subagent_model");
   let amended: Awaited<ReturnType<NonNullable<typeof port.amend>>>;
   try {
     amended = await port.amend({
