@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import {
@@ -9,15 +8,15 @@ import {
   zcodeSessionStateSnapshotSchema,
   type ZCodeSessionStateSnapshot,
 } from "@zcode/shared";
-import { getLegacyTaskSessionSnapshotPath, setDataBaseDir } from "../src/paths.js";
+import { getLegacyTaskSessionSnapshotPath } from "../src/paths.js";
 import { parseLegacyTaskSessionFile } from "../src/session/legacyTaskSessionFile.js";
 import { TaskIndexRepo } from "../src/session/taskIndexRepo.js";
 import { createZCodeTaskServiceAdapter } from "../src/zcode-agent/zcodeTaskServiceAdapter.js";
+import { sealDataRoot } from "./helpers/sealedDataRoot.js";
 
 for (const clientMode of ["desktop-continuous", "web-remote-replayable"] as const) {
   test(`previously imported Claude history becomes a real session for ${clientMode}`, async () => {
-    const dir = await mkdtemp(join(tmpdir(), "zcode-import-recovery-"));
-    setDataBaseDir(dir);
+    await using root = await sealDataRoot("zcode-import-recovery-");
     const meta = {
       taskId: "claude-import-example",
       traceId: "import-trace-example",
@@ -44,9 +43,10 @@ for (const clientMode of ["desktop-continuous", "web-remote-replayable"] as cons
       meta.workspaceIdentity,
     );
     const content = JSON.stringify(legacy);
+    assert.ok(path.startsWith(root.baseDir), "task 快照必须落在封住的临时数据根内");
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, content);
-    const taskIndexRepo = new TaskIndexRepo(join(dir, "tasks.sqlite"));
+    const taskIndexRepo = new TaskIndexRepo(join(root.baseDir, "tasks.sqlite"));
     await taskIndexRepo.syncTaskMeta({ meta });
     type Options = Parameters<typeof createZCodeTaskServiceAdapter>[0];
     type CreateInput = Parameters<Options["zcodeAgentService"]["createSession"]>[0];
@@ -131,8 +131,6 @@ for (const clientMode of ["desktop-continuous", "web-remote-replayable"] as cons
     } finally {
       service.disposeAll();
       taskIndexRepo.close();
-      setDataBaseDir(null);
-      await rm(dir, { recursive: true, force: true });
     }
   });
 }

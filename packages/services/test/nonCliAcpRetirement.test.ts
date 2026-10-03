@@ -12,14 +12,11 @@ import {
 } from "@zcode/shared";
 import { TaskIndexRepo } from "../src/session/taskIndexRepo.js";
 import { createZCodeTaskServiceAdapter } from "../src/zcode-agent/zcodeTaskServiceAdapter.js";
-import {
-  getLegacyTaskSessionSnapshotPath,
-  getZCodeDataRootDir,
-  setDataBaseDir,
-} from "../src/paths.js";
+import { getLegacyTaskSessionSnapshotPath } from "../src/paths.js";
 import { createMemoryService } from "../src/memory/memoryService.js";
 import { parseLegacyTaskSessionFile } from "../src/session/legacyTaskSessionFile.js";
 import { createProviderConfigRuntime } from "../src/model-provider/providerConfigRuntime.js";
+import { sealDataRoot } from "./helpers/sealedDataRoot.js";
 
 const meta = {
   taskId: "wrapper-example",
@@ -33,35 +30,22 @@ const meta = {
 };
 
 test("current Project Memory catalog and files remain readable", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "zcode-current-memory-"));
-  setDataBaseDir(dir);
-  try {
-    const workspaceId = "example-0123456789abcdef";
-    const memoryRoot = join(
-      getZCodeDataRootDir(),
-      "cli",
-      "memories",
-      "projects",
-      workspaceId,
-      "memory",
-    );
-    await mkdir(memoryRoot, { recursive: true });
-    await writeFile(join(memoryRoot, "MEMORY.md"), "# Project memory\n");
-    await writeFile(join(memoryRoot, "workflow.md"), "Use the current project workflow.\n");
-    const service = createMemoryService();
-    const catalog = await service.listProjectMemories();
-    assert.equal(catalog.length, 1);
-    assert.equal(catalog[0]?.id, workspaceId);
-    assert.deepEqual(
-      catalog[0]?.files.map((file) => file.name),
-      ["MEMORY.md", "workflow.md"],
-    );
-    const file = await service.readProjectMemoryFile({ workspaceId, fileName: "workflow.md" });
-    assert.equal(file.content, "Use the current project workflow.\n");
-  } finally {
-    setDataBaseDir(null);
-    await rm(dir, { recursive: true, force: true });
-  }
+  await using root = await sealDataRoot("zcode-current-memory-");
+  const workspaceId = "example-0123456789abcdef";
+  const memoryRoot = join(root.dataRoot, "cli", "memories", "projects", workspaceId, "memory");
+  await mkdir(memoryRoot, { recursive: true });
+  await writeFile(join(memoryRoot, "MEMORY.md"), "# Project memory\n");
+  await writeFile(join(memoryRoot, "workflow.md"), "Use the current project workflow.\n");
+  const service = createMemoryService();
+  const catalog = await service.listProjectMemories();
+  assert.equal(catalog.length, 1);
+  assert.equal(catalog[0]?.id, workspaceId);
+  assert.deepEqual(
+    catalog[0]?.files.map((file) => file.name),
+    ["MEMORY.md", "workflow.md"],
+  );
+  const file = await service.readProjectMemoryFile({ workspaceId, fileName: "workflow.md" });
+  assert.equal(file.content, "Use the current project workflow.\n");
 });
 
 test("opening the task index leaves retired ACP IDs and user rows untouched", async () => {
@@ -97,10 +81,10 @@ test("opening the task index leaves retired ACP IDs and user rows untouched", as
 });
 
 test("missing sessions report the owner error even when a valid ACP snapshot exists", async () => {
-  const dir = await mkdtemp(join(tmpdir(), "zcode-acp-snapshot-"));
-  setDataBaseDir(dir);
+  await using root = await sealDataRoot("zcode-acp-snapshot-");
   const path = getLegacyTaskSessionSnapshotPath(meta.workspacePath, meta.taskId);
   const snapshot = parseLegacyTaskSessionFile({ meta, messages: [], toolCalls: [] });
+  assert.ok(path.startsWith(root.baseDir), "task 快照必须落在封住的临时数据根内");
   await mkdir(dirname(path), { recursive: true });
   const content = JSON.stringify(snapshot);
   await writeFile(path, content);
@@ -136,8 +120,6 @@ test("missing sessions report the owner error even when a valid ACP snapshot exi
     assert.equal(await readFile(path, "utf8"), content);
   } finally {
     service.disposeAll();
-    setDataBaseDir(null);
-    await rm(dir, { recursive: true, force: true });
   }
 });
 

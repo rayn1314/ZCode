@@ -1,12 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createProviderConfigRuntime } from "../src/model-provider/providerConfigRuntime.js";
 import { readLegacyZCodeConfigProviders } from "../src/model-provider/legacyZCodeConfigProviderReader.js";
-import { getAppConfigDir, setDataBaseDir } from "../src/paths.js";
+import { sealDataRoot, type SealedDataRoot } from "./helpers/sealedDataRoot.js";
 
 const legacyConfig = {
   provider: {
@@ -28,10 +27,8 @@ const legacyConfig = {
   },
 };
 
-async function setup() {
-  const dir = await mkdtemp(join(tmpdir(), "zcode-provider-migration-"));
-  setDataBaseDir(dir);
-  const configDir = getAppConfigDir();
+async function setup(root: SealedDataRoot) {
+  const configDir = root.configDir;
   await mkdir(configDir, { recursive: true });
   const legacyPath = join(configDir, "config.json");
   const personalPath = join(configDir, "personal.json");
@@ -59,16 +56,12 @@ async function setup() {
     personalPath,
     recoveries,
     readCount: () => reads,
-    async dispose() {
-      runtime.dispose();
-      setDataBaseDir(null);
-      await rm(dir, { recursive: true, force: true });
-    },
   };
 }
 
 test("startup migrates published ZCode config into personal config without changing the source", async () => {
-  const fixture = await setup();
+  await using root = await sealDataRoot("zcode-provider-migration-");
+  const fixture = await setup(root);
   try {
     await fixture.runtime.start();
     const config = await fixture.runtime.configService.read();
@@ -95,12 +88,13 @@ test("startup migrates published ZCode config into personal config without chang
       "custom-example",
     );
   } finally {
-    await fixture.dispose();
+    fixture.runtime.dispose();
   }
 });
 
 test("startup preserves an existing personal config and never consults the legacy file", async () => {
-  const fixture = await setup();
+  await using root = await sealDataRoot("zcode-provider-migration-");
+  const fixture = await setup(root);
   const current = JSON.stringify({
     schemaVersion: 1,
     config: {
@@ -117,12 +111,13 @@ test("startup preserves an existing personal config and never consults the legac
     assert.deepEqual(config.personalProviders.toJSON(), []);
     assert.equal(await readFile(fixture.personalPath, "utf8"), current);
   } finally {
-    await fixture.dispose();
+    fixture.runtime.dispose();
   }
 });
 
 test("invalid legacy config is preserved and does not commit an empty personal config", async () => {
-  const fixture = await setup();
+  await using root = await sealDataRoot("zcode-provider-migration-");
+  const fixture = await setup(root);
   try {
     const invalidContent = '{"provider":';
     await writeFile(fixture.legacyPath, invalidContent);
@@ -132,6 +127,6 @@ test("invalid legacy config is preserved and does not commit an empty personal c
     assert.equal(await readFile(fixture.legacyPath, "utf8"), invalidContent);
     await assert.rejects(readFile(fixture.personalPath), { code: "ENOENT" });
   } finally {
-    await fixture.dispose();
+    fixture.runtime.dispose();
   }
 });
