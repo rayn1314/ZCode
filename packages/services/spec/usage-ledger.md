@@ -53,7 +53,8 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 
 - SQLite 全程 `readOnly: true` + 短连接，每请求用完即关；**绝不持有长连接**——长读事务会阻碍主程序 WAL checkpoint。
 - SQL 全参数化；条件文本只用静态列名，无动态字符串进 SQL 文本。
-- WSL 侧绝不在 Windows 侧直开 WSL 的 SQLite 文件（跨文件系统 WAL 锁），一律把聚合脚本送进 WSL 执行、只回传 JSON；进程执行（spawn wsl.exe）全部隔离在 ledgerWsl.ts，参数走 `wsl.exe --` 直通模式 + base64url 编码传筛选值。
+- WSL 侧绝不在 Windows 侧直开 WSL 的 SQLite 文件（跨文件系统 WAL 锁），一律把聚合脚本送进 WSL 执行、只回传 JSON；进程执行（spawn wsl.exe）全部隔离在 ledgerWsl.ts，命令一律走 `wsl.exe --exec` 直通模式 + base64url 编码传筛选值。
+- **`--exec` 是硬要求，不能用裸 `--`**：裸 `--` 会把参数交给 WSL 侧 shell 分词，而 shell 的 cwd 是 Windows 进程 cwd 的 /mnt 映射——若 cwd 里恰好有 `.zcode-*` 文件（打包产物的 `.zcode-install-manifest` 就是一例），`find -name .zcode-*` 的通配会被 shell 展开成那个文件名，探测静默失真（2026-10-03 实测：打包版 host 的 cwd 是 win-unpacked，导致 WSL·自建源从此探测不到，且无任何报错）。`--exec` 把参数原样传给目标程序，无 shell 展开面。
 - 日志不写凭据、不写明文 key。
 
 ## 失败语义

@@ -1,8 +1,10 @@
 import { spawn } from "node:child_process";
 
-// WSL 桥接的进程执行层。所有调用都走「可执行文件 + 参数列表」（wsl.exe -- 的
-// 直通模式，不经任何 shell），因此不存在命令拼接面；UI 侧来的可变值一律经
-// encodeWslArg 转 base64url 后再进参数列表。
+// WSL 桥接的进程执行层。所有命令调用都用 --exec：wsl.exe 裸 `--` 会把参数交给
+// WSL 侧 shell 分词，而 shell 的 cwd 是 Windows 进程 cwd 的 /mnt 映射——若 cwd
+// 里恰好有 .zcode-* 文件（如打包产物内的 .zcode-install-manifest），find 的
+// -name 通配会被展开吃掉，探测随之静默失真。--exec 把参数原样传给目标程序，
+// 不存在 shell 展开与命令拼接面；UI 侧来的可变值一律经 encodeWslArg 转 base64url。
 
 export type SpawnLike = typeof spawn;
 
@@ -110,7 +112,7 @@ const DB_SUFFIX = "/cli/db/db.sqlite";
 export async function probeWslDbRoots(distro: string, spawnImpl?: SpawnLike): Promise<string[]> {
   const printenv = async (name: string): Promise<string | null> => {
     try {
-      const result = await runWsl(["-d", distro, "--", "printenv", name], 15_000, spawnImpl);
+      const result = await runWsl(["-d", distro, "--exec", "printenv", name], 15_000, spawnImpl);
       if (result.status !== 0) {
         return null;
       }
@@ -129,7 +131,7 @@ export async function probeWslDbRoots(distro: string, spawnImpl?: SpawnLike): Pr
 
   try {
     const selfScan = await runWsl(
-      ["-d", distro, "--", "find", home, "-maxdepth", "1", "-type", "d", "-name", ".zcode-*"],
+      ["-d", distro, "--exec", "find", home, "-maxdepth", "1", "-type", "d", "-name", ".zcode-*"],
       20_000,
       spawnImpl,
     );
@@ -149,7 +151,7 @@ export async function probeWslDbRoots(distro: string, spawnImpl?: SpawnLike): Pr
       [
         "-d",
         distro,
-        "--",
+        "--exec",
         "find",
         ...candidates,
         "-maxdepth",
@@ -206,7 +208,7 @@ export async function runWslDump(params: {
   const args = [
     "-d",
     params.distro,
-    "--",
+    "--exec",
     "python3",
     wslScriptPath(params.scriptWinPath),
     "--db",
