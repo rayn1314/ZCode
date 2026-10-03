@@ -2,7 +2,6 @@
 // Node.js service implementations — NOT safe to import in browser code
 import { randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   createNodeProviderRuntimePathEnv,
@@ -17,8 +16,10 @@ import {
 import {
   buildLocalMediaPreviewUrl,
   isProviderProvisioningAccountCredentialKey,
+  SESSION_MAILBOX_ROOT_ENV,
   type ProviderProvisioningTrigger,
 } from "@zcode/shared";
+import { resolveSessionMailboxRoot } from "@zcode/shared/identity-paths-node";
 
 export {
   materializeZCodeBuiltinProviderConfig,
@@ -595,6 +596,21 @@ const cuaProductHelperTrackedStart = new WeakMap<Pick<CuaHelperHost, "start">, P
 const cuaProductHelperReservedSpawns = new WeakSet<Pick<CuaHelperHost, "start">>();
 /** Agent 已消费 Windows transport_ready tuple；full startup 后续失败时仍保留既有 Agent。 */
 const cuaProductHelperTransportSpawns = new WeakSet<Pick<CuaHelperHost, "start">>();
+
+/**
+ * Agent spawn 时下发的 mailbox 落盘根。
+ *
+ * 显式下发解析结果（`ZCODE_MAILBOX_ROOT` 覆盖优先，否则 `{dataRoot}/mailbox`），不依赖子进程
+ * 自行推导出同一路径——写侧（本进程）与读侧（Agent CLI）落到不同的树时，同一条会话消息会被
+ * 实时投递与 drain 各读一次。宿主是事实的 owner，值怎么来就怎么交出去。
+ */
+function resolveSpawnMailboxRootEnv(): Record<string, string> {
+  return {
+    [SESSION_MAILBOX_ROOT_ENV]: resolveSessionMailboxRoot({
+      dataRootDir: getZCodeDataRootDir(),
+    }),
+  };
+}
 
 function trackCuaProductHelperStartup(
   host: Pick<CuaHelperHost, "start">,
@@ -1827,9 +1843,10 @@ export function createLocalServices(options: {
     const socketPath = resolveBrokerSocketPath();
     // standaloneHelperCandidatePaths 未在上游 exports 白名单——此处按同一规则枚举安装候选
     //（dev-desktop → dev/ 前缀；app 名一律取 helperConstants，不写字面量）。
-    // ZCODE_HOME 显式覆盖优先（远端/测试）；兜底 `~/.zcode/computer-use` 与 CLI helperLauncher 的
-    // 安装根同源（helper 由 CLI/shared 侧安装，写死在 home 下，不随产品身份走）。
-    const home = process.env.ZCODE_HOME?.trim() || join(homedir(), ".zcode");
+    // ZCODE_HOME 显式覆盖优先（远端/测试）；兜底跟随身份数据根 `{dataRoot}/computer-use`，
+    // 与 CLI helperLauncher 的安装根同源（Helper 由 CLI/shared 侧安装，写死 `~/.zcode`
+    // 会让自建版找不到自己的 Helper，也会让官方根出现不属于它的 CUA 组件）。
+    const home = process.env.ZCODE_HOME?.trim() || getZCodeDataRootDir();
     const baseRoot = join(home, "computer-use");
     // 安装布局见上游 helperLauncher.resolveCuaHelperInstallRoot：dev 是独立子根 `dev/` 且 app
     // 名换成 DEV_HELPER_APP_NAME；preview 是独立子根 `preview/` 但**沿用**稳定 app 名
@@ -2268,6 +2285,8 @@ export function createLocalServices(options: {
           zcodeBuiltinFilePath: await providerConfigRuntime.resolveZCodeBuiltinActiveFilePath(),
           personalFilePath: join(resolveAppConfigDir(), PERSONAL_PROVIDER_CONFIG_FILE_NAME),
         }),
+        // mailbox 落盘根显式下发，保证同一身份下 CLI 与 Host 读写同一棵树（不再依赖继承）。
+        ...resolveSpawnMailboxRootEnv(),
       };
     },
     ...(isDesktopAttachedRemote

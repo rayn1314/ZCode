@@ -6,17 +6,16 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import {
-  DEFAULT_SESSION_MAILBOX_ROOT,
-  SESSION_MAILBOX_ROOT_ENV,
   buildSessionMailboxFileName,
   isValidSessionMailboxMessageId,
   isValidSessionMailboxSessionId,
   isValidSessionMessageChain,
   sessionMailboxMessageIdSuffix,
 } from "@zcode/shared";
+import { resolveSessionMailboxRoot } from "@zcode/shared/identity-paths-node";
+import { getZCodeDataRootDir } from "../paths.js";
 import type {
   SessionMessageMailboxEnvelope,
   SessionMessageMailboxPort,
@@ -31,10 +30,15 @@ export interface NodeSessionMessageMailboxOptions {
   env?: NodeJS.ProcessEnv;
 }
 
-/** mailbox 根目录：`ZCODE_MAILBOX_ROOT` 优先，缺省 `~/.zcode/mailbox`（与 CLI 同源）。 */
+/**
+ * mailbox 根目录：`ZCODE_MAILBOX_ROOT` 优先，缺省 `{身份数据根}/mailbox`（与 CLI 同源）。
+ *
+ * 根解析单源在 `@zcode/shared/identity-paths-node`：Host 与 CLI 只各自提供自己已知的数据根，
+ * 规则不重复。缺省必须跟随数据根——信封正文就是会话内容，落在共享 `~/.zcode/mailbox`
+ * 会让并排安装的另一个产品身份读到不属于它的消息。
+ */
 export function resolveSessionMessageMailboxRoot(env: NodeJS.ProcessEnv = process.env): string {
-  const configured = env[SESSION_MAILBOX_ROOT_ENV]?.trim() || DEFAULT_SESSION_MAILBOX_ROOT;
-  return expandHome(configured);
+  return resolveSessionMailboxRoot({ dataRootDir: getZCodeDataRootDir(), env });
 }
 
 export function createNodeSessionMessageMailbox(
@@ -104,10 +108,6 @@ class NodeSessionMessageMailbox implements SessionMessageMailboxPort {
     }
     return sessionDir;
   }
-}
-
-function expandHome(path: string): string {
-  return path.startsWith("~/") ? join(homedir(), path.slice(2)) : resolve(path);
 }
 
 async function removeTempFile(tempPath: string): Promise<void> {

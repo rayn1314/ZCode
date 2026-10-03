@@ -1,6 +1,7 @@
 import { accessSync, constants, existsSync } from "node:fs";
 import { delimiter, dirname, join, resolve as resolvePath } from "node:path";
 import { getRuntimeToolRuntime, type RuntimeToolId } from "@zcode/shared";
+import { getServerRuntimeRootDir } from "../paths.js";
 
 function isExecutableFile(path: string): boolean {
   try {
@@ -115,12 +116,12 @@ function findRuntimeToolBinary(
     typeof (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath === "string"
       ? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
       : null;
-  const runtimeRoot = env.ZCODE_SERVER_RUNTIME_ROOT?.trim();
+  // 与 provider runtime 同源：运行时根缺省按身份数据根兜底 `{数据根}/server`（官方空后缀即
+  // 历史 `~/.zcode/server`），自建版的 tools 制品不会落到官方根。
+  const runtimeRoot = env.ZCODE_SERVER_RUNTIME_ROOT?.trim() || getServerRuntimeRootDir();
   const moduleDir: string | undefined = import.meta.dirname;
   const candidate = resolveExistingPath([
-    runtimeRoot
-      ? resolvePath(runtimeRoot, "tools", runtime.bundledResourceDir, ...entrySegments)
-      : null,
+    resolvePath(runtimeRoot, "tools", runtime.bundledResourceDir, ...entrySegments),
     resourcesPath
       ? resolvePath(resourcesPath, "tools", runtime.bundledResourceDir, ...entrySegments)
       : null,

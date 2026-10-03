@@ -7,7 +7,7 @@ import { getBuildMetadata } from "./scripts/build-metadata.mjs";
 import {
   resolveDesktopProductFlavor,
   resolveDesktopProductIdentityForFlavor,
-} from "./scripts/desktop-product-identity.mjs";
+} from "../../scripts/product-identity.mjs";
 // tsup 会先打包配置文件；动态加载构建工具，避免其 import.meta.dirname 被重定位到 desktop。
 const { loadBuiltinProviderConfig } = await import(
   pathToFileURL(resolve(import.meta.dirname, "../../scripts/builtin-provider-config.mjs")).href

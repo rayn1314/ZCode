@@ -4,6 +4,7 @@ import { basename, dirname, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { build } from "esbuild";
 import { stageBuiltinProviderConfig } from "../../../../../scripts/builtin-provider-config.mjs";
+import { resolveDesktopProductIdentity } from "../../../../../scripts/product-identity.mjs";
 
 const cliRoot = resolve(import.meta.dirname, "..");
 const projectRoot = resolve(cliRoot, "../..");
@@ -196,6 +197,13 @@ export const resolveBuildAliases = ({
     rootDirectory,
     "../../packages/shared/src/zcodeEndpoint.ts",
   ),
+  // 身份路径派生单源（`resolveIdentityDataRoot` 等）：contracts 的默认数据根、adapters 的
+  // trust store、CLI bootstrap 的 mailbox 都 import 它。漏声明会被通用 "@zcode/shared" 前缀
+  // 改写成 `src/index.ts/identity-paths-node` 直接打包失败（同上各条既有规则）。
+  "@zcode/shared/identity-paths-node": resolve(
+    rootDirectory,
+    "../../packages/shared/src/identity-paths-node.ts",
+  ),
   "@zcode/shared/node": resolve(rootDirectory, "../../packages/shared/src/node.ts"),
   "@zcode/shared": resolve(rootDirectory, "../../packages/shared/src/index.ts"),
   "@zcode/core": resolve(cliDirectory, "../core/dist/index.js"),
@@ -231,6 +239,10 @@ export const buildCli = async ({
     bundle: true,
     define: {
       __CLI_VERSION__: JSON.stringify(cliVersion),
+      // 数据根后缀随产品身份注入。CLI 会脱离桌面宿主独立运行（不经宿主下发 ZCODE_DATA_ROOT），
+      // 若此常量缺失，@zcode/shared 的 ZCODE_DATA_ROOT_SUFFIX 恒为空串，自建构建会回落到
+      // 官方数据根 `{home}/.zcode` 与官方进程串台。取值来源与桌面构建同一份（scripts/product-identity.mjs）。
+      __ZCODE_DATA_ROOT_SUFFIX__: JSON.stringify(resolveDesktopProductIdentity(env).dataRootSuffix),
     },
     entryPoints: [resolve(cliDirectory, "src/main.ts")],
     // Ink 7 and yoga-layout use top-level await, so the CJS CLI bundle loads the TUI

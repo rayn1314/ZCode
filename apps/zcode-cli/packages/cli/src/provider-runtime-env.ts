@@ -1,6 +1,7 @@
 import { existsSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
+import { resolveIdentityDataRoot } from "@zcode/shared/identity-paths-node";
 import {
   materializeZCodeBuiltinProviderConfig,
   NodeZCodeBuiltinProviderConfigSource,
@@ -57,7 +58,12 @@ export async function prepareCliProviderRuntimeEnv(
 
   const explicitZCodeBuiltin = options.env[ZCODE_BUILTIN_PROVIDER_CONFIG_FILE_ENV]?.trim();
   const explicitPersonal = options.env[ZCODE_PERSONAL_PROVIDER_CONFIG_FILE_ENV]?.trim();
-  const dataBaseDir = options.dataBaseDir ?? options.env.ZCODE_DATA_BASE_DIR?.trim() ?? homedir();
+  // CLI 身份数据根（`.zcode{suffix}`）：显式 dataBaseDir 视为数据根父目录，否则按 env 解析
+  // （ZCODE_DATA_ROOT 覆盖 > ZCODE_DATA_BASE_DIR > home）。官方渠道后缀为空串，路径与历史
+  // 逐字节一致；自建渠道必须落进自己的根，否则会读写官方渠道的 provider 配置、缓存与凭据。
+  const dataRootDir = options.dataBaseDir
+    ? resolveIdentityDataRoot({ baseDir: options.dataBaseDir })
+    : resolveZCodeDataRoot(options.env);
   if (explicitZCodeBuiltin && explicitPersonal) {
     return {
       [ZCODE_BUILTIN_PROVIDER_CONFIG_FILE_ENV]: explicitZCodeBuiltin,
@@ -68,17 +74,17 @@ export async function prepareCliProviderRuntimeEnv(
   const zcodeBuiltinFilePath =
     explicitZCodeBuiltin ??
     (await resolveBundledZCodeBuiltinProviderConfig({
-      dataBaseDir,
+      dataRootDir,
       entrypoint: options.entrypoint ?? process.argv[1],
       sea: options.sea ?? getSeaProviderConfigAssets(),
     }));
   const personalFilePath =
-    explicitPersonal ?? join(dataBaseDir, ".zcode", "v2", PERSONAL_PROVIDER_CONFIG_FILE_NAME);
+    explicitPersonal ?? join(dataRootDir, "v2", PERSONAL_PROVIDER_CONFIG_FILE_NAME);
   const appVersion = options.appVersion ?? ZCODE_VERSION;
   const platform = options.platform ?? resolveZCodeBuiltinClientPlatform();
   const zcodeEndpointOrigin = resolveRuntimeZCodeEndpointOrigin(options.env);
   const cachePaths = resolveZCodeBuiltinCachePaths({
-    environmentConfigRoot: join(dataBaseDir, ".zcode", "v2"),
+    environmentConfigRoot: join(dataRootDir, "v2"),
     platform,
     appVersion,
     zcodeEndpointOrigin,
@@ -130,14 +136,14 @@ function requiresProviderRuntime(argv: readonly string[]): boolean {
 }
 
 async function resolveBundledZCodeBuiltinProviderConfig(input: {
-  readonly dataBaseDir: string;
+  readonly dataRootDir: string;
   readonly entrypoint: string | undefined;
   readonly sea: SeaProviderConfigAssets | undefined;
 }): Promise<string> {
   if (input.sea?.isSea()) {
     const content = input.sea.getAsset(SEA_ZCODE_BUILTIN_PROVIDER_CONFIG_ASSET_KEY, "utf8");
     return materializeZCodeBuiltinProviderConfig({
-      environmentConfigRoot: join(input.dataBaseDir, ".zcode", "v2"),
+      environmentConfigRoot: join(input.dataRootDir, "v2"),
       content,
     });
   }

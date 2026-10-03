@@ -3,12 +3,17 @@ import type { FileHandle } from "node:fs/promises";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
-import { homedir, uptime } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { uptime } from "node:os";
+import { basename, dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { WorkspaceHookTrustRecord, WorkspaceHookTrustStoreFile } from "@zcode/contracts";
 import {
+  getIdentityDataRootForBaseDir,
+  resolveWorkspaceHookTrustStoreFilePath,
+} from "@zcode/shared/identity-paths-node";
+import {
   WORKSPACE_HOOK_TRUST_STORE_SCHEMA_VERSION,
+  resolveZCodeDataRoot,
   workspaceHookTrustRecordSchema,
   workspaceHookTrustStoreFileSchema,
 } from "@zcode/contracts";
@@ -17,8 +22,6 @@ const DEFAULT_LOCK_TIMEOUT_MS = 5_000;
 const DEFAULT_STALE_LOCK_MS = 30_000;
 const LOCK_RETRY_MS = 10;
 const DEFAULT_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800] as const;
-const SECURITY_DIRECTORY = "security";
-const TRUST_STORE_FILE = "workspace-hook-trust-v1.json";
 // 进程启动时间的比较容差：ps/proc 的秒级精度 + 调度延迟，2s 足以覆盖且不放过复用。
 const LOCK_START_TIME_TOLERANCE_MS = 2_000;
 const PROC_CLOCK_TICKS_PER_SECOND = 100;
@@ -123,22 +126,35 @@ export interface WorkspaceHookTrustStoreRevokeOptions {
 }
 
 export interface WorkspaceHookTrustStorePathOptions {
+  /**
+   * 覆盖**数据根派生结果**（测试注入临时 HOME 用）：给出后按 `{homeDir}/.zcode{suffix}`
+   * 推数据根，`storage.dir` 里的 `~` 也按它展开。生产不传，走身份根派生。
+   */
   homeDir?: string;
+  /** 覆盖 user config 位置（测试注入用）；缺省 `{数据根}/cli/config.json`，与 hooks 声明同源。 */
   userConfigPath?: string;
 }
 
 export async function resolveWorkspaceHookTrustStorePath(
   options: WorkspaceHookTrustStorePathOptions = {},
 ): Promise<string> {
-  const home = resolve(options.homeDir ?? homedir());
+  const homeDir = options.homeDir ? resolve(options.homeDir) : undefined;
+  // 信任是权限边界（未授权的 hook 声明会被 Runtime 硬拦截），必须与 hooks **声明**同源：
+  // 声明从 `{数据根}/cli/config.json` 读，信任库也必须落在同一个身份根下。落在共享的
+  // `~/.zcode/security/` 会让一个客户端授予的信任被另一个身份继承——用户没在那边点过同意，
+  // hook 却已经可执行。派生规则单源在 identity-paths-node，这里不自行拼接或展开。
+  const dataRootDir = homeDir ? getIdentityDataRootForBaseDir(homeDir) : resolveZCodeDataRoot();
   const userConfigPath = resolve(
-    options.userConfigPath ?? join(home, ".zcode", "cli", "config.json"),
+    options.userConfigPath ?? join(dataRootDir, "cli", "config.json"),
   );
   const config = await readUserConfig(userConfigPath);
   const storage = isRecord(config.storage) ? config.storage : {};
   const configured = typeof storage.dir === "string" ? storage.dir.trim() : "";
-  const storageRoot = configured ? resolveTrustedUserPath(configured, home) : join(home, ".zcode");
-  return join(storageRoot, SECURITY_DIRECTORY, TRUST_STORE_FILE);
+  return resolveWorkspaceHookTrustStoreFilePath({
+    dataRootDir,
+    storageDirOverride: configured || undefined,
+    ...(homeDir ? { homeDir } : {}),
+  });
 }
 
 export async function createDefaultFileWorkspaceHookTrustStore(
@@ -538,13 +554,6 @@ async function readUserConfig(path: string): Promise<Record<string, unknown>> {
       cause: error,
     });
   }
-}
-
-function resolveTrustedUserPath(path: string, home: string): string {
-  if (path.startsWith("~/")) return join(home, path.slice(2));
-  if (isAbsolute(path)) return resolve(path);
-  // 安全原因：user config 中的相对 storage.dir 绑定用户目录，不能随 workspace cwd 漂移。
-  return resolve(home, path);
 }
 
 function trustKey(record: { workspaceIdentity: string; hookDeclarationDigest: string }): string {

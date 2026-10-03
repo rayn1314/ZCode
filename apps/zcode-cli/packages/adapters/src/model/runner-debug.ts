@@ -7,9 +7,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ModelTextResult } from "@zcode/contracts";
+import { resolveZCodeDataRoot, type ModelTextResult } from "@zcode/contracts";
 import { ZCODE_RUNTIME_ENV_KEY, normalizeZCodeRuntimeEnv } from "@zcode/shared";
 import { redactAnthropicRequestMetadata } from "./anthropic-request-metadata.js";
 import type { EnvRecord } from "./model-execution.js";
@@ -585,9 +584,11 @@ function sanitizeFileSegment(value?: string): string {
 }
 
 // storage profile 回滚删除了自定义 CLI 根模块，遗留 import 会让 adapters 无法构建。
-// 这里保持历史语义：开发态写 ~/.zcode/cli/debug，生产态写 ~/.zcode/cli/rollout。
+// 这里保持历史语义：开发态写 `{数据根}/cli/debug`，生产态写 `{数据根}/cli/rollout`。
+// 必须跟随身份数据根（不是写死 `{homedir}/.zcode`）：轨迹里有完整会话内容，落在共享根会被
+// 并排安装的另一个产品身份读到；services 侧的 modelTrajectoryFileTail 也按同一数据根读取。
 function getModelIOBaseDir(isDev: boolean): string {
-  return join(homedir(), ".zcode", "cli", isDev ? "debug" : "rollout");
+  return join(resolveZCodeDataRoot(), "cli", isDev ? "debug" : "rollout");
 }
 
 function stringifyDebugRecord(record: Record<string, unknown>): string {

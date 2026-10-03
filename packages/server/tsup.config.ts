@@ -9,6 +9,9 @@ const { loadBuiltinProviderConfig } = await import(
 const { stageThirdPartyNotices } = await import(
   pathToFileURL(resolve(import.meta.dirname, "../../scripts/third-party-notices.mjs")).href
 );
+const { resolveDesktopProductIdentity } = await import(
+  pathToFileURL(resolve(import.meta.dirname, "../../scripts/product-identity.mjs")).href
+);
 
 // tsup config 可能从不同 cwd 加载，基于配置文件自身目录解析仓库根 package.json。
 const rootPackageJsonPath = resolve(import.meta.dirname, "../../package.json");
@@ -21,6 +24,10 @@ export const SERVER_HTTP_DEFINES = {
   __ZCODE_VERSION__: JSON.stringify(version),
   __ZCODE_ENV__: JSON.stringify(zcodeEnv),
   __ZCODE_BUILTIN_PROVIDER_CONFIG_JSON__: JSON.stringify(zcodeBuiltinProviderConfigJson),
+  // entry-http 内联 @zcode/services 与 @zcode/shared 的源码，而数据根后缀是编译期常量
+  // （services/paths.ts 的 `getDataRootDirForBaseDir`）：缺这个 define，产物里它恒为空串，
+  // 自建身份跑本地 server 就会落到官方根 `{home}/.zcode`。取值同 build-remote.ts / 桌面 / CLI。
+  __ZCODE_DATA_ROOT_SUFFIX__: JSON.stringify(resolveDesktopProductIdentity().dataRootSuffix),
 };
 
 function createSharedDefines() {

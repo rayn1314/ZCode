@@ -144,6 +144,7 @@ export class ScriptWorkflowRuntime {
       resumeFromRunId: input.resumeFromRunId,
       runId: input.runId,
       store: this.store(),
+      storageRoot: this.deps.storageRoot,
       workingDirectory: this.deps.workingDirectory,
     });
     await this.appendEvent(run.id, "workflow_started", { scriptPath: document.path });

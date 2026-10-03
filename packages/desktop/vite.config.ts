@@ -10,7 +10,7 @@ import { getBuildMetadata } from "./scripts/build-metadata.mjs";
 import {
   resolveDesktopProductFlavor,
   resolveDesktopProductIdentityForFlavor,
-} from "./scripts/desktop-product-identity.mjs";
+} from "../../scripts/product-identity.mjs";
 
 const buildMetadata = getBuildMetadata();
 const desktopRequire = createRequire(import.meta.url);

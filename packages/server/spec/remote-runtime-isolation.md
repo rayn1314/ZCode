@@ -74,11 +74,19 @@ schema 兼容性：上游官方只有一套代码，production / preview 共享 
 ## 迁移边界
 
 - 已有远端 `~/.zcode/server`（官方）保持不变；自建部署到 `~/.zcode/server-rayn`，不覆盖官方。
-- **远端存量数据零自动迁移**：`~/.zcode`（远端）内的历史会话留在原地，归属官方环境；
-  自建版远端数据根 `~/.zcode-rayn` 首次使用时为空。
+- **远端存量数据零自动迁移**：本 spec 初版判断「旧会话留在 `~/.zcode`、`~/.zcode-rayn`
+  首次使用为空」，与实测不符——自 2026-09-14 起远端 agent 的会话库就一直按后缀数据根落在
+  `~/.zcode{suffix}/cli/db`，数据根切换对既有存量无影响（2026-10-02 修正表述）。
 - provider 配置与凭据无需手工搬运：自建版连接后 provisioning 会把桌面侧配置同步到新数据根。
 - 会话历史如需在自建版远端可见，参照 Windows 侧先例（`copyDataDirectory`，robocopy +
   SQLite `VACUUM INTO`）做一次性手动搬迁；本轮不自动化。
+- **workspace 身份 key 变更不自动迁移数据**（2026-10-02 实测）：WSL canonical 化使身份从
+  `remote:wsl:<distro>:<path>` 演进出带 user 的 `remote:wsl:<distro>:<user>:<path>`；
+  远端 `session.workspace_id` 按客户端传入身份过滤，新旧 key 下的会话互不可见，表现为
+  「重复的同路径项目、新条目下历史为空」。身份演进的归属迁移必须显式执行——本轮为一次性
+  人工 UPDATE `session.workspace_id`（735 行，备份 `db.sqlite.bak-20261002-pre-identity-fix`），
+  任务索引桶由 task-index-syncer 按新身份重灌；代码侧不得静默换 key，UI 侧归并规则见
+  `packages/ui/spec/remote-workspace-identity-merge.md`。
 - 手工 SSH 部署 / `zcode-server-cli` 直启远端 server 的场景不经 `buildRemoteServerCommand`，
   需要自设 `ZCODE_DATA_ROOT`（文档行为，不在本轮代码范围）。
 - agent wrapper 模板文本变化会触发一次远端 agent 重传（官方与自建各一次），语义不变。

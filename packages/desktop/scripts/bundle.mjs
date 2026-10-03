@@ -12,7 +12,7 @@ import process from "node:process";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { collectRuntimeModuleClosureEntries } from "./runtime-dependency-closure.mjs";
-import { resolveDesktopProductIdentity } from "./desktop-product-identity.mjs";
+import { resolveDesktopProductIdentity } from "../../../scripts/product-identity.mjs";
 import {
   findDesktopNativePackageViolations,
   parseAsarListWithPackState,

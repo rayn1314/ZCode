@@ -15,13 +15,15 @@ export async function prepareScriptWorkflowRun(input: {
   resumeFromRunId?: string;
   runId?: string;
   store: ScriptWorkflowStorePort;
+  /** 身份数据根（CLI 的 storageRoot），用于判定用户级工作流目录。 */
+  storageRoot: string;
   workingDirectory: string;
 }): Promise<ScriptWorkflowRunRecord> {
   const definition = await input.store.upsertScriptWorkflowDefinition({
     id: `script_${stableHash(`${input.document.path}:${input.document.hash}`).slice(0, 24)}`,
     meta: input.document.meta,
     name: input.document.meta.name,
-    scope: inferScriptWorkflowScope(input.document.path, input.workingDirectory),
+    scope: inferScriptWorkflowScope(input.document.path, input.workingDirectory, input.storageRoot),
     scriptHash: input.document.hash,
     scriptPath: input.document.path,
     source: "user",

@@ -1,8 +1,8 @@
 import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
 import type {
   DbMessageRecord,
   DbObservation,
@@ -15,12 +15,14 @@ import type {
   SourceLoadResult,
 } from "./types.js";
 
+// 结构化日志与会话库都跟随 CLI 的身份数据根（`{dataRoot}/cli/{log,db}`）：写侧是 CLI，
+// 读侧必须同源，写死 `~/.zcode` 会读到并排安装的另一个产品身份的日志与会话。
 export function defaultLogDir(): string {
-  return join(homedir(), ".zcode", "cli", "log");
+  return join(resolveZCodeDataRoot(), "cli", "log");
 }
 
 export function defaultDbPath(): string {
-  return join(homedir(), ".zcode", "cli", "db", "db.sqlite");
+  return join(resolveZCodeDataRoot(), "cli", "db", "db.sqlite");
 }
 
 export async function loadLogs(options: ObservationOptions): Promise<SourceLoadResult<LogRecord>> {

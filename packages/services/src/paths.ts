@@ -9,6 +9,7 @@ import {
   ZCODE_DATA_ROOT_ENV,
   ZCODE_DATA_ROOT_SUFFIX,
 } from "@zcode/shared";
+import { getIdentityDataRootForBaseDir } from "@zcode/shared/identity-paths-node";
 
 let _dataBaseDir: string | null = null;
 let _dataRootDir: string | null = null;
@@ -59,19 +60,20 @@ export function setDataRootDir(dir: string | null): void {
  * 身份数据根在给定 base dir 下的位置：`{baseDir}/.zcode{suffix}`。
  *
  * 官方渠道后缀为空串（路径与历史一致）；自建客户端按产品身份加后缀，与官方并排安装时
- * 各用各的会话库、凭据和设置。所有「从 base dir 推到数据根」的地方都必须走这里，
- * 漏掉后缀就会把自建版的数据写回官方根。
+ * 各用各的会话库、凭据和设置。「怎么拼」单源在 `@zcode/shared/identity-paths-node`，
+ * 这里只做转出，不再自己拼一遍（多处各拼一次就会漏后缀，把自建版的数据写回官方根）。
  */
 export function getDataRootDirForBaseDir(baseDir: string): string {
-  return join(baseDir, `.zcode${ZCODE_DATA_ROOT_SUFFIX}`);
+  return getIdentityDataRootForBaseDir(baseDir);
 }
 
 /**
  * {dataBaseDir}/.zcode{suffix}
  *
  * 优先返回 setDataRootDir() / ZCODE_DATA_ROOT 指定的完整根：同一台机器上并排安装的
- * 产品身份各有独立数据根，会话库、任务索引、凭据和设置都从这里派生。
- * 两者都没有时按 base dir 拼后缀，保证带身份的构建不会回落到官方根。
+ * 产品身份各有独立数据根，会话库、任务索引、凭据和设置都从这里派生。这两个显式值在
+ * setDataRootDir() / 模块加载时已经 trim，原样透传才能保证与改动前逐字节一致。
+ * 两者都没有时按 base dir 拼后缀（派生委托给单源函数），保证带身份的构建不会回落到官方根。
  */
 export function getZCodeDataRootDir(): string {
   if (_dataRootDir) return _dataRootDir;
@@ -148,6 +150,17 @@ export function getConversationWorkspaceDir(): string {
 /** {dataBaseDir}/.zcode/v2 */
 export function getAppConfigDir(): string {
   return join(getZCodeDataRootDir(), "v2");
+}
+
+/**
+ * 制品域：远端 Server 的代码安装根 `{身份数据根}/server`。
+ *
+ * 与本地 zcode-server-cli 的默认 server root 同源；未注入 ZCODE_SERVER_RUNTIME_ROOT 时
+ * 按身份后缀兜底，官方空后缀仍是 `~/.zcode/server`。不同身份的 node / server bundle /
+ * agents / tools 各自独立，避免互相覆盖与「客户端比远端 Server 新」的能力错配。
+ */
+export function getServerRuntimeRootDir(): string {
+  return join(getZCodeDataRootDir(), "server");
 }
 
 function readEnvValue(env: Record<string, string | undefined>, key: string): string | undefined {

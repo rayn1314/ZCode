@@ -1,6 +1,7 @@
 import { realpath } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 
 export interface ServerLayout {
   readonly dataBaseDir: string;
@@ -22,7 +23,9 @@ export interface ServerLayout {
 
 function getDefaultServerDataRoot(): string {
   const configured = process.env.ZCODE_DATA_BASE_DIR?.trim();
-  return join(configured || homedir(), ".zcode", "server");
+  // 制品域按产品身份后缀隔离：官方空后缀仍是 `{base}/.zcode/server`，自建版落 `{base}/.zcode{suffix}/server`，
+  // 与本地数据根同源，避免自建版把 server 制品写进官方根并污染其数据根推断。
+  return join(configured || homedir(), `.zcode${ZCODE_DATA_ROOT_SUFFIX}`, "server");
 }
 
 export function resolveServerLayout(serverRoot = getDefaultServerDataRoot()): ServerLayout {
@@ -79,7 +82,14 @@ export async function resolveCanonicalServerLayout(
 
 function inferDataBaseDir(serverRoot: string): string {
   const parent = dirname(serverRoot);
-  if (basename(serverRoot) === "server" && basename(parent) === ".zcode") {
+  const serverName = basename(serverRoot);
+  const parentName = basename(parent);
+  // 两种身份布局都要认，否则显式 root 的 baseDir 推断会退化成 serverRoot 本身：
+  // 本地默认 `{base}/.zcode{suffix}/server`（后缀在 .zcode 段），远端沿用 `{base}/.zcode/server{suffix}`（后缀在 server 段）。
+  if (serverName === "server" && parentName === `.zcode${ZCODE_DATA_ROOT_SUFFIX}`) {
+    return dirname(parent);
+  }
+  if (serverName === `server${ZCODE_DATA_ROOT_SUFFIX}` && parentName === ".zcode") {
     return dirname(parent);
   }
   // 非标准的显式 server root 仍保持隔离，不向其父目录扩散 Agent/SQLite 数据。

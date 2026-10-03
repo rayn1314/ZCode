@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
-import { isAbsolute, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type {
   Hook,
   HookEvent,
@@ -18,6 +18,7 @@ import {
   type WorkspaceHooksConfig,
 } from "@zcode/shared/workspace-hook-discovery";
 import { parseWorkspaceHookTrustStoreContent } from "@zcode/shared/workspace-hook-trust-store-file";
+import { resolveWorkspaceHookTrustStoreFilePath } from "@zcode/shared/identity-paths-node";
 import { createServiceLogger, type ServiceLogger } from "#src/logger/serviceLogger.js";
 import { getZCodeDataRootDir, resolveUserHomeDir } from "../paths.js";
 import type { IHooksService } from "./hooks.js";
@@ -145,9 +146,11 @@ async function loadLegacyHooksFromLocation(
  * parseWorkspaceHookTrustStoreContent（contracts schema 的单一权威下沉实现），
  * 任何 parse 失败一律 corrupt + fail-closed，不返回任何部分 digest。
  *
- * 注意：存储目录解析（storage.dir 的 ~/、相对路径处理）与 Runtime 侧
- * resolveWorkspaceHookTrustStorePath（adapters）逻辑等价但各自内联——架构上 services
- * 不应反向依赖 adapters，统一需下沉到 shared 层，此处仅记录该重复。
+ * 注意：存储目录解析（storage.dir 的 ~/、相对路径处理）已下沉到
+ * `@zcode/shared/identity-paths-node` 的 resolveWorkspaceHookTrustStoreFilePath()。信任库必须
+ * 跟随**声明所在的数据根**（`{dataRoot}/cli/config.json`），不能回落共享 `~/.zcode`：
+ * 信任是权限边界，落在共享位置会让一个客户端授予的信任被另一个客户端继承——用户没在那边
+ * 点过同意，hook 却已经可执行。corrupt / fail-closed 的语义（见上）不得弱化。
  */
 async function readPersistentWorkspaceHookTrustDigests(
   workspaceIdentity: string,
@@ -155,19 +158,11 @@ async function readPersistentWorkspaceHookTrustDigests(
 ): Promise<{ digests: Set<string>; corrupt: boolean }> {
   const userConfig = (await readJsonFile<Record<string, unknown>>(getConfigPath("zcode"))) ?? {};
   const storage = isRecord(userConfig.storage) ? userConfig.storage : {};
-  const configured = typeof storage.dir === "string" ? storage.dir.trim() : "";
-  const home = resolveUserHomeDir();
-  const storageRoot = configured
-    ? configured.startsWith("~/")
-      ? join(home, configured.slice(2))
-      : isAbsolute(configured)
-        ? resolve(configured)
-        : resolve(home, configured)
-    : // CLI 侧未显式配置 storage.dir 时兜底固定共享 `~/.zcode`（见 CLI
-      // workspace-hook-trust-store.resolveWorkspaceHookTrustStorePath），
-      // 信任记录是 CLI 写出的共享事实，这里必须跟随同一位置才能读到。
-      join(home, ".zcode");
-  const trustFilePath = join(storageRoot, "security", "workspace-hook-trust-v1.json");
+  const trustFilePath = resolveWorkspaceHookTrustStoreFilePath({
+    dataRootDir: getZCodeDataRootDir(),
+    storageDirOverride: typeof storage.dir === "string" ? storage.dir : "",
+    homeDir: resolveUserHomeDir(),
+  });
 
   // 异步读取 + ENOENT 区分：不用 existsSync 预检——同步调用会阻塞服务
   // 线程，且「检查→读取」之间存在 TOCTOU 窗口；readFile 的 ENOENT 本身就是

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
 import type { TuiClipboardImage, TuiImageMediaType, TuiReadClipboardImage } from "@zcode/tui";
 
 const DEFAULT_MAX_CLIPBOARD_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -30,7 +30,10 @@ type NodeClipboardImageReaderOptions = {
 };
 
 function resolveDefaultClipboardDirectory(processEnv: NodeJS.ProcessEnv = process.env): string {
-  const storageRoot = processEnv.ZCODE_STORAGE_DIR?.trim() || join(homedir(), ".zcode");
+  // ZCODE_STORAGE_DIR 是存储根的显式覆盖（beta 档会把它指到 ~/.zcode-beta）；
+  // 未覆盖时必须是**身份数据根**，与 exec 输出根（adapters/exec/execution-utils.ts）同源：
+  // 写死 `{homedir}/.zcode` 会让自建身份把剪贴板图片写进官方根。
+  const storageRoot = processEnv.ZCODE_STORAGE_DIR?.trim() || resolveZCodeDataRoot(processEnv);
   return join(storageRoot, "clipboard");
 }
 

@@ -1,6 +1,11 @@
 import { join } from "node:path";
 import { access } from "node:fs/promises";
-import { SERVICE_AUTHORITY_MODE_ENV, ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
+import {
+  SERVICE_AUTHORITY_MODE_ENV,
+  SESSION_MAILBOX_DIR_NAME,
+  SESSION_MAILBOX_ROOT_ENV,
+  ZCODE_DATA_ROOT_SUFFIX,
+} from "@zcode/shared";
 import type { StdioStream } from "@zcode/server/remote/backend.js";
 import { quotePosixPathArg } from "@zcode/server/remote/posixShell.js";
 import type { RemoteAssetNetworkPort } from "@zcode/server/remote/remoteAssetNetwork.js";
@@ -40,6 +45,28 @@ export const REMOTE_DATA_ROOT_ENV_ASSIGNMENT =
   deriveRemoteDataRootEnvAssignment(ZCODE_DATA_ROOT_SUFFIX);
 
 /**
+ * 远端 mailbox 落盘根的 env 赋值（`ZCODE_MAILBOX_ROOT="$HOME/.zcode<suffix>/mailbox"`）。
+ *
+ * 与远端数据根同源派生：mailbox 是「同机兜底」的传输通道，必须和远端 server/agent 的数据根
+ * 落在同一棵树，否则实时投递与 drain 各写一份。
+ *
+ * 官方（空后缀）返回 null，与上面的 `deriveRemoteDataRootEnvAssignment` 保持同一约定（这是
+ * 部署命令的既有形态，不能逐字节漂移）。这里不担心「靠子进程推导」：同一条启动命令里的
+ * `ZCODE_DATA_ROOT` 就是推导输入本身——两边输入是同一个赋值，不存在本地 spawn env 那种
+ * 「宿主 baseDir 与子进程 home 各自不同」的空隙。
+ */
+export function deriveRemoteMailboxRootEnvAssignment(dataRootSuffix: string): string | null {
+  const suffix = dataRootSuffix.trim();
+  if (!suffix) {
+    return null;
+  }
+  return `${SESSION_MAILBOX_ROOT_ENV}="$HOME/.zcode${suffix}/${SESSION_MAILBOX_DIR_NAME}"`;
+}
+
+export const REMOTE_MAILBOX_ROOT_ENV_ASSIGNMENT =
+  deriveRemoteMailboxRootEnvAssignment(ZCODE_DATA_ROOT_SUFFIX);
+
+/**
  * 远端 server 启动命令的固定 env 赋值段（白名单透传之前的部分）。
  * 单点构造，保证「部署基址」与「运行时数据根」由同一常量派生。
  */
@@ -50,6 +77,9 @@ export function buildRemoteServerBaseEnvAssignments(): string[] {
   ];
   if (REMOTE_DATA_ROOT_ENV_ASSIGNMENT) {
     assignments.push(REMOTE_DATA_ROOT_ENV_ASSIGNMENT);
+  }
+  if (REMOTE_MAILBOX_ROOT_ENV_ASSIGNMENT) {
+    assignments.push(REMOTE_MAILBOX_ROOT_ENV_ASSIGNMENT);
   }
   return assignments;
 }

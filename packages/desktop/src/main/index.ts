@@ -131,7 +131,8 @@ import {
   updateZCodeStdioTapDevMenuState,
 } from "./desktopApplicationMenu.js";
 import { applyAppIcon } from "./desktopWindowChrome.js";
-import { resolveWindowsAppUserModelIdForFlavor } from "../../scripts/desktop-product-identity.mjs";
+// 身份解析模块在仓库根的 scripts/（不是 packages/desktop/scripts/），从 src/main 要上溯四级。
+import { resolveWindowsAppUserModelIdForFlavor } from "../../../../scripts/product-identity.mjs";
 import type { DesktopWindowSize } from "./desktopWindowSize.js";
 import { maybeWarnArchitectureMismatch } from "./desktopArchitectureGuard.js";
 import { maybeBlockStartupForForceUpdate } from "./forceUpdateGuard.js";

@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
-import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
 import { getRuntimeToolRuntime, type RuntimeToolId } from "@zcode/shared/runtime-tool-runtime";
 
 type CliEnv = Record<string, string | undefined>;
@@ -66,7 +66,9 @@ export async function ensureSeaRuntimeTools(
 
   const env = options.env ?? process.env;
   const configuredStorageRoot = options.storageRoot ?? env.ZCODE_STORAGE_DIR?.trim();
-  const storageRoot = configuredStorageRoot || join(homedir(), ".zcode");
+  // 未显式覆盖时落身份数据根（同 exec 输出根）：写死 `{homedir}/.zcode` 会让自建身份的
+  // SEA 运行时工具写进官方根。
+  const storageRoot = configuredStorageRoot || resolveZCodeDataRoot(env);
   const runtimeEnv: CliEnv = {};
 
   for (const tool of manifest.tools) {

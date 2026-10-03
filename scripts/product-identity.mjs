@@ -1,3 +1,20 @@
+// 构建期产品身份的**单一来源**。
+//
+// 所有会把 `@zcode/shared` / `@zcode/services` 源码内联进产物的构建入口都从这里取
+// `dataRootSuffix` 并注入 `__ZCODE_DATA_ROOT_SUFFIX__`，产物因此必须按身份分档：
+// - 桌面：`packages/desktop/tsup.config.ts`（main/host/preload）与 `vite.config.ts`（renderer）；
+// - CLI bundle：`apps/zcode-cli/packages/cli/scripts/build.mjs`；
+// - CLI 子包 tui：`apps/zcode-cli/packages/tui/scripts/build.mjs`
+//   （它把 `@zcode/*` 依赖全量内联，其中 contracts 的 config 模块在求值期就算数据根）；
+// - 本地 server：`packages/server/tsup.config.ts`（entry-http）；
+// - 远端 server bundle：`packages/server/build-remote.ts`；
+// - server-cli（本地 server 的安装 / supervisor）：`packages/zcode-server-cli/tsup.config.ts`。
+//
+// 为什么必须共用一份：这些产物都会脱离桌面宿主独立运行（不经宿主注入 `ZCODE_DATA_ROOT`），
+// 后缀是编译期常量；任何一处自己推导或漏注入，自建构建就会回落到官方数据根 `{home}/.zcode`，
+// 与官方进程互相串台。本模块原先住在 `packages/desktop/scripts/`，上移到仓库根的 `scripts/`
+// 就是为了让所有构建入口共用。新增内联 `@zcode/*` 的构建入口时，必须同步补 `define`。
+
 /**
  * 构建期开关：为真时安装包使用 Preview 身份，而后端环境仍由 `ZCODE_ENV` 单独决定。
  * 典型用法是 `ZCODE_ENV=production ZCODE_PREVIEW_IDENTITY=1`，得到一个连接生产后端、

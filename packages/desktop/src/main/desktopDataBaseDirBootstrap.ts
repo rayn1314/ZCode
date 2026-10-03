@@ -55,7 +55,7 @@ function readBootstrapDataBaseDirFromDisk(
  * 产品身份数据根。
  *
  * 上游两条官方渠道的后缀为空串，路径与历史完全一致。下游自建客户端覆盖了产品名或 appId
- * （见 desktop-product-identity.mjs），就必须与官方客户端各用各的数据根：共用
+ * （见 scripts/product-identity.mjs），就必须与官方客户端各用各的数据根：共用
  * `{dataBaseDir}/.zcode` 会让两个客户端读写同一个会话库、凭据和设置，会话列表互相可见，
  * 还会并发写同一个 SQLite。
  *

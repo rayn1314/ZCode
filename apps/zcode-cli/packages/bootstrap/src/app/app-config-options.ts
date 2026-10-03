@@ -1,15 +1,13 @@
-import { resolvePath, type ConfigResult } from "@zcode/adapters/config";
+import type { ConfigResult } from "@zcode/adapters/config";
 import { createNodeSessionMailboxAdapter } from "@zcode/adapters/mailbox";
 import { detectLocale, resolveLocale } from "@zcode/i18n";
+import { resolveSessionMailboxRoot } from "@zcode/shared/identity-paths-node";
 import {
-  DEFAULT_SESSION_MAILBOX_ROOT,
-  SESSION_MAILBOX_ROOT_ENV,
-} from "@zcode/shared";
-import type {
-  RuntimeConfigPatch,
-  SessionMailboxPort,
-  SupportedLocale,
-  UiLocale,
+  resolveZCodeDataRoot,
+  type RuntimeConfigPatch,
+  type SessionMailboxPort,
+  type SupportedLocale,
+  type UiLocale,
 } from "@zcode/contracts";
 import type { ZCodeAppOptions } from "./types.js";
 
@@ -33,8 +31,11 @@ export function createSessionMailboxPortFromEnv(
   env: NodeJS.ProcessEnv,
 ): SessionMailboxPort | undefined {
   if (!isMessageEnabled(env)) return undefined;
+  // 收件箱落盘根跟随身份数据根（`{dataRoot}/mailbox`，`ZCODE_MAILBOX_ROOT` 仅作显式覆盖）：
+  // 信封正文就是会话内容，落在共享的 `~/.zcode/mailbox` 会让并排安装的另一个产品身份读到
+  // 不属于它的消息。派生规则单源在 identity-paths-node，不要在这里手写拼接。
   return createNodeSessionMailboxAdapter({
-    rootDir: resolvePath(env[SESSION_MAILBOX_ROOT_ENV] ?? DEFAULT_SESSION_MAILBOX_ROOT),
+    rootDir: resolveSessionMailboxRoot({ dataRootDir: resolveZCodeDataRoot(env), env }),
   });
 }
 

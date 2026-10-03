@@ -3168,7 +3168,7 @@ export function createZCodeAgentService(
   // 就绪的 workspace 级方法，管理面进程正是为这种「不寄居真实项目」的控制面能力准备的，且不会因
   // 真实 workspace 生命周期被 watchdog 回收；getOrStartReadOnlyClient 反而会把这个合成 workspace
   // 塞进 activeClientsByWorkspaceKey 并跑一遍交互偏好同步，污染会话 client map。两条路径都在本机，
-  // homedir() 即用户家目录，全局根 `~/.zcode/workflows/` 因此解析到真实目录。
+  // 全局根（本机身份数据根下的 `workflows/`）因此解析到真实目录。
   // 远程 runtime（SSH/WSL identity 或带 remoteSessionId）的 home 不是本机，绝不选它当载体。
   function isLocalActiveWorkspaceClient(workspace: ZCodeAgentWorkspaceTarget): boolean {
     return (

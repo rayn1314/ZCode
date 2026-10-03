@@ -11,7 +11,6 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, join, posix } from "node:path";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -49,8 +48,9 @@ function getZCodeCliLogDir() {
  * helperExitLogPathFor）。同目录下还有 `.tokens` broker 凭据，收集时必须按文件名白名单。
  */
 function getCuaHelperRunDir() {
-  // Helper/broker 侧的安装与运行目录写死共享 `~/.zcode`，不认产品身份后缀，这里必须跟随同一位置。
-  return join(homedir(), ".zcode", "computer-use", "run");
+  // Helper/broker 的安装与运行目录跟随身份数据根（与 CLI helperLauncher 同源）：
+  // 写死共享 `~/.zcode` 会让自建版收不到自己的 helper 诊断日志（`<socket>.exit.log`）与 broker 凭据。
+  return join(getZCodeDataRootDir(), "computer-use", "run");
 }
 
 function isCuaHelperDiagnosticFileName(fileName: string): boolean {
@@ -853,7 +853,7 @@ async function createLogArchiveArtifacts(
   // Computer Use Helper 的结构化诊断必须进日志包：否则反馈包里
   // grep "background keyboard begin rejected" 命中 0，
   // 因为 Helper 由 LaunchServices 启动、stderr 被系统丢弃，它把诊断 tee 到
-  // ~/.zcode/computer-use/run/<socket>.exit.log，既不在 app data 也不在 ~/.zcode/cli 下。
+  // {数据根}/computer-use/run/<socket>.exit.log，既不在 app data 也不在 cli/ 下。
   // 同目录下有 .tokens broker 凭据，因此按文件名白名单只收 *.exit.log，不递归该目录。
   await collectLogArchiveFilesByName(
     getCuaHelperRunDir(),

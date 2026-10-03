@@ -1,10 +1,13 @@
 import type { IRemoteBackend, RemoteUploadOptions } from "@zcode/server/remote";
 import { quotePosixPathArg } from "@zcode/server/remote/posixShell.js";
-import type { TraceId, ZCodePromptAttachment } from "@zcode/shared";
+import { ZCODE_DATA_ROOT_SUFFIX, type TraceId, type ZCodePromptAttachment } from "@zcode/shared";
 import { randomUUID } from "node:crypto";
 
-const REMOTE_PROMPT_ATTACHMENT_ROOT = "~/.zcode/tmp/prompt-attachments";
-const REMOTE_PROMPT_ATTACHMENT_RELATIVE_ROOT = ".zcode/tmp/prompt-attachments";
+// 远端附件暂存根跟随产品身份的远端数据根：与身份后缀同源，官方空后缀时与历史路径逐字节一致。
+// 写死共享 `~/.zcode` 会让自建版把含会话内容的附件落到官方远端根，且官方 server 的清理任务
+// 会扫到不属于它的文件。
+const REMOTE_PROMPT_ATTACHMENT_ROOT = `~/.zcode${ZCODE_DATA_ROOT_SUFFIX}/tmp/prompt-attachments`;
+const REMOTE_PROMPT_ATTACHMENT_RELATIVE_ROOT = `.zcode${ZCODE_DATA_ROOT_SUFFIX}/tmp/prompt-attachments`;
 
 interface RemotePromptAttachmentMaterializeInput {
   taskId?: string;

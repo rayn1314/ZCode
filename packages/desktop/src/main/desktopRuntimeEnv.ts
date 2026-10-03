@@ -24,8 +24,14 @@ import {
   normalizeDynamicWorkflowMode,
   readZCodeAgentTelemetryEnv,
   sanitizeZCodeRuntimeEnv,
+  SESSION_MAILBOX_ROOT_ENV,
+  ZCODE_DATA_ROOT_SUFFIX,
   type ZCodeRuntimeEnv,
 } from "@zcode/shared";
+import {
+  resolveIdentityDataRoot,
+  resolveSessionMailboxRoot,
+} from "@zcode/shared/identity-paths-node";
 import { resolvePlatformKeyForPackagedApp } from "../../scripts/target-platform.mjs";
 import {
   getAppConfigDir,
@@ -516,13 +522,25 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
   );
   const dataBaseDir = getDataBaseDir();
   const dataRootDir = getZCodeDataRootDir();
-  // 数据根与官方默认根 `{dataBaseDir}/.zcode` 不一致（即带产品身份后缀的自建客户端）时必须显式下发：
-  // Agent CLI 是外部二进制，没有编译期身份后缀，缺了 ZCODE_DATA_ROOT 就会按 {dataBaseDir}/.zcode 自行推算，
-  // 把自建版的会话库、凭据和设置写回官方根，整体隔离失效。
-  const overriddenDataRootDir = dataRootDir === join(dataBaseDir, ".zcode") ? null : dataRootDir;
+  // 数据根下发条件：一旦不是「身份缺省根」就显式下发（用户改过数据根 / 装到别处），
+  // 自建身份（编译期后缀非空）**一律**下发——Agent CLI 是外部二进制，若它自带的后缀与宿主
+  // 不一致（旧包、手工安装的 npm 版），让它按 {dataBaseDir}/.zcode{suffix} 自行推算就会把
+  // 自建版的会话库、凭据和设置写回官方根。
+  // 官方渠道未覆盖时不下发：子进程按同一份 baseDir + 空后缀推导出同一路径，命令行逐字节不变。
+  const identityDefaultDataRootDir = resolveIdentityDataRoot({ baseDir: dataBaseDir });
+  const overriddenDataRootDir =
+    ZCODE_DATA_ROOT_SUFFIX !== "" || dataRootDir !== identityDefaultDataRootDir
+      ? dataRootDir
+      : null;
   const rawInheritedEnv = {
     ...hostProcessLocalEnv,
     ...readDefinedProcessEnv(),
+  };
+  // mailbox 落盘根：显式下发给子进程（含缺省值），不依赖「两侧按同一套输入各自推导出同一路径」。
+  // 写侧（Host services）与读侧（Agent CLI）落到不同的树时，同一条会话消息会被实时投递与
+  // drain 各读一次。宿主是本进程事实的 owner，直接把解析结果交出去，推导一致只是副产品。
+  const mailboxRootEnv = {
+    [SESSION_MAILBOX_ROOT_ENV]: resolveSessionMailboxRoot({ dataRootDir, env: rawInheritedEnv }),
   };
   const packagedDesktop = isElectronAppPackaged();
   const bundledCuaHelperAppPath =
@@ -537,10 +555,10 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
               rawInheritedEnv.ZCODE_CUA_HELPER_ALLOW_UNSIGNED_LOCAL?.trim().toLowerCase() ?? "",
             )
           ? rawInheritedEnv.ZCODE_CUA_BUNDLED_HELPER_APP_PATH?.trim() ||
-            // ZCODE_HOME 显式覆盖优先；兜底固定共享 `~/.zcode`——Helper 侧装在同一位置，
-            // 它不认产品身份后缀，这里跟随身份目录会让自建版找不到已安装的 Helper。
+            // ZCODE_HOME 显式覆盖优先；兜底跟随身份数据根 `{dataRoot}/computer-use`，
+            // Helper 由 CLI/shared 侧按同一数据根安装，写死共享 `~/.zcode` 会让自建版找不到已装的 Helper。
             join(
-              rawInheritedEnv.ZCODE_HOME?.trim() || join(homedir(), ".zcode"),
+              rawInheritedEnv.ZCODE_HOME?.trim() || dataRootDir,
               "computer-use",
               "dev",
               DEV_HELPER_APP_NAME,
@@ -602,6 +620,7 @@ export function buildHostProcessEnv(hostProcessLocalEnv: Record<string, string>)
     // 身份数据根：与 ZCODE_DATA_BASE_DIR 是两层——后者是父目录，这里是 `.zcode` 根本身。
     // 自建客户端与官方客户端并排安装时各用各的根，共用会让两者的会话列表互相可见。
     ...(overriddenDataRootDir ? { [ZCODE_DATA_ROOT_ENV]: overriddenDataRootDir } : {}),
+    ...mailboxRootEnv,
     ...(windowsAppInstallDir ? { [ZCODE_WINDOWS_APP_INSTALL_DIR_ENV]: windowsAppInstallDir } : {}),
     ...(bundledCuaHelperAppPath
       ? { [ZCODE_CUA_BUNDLED_HELPER_APP_PATH_ENV]: bundledCuaHelperAppPath }

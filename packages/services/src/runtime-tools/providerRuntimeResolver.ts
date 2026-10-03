@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
 import { resolve as resolvePath } from "node:path";
 import { ZCODE_AGENT_RUNTIME } from "@zcode/shared";
+import { getServerRuntimeRootDir } from "../paths.js";
 
 const packagedResourcesPath =
   typeof (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath === "string"
@@ -18,14 +18,13 @@ function resolveExistingPath(candidates: Array<string | null | undefined>): stri
 }
 
 /**
- * 远端 Server 的运行时根由 `ZCODE_SERVER_RUNTIME_ROOT` 注入（产品隔离后不再固定 `~/.zcode/server`）；
- * 未设置时回退历史默认路径，保持官方渠道与本地开发行为不变。
+ * 远端 Server 的运行时根由 `ZCODE_SERVER_RUNTIME_ROOT` 注入；未设置时按身份数据根兜底
+ * `{数据根}/server`（官方空后缀即历史默认 `~/.zcode/server`），保证自建版不与官方共用
+ * 同一份 agents 制品。
  */
 function resolveRuntimeRootAgentsDir(...segments: string[]): string {
   const runtimeRoot = process.env.ZCODE_SERVER_RUNTIME_ROOT?.trim();
-  return runtimeRoot
-    ? resolvePath(runtimeRoot, "agents", ...segments)
-    : resolvePath(homedir(), ".zcode", "server", "agents", ...segments);
+  return resolvePath(runtimeRoot || getServerRuntimeRootDir(), "agents", ...segments);
 }
 
 function resolvePlatformScopedBundledAgentRoots(moduleDir?: string): Array<string | null> {

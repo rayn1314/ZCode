@@ -3,9 +3,15 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", "!dist/**", "!.turbo/**"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "!dist/**",
+        "!.turbo/**",
+        "$TURBO_ROOT$/../../scripts/product-identity.mjs"
+      ],
       "outputs": ["dist/**"],
-      "cache": true
+      "cache": true,
+      "env": ["ZCODE_APP_ID", "ZCODE_PRODUCT_NAME"]
     },
     "build:desktop-agent": {
       "dependsOn": [
@@ -27,6 +33,7 @@
         "!.turbo/**",
         "$TURBO_ROOT$/../../config/provider/zcode-builtin.json",
         "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
+        "$TURBO_ROOT$/../../scripts/product-identity.mjs",
         "$TURBO_ROOT$/../../scripts/load-endpoint-env.mjs",
         "$TURBO_ROOT$/../../packages/provider/src/**",
         "$TURBO_ROOT$/../../packages/provider-node/src/zcode-builtin-release.ts",
@@ -40,7 +47,13 @@
       ],
       "outputs": ["dist/**"],
       "cache": true,
-      "env": ["ZCODE_ENV", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", "NODE_ENV"]
+      "env": [
+        "ZCODE_ENV",
+        "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+        "NODE_ENV",
+        "ZCODE_APP_ID",
+        "ZCODE_PRODUCT_NAME"
+      ]
     },
     "dev": {
       "cache": false,
@@ -62,6 +75,7 @@
         "!.turbo/**",
         "$TURBO_ROOT$/../../config/provider/zcode-builtin.json",
         "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
+        "$TURBO_ROOT$/../../scripts/product-identity.mjs",
         "$TURBO_ROOT$/../../scripts/load-endpoint-env.mjs",
         "$TURBO_ROOT$/../../packages/provider/src/**",
         "$TURBO_ROOT$/../../packages/provider-node/src/zcode-builtin-release.ts",
@@ -76,7 +90,13 @@
       ],
       "outputs": ["dist/**"],
       "cache": true,
-      "env": ["ZCODE_ENV", "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE", "NODE_ENV"]
+      "env": [
+        "ZCODE_ENV",
+        "ZCODE_BUILTIN_PROVIDER_CONFIG_FILE",
+        "NODE_ENV",
+        "ZCODE_APP_ID",
+        "ZCODE_PRODUCT_NAME"
+      ]
     }
   }
 }

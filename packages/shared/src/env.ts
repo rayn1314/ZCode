@@ -41,7 +41,7 @@ export const ZCODE_PRODUCT_FLAVOR = normalizeZCodeProductFlavor(
 // ── 构建期产品身份（应用名 / appId） ──
 // 上游身份表只有 production / preview 两个 flavor。下游 fork 需要自己的应用名与 appId，
 // 才能与官方客户端并排共存（独立安装位、独立 Electron 数据目录、独立 AppUserModelId）。
-// 构建脚本把**解析后**的身份注入成编译期常量（含下游覆盖，见 desktop-product-identity.mjs），
+// 构建脚本把**解析后**的身份注入成编译期常量（含下游覆盖，见 scripts/product-identity.mjs），
 // 所以这里拿到的是最终值而不是"覆盖开关"。未注入时为空串，调用方回退身份表默认值。
 declare const __ZCODE_PRODUCT_NAME__: string;
 declare const __ZCODE_APP_ID__: string;
@@ -59,7 +59,7 @@ export const ZCODE_APP_ID = typeof __ZCODE_APP_ID__ !== "undefined" ? __ZCODE_AP
  *
  * 上游官方渠道为空串；下游自建客户端非空（如 `-rayn` → `~/.zcode-rayn`），
  * 据此与官方客户端并排运行时各用各的会话库、凭据和设置。派生规则见
- * `desktop-product-identity.mjs` 的 resolveDataRootSuffix。
+ * `scripts/product-identity.mjs` 的 resolveDataRootSuffix。
  */
 export const ZCODE_DATA_ROOT_SUFFIX =
   typeof __ZCODE_DATA_ROOT_SUFFIX__ !== "undefined" ? __ZCODE_DATA_ROOT_SUFFIX__.trim() : "";
@@ -68,11 +68,18 @@ export const ZCODE_BUILD_COMMIT_ID_ENV = "ZCODE_BUILD_COMMIT_ID" as const;
 /**
  * 数据根本身的覆盖 env key（完整路径，不再拼 `.zcode`）。
  *
- * 宿主进程与远端部署命令都用它把产品身份定向到各自的数据根；解析规则见
- * services 的 paths.ts（`setDataRootDir > ZCODE_DATA_ROOT > {dataBaseDir}/.zcode`）。
- * 常量放 shared：server 的远端启动命令与 services 的本地 spawn env 必须拼写同源。
+ * 宿主进程与远端部署命令都用它把产品身份定向到各自的数据根；解析规则单源在
+ * `@zcode/shared/identity-paths-node` 的 `resolveIdentityDataRoot()`
+ * （`显式数据根 > {数据根父目录}/.zcode{suffix}`）。
+ * 常量放 shared：server 的远端启动命令、services 的本地 spawn env、CLI 的读取端
+ * 必须拼写同源。
  */
 export const ZCODE_DATA_ROOT_ENV = "ZCODE_DATA_ROOT" as const;
+/**
+ * 数据根**父目录**的覆盖 env key（默认家目录）。桌面「设置 → 数据存储路径」写的就是它，
+ * bootstrap `setting.json` 记录的 `dataBaseDir` 同义。
+ */
+export const ZCODE_DATA_BASE_DIR_ENV = "ZCODE_DATA_BASE_DIR" as const;
 
 // ── 运行时环境变量（不经过编译打包，启动时从 process.env 读取） ──
 // 启用调试模式，值为 inspect-brk 的端口号，如 ZCODE_DEBUG=9230

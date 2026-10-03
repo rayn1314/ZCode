@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveUserPath, resolveZCodeDataRoot } from "@zcode/contracts";
+import { resolveIdentityDataRoot } from "@zcode/shared/identity-paths-node";
 import { atomicWritePrivateTextFile, backupCorruptFile, withFileLock } from "@zcode/shared/node";
 import { createZCodeCredentialCipher, type ZCodeCredentialCipher } from "./credential-cipher.js";
 
@@ -287,8 +288,9 @@ export function resolveSharedZCodeCredentialsPath(
   // options.baseDir 是数据根的父目录（调用方显式指定）；未指定时交给统一数据根解析，
   // 它会优先认 ZCODE_DATA_ROOT —— 并排安装的客户端必须各用各的凭据库，否则一处登录
   // 会让另一处也处于登录态（甚至互相刷新同一份 token）。
+  // 两个分支都必须带产品身份后缀，因此统一走 resolveIdentityDataRoot，不再自行拼 `.zcode`。
   const dataRoot = options.baseDir
-    ? join(resolveUserPath(options.baseDir), ".zcode")
+    ? resolveIdentityDataRoot({ baseDir: options.baseDir })
     : resolveZCodeDataRoot(env);
   return join(dataRoot, "v2", "credentials.json");
 }

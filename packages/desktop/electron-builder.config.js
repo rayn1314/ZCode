@@ -19,7 +19,7 @@ import { getTargetPlatform } from "./scripts/target-platform.mjs";
 import {
   resolveDesktopArtifactSuffix,
   resolveDesktopProductIdentity,
-} from "./scripts/desktop-product-identity.mjs";
+} from "../../scripts/product-identity.mjs";
 import { verifyStagedKoffi } from "./scripts/koffi-package-assets.mjs";
 const ELECTRON_BUILDER_ARCH = {
   1: "x64",

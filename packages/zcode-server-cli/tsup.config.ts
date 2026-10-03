@@ -6,11 +6,18 @@ import { pathToFileURL } from "node:url";
 const { loadBuiltinProviderConfig } = await import(
   pathToFileURL(resolve(import.meta.dirname, "../../scripts/builtin-provider-config.mjs")).href
 );
+const { resolveDesktopProductIdentity } = await import(
+  pathToFileURL(resolve(import.meta.dirname, "../../scripts/product-identity.mjs")).href
+);
 
 const { content: zcodeBuiltinProviderConfigJson } = await loadBuiltinProviderConfig();
 
 export const SERVER_CLI_DEFINES = {
   __ZCODE_BUILTIN_PROVIDER_CONFIG_JSON__: JSON.stringify(zcodeBuiltinProviderConfigJson),
+  // 本包内联 @zcode/services 与 @zcode/shared 的源码，而 runtime/paths.ts 的默认 server root
+  // 与 baseDir 推断都按编译期后缀派生：缺这个 define，产物里后缀恒为空串，自建身份安装/管理
+  // 本地 server 会落进官方根 `{home}/.zcode/server`，与远端部署（build-remote.ts 有注入）分叉。
+  __ZCODE_DATA_ROOT_SUFFIX__: JSON.stringify(resolveDesktopProductIdentity().dataRootSuffix),
 };
 
 export default defineConfig({

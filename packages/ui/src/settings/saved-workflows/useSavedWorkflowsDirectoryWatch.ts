@@ -18,7 +18,7 @@ function savedWorkflowsDirectoryPath(workspacePath: string): string {
  * effect 依赖变化会拆掉旧 watcher 重建，旧 host 的 id 不会泄漏。
  *
  * 项目组传 `workspacePath`（拼出 `<ws>/.zcode/workflows`）；全局组传 `directory`（协议 list 回的
- * 绝对目录，即 `~/.zcode/workflows`），二者择一——`directory` 优先。
+ * 绝对目录，即 agent 侧身份数据根下的 `workflows/`），二者择一——`directory` 优先。
  */
 export function useSavedWorkflowsDirectoryWatch({
   fileWatcherService,
@@ -59,7 +59,7 @@ export function useSavedWorkflowsDirectoryWatch({
         });
       })
       .catch((error: unknown) => {
-        logger.debug("[SavedWorkflows] 监听 .zcode/workflows 失败（目录可能尚不存在）", {
+        logger.debug("[SavedWorkflows] 监听工作流目录失败（目录可能尚不存在）", {
           path: directoryPath,
           error: error instanceof Error ? error.message : String(error),
         });

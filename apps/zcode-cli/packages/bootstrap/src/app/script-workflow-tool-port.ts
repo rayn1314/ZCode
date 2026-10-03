@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   WORKFLOW_RUN_ID_PATTERN,
@@ -314,8 +313,12 @@ async function resolveNamedWorkflowPath(
 ): Promise<string> {
   const fileName = workflowFileName(name);
   const candidates = [
+    // 项目级仍固定 `{workspace}/.zcode/workflows`（跟仓库走，不按身份分）。
     join(deps.workingDirectory, ".zcode", "workflows", fileName),
-    join(homedir(), ".zcode", "workflows", fileName),
+    // 用户级落**身份数据根**：原先写死 `{homedir}/.zcode/workflows`，自建身份与官方身份会共用
+    // 同一份用户工作流脚本。取值用 deps.storageRoot（= CLI 的 storage.dir 解析结果，与
+    // cliStorageRoot 同源），不再自行拼 home。
+    join(deps.storageRoot, "workflows", fileName),
   ];
   const builtIn = BUILTIN_WORKFLOW_ALLOWLIST.get(name);
   if (builtIn) candidates.push(builtIn);

@@ -17,7 +17,6 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   SAVED_WORKFLOW_FILE_EXTENSION,
@@ -25,6 +24,7 @@ import {
   SAVED_WORKFLOW_MAX_NAME_CHARS,
   SAVED_WORKFLOW_PROJECT_DIR,
   isValidSavedWorkflowName,
+  resolveZCodeDataRoot,
   type SavedWorkflowEntry,
   type SavedWorkflowInvalidEntry,
   type SavedWorkflowMeta,
@@ -40,17 +40,17 @@ export interface SavedWorkflowRoot {
 }
 
 /**
- * `savedWorkflowRoots` / 派生函数的可选参数。`homeDir` 只为测试注入：生产恒取
- * `os.homedir()`（agent 进程所在机器的家目录），**不**跟任何 `storage.dir` 配置走。
+ * `savedWorkflowRoots` / 派生函数的可选参数。`dataRootDir` 只为测试注入：生产恒取
+ * 身份数据根（`resolveZCodeDataRoot()`，含产品身份后缀），全局档落 `{dataRoot}/workflows`。
  */
 export interface SavedWorkflowRootsOptions {
-  homeDir?: string;
+  dataRootDir?: string;
 }
 
 /**
  * 本次会话的查找根，**按优先级排列**：`[project, global]`。
  *
- * 项目档落在会话工作目录的 `.zcode/workflows/`，全局档落在家目录的 `~/.zcode/workflows/`。
+ * 项目档落在会话工作目录的 `.zcode/workflows/`，全局档落在身份数据根的 `workflows/`。
  * 所有查找按顺序 first-wins：项目里的那份永远赢过全局那份（同名遮蔽）。
  */
 export function savedWorkflowRoots(
@@ -59,7 +59,10 @@ export function savedWorkflowRoots(
 ): SavedWorkflowRoot[] {
   return [
     { scope: "project", dir: join(cwd, SAVED_WORKFLOW_PROJECT_DIR) },
-    { scope: "global", dir: join(options?.homeDir ?? homedir(), SAVED_WORKFLOW_GLOBAL_DIR) },
+    {
+      scope: "global",
+      dir: join(options?.dataRootDir ?? resolveZCodeDataRoot(), SAVED_WORKFLOW_GLOBAL_DIR),
+    },
   ];
 }
 
@@ -131,9 +134,9 @@ export function resolveSavedWorkflow(options: {
   cwd: string;
   name: string;
   scope?: SavedWorkflowScope;
-  homeDir?: string;
+  dataRootDir?: string;
 }): SavedWorkflowResolveResult {
-  const { cwd, name, scope, homeDir } = options;
+  const { cwd, name, scope, dataRootDir } = options;
   if (!isValidSavedWorkflowName(name)) {
     return {
       ok: false,
@@ -144,8 +147,8 @@ export function resolveSavedWorkflow(options: {
 
   const roots =
     scope === undefined
-      ? savedWorkflowRoots(cwd, { homeDir })
-      : [savedWorkflowRoot(cwd, scope, { homeDir })];
+      ? savedWorkflowRoots(cwd, { dataRootDir })
+      : [savedWorkflowRoot(cwd, scope, { dataRootDir })];
 
   for (const root of roots) {
     const path = savedWorkflowPath(root, name);
@@ -190,7 +193,7 @@ export function resolveSavedWorkflow(options: {
 export function listSavedWorkflows(options: {
   cwd: string;
   scope?: SavedWorkflowScope;
-  homeDir?: string;
+  dataRootDir?: string;
 }): SavedWorkflowListResult {
   const entries: SavedWorkflowEntry[] = [];
   const invalid: SavedWorkflowInvalidEntry[] = [];
@@ -198,8 +201,8 @@ export function listSavedWorkflows(options: {
 
   const roots =
     options.scope === undefined
-      ? savedWorkflowRoots(options.cwd, { homeDir: options.homeDir })
-      : [savedWorkflowRoot(options.cwd, options.scope, { homeDir: options.homeDir })];
+      ? savedWorkflowRoots(options.cwd, { dataRootDir: options.dataRootDir })
+      : [savedWorkflowRoot(options.cwd, options.scope, { dataRootDir: options.dataRootDir })];
 
   for (const root of roots) {
     let fileNames: string[];
@@ -267,10 +270,10 @@ export function saveSavedWorkflow(options: {
   meta: SavedWorkflowMeta;
   script: string;
   scope?: SavedWorkflowScope;
-  homeDir?: string;
+  dataRootDir?: string;
 }): { path: string; scope: SavedWorkflowScope; overwritten: boolean } {
   const root = savedWorkflowRoot(options.cwd, options.scope ?? "project", {
-    homeDir: options.homeDir,
+    dataRootDir: options.dataRootDir,
   });
   const path = savedWorkflowPath(root, options.name);
   mkdirSync(root.dir, { recursive: true });
@@ -284,11 +287,11 @@ export function savedWorkflowExists(options: {
   cwd: string;
   name: string;
   scope?: SavedWorkflowScope;
-  homeDir?: string;
+  dataRootDir?: string;
 }): boolean {
   if (!isValidSavedWorkflowName(options.name)) return false;
   const root = savedWorkflowRoot(options.cwd, options.scope ?? "project", {
-    homeDir: options.homeDir,
+    dataRootDir: options.dataRootDir,
   });
   return fileExists(savedWorkflowPath(root, options.name));
 }
@@ -303,11 +306,11 @@ export function findSavedWorkflowShadowing(options: {
   cwd: string;
   name: string;
   scope: SavedWorkflowScope;
-  homeDir?: string;
+  dataRootDir?: string;
 }): SavedWorkflowShadowing | undefined {
   if (!isValidSavedWorkflowName(options.name)) return undefined;
   const otherScope: SavedWorkflowScope = options.scope === "project" ? "global" : "project";
-  const otherRoot = savedWorkflowRoot(options.cwd, otherScope, { homeDir: options.homeDir });
+  const otherRoot = savedWorkflowRoot(options.cwd, otherScope, { dataRootDir: options.dataRootDir });
   if (!fileExists(savedWorkflowPath(otherRoot, options.name))) return undefined;
   return options.scope === "project" ? "hides_global" : "hidden_by_project";
 }
@@ -334,9 +337,9 @@ export type SavedWorkflowMoveResult =
 export function moveSavedWorkflow(options: {
   cwd: string;
   name: string;
-  homeDir?: string;
+  dataRootDir?: string;
 }): SavedWorkflowMoveResult {
-  const { cwd, name, homeDir } = options;
+  const { cwd, name, dataRootDir } = options;
   if (!isValidSavedWorkflowName(name)) {
     return {
       ok: false,
@@ -345,8 +348,8 @@ export function moveSavedWorkflow(options: {
     };
   }
 
-  const fromRoot = savedWorkflowRoot(cwd, "global", { homeDir });
-  const toRoot = savedWorkflowRoot(cwd, "project", { homeDir });
+  const fromRoot = savedWorkflowRoot(cwd, "global", { dataRootDir });
+  const toRoot = savedWorkflowRoot(cwd, "project", { dataRootDir });
   const fromPath = savedWorkflowPath(fromRoot, name);
   const toPath = savedWorkflowPath(toRoot, name);
 

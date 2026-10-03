@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import test from "node:test";
+import { SESSION_MAILBOX_DIR_NAME, ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import {
   createNodeSessionMessageMailbox,
   resolveSessionMessageMailboxRoot,
 } from "../src/session/sessionMailboxStore.js";
+import { getDataBaseDir, getZCodeDataRootDir } from "../src/paths.js";
 
 /**
  * 契约：Host 侧 mailbox 与 CLI adapters 共用同一套文件名/根目录规则，
@@ -76,11 +78,22 @@ test("路径穿越被拒：sessionId 与 messageId 都过白名单", async () =>
   });
 });
 
-test("根目录解析：ZCODE_MAILBOX_ROOT 优先，缺省 ~/.zcode/mailbox", () => {
-  assert.match(resolveSessionMessageMailboxRoot({}), /[\\/]\.zcode[\\/]mailbox$/);
+test("根目录解析：ZCODE_MAILBOX_ROOT 优先，缺省跟随身份数据根", () => {
+  // 缺省必须落在身份数据根下：信封正文就是会话内容，落在共享 `~/.zcode/mailbox` 会让并排安装的
+  // 另一个产品身份读到不属于它的消息。数据根本身可能是显式 ZCODE_DATA_ROOT（宿主下发）或
+  // base dir 派生，两种都由 getZCodeDataRootDir() 收口。
+  const defaultRoot = resolveSessionMessageMailboxRoot({});
+  assert.equal(defaultRoot, join(getZCodeDataRootDir(), SESSION_MAILBOX_DIR_NAME));
+  if (ZCODE_DATA_ROOT_SUFFIX) {
+    assert.notEqual(
+      defaultRoot,
+      join(getDataBaseDir(), ".zcode", SESSION_MAILBOX_DIR_NAME),
+      "带身份后缀时不能回落到官方共享 mailbox",
+    );
+  }
+
   const overridden = resolveSessionMessageMailboxRoot({
     ZCODE_MAILBOX_ROOT: "/custom/mailbox",
   });
-  assert.ok(overridden.includes("custom"), overridden);
-  assert.ok(overridden.endsWith("mailbox"), overridden);
+  assert.equal(overridden, resolve("/custom/mailbox"));
 });

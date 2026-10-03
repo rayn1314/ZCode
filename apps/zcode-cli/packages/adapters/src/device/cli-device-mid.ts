@@ -1,6 +1,7 @@
 import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
-import { resolveUserPath, resolveZCodeDataRoot } from "@zcode/contracts";
+import { resolveZCodeDataRoot } from "@zcode/contracts";
+import { resolveIdentityDataRoot } from "@zcode/shared/identity-paths-node";
 import { createUuid } from "@zcode/shared";
 
 const LOCK_RETRY_DELAY_MS = 10;
@@ -56,8 +57,9 @@ function resolveCliTelemetryStateFile(options: EnsureCliDeviceMidOptions): strin
   // options.baseDir 是数据根的父目录（调用方显式指定）；未指定时交给统一数据根解析，
   // 它会优先认 ZCODE_DATA_ROOT —— 并排安装的客户端必须各用各的设备标识文件，
   // 否则一处生成的 deviceMid 会被另一处直接复用，两台客户端共用一个设备身份。
+  // 两个分支都必须带产品身份后缀，因此统一走 resolveIdentityDataRoot，不再自行拼 `.zcode`。
   const dataRoot = options.baseDir
-    ? join(resolveUserPath(options.baseDir), ".zcode")
+    ? resolveIdentityDataRoot({ baseDir: options.baseDir })
     : resolveZCodeDataRoot(env);
   return join(dataRoot, "v2", "telemetry-state.json");
 }

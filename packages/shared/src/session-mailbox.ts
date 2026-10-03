@@ -2,12 +2,19 @@
 //
 // 同一台机器上写侧可能是 CLI 进程（adapters）或 Host services 进程，读侧仍是目标 CLI；
 // 两个进程必须按同一套根目录 / 文件名规则读写同一棵树，否则实时投递与 drain 会各写一份，
-// 同一条消息被读两次。这里只放纯字符串规则（不引 node:os / node:path），
-// `~` 展开与目录拼接由各进程自行完成。
+// 同一条消息被读两次。这里只放纯字符串规则（不引 node:os / node:path）。
+// 落盘根的解析（`~` 展开 + 默认根拼接）单源在 `@zcode/shared/identity-paths-node`
+// 的 `resolveSessionMailboxRoot()`：缺省是 `{身份数据根}/mailbox`，两个进程都调它。
 
-/** mailbox 根目录覆盖；缺省 `~/.zcode/mailbox`。CLI 与 Host services 读同一个值。 */
+/**
+ * mailbox 根目录覆盖；缺省 `{身份数据根}/mailbox`。CLI 与 Host services 读同一个值。
+ *
+ * 显式覆盖只用于测试与排障。缺省必须跟随身份数据根：信封正文就是会话内容，落在共享的
+ * `~/.zcode/mailbox` 会让并排安装的另一个产品身份读到不属于它的消息。
+ */
 export const SESSION_MAILBOX_ROOT_ENV = "ZCODE_MAILBOX_ROOT";
-export const DEFAULT_SESSION_MAILBOX_ROOT = "~/.zcode/mailbox";
+/** 身份数据根下的 mailbox 目录名。 */
+export const SESSION_MAILBOX_DIR_NAME = "mailbox";
 export const SESSION_MAILBOX_ENVELOPE_SUFFIX = ".json";
 
 /**
