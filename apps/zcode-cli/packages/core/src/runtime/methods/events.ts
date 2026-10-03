@@ -24,6 +24,7 @@ import type { AgentRuntimeInternal } from "../internal.js";
 import { buildPersistedConversationInputIntent } from "./input-intent-persistence.js";
 import { recordToolUsageFromEvent } from "./usage-observability.js";
 import { persistSessionShellEnvironmentSnapshot } from "./session-shell-environment.js";
+import { persistSubagentLifecycleEntry } from "./subagent-lifecycle-persistence.js";
 import { persistRuntimeModelSelection } from "./turn-model.js";
 import {
   persistWorkspaceCheckpointEntry,
@@ -310,6 +311,16 @@ async function persistDurableSessionEvent(
         status: "failed",
       });
     }
+    return;
+  }
+
+  // 子代理生命周期落稳定 id 的 session entry：事件只进父会话的内存 eventStore，
+  // 会话去激活即被清空且冷恢复不回灌，roster 需要它跨重启读到「派过哪些子代理」。
+  if (
+    event.type === SessionEventType.SubagentSpawned ||
+    event.type === SessionEventType.SubagentStopped
+  ) {
+    await persistSubagentLifecycleEntry(this, event, traceContext);
     return;
   }
 

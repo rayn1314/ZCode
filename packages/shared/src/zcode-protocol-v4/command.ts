@@ -26,7 +26,14 @@ import {
   zcodeProtocolMcpServerSchema,
 } from "../zcode-protocol/index.js";
 import { sharedContextRefSchema } from "./shared-context-ref.js";
+// 防环链 schema 定义在 input-intent.ts：intent schema 自身要用它（QueueItem 继承该 schema），
+// 放在 command.ts 会形成 command → transport → snapshot → input-intent → command 的模块环。
+// 本文件只 import 用于 sendText payload；对外仍从 index 的 input-intent 一处置出。
+import { sessionMessageChainSchema } from "./input-intent.js";
 export type { SharedContextRef } from "./shared-context-ref.js";
+// 防环链 schema 定义在 input-intent.ts（intent schema 自身要用它，避免 command ↔ transport
+// 的模块环）；这里转出，消费方（validation / services / desktop）可按命令层导入同名符号。
+export { sessionMessageChainSchema, type SessionMessageChain } from "./input-intent.js";
 
 const createSessionRequestedConfigSchema = z.object({
   modelSelection: modelSelectionSchema.optional(),
@@ -110,6 +117,9 @@ export const commandPayloadSchemas = {
       // 定时任务会话的后续用户输入也必须保持 turn-scoped 工具面隔离；不能借用
       // automationId，否则会把普通用户输入误标成一次 automation 派发。
       toolDisallowlist: z.array(z.string().min(1)).optional(),
+      // 防环链（spec D7）：跨会话消息经本字段结构化到达接收方 runtime。
+      // 必须显式声明——zod object 会静默剥离未知键，漏掉它链在 admission 处就断了。
+      sessionMessageChain: sessionMessageChainSchema.optional(),
     })
     .superRefine((payload, context) => {
       if (payload.automationId && payload.offPeakTaskId) {

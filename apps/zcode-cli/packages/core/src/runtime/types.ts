@@ -61,6 +61,7 @@ import type {
   SessionId,
   SessionTaskType,
   SessionMailboxPort,
+  SessionMessageChain,
   SessionMessagePort,
   SessionProjection,
   SessionStorePort,
@@ -82,6 +83,7 @@ import type {
   McpPort,
   McpServerConfig,
   SubagentPort,
+  SubagentRosterPort,
   ToolArtifactStorePort,
   ToolCallId,
   WorkflowPort,
@@ -331,6 +333,11 @@ export interface AgentRuntimeDeps {
    * 缺席即能力缺席，handler 明确失败，不静默降级。子代理 runtime 由父 runtime 继承注入。
    */
   sessionMessagePort?: SessionMessagePort;
+  /**
+   * 子代理继承的初始入站链（spec D7）：spawn 时快照父会话当前链，否则
+   * 「父会话收信 → 派子代理回信」会绕过链深计数。只在创建时给一次，之后由 runtime 自持。
+   */
+  initialSessionMessageChain?: SessionMessageChain;
   modelFactory: RuntimeModelFactory;
   /** 可选宿主能力：解析未来执行的显式意图；不用于修改已冻结 Model。 */
   resolveEffectiveModelSelection?: (selection: ModelSelection) => EffectiveModelSelectionResult;
@@ -354,6 +361,11 @@ export interface AgentRuntimeDeps {
   skillPort?: SkillPort;
   mcpPort?: McpPort;
   subagentPort?: SubagentPort;
+  /**
+   * 历史子代理只读端口（spec D8）。由 bootstrap 按进程注入，`ListAgents` 用它补齐
+   * 重启后为空的进程内注册表；缺席即老装配没有这项能力，只报注册表。
+   */
+  subagentRosterPort?: SubagentRosterPort;
   coordinatorResponsePort?: CoordinatorResponsePort;
   /** 工作流 actor 提交终态结果的端口；存在即作为 submit_result 工具的注册门。 */
   workflowSubmitPort?: WorkflowSubmitPort;

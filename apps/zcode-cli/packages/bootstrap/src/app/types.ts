@@ -74,6 +74,7 @@ import type {
   SessionStorePort,
   SkillLoadOutcome,
   SkillPort,
+  SubagentRosterPort,
   ToolArtifactReadResult,
   ToolArtifactStorePort,
   TodoItem,
@@ -140,6 +141,11 @@ export interface ZCodeAppOptions {
    * core 只依赖端口做 `sess_*` 寻址的 SendMessage，缺席即能力缺席。
    */
   sessionMessagePort?: SessionMessagePort;
+  /**
+   * 历史子代理只读端口（spec D8）。协议服务器按进程级同一实例注入；
+   * ListAgents 用它补齐重启后为空的注册表，缺席只报注册表、不报能力缺失。
+   */
+  subagentRosterPort?: SubagentRosterPort;
   inputHistoryStore?: InputHistoryStorePort;
   modelAdapter?: AiSdkModelAdapter;
   /** Worker 进程拥有的 Registry；App 只借用，不负责释放。 */

@@ -22,10 +22,12 @@ import type {
   SessionId,
   SessionMailboxEnvelope,
   SessionMailboxPort,
+  SessionMessageChain,
   SessionMessageDeliveryRequest,
   SessionMessageDeliveryResult,
   SessionMessagePort,
 } from "@zcode/contracts";
+import { SESSION_MESSAGE_MAX_HOP, SessionMessageChainExceededError } from "@zcode/contracts";
 import { V4_NOTIFICATIONS, type CommandAck } from "@zcode/shared/zcode-protocol-v4";
 
 /** v4 命令面投递结果：accepted 是否被接收，detail 记录被拒原因。 */
@@ -40,6 +42,8 @@ export interface SessionMessageV4SendInput {
   commandId: string;
   text: string;
   requestedDelivery: "guide" | "startNow";
+  /** 防环链（spec D7）：随 payload 结构化到达接收方 runtime，投递层只透传不裁决。 */
+  sessionMessageChain?: SessionMessageChain;
 }
 
 /** 装配层注入的能力窄面（便于单测与解耦具体协议实现）。 */
@@ -74,6 +78,17 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
   ): Promise<SessionMessageDeliveryResult> {
     const target = request.toSessionId;
 
+    // cap 的唯一裁决点（spec D7）：发送方进程里唯一的写侧入口就是这里（三档都经过它）。
+    // 超限是"拒绝"不是"降级"——不落盘、不唤醒、不改动目标，并把原因交回调用方/模型。
+    // 接收侧（Host adapter、目标 runtime）不得因 hop 大而丢消息。
+    const chain = request.sessionMessageChain;
+    if (chain && chain.hop > SESSION_MESSAGE_MAX_HOP) {
+      throw new SessionMessageChainExceededError({
+        hop: chain.hop,
+        originMessageId: chain.originMessageId,
+        toSessionId: target,
+      });
+    }
     // 档 2 前置：不在进程内先尝试冷恢复；恢复不出 record 即落盘。
     if (!this.host.hasResidentSession(target)) {
       const resumed = await this.tryEnsureResident(target);
@@ -97,6 +112,7 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
         commandId: request.requestId ?? `${MAILBOX_SOURCE}:${request.messageId}`,
         text: formatDeliveryText(request),
         requestedDelivery,
+        ...(chain ? { sessionMessageChain: chain } : {}),
       });
     } catch (error) {
       return await this.storeToMailbox(request, opts, `v4 delivery failed: ${errorText(error)}`);
@@ -156,6 +172,8 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
       content: request.content,
       createdAt: request.createdAt,
       senderKind: request.senderKind,
+      // mailbox 是链的结构化载体：drain 时 hook 会把 chain 交回 runtime（spec D7）。
+      ...(request.sessionMessageChain ? { chain: request.sessionMessageChain } : {}),
     };
     await this.host.mailbox.deliver(envelope, opts);
     this.host.logger?.info("Session message stored in target mailbox", {
@@ -193,6 +211,10 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
           requestId: request.requestId ?? `${MAILBOX_SOURCE}:${request.messageId}`,
           toSessionId: request.toSessionId,
           ...(request.senderKind ? { senderKind: request.senderKind } : {}),
+          // 跨进程 main 路由原样透传；链在目标 Host 落地（live 或 mailbox）后必须连续。
+          ...(request.sessionMessageChain
+            ? { sessionMessageChain: request.sessionMessageChain }
+            : {}),
         },
       },
     });
@@ -204,8 +226,9 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
  * 与 mailbox 注入格式同属性名，接收侧模型无需区分两种通路（spec D4）。
  */
 function formatDeliveryText(request: SessionMessageDeliveryRequest): string {
+  const chain = request.sessionMessageChain;
   return [
-    `<session-message source="${MAILBOX_SOURCE}" message_id="${escapeAttr(request.messageId)}" from_session="${escapeAttr(request.fromSessionId)}" sender_kind="${escapeAttr(request.senderKind)}" created_at="${escapeAttr(request.createdAt)}">`,
+    `<session-message source="${MAILBOX_SOURCE}" message_id="${escapeAttr(request.messageId)}" from_session="${escapeAttr(request.fromSessionId)}" sender_kind="${escapeAttr(request.senderKind)}"${chain ? ` hop="${chain.hop}" origin="${escapeAttr(chain.originMessageId)}"` : ""} created_at="${escapeAttr(request.createdAt)}">`,
     request.content,
     "</session-message>",
   ].join("\n");

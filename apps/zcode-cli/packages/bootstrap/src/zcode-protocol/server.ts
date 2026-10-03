@@ -95,6 +95,7 @@ import {
 import { createConversationV4Gateway } from "./v4-bridge.js";
 import { createSessionMailboxPortFromEnv } from "../app/app-config-options.js";
 import { createBootstrapSessionMessagePort } from "./session-message-wiring.js";
+import { createSubagentRosterPort } from "./subagent-roster.js";
 import { createSessionResidentPoolHost } from "./session-residency.js";
 import {
   DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT,
@@ -278,6 +279,12 @@ export class ZCodeProtocolAgentServer {
         sessionMailboxPort,
       );
     }
+    // 历史子代理 roster：只读端口，进程级一份（spec D8）。数据源是持久化 session entry，
+    // 惰性解析 session store——端口构造早于任何 session record 入表，不能此刻绑死。
+    this.context.subagentRosterPort = createSubagentRosterPort({
+      resolveSessionStore: () => this.context.deps.sessionStore,
+      logger: this.logger,
+    });
     this.browserControlPort = createProtocolBrowserControlBroker(this.context);
     const sessionResidentTargetCount =
       deps.sessionResidentPoolOptions?.targetCount ?? deps.sessionResidentTargetCount;

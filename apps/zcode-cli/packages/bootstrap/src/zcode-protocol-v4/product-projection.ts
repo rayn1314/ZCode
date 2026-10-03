@@ -3392,6 +3392,8 @@ export class ProductProjection {
       planEnabled: payload.intent?.planEnabled ?? existing?.planEnabled,
       sharedContextRefs: payload.intent?.sharedContextRefs ?? existing?.sharedContextRefs,
       provenance: payload.intent?.provenance ?? existing?.provenance,
+      // 排队不改变链身份（spec D7）：漏掉这行，被排队的回信提升时链归零，互相回信就能绕过 cap。
+      sessionMessageChain: payload.intent?.sessionMessageChain ?? existing?.sessionMessageChain,
       delivery: {
         requested: requestedDelivery,
         admitted: admittedDelivery,

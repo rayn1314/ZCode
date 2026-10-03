@@ -10,6 +10,7 @@ import {
   type SessionMessagePort,
   type SessionTaskType,
   type SessionStorePort,
+  type SubagentRosterPort,
   type TraceContext,
 } from "@zcode/contracts";
 import type { McpTelemetryTracker } from "@zcode/adapters";
@@ -153,6 +154,11 @@ export interface ZCodeProtocolAgentServerContext {
   // 注入每个 workspace app 的 runtime，成为 SendMessage `sess_*` 的唯一写路径。
   sessionMessagePort?: SessionMessagePort;
   sessionMailboxPort?: SessionMailboxPort;
+  /**
+   * 历史子代理只读端口（spec D8）。进程级一份，按会话惰性解析事件源，
+   * 与 sessionMessagePort 一并注入每个 workspace app 的 runtime，供 ListAgents 补齐重启后的历史。
+   */
+  subagentRosterPort?: SubagentRosterPort;
   // 单 CLI resident session 池。冷恢复入口经 waitForDeactivation 等待旧 app.close 收尾，
   // 协议请求则持有 operation lease，禁止异步 handler 与容量回收交错。
   sessionResidentPool?: SessionResidentPool;

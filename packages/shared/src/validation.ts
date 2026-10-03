@@ -25,6 +25,7 @@ import { zcodeTaskModeSchema } from "./zcode-task-mode-schema.js";
 import { PROTOCOL_V4_LIMITS } from "./zcode-protocol-v4/core.js";
 import { errorAttributionSchema } from "./zcode-protocol-v4/snapshot.js";
 import { sessionWorkflowActivitySchema } from "./zcode-protocol-v4/sessions-index-workflow-activity.js";
+import { sessionMessageChainSchema } from "./zcode-protocol-v4/input-intent.js";
 import {
   taskOwnerCommandDeliverySchema,
   taskOwnerCommandRequestSchema,
@@ -355,6 +356,8 @@ export const sessionMessageRequestSchema = z.object({
   // 来源身份（spec D4）：跨进程链路必须保留，否则目标侧注入/回写会退化成 session。
   // 旧提交端缺省不传，读取方按 session 处理，因此可选不破坏兼容。
   senderKind: z.enum(["session", "subagent"]).optional(),
+  // 防环链（spec D7）：跨进程 request / 通知 / main 路由原样透传，不在此裁决。
+  sessionMessageChain: sessionMessageChainSchema.optional(),
 });
 
 /**

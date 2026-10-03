@@ -808,6 +808,11 @@ export const SESSION_ENTRY_USER_INPUT_AUTO_RESOLUTION =
   "runtime/user_input_auto_resolution" as const;
 export const SESSION_ENTRY_WORKSPACE_CHECKPOINT = "runtime/workspace_checkpoint" as const;
 export const SESSION_ENTRY_WORKSPACE_FILE_REWIND = "runtime/workspace_file_rewind" as const;
+/**
+ * 子代理生命周期（spec D8）。id 稳定为 `subagent-lifecycle:<agentId>`：spawn/stop 覆写同一行，
+ * 行数 = 该会话派发过的子代理数，不随事件数增长。仅落最小事实集，不塞 prompt/工具清单。
+ */
+export const SESSION_ENTRY_SUBAGENT_LIFECYCLE = "runtime/subagent_lifecycle" as const;
 
 export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
@@ -817,6 +822,7 @@ export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_USER_INPUT_AUTO_RESOLUTION,
   SESSION_ENTRY_WORKSPACE_CHECKPOINT,
   SESSION_ENTRY_WORKSPACE_FILE_REWIND,
+  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
 ] as const;
 
 export type SessionEntryType = (typeof SESSION_ENTRY_TYPES)[number];

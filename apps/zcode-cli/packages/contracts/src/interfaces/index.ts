@@ -14,6 +14,9 @@ export * from "./session-message.port.js";
 export * from "./session-store.port.js";
 export * from "./tool-artifact-store.port.js";
 export * from "./subagent.port.js";
+// 历史子代理 roster：core 只依赖该只读端口，实现由 bootstrap 注入，用来补齐
+// 重启后为空的进程内注册表（spec D8）。
+export * from "./subagent-roster.port.js";
 export * from "./workflow.port.js";
 export * from "./workflow-submit.port.js";
 export * from "./workflow-escalate.port.js";

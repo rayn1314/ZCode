@@ -36,6 +36,18 @@ export const conversationInputDispatchSchema = z
   })
   .strict();
 
+/**
+ * 会话消息防环链（spec D7）。必须显式声明：本 schema 是 `.strict()`，未知键会被静默剥离，
+ * 漏掉它链会在 admission 处断掉。`hop` 从 1 起（链首）。
+ */
+export const sessionMessageChainSchema = z
+  .object({
+    originMessageId: z.string().min(1),
+    hop: z.number().int().positive(),
+  })
+  .strict();
+export type SessionMessageChain = z.infer<typeof sessionMessageChainSchema>;
+
 export const conversationInputIntentSchema = z
   .object({
     sourceCommandId: z.string().min(1),
@@ -50,6 +62,8 @@ export const conversationInputIntentSchema = z
     mode: submissionModeSchema.optional(),
     planEnabled: z.boolean().optional(),
     sharedContextRefs: z.array(sharedContextRefSchema).max(1).optional(),
+    // 防环链随 intent 走：QueueItem 继承本 schema，排队后提升仍能还原链深（spec D7）。
+    sessionMessageChain: sessionMessageChainSchema.optional(),
     delivery: conversationInputDeliverySchema,
     order: conversationInputOrderSchema,
     steer: conversationInputSteerSchema,

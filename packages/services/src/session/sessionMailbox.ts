@@ -5,6 +5,8 @@
 // 目标 Host 实时投递命中后按 messageId 消费掉信封，避免 live 注入 + 下次 drain 重复投递。
 // 文件名 / 根目录规则由 @zcode/shared 的 session-mailbox 统一，两个进程不再各写一套。
 
+import type { SessionMessageChain } from "@zcode/shared/zcode-protocol-v4";
+
 export type SessionMessageSenderKind = "session" | "subagent";
 
 export interface SessionMessageSendRequested {
@@ -19,6 +21,11 @@ export interface SessionMessageSendRequested {
    * 文本会退化成 `session`，接收方无法区分来源（spec D4 身份不变式）。
    */
   senderKind?: SessionMessageSenderKind;
+  /**
+   * 防环链（spec D7）：跨进程原样透传。接收侧**不做** cap 裁决——拒绝只发生在发送方端口，
+   * 这里因链深丢消息等于静默吞消息。
+   */
+  sessionMessageChain?: SessionMessageChain;
 }
 
 export interface SessionMessageDeliveryResult {
@@ -38,6 +45,8 @@ export interface SessionMessageMailboxEnvelope {
   content: string;
   createdAt: string;
   senderKind?: SessionMessageSenderKind;
+  /** 防环链（spec D7）：落盘信封必须保住它，否则目标 CLI drain 时链在接收侧断掉。 */
+  chain?: SessionMessageChain;
 }
 
 /**

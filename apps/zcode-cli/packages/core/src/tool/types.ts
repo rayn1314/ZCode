@@ -16,6 +16,7 @@ import type {
   ModelMessageContent,
   ModelContentProtection,
   Model,
+  Logger,
   CoordinatorResponsePort,
   DynamicWorkflowRunPort,
   DynamicWorkflowSnippetPort,
@@ -24,12 +25,14 @@ import type {
   SessionId,
   SessionEvent,
   SessionModePort,
+  SessionMessageChainReader,
   SessionMessagePort,
   SessionStorePort,
   SkillPort,
   SkillTelemetryMetadata,
   SubagentRunOptions,
   SubagentPort,
+  SubagentRosterPort,
   ToolArtifactStorePort,
   TraceContext,
   TraceId,
@@ -135,6 +138,12 @@ export interface ToolExecutionContext {
    * 当前 Tool 的实时观测写入器。Handler 只能通过窄接口写事实，不能接触原始 OTel Span。
    */
   telemetry?: ToolExecutionSpanWriter;
+  /**
+   * 本会话 runtime 的 logger（executor 的 deps.logger）。handler 需要为「可恢复但必须留痕」
+   * 的失败（如 ListAgents 的历史投影读取失败）记一行 warn：这类事实只在这里可见，
+   * 不能只靠返回值把它降级成一个布尔位。
+   */
+  logger?: Logger;
   /** 当前工具调用是否属于 automation 派发轮；写工具 handler 用它做最终权限校验。 */
   automationTurn?: boolean;
   /** 当前工具调用是否属于闲时任务派发轮；OffPeakCreate handler 用它做最终拒绝。 */
@@ -160,8 +169,18 @@ export interface ToolExecutionContext {
   subagentModelOverride?: SubagentRunOptions["modelOverride"];
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /**
+   * 历史子代理只读端口（spec D8）。`ListAgents` 用它补齐重启后为空的注册表；
+   * 缺席即「本装配没有这项能力」，handler 只报注册表且不置 historyUnavailable。
+   */
+  subagentRosterPort?: SubagentRosterPort;
   /** 跨会话投递端口（`SendMessage` 的 `sess_*` 寻址）；缺席即能力缺席，handler 明确失败。 */
   sessionMessagePort?: SessionMessagePort;
+  /**
+   * 本会话入站防环链的只读口（spec D7）。工具侧只读、不推导：链可能在回合中途被 guide 更新，
+   * 所以 SendMessage 每次经它取实时值，而不是轮次开始时的快照。
+   */
+  sessionMessageChainReader?: SessionMessageChainReader;
   coordinatorResponsePort?: CoordinatorResponsePort;
   /** 工作流 actor 提交终态结果并等待引擎裁决的端口；仅在 workflow actor 会话注入。 */
   workflowSubmitPort?: WorkflowSubmitPort;

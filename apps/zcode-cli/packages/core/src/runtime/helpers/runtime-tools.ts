@@ -141,6 +141,9 @@ function createRuntimeHookRunner(
       }
     },
     mailbox: deps.sessionMailboxPort,
+    // 接收侧记链（spec D7）：mailbox 通路的结构化信封经 hook 上报给 runtime；
+    // 它是入站链的唯一写入点之一，工具侧只经 reader 读取。
+    noteInboundSessionMessageChain: (chain) => runtime.noteInboundSessionMessageChain(chain),
     sessionId,
   })) {
     if ("register" in hookRunner && typeof hookRunner.register === "function") {
@@ -188,7 +191,11 @@ function createRuntimeToolExecutor(
     nativeSearchEnhancementsEnabled: runtime.config.nativeSearchEnhancementsEnabled,
     skillPort: deps.skillPort,
     subagentPort: runtime.subagentPort,
+    // 历史子代理只读端口（spec D8）：装配期一次传入，ListAgents 用它补持久化历史。
+    subagentRosterPort: deps.subagentRosterPort,
     sessionMessagePort: deps.sessionMessagePort,
+    // 运行时装配期字段（不像 subagentModelOverride 那样逐轮传递）：SendMessage 每次经它读实时链。
+    sessionMessageChainReader: runtime.sessionMessageChainReader,
     coordinatorResponsePort: deps.coordinatorResponsePort,
     workflowSubmitPort: deps.workflowSubmitPort,
     workflowEscalatePort: deps.workflowEscalatePort,

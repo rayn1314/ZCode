@@ -126,6 +126,41 @@ test("senderKind 可选：旧信封缺字段仍可解析，新信封按值往返
   });
 });
 
+test("chain 可选：带链信封可投递并 drain 回读，旧信封缺字段仍合法", async () => {
+  await withRoot(async (rootDir) => {
+    const mailbox = createNodeSessionMailboxAdapter({ rootDir });
+    const chain = { hop: 2, originMessageId: "msg_root" };
+    await mailbox.deliver(envelope({ messageId: "msg_legacy" }));
+    await mailbox.deliver(
+      envelope({ messageId: "msg_chained", chain, createdAt: "2026-10-03T03:15:01.000Z" }),
+    );
+
+    const drained = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.equal(drained.length, 2);
+    // 防环链是结构化字段，drain 必须原样交回 runtime（spec D7 接收侧记）。
+    assert.equal(drained[0].chain, undefined);
+    assert.deepEqual(drained[1].chain, chain);
+  });
+});
+
+test("非法 chain 被拒：hop 非正整数 / origin 空", async () => {
+  await withRoot(async (rootDir) => {
+    const mailbox = createNodeSessionMailboxAdapter({ rootDir });
+
+    for (const illegal of [
+      { hop: 0, originMessageId: "msg_root" },
+      { hop: 1.5, originMessageId: "msg_root" },
+      { hop: 1, originMessageId: "" },
+    ]) {
+      await assert.rejects(
+        () =>
+          mailbox.deliver(envelope({ chain: illegal as SessionMailboxEnvelope["chain"] })),
+        /Invalid session mailbox envelope chain/,
+      );
+    }
+  });
+});
+
 test("路径穿越与非法取值仍被拒：sessionId / messageId / createdAt", async () => {
   await withRoot(async (rootDir) => {
     const mailbox = createNodeSessionMailboxAdapter({ rootDir });

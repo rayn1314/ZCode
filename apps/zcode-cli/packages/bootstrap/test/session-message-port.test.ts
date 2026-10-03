@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type {
-  SessionMailboxEnvelope,
-  SessionMailboxPort,
-  SessionMessageDeliveryRequest,
+import {
+  SESSION_MESSAGE_MAX_HOP,
+  SessionMessageChainExceededError,
+  type SessionMailboxEnvelope,
+  type SessionMailboxPort,
+  type SessionMessageDeliveryRequest,
 } from "@zcode/contracts";
+import type { CommandEnvelope } from "@zcode/shared/zcode-protocol-v4";
 import {
   BootstrapSessionMessagePort,
   resolveV4SendResult,
@@ -13,6 +16,7 @@ import {
   type SessionMessageV4SendResult,
 } from "../src/zcode-protocol/session-message-port.js";
 import { createBootstrapSessionMessagePort } from "../src/zcode-protocol/session-message-wiring.js";
+import { inputIntentMetadata } from "../src/zcode-protocol-v4/commands/input-intent.js";
 import type { ZCodeProtocolAgentServerContext } from "../src/zcode-protocol/server-types.js";
 import {
   createSessionMailboxPortFromEnv,
@@ -43,6 +47,7 @@ interface FakeHostState {
   resident: Set<string>;
   active: Set<string>;
   resumeResult: boolean | "throw";
+  resumeCalls: number;
   sendResult: SessionMessageV4SendResult | "throw";
   sends: SessionMessageV4SendInput[];
   stored: SessionMailboxEnvelope[];
@@ -57,6 +62,7 @@ function createHost(overrides: Partial<FakeHostState> = {}): {
     resident: new Set(["sess_target"]),
     active: new Set(),
     resumeResult: false,
+    resumeCalls: 0,
     sendResult: { accepted: true },
     sends: [],
     stored: [],
@@ -78,6 +84,7 @@ function createHost(overrides: Partial<FakeHostState> = {}): {
     hasResidentSession: (sessionId) => state.resident.has(sessionId),
     hasActiveTurn: (sessionId) => state.active.has(sessionId),
     async ensureSessionResident(sessionId) {
+      state.resumeCalls += 1;
       if (state.resumeResult === "throw") throw new Error("cold resume blew up");
       if (state.resumeResult) state.resident.add(sessionId);
       return state.resumeResult === true;
@@ -170,6 +177,72 @@ test("throwing v4 delivery is stored", async () => {
 
   assert.equal(result.status, "stored");
   assert.equal(state.stored.length, 1);
+});
+
+// ── 防环链（spec D7）：cap 的唯一裁决点在发送侧端口 ──
+
+test("hop=6 放行，链透传给 v4 投递并出现在注入文本里", async () => {
+  const { host, state } = createHost({ active: new Set(["sess_target"]) });
+  const chain = { hop: SESSION_MESSAGE_MAX_HOP, originMessageId: "msg_root" };
+  const result = await new BootstrapSessionMessagePort(host).deliver(
+    createRequest({ sessionMessageChain: chain }),
+  );
+
+  assert.equal(result.status, "steered");
+  assert.deepEqual(state.sends[0]?.sessionMessageChain, chain);
+  // 模型自己也要看得到链深（spec 行为 7）。
+  assert.match(state.sends[0]!.text, /hop="6"/);
+  assert.match(state.sends[0]!.text, /origin="msg_root"/);
+});
+
+test("hop=7 是拒绝：不落盘、不冷恢复、不投递", async () => {
+  const { host, state } = createHost({ resident: new Set(), resumeResult: false });
+  await assert.rejects(
+    () =>
+      new BootstrapSessionMessagePort(host).deliver(
+        createRequest({ sessionMessageChain: { hop: 7, originMessageId: "msg_root" } }),
+      ),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionMessageChainExceededError);
+      assert.equal(error.hop, 7);
+      assert.equal(error.originMessageId, "msg_root");
+      assert.equal(error.toSessionId, "sess_target");
+      assert.match(error.message, new RegExp(`max ${SESSION_MESSAGE_MAX_HOP}`));
+      return true;
+    },
+  );
+  assert.equal(state.stored.length, 0, "拒绝不得降级成 stored");
+  assert.equal(state.sends.length, 0);
+  assert.equal(state.resumeCalls, 0, "拒绝发生在冷恢复之前，不得唤醒或拉起目标");
+});
+
+test("不可达目标落 mailbox 时信封带上 chain，并原样上报给跨进程路由", async () => {
+  const { host, state } = createHost({ resident: new Set(), resumeResult: false });
+  const chain = { hop: 2, originMessageId: "msg_root" };
+  const result = await new BootstrapSessionMessagePort(host).deliver(
+    createRequest({ sessionMessageChain: chain }),
+  );
+
+  assert.equal(result.status, "stored");
+  assert.deepEqual(state.stored[0]?.chain, chain);
+});
+
+test("input-intent：链写进 TurnInputIntentMetadata，缺席不产生该字段", () => {
+  const envelope = {
+    type: "sendText",
+    commandId: "cmd_1",
+    clientId: "cli",
+  } as unknown as CommandEnvelope;
+
+  const withChain = inputIntentMetadata(envelope, {
+    text: "hi",
+    requestedDelivery: "startNow",
+    sessionMessageChain: { hop: 2, originMessageId: "msg_root" },
+  });
+  assert.deepEqual(withChain.sessionMessageChain, { hop: 2, originMessageId: "msg_root" });
+
+  const without = inputIntentMetadata(envelope, { text: "hi", requestedDelivery: "startNow" });
+  assert.equal("sessionMessageChain" in without, false);
 });
 
 test("mailbox write failure surfaces instead of claiming stored", async () => {
@@ -287,6 +360,17 @@ test("wiring builds a sendText command envelope for a resident target", async ()
   assert.equal(envelope.payload.requestedDelivery, "guide");
   assert.match(envelope.payload.text, /<session-message /);
   assert.equal(fixture.stored.length, 0);
+});
+
+test("wiring：链必须显式进 sendText payload（zod object 会静默剥离未知键）", async () => {
+  const fixture = createWiringFixture({ resident: true, active: false });
+  const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
+  await port.deliver(createRequest({ sessionMessageChain: { hop: 3, originMessageId: "msg_root" } }));
+
+  const envelope = fixture.envelopes[0] as {
+    payload: { sessionMessageChain?: unknown };
+  };
+  assert.deepEqual(envelope.payload.sessionMessageChain, { hop: 3, originMessageId: "msg_root" });
 });
 
 test("wiring degrades to mailbox when the v4 gateway is absent", async () => {

@@ -11,6 +11,8 @@ import type {
   SessionEventStorePort,
   SessionId,
   SessionMailboxPort,
+  SessionMessageChain,
+  SessionMessageChainReader,
   SessionStorePort,
   ContextSourcePort,
   ContextSourceSnapshot,
@@ -115,6 +117,10 @@ export interface AgentRuntimeInternal
   workspaceRoot: string;
   sessionStore?: SessionStorePort;
   sessionMailboxPort?: SessionMailboxPort;
+  /** 会话级入站防环链的唯一持有者；写入者只有 noteInboundSessionMessageChain（spec D7）。 */
+  inboundSessionMessageChain?: SessionMessageChain;
+  /** 工具上下文读取当前入站链的只读口（链可能在回合中途被 guide 更新）。 */
+  sessionMessageChainReader: SessionMessageChainReader;
   sessionPersisted: boolean;
   needsPlanModeExitReminder: boolean;
   latestConversationMessageId?: MessageId;

@@ -61,7 +61,12 @@ function sendViaV4(
       clientId: SESSION_MESSAGE_CLIENT_ID,
       commandId: input.commandId,
       issuedAt: new Date().toISOString(),
-      payload: { requestedDelivery: input.requestedDelivery, text: input.text },
+      payload: {
+        requestedDelivery: input.requestedDelivery,
+        text: input.text,
+        // 防环链必须显式进 payload：sendText 的 zod object 会静默剥离未知键。
+        ...(input.sessionMessageChain ? { sessionMessageChain: input.sessionMessageChain } : {}),
+      },
       sessionId: input.sessionId,
       type: "sendText",
     })

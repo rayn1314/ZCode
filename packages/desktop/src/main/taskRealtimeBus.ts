@@ -94,6 +94,8 @@ interface SessionMessageRequest {
   toSessionId: string;
   /** 来源身份，跨进程路由原样透传，不参与路由裁决。 */
   senderKind?: "session" | "subagent";
+  /** 防环链（spec D7）：main 只做路由，原样透传，不做 cap 裁决。 */
+  sessionMessageChain?: { originMessageId: string; hop: number };
 }
 
 interface SessionMessageDeliveryResult {

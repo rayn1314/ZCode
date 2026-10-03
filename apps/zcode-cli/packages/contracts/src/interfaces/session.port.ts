@@ -24,6 +24,7 @@ import type { GoalCompletionVerificationOutput } from "../tools/target.js";
 import type { PermissionOptionsPolicy, PermissionUpdate } from "./permission.port.js";
 import type { ToolResultDisplayPayload } from "../tools/tool-result-metadata.js";
 import type { ModelSelection } from "../model/model.js";
+import type { SessionMessageChain } from "./session-message.port.js";
 
 // -----------------------------------------------
 // Collaboration Mode and Risk Level
@@ -264,6 +265,11 @@ export interface TurnSteerInput {
   traceContext?: TraceContext;
   /** 当前输入消费时不向 provider 暴露的工具名。 */
   toolDisallowlist?: readonly string[];
+  /**
+   * 防环链（spec D7）：mid-turn steer 只在**被接受**且带链时记录；被拒不得记录，
+   * 不携带链也不清除（本轮开链/清链已由该轮 admission 决定）。
+   */
+  sessionMessageChain?: SessionMessageChain;
 }
 
 export type TurnSteerCommandKind = "sendText" | "sendGoalCommand" | "compact";
@@ -313,6 +319,11 @@ export interface TurnInputIntentMetadata {
     queueItemId?: string;
     clientId?: string;
   };
+  /**
+   * 防环链（spec D7）：live 通路经 v4 sendText payload → admission 落到这里。
+   * 存在即接收方 runtime 记录；命令面输入缺席 = 人重新开话头 → 清空会话入站链。
+   */
+  sessionMessageChain?: SessionMessageChain;
 }
 
 /** queue 内保留尚未 resolve 的附件描述；消费时与普通 turn 使用同一 resolver。 */

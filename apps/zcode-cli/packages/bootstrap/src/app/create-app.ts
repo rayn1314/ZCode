@@ -739,6 +739,9 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       // 跨会话投递端口（bootstrap 进程级一份，经 createWorkspaceZCodeApp 注入）。
       // 缺席即能力缺席：SendMessage 的 `sess_*` 分支明确失败，不静默降级。
       sessionMessagePort: options.sessionMessagePort,
+      // 历史子代理只读端口（spec D8）：与 sessionMessagePort 同源（进程级一份），
+      // 供 ListAgents 从父会话持久化事件补齐重启后的历史。
+      subagentRosterPort: options.subagentRosterPort,
       logger,
       executionPort,
       workspaceHookAdmission: workspaceHookRuntimeSecurity?.admission,

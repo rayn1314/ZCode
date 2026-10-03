@@ -26,6 +26,18 @@ export function isValidSessionMailboxSessionId(sessionId: string): boolean {
   return SESSION_ID_PATTERN.test(sessionId);
 }
 
+/**
+ * 防环链形状校验（spec D7）：CLI adapters 与 Host services 都写同一棵树，两边必须用同一套
+ * 规则拒绝非法链——否则坏链会被落盘，目标 drain 时才发现。
+ * `hop` 从 1 起且必须是正整数；`originMessageId` 必须是非空字符串。
+ */
+export function isValidSessionMessageChain(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const chain = value as { originMessageId?: unknown; hop?: unknown };
+  if (typeof chain.originMessageId !== "string" || chain.originMessageId.length === 0) return false;
+  return typeof chain.hop === "number" && Number.isInteger(chain.hop) && chain.hop > 0;
+}
+
 /** 信封文件名的 messageId 后缀（`_<messageId>.json`）；consume 按它匹配。 */
 export function sessionMailboxMessageIdSuffix(messageId: string): string {
   if (!isValidSessionMailboxMessageId(messageId)) {

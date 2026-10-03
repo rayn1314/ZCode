@@ -30,6 +30,8 @@ import type {
   SessionProjection,
   SessionStorePort,
   SessionGoal,
+  SessionMessageChain,
+  SessionMessageChainReader,
   SavedWorkflowScope,
   TargetChangedPayload,
   DynamicWorkflowRunProgressPayload,
@@ -223,6 +225,15 @@ export class AgentRuntime {
   private pendingModelChangeTimeline?: PendingModelChangeTimeline;
   private sessionStartHookRan = false;
   private sessionTitleGenerationAttempted = false;
+  /**
+   * 会话级入站防环链（spec D7）：唯一持有者。写入者只有 noteInboundSessionMessageChain
+   * （mailbox drain 接线与 v4 intent admission 各一处）；工具侧只经 reader 读取。
+   */
+  private inboundSessionMessageChain?: SessionMessageChain;
+  /** 工具上下文注入的只读视图；链可能在回合中途被 guide 更新，所以必须每次读取实时值。 */
+  readonly sessionMessageChainReader: SessionMessageChainReader = {
+    current: () => this.inboundSessionMessageChain,
+  };
   private agentTelemetry: RuntimeTelemetryFacade;
 
   constructor(sessionId: SessionId, config: AgentRuntimeConfig, deps: AgentRuntimeDeps) {
@@ -255,6 +266,8 @@ export class AgentRuntime {
     this.eventReducer = new EventReducer();
     this.eventStore = deps.eventStore;
     this.sessionStore = deps.sessionStore;
+    // 子代理继承：spawn 时父会话的当前链快照（spec D7）。缺省即无链，链首由子会话首条消息开启。
+    this.inboundSessionMessageChain = deps.initialSessionMessageChain;
     this.rootTraceContext = deps.traceContext ?? createRootTraceContext({ sessionId });
     this.appVersion = deps.appVersion ?? "0.0.0";
     this.logger = deps.logger?.child({

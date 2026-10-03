@@ -251,8 +251,9 @@ function escapeSessionMessageAttr(value: string): string {
  * 同属性名（source/from_session/sender_kind），接收侧模型无需区分 mailbox 与实时两条通路。
  */
 function formatSessionMessageDeliveryText(request: SessionMessageSendRequested): string {
+  const chain = request.sessionMessageChain;
   return [
-    `<session-message source="session-message" message_id="${escapeSessionMessageAttr(request.messageId)}" from_session="${escapeSessionMessageAttr(request.fromSessionId)}" sender_kind="${escapeSessionMessageAttr(request.senderKind ?? "session")}" created_at="${escapeSessionMessageAttr(request.createdAt)}">`,
+    `<session-message source="session-message" message_id="${escapeSessionMessageAttr(request.messageId)}" from_session="${escapeSessionMessageAttr(request.fromSessionId)}" sender_kind="${escapeSessionMessageAttr(request.senderKind ?? "session")}"${chain ? ` hop="${chain.hop}" origin="${escapeSessionMessageAttr(chain.originMessageId)}"` : ""} created_at="${escapeSessionMessageAttr(request.createdAt)}">`,
     request.content,
     "</session-message>",
   ].join("\n");
@@ -570,6 +571,10 @@ export function createZCodeTaskServiceAdapter(
           payload: {
             text: formatSessionMessageDeliveryText(request),
             requestedDelivery: "guide",
+            // 防环链原样进入 v4 payload（spec D7）：接收侧不做 cap 裁决，只负责让链连续。
+            ...(request.sessionMessageChain
+              ? { sessionMessageChain: request.sessionMessageChain }
+              : {}),
           },
           sessionId: target.taskId,
           // requestId 作为幂等键：跨进程重投由 CommandInbox 去重，不会二次注入。
@@ -641,6 +646,8 @@ export function createZCodeTaskServiceAdapter(
         content: request.content,
         createdAt: request.createdAt,
         ...(request.senderKind ? { senderKind: request.senderKind } : {}),
+        // 落盘信封保住链（spec D7）：目标 CLI 下次 drain 时 hook 会把 chain 交回 runtime。
+        ...(request.sessionMessageChain ? { chain: request.sessionMessageChain } : {}),
       });
     } catch (error) {
       return {

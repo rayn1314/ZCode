@@ -61,6 +61,11 @@ export async function admitPrompt(
         inputId: options?.inputId,
         intent: admissionIntent(options?.intent, delivery ?? "queue"),
         queryId: options?.queryId,
+        // 防环链（spec D7）：live 通路把链放在 intent 里，mid-turn 引导必须把它交给 steerTurn，
+        // 否则"回信被作为 guide 注入运行中回合"这条最常见的跨会话路径会丢链、计数归零。
+        ...(options?.intent?.sessionMessageChain
+          ? { sessionMessageChain: options.intent.sessionMessageChain }
+          : {}),
         toolDisallowlist: options?.toolDisallowlist,
         traceContext: options?.traceContext,
       });

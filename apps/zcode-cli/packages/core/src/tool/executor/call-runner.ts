@@ -374,6 +374,8 @@ async function executeToolCallImpl(
     const context: ToolExecutionContext = {
       toolCallId: canonicalToolCall.id,
       telemetry,
+      // handler 侧只有这一个日志出口；ListAgents 的历史投影失败要靠它留痕。
+      logger: deps.logger,
       automationTurn: options?.automationTurn,
       offPeakTurn: options?.offPeakTurn,
       traceContext,
@@ -403,7 +405,9 @@ async function executeToolCallImpl(
       },
       skillPort: deps.skillPort,
       subagentPort: deps.subagentPort,
+      subagentRosterPort: deps.subagentRosterPort,
       sessionMessagePort: deps.sessionMessagePort,
+      sessionMessageChainReader: deps.sessionMessageChainReader,
       coordinatorResponsePort: deps.coordinatorResponsePort,
       workflowSubmitPort: deps.workflowSubmitPort,
       workflowEscalatePort: deps.workflowEscalatePort,

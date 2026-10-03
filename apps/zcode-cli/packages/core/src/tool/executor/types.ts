@@ -22,12 +22,14 @@ import type {
   PermissionBrokerPort,
   SessionEvent,
   SessionId,
+  SessionMessageChainReader,
   SessionMessagePort,
   SessionModePort,
   SessionStorePort,
   SkillPort,
   SubagentRunOptions,
   SubagentPort,
+  SubagentRosterPort,
   ToolArtifactStorePort,
   TraceContext,
   TurnId,
@@ -100,8 +102,12 @@ export interface ToolExecutorOptions {
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /** 历史子代理只读端口；透传到 ToolExecutionContext 供 ListAgents 补齐持久化历史（spec D8）。 */
+  subagentRosterPort?: SubagentRosterPort;
   /** 跨会话投递端口；透传到 ToolExecutionContext 供 SendMessage 的 `sess_*` 寻址。 */
   sessionMessagePort?: SessionMessagePort;
+  /** 入站防环链只读口（spec D7）；透传到 ToolExecutionContext 供 SendMessage 计算 hop/origin。 */
+  sessionMessageChainReader?: SessionMessageChainReader;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */
@@ -208,8 +214,12 @@ export interface ToolExecutorDeps {
   nativeSearchEnhancementsEnabled?: boolean;
   skillPort?: SkillPort;
   subagentPort?: SubagentPort;
+  /** 历史子代理只读端口；透传到 ToolExecutionContext 供 ListAgents 补齐持久化历史（spec D8）。 */
+  subagentRosterPort?: SubagentRosterPort;
   /** 跨会话投递端口；透传到 ToolExecutionContext 供 SendMessage 的 `sess_*` 寻址。 */
   sessionMessagePort?: SessionMessagePort;
+  /** 入站防环链只读口（spec D7）；透传到 ToolExecutionContext 供 SendMessage 计算 hop/origin。 */
+  sessionMessageChainReader?: SessionMessageChainReader;
   coordinatorResponsePort?: CoordinatorResponsePort;
   workflowSubmitPort?: WorkflowSubmitPort;
   /** actor 的升级端口；存在即为该会话注册 escalate。 */

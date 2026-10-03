@@ -12,6 +12,7 @@ import type {
   ProjectId,
   SessionEvent,
   SessionEventSink,
+  SessionMessageChain,
   SkillLoadOutcome,
   SubagentPort,
   TodoItem,
@@ -220,6 +221,8 @@ export interface AgentRuntimeCoreMethods {
   }): Promise<boolean>;
   setQueueAutoDrain(options: { autoDrain: boolean; traceContext: TraceContext }): Promise<void>;
   completeExternalQueueDrain(): void;
+  /** 入站防环链的唯一写入点；`undefined` 即清空（spec D7）。 */
+  noteInboundSessionMessageChain(chain: SessionMessageChain | undefined): void;
   setFollowupMode(options: { mode: "queue" | "guide"; traceContext: TraceContext }): Promise<void>;
   emitModelSelected(options: {
     modelSelection: ModelSelection;

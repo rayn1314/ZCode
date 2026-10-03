@@ -97,6 +97,12 @@ export async function executeTurnCommand(
   options?: ExecuteTurnOptions,
   startReservation?: ActiveTurnStartReservation,
 ): Promise<TurnResult> {
+  // 防环链（spec D7）必须在任何 await 之前落定：命令面输入（intent 在场）不带链 = 人重新开话头
+  // → 清空本会话入站链。core 内部派生的轮次（后台结果、子代理通知、hook 续跑）不带 intent，
+  // 因此不会误清。
+  if (options?.intent) {
+    this.noteInboundSessionMessageChain(options.intent.sessionMessageChain);
+  }
   // 普通 Turn 过去在异步初始化完成后才读取 Session Selection/输出样式，
   // 初始化期间发生的切模会越过 admission 边界，错误影响已经开始的 Turn。
   // 这里在任何 await 之前冻结本轮事实；后续配置变化只作用于下一轮。

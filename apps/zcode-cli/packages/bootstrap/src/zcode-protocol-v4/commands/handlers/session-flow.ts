@@ -261,6 +261,10 @@ async function sendText(
         : {}),
       attachmentRefs: payload.attachments,
       sharedContextRefs: payload.context_refs,
+      // 防环链（spec D7）：live 通路把 payload 的链放进 intent，core admission 读取并记录。
+      ...(payload.sessionMessageChain
+        ? { sessionMessageChain: payload.sessionMessageChain }
+        : {}),
     });
     started = await startPromptTurn(host, record, {
       content: payload.text,

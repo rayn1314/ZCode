@@ -1,8 +1,9 @@
 // ============================================================
 // ListAgents Tool - 列出本会话派出的子代理及其状态
 // ============================================================
-// 数据源只有本进程内 runtimeTaskRegistry 里的 `local_agent` 任务。跨重启的历史不在契约里：
-// 那需要按 `subagent_child` 从 sessionStore 恢复，是后续任务（见 spec 遗留工作 2）。
+// 数据源有两个：本进程内 runtimeTaskRegistry 的 `local_agent` 任务（live），以及由
+// `SubagentRosterPort` 从父会话持久化事件投影出的历史（history，spec D8）。
+// 每行必须带 `source`：`live` 可用 `agent_*` 寻址，`history` 只能用 `childSessionId` 走跨会话路径。
 
 import { z } from "zod";
 import { toToolJsonSchema } from "./json-schema.js";
@@ -59,6 +60,11 @@ export const ListAgentsAgentSchema = z
     startedAt: z.number(),
     /** 终态才有；运行中缺席。 */
     endedAt: z.number().optional(),
+    /**
+     * 行来源。`live`：本进程注册表，可用 `agent_*` 寻址，状态实时。
+     * `history`：持久化事件投影，`agent_*` 寻址已失效，只能用 `childSessionId` 走跨会话路径。
+     */
+    source: z.enum(["live", "history"]),
   })
   .strict();
 
@@ -67,6 +73,12 @@ export type ListAgentsAgent = z.infer<typeof ListAgentsAgentSchema>;
 export const ListAgentsOutputSchema = z
   .object({
     agents: z.array(ListAgentsAgentSchema),
+    /**
+     * 历史投影失败（事件读取异常/超时）时为 true：此时 `agents` 只含 live 行。
+     * 必须显式区分「历史读不到」与「历史本来就没有」——否则模型会把一次读取故障
+     * 当成「这个会话没派过子代理」。roster 端口缺席（老装配）不置该位。
+     */
+    historyUnavailable: z.literal(true).optional(),
   })
   .strict();
 

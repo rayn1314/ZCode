@@ -14,6 +14,7 @@ import {
   buildSessionMailboxFileName,
   isValidSessionMailboxMessageId,
   isValidSessionMailboxSessionId,
+  isValidSessionMessageChain,
   sessionMailboxMessageIdSuffix,
 } from "@zcode/shared";
 import type {
@@ -144,6 +145,10 @@ function assertEnvelope(value: unknown): SessionMessageMailboxEnvelope {
   // 可选字段：旧信封没有 senderKind 仍然合法，只在出现时必须取白名单值。
   if (parsed.senderKind !== undefined && !SENDER_KINDS.includes(parsed.senderKind)) {
     throw new Error("Invalid session mailbox envelope senderKind");
+  }
+  // 与 CLI adapters 同一套链校验：坏链不落盘，避免目标 drain 时才暴露。
+  if (parsed.chain !== undefined && !isValidSessionMessageChain(parsed.chain)) {
+    throw new Error("Invalid session mailbox envelope chain");
   }
   return parsed;
 }

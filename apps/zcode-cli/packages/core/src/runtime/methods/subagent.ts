@@ -300,6 +300,9 @@ export function createDefaultSubagentPort(
           // 子代理也获得跨会话投递端口，因此可用 SendMessage 发 `sess_*`（树外/任意会话）；
           // subagents.enabled:false 仍关闭 Agent/Task，子代理不能套娃。
           sessionMessagePort: deps.sessionMessagePort,
+          // 防环链继承（spec D7）：spawn 时快照父会话当前链，否则「父会话收信 → 派子代理回信」
+          // 会在子会话里从 hop=1 重新开链，绕过计数。只在创建时给一次。
+          initialSessionMessageChain: this.sessionMessageChainReader.current(),
           // 子 runtime 继承父的模型请求准入端口：subagent 的请求 provider 同样看得见，
           // 它们该与父一样喂治理器信号（父是 observer 则子也是 observer）。
           modelRequestAdmission: this.modelRequestAdmission,

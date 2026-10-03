@@ -3,8 +3,10 @@ import {
   SendMessageInputJsonSchema,
   SendMessageInputSchema,
   SendMessageOutputSchema,
+  SessionMessageChainExceededError,
   type SendMessageInput,
   type SendMessageOutput,
+  type SessionMessageChain,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
   type SessionMessageSenderKind,
@@ -27,6 +29,7 @@ const SEND_MESSAGE_FAILURE_CODE = {
   RECIPIENT_INVALID: 1,
   SUBAGENT_REGISTRY_UNAVAILABLE: 2,
   SESSION_MESSAGE_UNAVAILABLE: 3,
+  CHAIN_EXCEEDED: 4,
 } as const;
 /**
  * SendMessage 续跑已完成子 Agent 走
@@ -50,6 +53,8 @@ const SEND_MESSAGE_PROVIDER_DESCRIPTION = [
   "- `agent_<uuid>`: a subagent this session spawned; use the `agentId` from the Agent result. The message is steered into its active turn, queued for its next tool round, or resumes a settled agent in the background.",
   "- `sess_*`: any session by its ID (for a subagent, `sess_subagent_<uuid>`). Cross-session delivery reports how it landed: `steered` (injected into the target's running turn), `woken` (opened a new turn for an idle or cold session), or `stored` (target unreachable; kept in its mailbox for the next drain). You cannot send to your own session ID.",
   "- Any other value is rejected. Address sessions by their `sess_*` ID, not by title.",
+  "",
+  "Replies between two sessions are chain-limited: a message that would exceed 6 hops in one back-and-forth chain is rejected instead of delivered. If that happens, stop replying, summarize what you learned, and report to the user; a new human message resets the chain.",
   "",
   "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox.",
 ].join("\n");
@@ -156,8 +161,24 @@ async function sendToSession(
     fromSessionId: context.sessionId,
     senderKind: resolveSenderKind(context),
     createdAt: new Date().toISOString(),
+    // 发送侧算链（spec D7）：读本会话**实时**入站链（guide 可能在本回合中途注入新链）。
+    // reader 缺席按无链处理，不因能力缺席而报错——链上限只是护栏，不是寻址前提。
+    sessionMessageChain: resolveOutboundChain(context, messageId),
   };
-  const result = await port.deliver(request, { signal: context.abortSignal });
+  let result: SessionMessageDeliveryResult;
+  try {
+    result = await port.deliver(request, { signal: context.abortSignal });
+  } catch (error) {
+    // cap 的唯一裁决点在发送侧端口；超限是明确业务失败，必须交回模型，不能悄悄降级成 stored。
+    if (error instanceof SessionMessageChainExceededError) {
+      return {
+        result: false,
+        errorCode: SEND_MESSAGE_FAILURE_CODE.CHAIN_EXCEEDED,
+        message: error.message,
+      };
+    }
+    throw error;
+  }
 
   return {
     status: "success",
@@ -165,6 +186,20 @@ async function sendToSession(
     delivery: result.status,
     message: formatSessionDeliveryMessage(result),
   } satisfies SendMessageOutput;
+}
+
+/**
+ * `sess_*` 出站链：入站链存在则接续（hop+1、origin 保持），否则本次消息就是链首（hop=1）。
+ * 工具侧不得自行推导链深，只能经 reader 读 runtime 的唯一事实源。
+ */
+function resolveOutboundChain(
+  context: ToolExecutionContext,
+  outboundMessageId: string,
+): SessionMessageChain {
+  const inbound = context.sessionMessageChainReader?.current();
+  return inbound
+    ? { hop: inbound.hop + 1, originMessageId: inbound.originMessageId }
+    : { hop: 1, originMessageId: outboundMessageId };
 }
 
 function invalidRecipientFailure(to: string): ToolHandlerFailure {

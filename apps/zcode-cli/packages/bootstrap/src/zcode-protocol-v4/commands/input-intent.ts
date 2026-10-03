@@ -19,6 +19,7 @@ interface CanonicalCommandIntent {
   attachmentRefs?: readonly AttachmentRef[];
   sharedContextRefs?: TurnInputIntentMetadata["sharedContextRefs"];
   provenance?: TurnInputIntentMetadata["provenance"];
+  sessionMessageChain?: TurnInputIntentMetadata["sessionMessageChain"];
 }
 
 export function inputIntentMetadata(
@@ -33,6 +34,7 @@ export function inputIntentMetadata(
     mode?: SubmissionMode;
     planEnabled?: boolean;
     sharedContextRefs?: TurnInputIntentMetadata["sharedContextRefs"];
+    sessionMessageChain?: TurnInputIntentMetadata["sessionMessageChain"];
   },
 ): TurnInputIntentMetadata {
   const admission = commandAdmissionOf(envelope);
@@ -65,6 +67,10 @@ export function inputIntentMetadata(
     ...(options.fallbackReasonCode ? { fallbackReasonCode: options.fallbackReasonCode } : {}),
     ...(options.attachmentRefs ? { attachmentRefs: [...options.attachmentRefs] } : {}),
     ...(options.sharedContextRefs ? { sharedContextRefs: [...options.sharedContextRefs] } : {}),
+    // 防环链（spec D7）：live 通路的链必须落进 intent，core 在 admission 时读取。
+    ...(options.sessionMessageChain
+      ? { sessionMessageChain: { ...options.sessionMessageChain } }
+      : {}),
   };
 }
 
@@ -93,6 +99,9 @@ export function inputIntentMetadataFromCanonical(
     ...(canonical.fallbackReasonCode ? { fallbackReasonCode: canonical.fallbackReasonCode } : {}),
     ...(canonical.attachmentRefs ? { attachmentRefs: [...canonical.attachmentRefs] } : {}),
     ...(canonical.sharedContextRefs ? { sharedContextRefs: [...canonical.sharedContextRefs] } : {}),
+    ...(canonical.sessionMessageChain
+      ? { sessionMessageChain: { ...canonical.sessionMessageChain } }
+      : {}),
     ...(originalSourceCommandId
       ? {
           provenance: canonical.provenance ?? {
@@ -131,5 +140,7 @@ export function inputIntentMetadataFromQueueItem(
     ...(item.sharedContextRefs ? { sharedContextRefs: [...item.sharedContextRefs] } : {}),
     // 提升只改变调度状态；重试／编辑原始输入的来源关联不能在此丢失。
     ...(item.provenance ? { provenance: { ...item.provenance } } : {}),
+    // 排队不改变链身份：不复制它会让"回信被排队"在提升后丢掉链深（spec D7）。
+    ...(item.sessionMessageChain ? { sessionMessageChain: { ...item.sessionMessageChain } } : {}),
   };
 }

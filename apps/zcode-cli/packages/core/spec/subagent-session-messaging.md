@@ -57,7 +57,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - `fromSessionId`：发送方会话 id（正式会话 `sess_*`；子代理 `sess_subagent_*`）；
 - `senderKind`：`"session"`（独立身份）或 `"subagent"`（附属身份）。
 
-接收侧 `<session-message>` 注入文本增加 `sender_kind` 属性。子代理**可以**发给任意会话（含正式会话），其消息按附属身份标注；`workflow_child` 等受限会话继续走既有 denylist（`bootstrap/src/app/workflow-actor-tools.ts`）。本轮不做防环（hop 计数），只做来源标注，防环列为后续。
+接收侧 `<session-message>` 注入文本增加 `sender_kind` 属性。子代理**可以**发给任意会话（含正式会话），其消息按附属身份标注；`workflow_child` 等受限会话继续走既有 denylist（`bootstrap/src/app/workflow-actor-tools.ts`）。防环见 D7。
 
 ### D5 · 树内通路保留
 
@@ -66,6 +66,31 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 ### D6 · `Agent` 传 `model`（可选，阶段 4）
 
 照 `CreateWorkflow` 的 `subagent_model` 先例：在 `resolveInput` 阶段用 `modelCatalogPort` 解析成规范形，解不开即业务失败；插进 `resolveSubagentSelection` 的解析顺序（`override(turn) ≥ 调用级 > profile > 父模型`）；**只活一次、不回写任何配置**——这是当年移除该字段的原因，规范化为"本次 spawn 的一次性请求"即可规避历史回放覆盖配置的问题。后台/复活路径当前拿不到调用级 override，此不对称在工具描述与本节明说。
+
+### D7 · 防环：链深随消息携带，cap 由发送侧端口裁决（阶段 5）
+
+两个会话互相回信没有终止条件，这是本能力唯一的系统性风险。设计要点：
+
+- **链身份随消息走，投递层不做任何记账。** 每条会话消息可携带 `chain = { originMessageId, hop }`：`originMessageId` 是链首消息 id，`hop` 是它在链上的深度（链首为 1）。投递层不维护"上一条是谁发的"这类状态，因此不存在多写者与过期判断。
+- **发送侧算，接收侧记。** `SendMessage` 发 `sess_*` 时读本会话当前入站链：`hop = 入站链.hop + 1`、`origin = 入站链.originMessageId`；没有入站链（本轮由人或内部事件触发）则 `hop = 1`、`origin` 取本次 `messageId`。
+- **链必须结构化到达接收方 runtime。** live 通路（`sendText`）过去只传文本，而闭合的 payload schema 会静默剥离未知键，所以给 `sendText` payload 与 `QueueItem` 增加可选字段 `sessionMessageChain`，经 `inputIntentMetadata` 落到 `TurnInputIntentMetadata.sessionMessageChain`，core 在输入 admission 时读取。mailbox 通路直接读信封的 `chain`。两条通路在 core 汇合到同一处记录。
+- **入站链的唯一持有者**是 core 的会话 runtime（`AgentRuntime` 一个私有字段）。设置点：mailbox drain（结构化信封）与 v4 intent admission（携带链时）。清除点是**精确**的而非超时：一次来自命令面的输入（`ExecuteTurnOptions.intent` 在场）若不带链，说明这是人重新开的输入，链深归零；core 内部派生的轮次（后台结果、子代理通知、hook 续跑）不带 intent，因此不会误清。mid-turn 的 `steerTurn` 只"带链则设置"，不清除——那一轮的开链/清链已由该轮 admission 决定。
+- **发送侧读的是实时值，不是轮次快照**：链在本回合中途也可能被注入（guide），所以工具上下文拿到的是 reader 端口而非快照值。
+- **子代理继承父会话的当前链**（spawn 时快照进子 runtime），否则"父会话收信 → 派子代理回信"会绕过计数。
+- **cap 只在发送侧裁决**：`BootstrapSessionMessagePort.deliver` 是发送方进程里唯一的写侧入口（三档都经过它），`hop > SESSION_MESSAGE_MAX_HOP(=6)` 时**拒绝投递**并返回明确失败：不落盘、不唤醒、不改动目标。接收侧只如实记录与传播，不静默丢弃。
+- 拒绝文案面向模型可执行，点明链首与深度，并要求"停止回信、把结论汇报给用户"。用户再说一句话即重置链深。
+
+**为什么不在投递层记账 / 不用超时**：投递层看不到"目标会话这一轮是人触发的还是消息触发的"，只能靠时间窗口猜；core 看得到全部输入，这是唯一能精确判定链是否还在的位置。**为什么 cap 不在接收侧**：接收侧丢弃等于静默吞消息；拒绝必须发生在发送方拿得到结果的地方，才能把原因交回模型。
+
+### D8 · `ListAgents` 跨重启：注册表是活体真相，roster 端口补历史（阶段 6）
+
+`ListAgents` 现在只读进程内注册表，重启后为空（子会话其实还在磁盘上）。设计要点：
+
+- **新增只读端口 `SubagentRosterPort`**（contracts），按父会话列出历史子代理；由 bootstrap 实现（它拿得到持久化 session store），core 只依赖端口。
+- **数据来源是父会话自己的持久化 session entry**（`runtime/subagent_lifecycle`，id 稳定为 `subagent-lifecycle:<agentId>`）：core 的 `persistDurableSessionEvent` 在 `SubagentSpawned` / `SubagentStopped` 事件上**覆写同一行**（行数 = 派发过的子代理数），spawn 建行、stop 收口并保留首次 spawn 的 `created`/`startedAt`。给出 `agentId`、`childSessionId`、`agentType`、`description`、`isBackgrounded`、`status`（事件原词）、`startedAt`、`endedAt`。**不读父会话事件投影**（内存 eventStore 随会话去激活清空、冷恢复不回灌），也不读父会话消息历史——列个子代理不该触发整段 transcript 的 hydrate。
+- **状态语义必须诚实**：entry 带终态 → 映射为终态（`success → completed` 等）；只有 spawn 没有终态 → 报 `lost`（进程重启后那个 runtime 已经不存在了），**不得报 `running`**——`running` 只能由本进程注册表断言。**同一事实两种来源必须同词**：后台被 TaskStop 时活体注册表报 `killed`（`runner.ts` 的 `BACKGROUND_AGENT_STOPPED_STATE.registryStatus`），事件只带 `stopped`，故 entry 路径把 `stopped` 也归一到 `killed`。
+- **合并语义**：注册表条目优先（实时状态与 `isBackgrounded` 更准），roster 补注册表缺的条目，按 `agentId` 去重；每行标注 `source: "live" | "history"`，模型据此知道哪些能用 `agent_*` 寻址、哪些只能用 `childSessionId`（`sess_subagent_*`）走跨会话路径。
+- 重启后 `agent_*` 寻址不可用是既有行为（内存注册表为空），不在本轮改成持久寻址；输出里的 `childSessionId` 就是给这种情况用的寻址键。
 
 ## 架构与投递拓扑
 
@@ -100,9 +125,9 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 - 新增工具 `ListAgents`。入参可选过滤（如 `status`、`agent_type`），缺省列出本会话全部子代理。
 - 输出每项：`agentId`、`childSessionId`、`agentType`、`description`、`status`、`isBackgrounded`、`startedAt`（可含 `endedAt`）。
-- 数据源：`context.runtimeTaskRegistry.all()`（本会话的 `local_agent` 任务，含运行中与终态）。
+- 数据源：`context.runtimeTaskRegistry.all()`（本会话的 `local_agent` 任务，含运行中与终态），并在注册表缺失该条目时由 `SubagentRosterPort` 补齐历史（阶段 6，见 D8）。
 - 注册门：与 `includeAgent` 同门（父会话且有 subagent 端口才注册）。
-- **已知边界**：注册表是进程内内存，重启后为空。跨重启列出历史子代理需要从 `sessionStore` 按 `subagent_child` 恢复，列为后续；本轮在工具描述里说明"仅本进程内"。
+- 每行带 `source: "live" | "history"`：`live` 可 `agent_*` 寻址，`history` 只能用 `childSessionId`。
 
 ### 3. SendMessage 统一寻址（阶段 2）
 
@@ -132,6 +157,20 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **开关**：消息与 mailbox 默认开启（显式 `ZCODE_MESSAGE_ENABLED=0/false` 才关闭）。
 - main 路由（`taskRealtimeBus.ts`）已完整，不改；"强制唤醒从未被 announce 的会话"列为后续。
 
+### 7. 防环（阶段 5）
+
+- 链字段：`SessionMessageDeliveryRequest.sessionMessageChain?`、mailbox `SessionMailboxEnvelope.chain?`、v4 `sendText` payload / `QueueItem.sessionMessageChain?`、`TurnInputIntentMetadata.sessionMessageChain?`；注入文本 `<session-message>` 同时输出 `hop` 与 `origin` 属性，让模型自己也能看到链深。
+- 发送：`SendMessage` 的 `sess_*` 分支从 `SessionMessageChainReader.current()` 取本会话入站链算 `hop/origin`（无链则 `hop=1`）。
+- 记录：mailbox drain 与 v4 admission 两条通路都调 `AgentRuntime.noteInboundSessionMessageChain(chain)`；命令面输入不带链时清除。
+- 裁决：`hop > SESSION_MESSAGE_MAX_HOP` 在 `BootstrapSessionMessagePort.deliver` 直接拒绝，返回 `failed` + 明确文案；跨进程 request/notification/main 路由原样透传 `chain`。
+- 传播：目标侧 Host 注入 v4 `sendText` 时带上 `sessionMessageChain`（live）或写进 mailbox `chain`（stored），保证链在跨进程后仍然连续。
+
+### 8. 历史子代理恢复（阶段 6）
+
+- `SubagentRosterPort.listByParentSession(parentSessionId)`：bootstrap 读父会话持久化的 `runtime/subagent_lifecycle` session entry，按 D8 的状态语义与映射返回。
+- `ListAgents` 合并 registry（优先）与 roster（补齐），按 `agentId` 去重并标注 `source`。
+- 工具描述改为"本进程注册表 + 持久化历史"，并说明 `history` 条目只能用 `childSessionId` 寻址。
+
 ## 所有权与不变式
 
 - **spawn 语义 owner**：`core/src/subagent/runner.ts`（`launch` 的分叉是唯一判据），handler 只透传 `wait`。
@@ -141,6 +180,9 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **身份不变式**：`fromSessionId` 与 `senderKind` 由发送方 runtime 填充，接收方只读；子代理不得伪造为正式会话身份。
 - **树内快速通路优先**：目标若在本会话子代理注册表内，走既有子代理投递，不经 v4 往返。
 - **幂等**：跨进程投递沿用 `SessionMessageSendRequested` 的 `requestId` 去重；mailbox 信封以 `messageId` 命名，重复投递不产生重复可读消息。
+- **入站链的唯一 owner**：会话 runtime 的 `inboundSessionMessageChain` 字段。写入者只有 `noteInboundSessionMessageChain`（mailbox drain 接线与 v4 intent admission 各一处）；工具侧只经 reader 读取，不得自行推导链深。
+- **cap 的唯一裁决点**：`BootstrapSessionMessagePort.deliver`。接收侧（Host adapter、目标 runtime）不得因为 `hop` 大而丢消息——拒绝只发生在发送方，且必须回传原因。
+- **roster 只读**：`SubagentRosterPort` 不得写任何状态，也不得成为子代理生命周期的第二个真相源；`running` 永远只能由进程内注册表断言。
 
 ## 失败语义
 
@@ -150,6 +192,8 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - mailbox 目录不可写：返回失败并明确原因，不假装成功。
 - 目标会话在投递瞬间被卸载：以 revision/幂等门兜底，必要时重试一次；仍失败则落盘。
 - 抄底语义：闲时轮借用前台模型时后台不可用——profile 显式后台仍抛 `BACKGROUND_UNAVAILABLE`（文案不变）；默认路径降级为前台并在结果与日志里标注，不静默。
+- 链深超限：发送方拿到的是一次明确的业务失败（含链首 `messageId` 与当前 `hop`），消息不投递、不落盘、不唤醒目标；这是"拒绝"不是"降级"，不得改写成 `stored`。
+- 历史子代理读取失败（session entry 读取异常）：`ListAgents` 退回只报注册表内容并在结果正文里说明历史不可读，不假装"没有历史子代理"。子代理生命周期 entry 落盘失败只 warn，不打断子代理运行。
 
 ## 迁移边界
 
@@ -166,6 +210,8 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **阶段 2（core/contracts/adapters/bootstrap）已落地**：mailbox `deliver`；`SessionMessagePort` + 本进程三档投递（活动 `guide` / 空闲 `startNow` / 不可达 mailbox `stored`）；`SendMessage` 支持 `sess_*`；子代理注册 `SendMessage`；身份字段；消息开关默认开启（显式 `0`/`false` 关闭）。
 - **阶段 3（services/desktop/shared）已落地**：`deliverSessionMessage` 三态 + 回执；mailbox `consume` 去重（CLI adapters 与 Host services 共 `@zcode/shared` 的落盘规则）；CLI→Host 触发通道走 v4 sideband 通知 `v4/session/message-send-requested`，Host 转 main 实时路由。
 - **阶段 4（core/contracts）已落地**：`Agent` 支持调用级 `model`（`resolveInput` 用 `modelCatalogPort` 规范化、解不开即业务失败、只活一次不回写配置，优先级 `turn override > 调用级 > profile > 父模型`）。**已知不对称**：该选型只在本次前台 `run`（`wait: true` 且 profile 不强制后台）生效；后台/复活路径无选型通道，会跑在 profile/会话模型上。
+- **阶段 5（contracts/shared/core/bootstrap/services/desktop）已落地**：防环链（D7）——链随消息结构化携带、接收方 runtime 记录、发送侧端口按 `SESSION_MESSAGE_MAX_HOP` 拒绝超限投递。
+- **阶段 6（contracts/core/bootstrap）已落地**：`SubagentRosterPort` + `ListAgents` 合并历史（D8）。
 
 ### 阶段 3 的落地结论
 
@@ -188,17 +234,11 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 ## 遗留工作（分类）
 
-**本轮范围内、已排期**：阶段 1、2、3、4 已全部落地（见上）。
+**本轮范围内、已排期**：阶段 1、2、3、4、5、6 已全部落地（见上）。
 
 **阶段性说明（同一 workspace 已完整可用）**：桌面里两个会话若属于同一 workspace（常见情形），它们在同一 CLI 进程内，阶段 2 的本进程三档已覆盖"发消息 + 唤醒"全链路，无需阶段 3。阶段 3 只补"不同 workspace（两个 CLI 进程）"的实时投递。
 
-**本轮不做、需另立任务**：
-1. 跨会话消息防环（hop 计数或拒绝回环）。
-2. `ListAgents` 跨重启（从 `sessionStore` 按 `subagent_child` 恢复历史，需给 `ListSessionsInput` 增加 parentID/parentSessionId 过滤或单独查询）。
-3. 强制唤醒"从未被任何 host announce"的会话（需 main 按 workspace 解析承载 host）。
-4. 会话级消息的 UI 呈现（收件箱/来源标注）——本 spec 只定义模型侧与投递侧。
-5. dwf actor 与会话消息的统一（当前两套通信）。
-6. 跨机器（远端 workspace）的 mailbox 共享；当前 mailbox 位于本机 `~/.zcode/mailbox`，远端目标需在远端 Host 落盘。
+**本轮不做、需另立任务**：见文末「遗留工作评估」的 B 组（需拍板）与 C 组（工程排序）。防环与 `ListAgents` 跨重启已在阶段 5/6 落地，见 D7/D8。
 
 **已清理**：`workspace_session_message_send_requested` 这条无生产者的 workspace 事件消费链（类型定义、`ZCodeWorkspaceEvent` 联合成员、`host/index.ts` 的 `subscribeSessionMessageRequests`/`forwardSessionMessageRequest` 及调用点、`hostRemoteWorkspaceProxyState.ensureWorkspaceSubscription`）。证明与删除见"阶段 3 的落地结论"末条。
 
@@ -208,18 +248,24 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 ### 遗留工作评估（2026-10-03）
 
-按「触发条件 / 改动面 / 建议」重排上面六项，另附两条已决策不做。
+按「触发条件 / 改动面 / 需要谁决定」分三组，另附两条已决策不做。
 
-1. **跨会话消息防环** —— 触发条件已经存在：两个会话互相回信、或子代理把上游会话也当成通信对象时，没有任何 hop 约束能终止往返；表现是 token 持续消耗、用户看不到停止条件。改动面小（信封加 `hop`/`origin`，在 `SessionMessagePort.deliver` 与 Host 侧 `deliverSessionMessage` 两处入口判阈值），**建议排在下一轮首位**。
-2. **`ListAgents` 跨重启** —— 触发条件是「重启 CLI/桌面后想继续指挥老会话的子代理」，此时列表为空但磁盘上子会话仍在，模型会误判「没有子代理」。改动面中等：需要 `ListSessionsInput` 支持 `parentSessionId` 过滤，或单独一条查询，再决定重启后是否可继续 `SendMessage`（当前 `agent_` 寻址依赖内存注册表，重启后应退化为 `sess_subagent_*` 寻址）。**建议与第 1 项同轮或下一轮**。
-3. **会话级消息的 UI 呈现** —— 模型侧已可用（收件箱文本注入 + `sender_kind`），但用户在界面上看不到「这条消息从哪个会话来」。改动面中等（协议投影 + `packages/ui` 收件箱视图）。**是否要做取决于你希望跨会话消息在桌面里可见到什么程度**，属于产品取舍而非技术债。
-4. **强制唤醒「从未被任何 host announce」的会话** —— 只有目标会话从未在本机启动过（例如刚装好、或远端 workspace 下的会话）时才命中；命中时投递降级为 `stored`，消息不丢但不会实时到达。改动面最大（main 要按 workspace 解析承载 host 并拉起 CLI 进程，涉及进程生命周期），**建议等第 1、2 项稳定后再评估**。
-5. **跨机器（远端 workspace）mailbox 共享** —— 当前 mailbox 固定在本机 `~/.zcode/mailbox`，远端目标需要在远端 Host 落盘并让远端 CLI drain。改动面中等但边界多（远端数据根、鉴权、drain 触发）。**与「手机远控 + 远端 workspace」是否要互发消息这个产品需求绑定**，需求未定前不动。
-6. **dwf actor 与会话消息统一** —— 不建议做：actor 的通信语义是「裁决」（`submit_result`/`escalate`/ask 队列），与会话间「聊天」不是同一条业务路径，合并会把工作流引擎的裁决模型拖进消息层。当前已用 denylist 明确禁止 actor 使用 `SendMessage`。
+**A. 已落地（本轮做完，仅需知悉）**
+
+1. **跨会话消息防环**（阶段 5）—— 链随消息携带、core runtime 记录、发送侧端口按 `SESSION_MESSAGE_MAX_HOP=6` 拒绝。剩下的只是一个口径问题：cap 值是否合适（当前 6 跳，人类输入重置），要调只改 `contracts` 的一个常量。
+2. **`ListAgents` 跨重启**（阶段 6）—— `SubagentRosterPort` 读父会话持久化的 `runtime/subagent_lifecycle` session entry，与进程内注册表合并。已知边界：`history` 条目只能按 `childSessionId` 寻址（`agent_*` 依赖内存注册表，重启即失效）；entry 只在子代理事件到达父 runtime 的事件汇时写入，被 stale-branch 丢弃的 stop 会让历史行报 `lost`（保守结果，不是 running）。
+
+**B. 需要你拍板（产品取舍，不是技术债）**
+
+3. **会话级消息的 UI 呈现** —— 模型侧已可用（收件箱文本注入 + `sender_kind` + 链深），但用户在界面上看不到「这条消息从哪个会话来」。改动面中等（协议投影 + `packages/ui` 收件箱视图）。能做到什么程度取决于你。
+4. **跨机器（远端 workspace）mailbox 共享** —— 当前 mailbox 固定在本机 `~/.zcode/mailbox`，远端目标需要在远端 Host 落盘并让远端 CLI drain。与「手机远控 + 远端 workspace 是否要互发消息」这个需求绑定，需求未定前不动。
+
+**C. 工程排序（我建议的次序，不需要你介入）**
+
+5. **强制唤醒「从未被任何 host announce」的会话** —— 只有目标会话从未在本机启动过（刚装好、或远端 workspace 下的会话）才命中；命中时投递降级为 `stored`，消息不丢但不会实时到达。改动面最大（main 要按 workspace 解析承载 host 并拉起 CLI 进程，涉及进程生命周期），建议等线上反馈确认真的常遇到再做。
+6. **dwf actor 与会话消息统一** —— **建议不做**：actor 的通信语义是「裁决」（`submit_result`/`escalate`/ask 队列），与会话间「聊天」不是同一条业务路径，合并会把工作流引擎的裁决模型拖进消息层。当前已用 denylist 明确禁止 actor 使用 `SendMessage`。
 
 已决策不做（保持现状）：
 
 - **回执的静默追加位**：现在源会话空闲时直接跳过回执。只有当「源会话空闲也要看到回执」成为真实诉求时，才值得在 v4 admission 增加 silent-append 投递位。
 - **删除已无生产者的 workspace 事件链**：已在本轮清理完毕（见上），不保留兼容分支。
-
-需你拍板的三项：第 3 项（UI 呈现到哪一层）、第 5 项（是否支持跨机器互发）。其余四项是工程排序，按上面建议执行即可。

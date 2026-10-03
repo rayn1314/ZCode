@@ -81,6 +81,8 @@ export async function createWorkspaceZCodeApp(
     // 这是所有 workspace app 的唯一装配入口，父/子 runtime 因此共享同一份端口实例。
     ...(context.sessionMailboxPort ? { sessionMailboxPort: context.sessionMailboxPort } : {}),
     ...(context.sessionMessagePort ? { sessionMessagePort: context.sessionMessagePort } : {}),
+    // 历史子代理只读端口（spec D8）：同一装配入口注入，因此是进程级同一实例。
+    ...(context.subagentRosterPort ? { subagentRosterPort: context.subagentRosterPort } : {}),
     runtimeConfig: {
       ...options.runtimeConfig,
       // createZCodeApp 会把 workingDirectory 规范化为执行 cwd。把协议入口的

@@ -117,12 +117,16 @@ function createFixture(state?: Partial<FixtureState>): Fixture {
       sessionMessageListener(event);
     },
     payloadOf(index: number) {
-      return envelopes[index]!.payload as { requestedDelivery?: string; text: string };
+      return envelopes[index]!.payload as {
+        requestedDelivery?: string;
+        text: string;
+        sessionMessageChain?: { hop: number; originMessageId: string };
+      };
     },
   };
 }
 
-function createRequest() {
+function createRequest(overrides: Partial<SessionMessageSendRequested> = {}) {
   return {
     content: "please continue",
     createdAt: "2026-10-03T00:00:00.000Z",
@@ -131,6 +135,7 @@ function createRequest() {
     requestId: "req_1",
     toSessionId: TARGET_SESSION,
     senderKind: "subagent" as const,
+    ...overrides,
   };
 }
 
@@ -202,6 +207,41 @@ test("v4 投递被拒退回 mailbox，不假装投递成功", async () => {
   assert.equal(fixture.envelopes.length, 1);
   assert.equal(fixture.delivered.length, 1);
   assert.deepEqual(fixture.consumed, []);
+});
+
+test("实时投递把防环链放进 v4 payload，并写进注入文本（spec D7）", async () => {
+  const fixture = createFixture();
+  const chain = { hop: 3, originMessageId: "msg_root" };
+  const result = await fixture.service.deliverSessionMessage(
+    createRequest({ sessionMessageChain: chain }),
+  );
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(fixture.payloadOf(0).sessionMessageChain, chain);
+  assert.match(fixture.payloadOf(0).text, /hop="3"/);
+  assert.match(fixture.payloadOf(0).text, /origin="msg_root"/);
+});
+
+test("接收侧不做 cap 裁决：hop 超大仍投递，不因链深丢消息", async () => {
+  const fixture = createFixture();
+  const result = await fixture.service.deliverSessionMessage(
+    createRequest({ sessionMessageChain: { hop: 99, originMessageId: "msg_root" } }),
+  );
+
+  assert.equal(result.status, "success");
+  assert.equal(fixture.envelopes.length, 1, "拒绝只发生在发送侧端口，接收侧不得丢弃");
+  assert.deepEqual(fixture.delivered, []);
+});
+
+test("不可达兜底落盘的信封带 chain，供目标 CLI drain 时续链", async () => {
+  const fixture = createFixture({ remembered: [SOURCE_SESSION] });
+  const chain = { hop: 2, originMessageId: "msg_root" };
+  const result = await fixture.service.deliverSessionMessage(
+    createRequest({ sessionMessageChain: chain }),
+  );
+
+  assert.equal(result.status, "success");
+  assert.deepEqual(fixture.delivered[0]?.chain, chain);
 });
 
 test("mailbox 写失败时返回 failed 并带原因", async () => {

@@ -56,6 +56,7 @@ import {
   stopActiveForegroundExecution,
 } from "./runtime-command-queue.js";
 import { hasResidencyBlockingWork, trackResidencyBlockingWork } from "./residency.js";
+import { noteInboundSessionMessageChain } from "./session-message-chain.js";
 import {
   clearAllPendingInputs,
   completeExternalQueueDrain,
@@ -268,6 +269,7 @@ export function installAgentRuntimeMethods(ctor: AgentRuntimeConstructor): void 
   proto.reorderPendingInput = reorderPendingInput;
   proto.setQueueAutoDrain = setQueueAutoDrain;
   proto.completeExternalQueueDrain = completeExternalQueueDrain;
+  proto.noteInboundSessionMessageChain = noteInboundSessionMessageChain;
   proto.setFollowupMode = setFollowupMode;
   proto.emitModelSelected = emitModelSelected;
   proto.emitModeChanged = emitModeChanged;

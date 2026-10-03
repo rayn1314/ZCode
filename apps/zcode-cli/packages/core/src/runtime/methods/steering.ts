@@ -23,6 +23,7 @@ import type {
   QueryId,
   SessionEvent,
   TraceContext,
+  TurnInputIntentMetadata,
   TurnSteerInput,
   TurnSteerRejectReason,
   TurnSteerResult,
@@ -119,6 +120,11 @@ export async function steerTurn(
   const delivery = request.delivery;
   const toolDisallowlist = request.toolDisallowlist;
   const queuePosition = activeTurn.pendingInputs.length;
+  // 防环链（spec D7）：mid-turn steer 只"带链则设置"，不清除——本轮开链/清链已由该轮
+  // admission 决定；被拒路径（no_active_turn 等）在上面已返回，所以这里只记录真正被接受的引导链。
+  if (request.sessionMessageChain) {
+    this.noteInboundSessionMessageChain(request.sessionMessageChain);
+  }
   const intent = request.intent
     ? {
         ...request.intent,
@@ -1246,6 +1252,16 @@ async function drainPendingInputUnlocked(
   }
 
   const pendingInputIds = pendingInputs.map((pendingInput) => pendingInput.id);
+  // 防环链（spec D7）：被排队的跨界消息最终行内 drain 成 guide 时，这一轮不会再走
+  // executeTurn/steerTurn，链必须在此刻记录，否则"忙且不可引导的目标"这条路径会丢链。
+  // 只设置不清除：命令面输入的清链/开链已由该轮 admission 决定。
+  const drainedChain = pendingInputs.reduce<TurnInputIntentMetadata["sessionMessageChain"]>(
+    (latest, pendingInput) => pendingInput.intent?.sessionMessageChain ?? latest,
+    undefined,
+  );
+  if (drainedChain) {
+    this.noteInboundSessionMessageChain(drainedChain);
+  }
   const toolDisallowlist = [
     ...new Set(pendingInputs.flatMap((pendingInput) => pendingInput.toolDisallowlist ?? [])),
   ];

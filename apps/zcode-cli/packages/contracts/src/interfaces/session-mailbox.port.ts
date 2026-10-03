@@ -1,5 +1,5 @@
 import type { SessionId } from "./shared.js";
-import type { SessionMessageSenderKind } from "./session-message.port.js";
+import type { SessionMessageChain, SessionMessageSenderKind } from "./session-message.port.js";
 
 export interface SessionMailboxEnvelope {
   version: 1;
@@ -13,6 +13,11 @@ export interface SessionMailboxEnvelope {
    * `"session"` 处理，因此新增该可选字段不破坏向后兼容。
    */
   senderKind?: SessionMessageSenderKind;
+  /**
+   * 防环链（spec D7）。信封是 mailbox 通路的结构化载体：drain 时必须把链交回 runtime，
+   * 否则"实时投递被降级为落盘"会让链在接收侧断掉，互相回信失去计数。
+   */
+  chain?: SessionMessageChain;
 }
 
 export interface SessionMailboxPort {
