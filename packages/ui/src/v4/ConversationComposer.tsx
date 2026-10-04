@@ -1299,18 +1299,20 @@ function ConversationComposerImpl({
           sendAction.fail({ failureStage: "attachment_not_ready" });
           return;
         }
-        // 外部上下文不走协议附件；按 selection -> code comment -> web -> PPTX 的固定尾块顺序
-        // 序列化，历史 user row 才能按相反顺序无损解析并隐藏内部 prompt block。
+        // 外部上下文不走协议附件；按 selection -> code comment -> web -> PPTX -> 会话消息信封
+        // 的固定尾块顺序序列化，历史 user row 才能按相反顺序无损解析并隐藏内部 prompt block。
         //
         // 分享 handover 不在这里序列化：share URL 块纯粹是 renderer 自产自销（CLI/shared
         // 里没有任何东西解析它），唯一作用是驱动一个已被产品裁掉的 chip，代价却是把一个
         // share URL 塞进发给模型的正文。模型侧内容由隐藏的 shared_context 消息经
         // inputIntent.sharedContextRefs 注入，与正文无关。
+        // 会话消息信封来自外部投递，本地 composer 永不产出，恒传空数组。
         const promptText = serializeComposerPromptContexts(trimmed, {
           codeComments: currentCodeCommentContexts,
           conversationSelections: currentConversationSelections,
           webElements: currentWebElementContexts,
           pptxElements: currentPptxElementReferences,
+          sessionMessages: [],
         });
         const contextAttachmentCount =
           countComposerPromptContexts({
@@ -1318,6 +1320,7 @@ function ConversationComposerImpl({
             conversationSelections: currentConversationSelections,
             webElements: currentWebElementContexts,
             pptxElements: currentPptxElementReferences,
+            sessionMessages: [],
           }) + (submittedShareContext ? 1 : 0);
         if (trimmed) {
           promptHistoryBeforeSend = readPromptHistoryEntries(workspacePath);

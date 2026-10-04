@@ -1014,6 +1014,10 @@ const enUS: Record<string, string> = {
   "chat.selections.limit.count": "You can attach at most 8 conversation selections.",
   "chat.selections.limit.total":
     "Conversation selections can contain at most 16,000 characters in total.",
+  "chat.sessionMessage.fromAnotherSession": "Message from another session",
+  "chat.sessionMessage.fromAnotherSessionCount": "Messages from another session ({count})",
+  "chat.sessionMessage.deliveryResult": "Message delivery receipt",
+  "chat.sessionMessage.hop": "Hop {hop}",
   "sidePane.openTabDescription": "Choose a tab to open in the side pane.",
   "sidePane.openFile": "Open file",
   "sidePane.openFileDescription": "Open a file from the current workspace in the side panel.",

@@ -117,6 +117,7 @@ import {
 import { WebElementContextAttachmentChip } from "@/v4/composer/WebElementContextAttachmentChip.js";
 import { ConversationSelectionReferenceChip } from "@/v4/composer/ConversationSelectionReferenceChip.js";
 import { PptxElementReferenceChip } from "@/v4/composer/PptxElementReferenceChip.js";
+import { SessionMessageEnvelopeChip } from "@/v4/composer/SessionMessageEnvelopeChip.js";
 import { useOpenPptxElementReference } from "@/v4/composer/useOpenPptxElementReference.js";
 import { ConversationFileRewindDialog } from "@/v4/ConversationFileRewindDialog.js";
 import { ConversationUserInputBody } from "@/v4/ConversationUserInputBody.js";
@@ -917,6 +918,7 @@ const UserInputRowView = memo(function UserInputRowView({
   const webElementContexts = parsedPrompt.webElements;
   const pptxElementReferences = parsedPrompt.pptxElements;
   const conversationSelections = parsedPrompt.conversationSelections;
+  const sessionMessages = parsedPrompt.sessionMessages;
   const hasAttachments = (row.attachments?.length ?? 0) > 0;
   const hasMediaAttachments =
     row.attachments?.some(
@@ -934,7 +936,8 @@ const UserInputRowView = memo(function UserInputRowView({
     codeCommentContexts.length > 0 ||
     webElementContexts.length > 0 ||
     pptxElementReferences.length > 0 ||
-    conversationSelections.length > 0;
+    conversationSelections.length > 0 ||
+    sessionMessages.length > 0;
   const hasAttachmentArea = hasAttachments || hasContextReferences;
   const hasAttachmentPills = hasFileAttachments || hasContextReferences;
   const openPptxElementReference = useOpenPptxElementReference({
@@ -1141,6 +1144,9 @@ const UserInputRowView = memo(function UserInputRowView({
                         }))
                       }
                     />
+                    {/* 只读：信封是投递方冻结的协议文本，编辑态只能改可见正文，
+                        删掉信封会让历史消息的防环链来源字段永久丢失。 */}
+                    <SessionMessageEnvelopeChip references={editPromptContexts.sessionMessages} />
                   </div>
                 ) : null}
               </div>
@@ -1246,6 +1252,7 @@ const UserInputRowView = memo(function UserInputRowView({
                 references={conversationSelections}
                 contentAlign="end"
               />
+              <SessionMessageEnvelopeChip references={sessionMessages} contentAlign="end" />
             </div>
           ) : null}
         </div>
