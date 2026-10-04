@@ -373,11 +373,19 @@ export function captureComputerUseRuntimeFromEnvironment(
   env: NodeJS.ProcessEnv = process.env,
 ): ComputerUseRuntime | undefined {
   const socketPath = env.ZCODE_CUA_PERMISSION_BROKER_SOCKET?.trim();
-  if (!socketPath) return undefined;
-  return createComputerUseRuntime({
-    brokerSocketPath: socketPath,
-    refreshMarkerPath: env.ZCODE_CUA_PERMISSION_BROKER_REFRESH_MARKER?.trim(),
-  });
+  if (socketPath) {
+    return createComputerUseRuntime({
+      brokerSocketPath: socketPath,
+      refreshMarkerPath: env.ZCODE_CUA_PERMISSION_BROKER_REFRESH_MARKER?.trim(),
+    });
+  }
+  // 路线 B：自建版桥接模式。没有官方 broker 凭据时，若显式开启桥接开关，
+  // 仍创建 runtime，由 @zcode/zcode-cua 把官方工具面转发到开源引擎 open-computer-use。
+  const bridgeEnabled = env.ZCODE_CUA_BRIDGE_ENABLE?.trim().toLowerCase();
+  if (bridgeEnabled === "1" || bridgeEnabled === "true" || bridgeEnabled === "on") {
+    return createComputerUseRuntime({ bridge: true });
+  }
+  return undefined;
 }
 
 function isWorkerCallData(value: unknown): value is WorkerCallData {

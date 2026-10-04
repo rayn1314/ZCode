@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "open-computer-use": {
+      "command": "cmd",
+      "args": ["/c", "open-computer-use", "mcp"]
+    }
+  }
+}
