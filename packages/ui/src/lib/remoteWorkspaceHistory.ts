@@ -161,6 +161,55 @@ function normalizeOptionalPath(path: string | undefined): string | undefined {
   return trimmed ? trimmed : undefined;
 }
 
+/**
+ * 归并判定：两个 target 是否指向同一远程环境（身份可沿用既有条目）。
+ *
+ * 仅放宽 WSL user 段——canonical 化（连接前探测默认用户）会让 target 补上 user，
+ * 而条目存量 identity 是探测前生成的，逐字比对必然失配。一方缺 user = 同一默认环境；
+ * 双方都显式填写且不同 = 真正的两个环境，不得归并。ssh/docker 的 authority 天然完整，全等才归并。
+ */
+function matchesRemoteTargetForIdentityMerge(
+  entryTarget: RemoteTarget | RemoteTargetSnapshot,
+  incomingTarget: RemoteTarget | RemoteTargetSnapshot,
+): boolean {
+  if (entryTarget.kind !== incomingTarget.kind) {
+    return false;
+  }
+  switch (entryTarget.kind) {
+    // kind 相等已在上行收口；TS 无法跨两个独立 union 联动收窄，按该前提取同一变体。
+    case "ssh": {
+      const incoming = incomingTarget as Extract<
+        RemoteTarget | RemoteTargetSnapshot,
+        { kind: "ssh" }
+      >;
+      return (
+        entryTarget.host.trim().toLowerCase() === incoming.host.trim().toLowerCase() &&
+        (entryTarget.port ?? 22) === (incoming.port ?? 22) &&
+        entryTarget.username.trim() === incoming.username.trim()
+      );
+    }
+    case "wsl": {
+      const incoming = incomingTarget as Extract<
+        RemoteTarget | RemoteTargetSnapshot,
+        { kind: "wsl" }
+      >;
+      if ((entryTarget.distro?.trim() || "default") !== (incoming.distro?.trim() || "default")) {
+        return false;
+      }
+      const entryUser = getWslRemoteTargetUser(entryTarget);
+      const incomingUser = getWslRemoteTargetUser(incoming);
+      return !entryUser || !incomingUser || entryUser === incomingUser;
+    }
+    case "docker": {
+      const incoming = incomingTarget as Extract<
+        RemoteTarget | RemoteTargetSnapshot,
+        { kind: "docker" }
+      >;
+      return entryTarget.container === incoming.container;
+    }
+  }
+}
+
 function findMatchingRemoteWorkspaceSessionEntry(
   sessions: RemoteWorkspaceSessionEntry[],
   workspacePath: string,
@@ -169,6 +218,15 @@ function findMatchingRemoteWorkspaceSessionEntry(
   const workspaceIdentity = buildRemoteWorkspaceIdentity(workspacePath, target);
   return (
     sessions.find((entry) => resolveRemoteWorkspaceSessionIdentity(entry) === workspaceIdentity) ??
+    // 归并兜底：条目 target 被 canonical 化后，现算身份与存量 identity 不再逐字相等，
+    // 条目会匹配不到自己并分裂出重复条目、历史会话失联（2026-10-02 实测事故）。
+    // 同一环境的条目必须归并命中，沿用其存量身份。
+    sessions.find(
+      (entry) =>
+        matchesRemoteTargetForIdentityMerge(entry.target, target) &&
+        normalizeWorkspacePathForIdentity(entry.workspacePath) ===
+          normalizeWorkspacePathForIdentity(workspacePath),
+    ) ??
     null
   );
 }
@@ -310,9 +368,12 @@ export function buildRemoteWorkspaceSessionMutation(params: {
       params.workspacePath,
       params.target,
     ) ?? null;
+  // 归并命中的条目身份最优先：身份是远端会话库 / 任务索引的数据归属键，target 被
+  // canonical 化（探测出 WSL 用户名等格式升级）不构成换 key 的理由。显式传入的身份只是
+  // 本次连接的现算值，若它压过条目身份，同一环境会再次分裂出重复条目（2026-10-02 实测）。
   const resolvedWorkspaceIdentity =
-    params.workspaceIdentity ??
     currentEntry?.workspaceIdentity ??
+    params.workspaceIdentity ??
     buildRemoteWorkspaceIdentity(params.workspacePath, params.target);
   const workspaceKey = resolvedWorkspaceIdentity?.trim() || params.workspacePath;
   const nextSnapshot =

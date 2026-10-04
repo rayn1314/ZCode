@@ -16,6 +16,10 @@ _Avoid_: 拿它当身份键
 workspace 的身份键，用于去重、绑定、缓存、队列、持久化和请求关联的身份隔离。身份键统一为 `workspaceIdentity?.trim() || workspacePath`，本地保留路径 fallback；远端 identity 由 `packages/shared/src/remote-workspace-identity.ts` 的 `buildRemoteWorkspaceIdentity` / `parseRemoteWorkspaceIdentity` 构造和解析，不在业务代码里手写格式。
 _Avoid_: 远端链路只按路径匹配
 
+**Remote Workspace Identity Merge（远程身份归并）**:
+历史条目按「同 kind + 同 authority（仅 WSL 放宽 user 段通配）+ 同归一化路径」把 canonical 化后的连接 target 归并回既有条目并沿用其存量 identity；身份是数据归属键，不得因 target 格式演进静默升级，格式升级走显式迁移。规则见 `packages/ui/spec/remote-workspace-identity-merge.md`。
+_Avoid_: 按 target 现算身份逐字比对历史条目、连接时静默换身份 key
+
 **Task（任务）**:
 可被调度、恢复和归档的工作单元，持久化在 `tasks-index.sqlite`。
 _Avoid_: 把一次会话当成一个任务
