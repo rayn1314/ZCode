@@ -28,6 +28,14 @@ _Avoid_: 把一次会话当成一个任务
 一次可恢复的对话与执行上下文，归属于某个 workspace；一个 workspace 下可有多个 session。
 _Avoid_: 与 Task 混用
 
+**Subagent Session（子代理会话）**:
+子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。它是可输入、可续聊、可被单独唤醒的**附属**会话；父会话被卸载或删除时级联中止。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
+_Avoid_: 把子代理当一次性执行体，或当与父会话平级的独立会话
+
+**Session Role Policy（会话角色策略）**:
+以 `taskType` 为输入、输出该会话能力面（可用命令集、工具面修正、嵌套闸、交互归属、列表归属、usage 归属）的唯一判据表。会话能力差异一律加策略项，不再新增业务代码里的 `taskType` 硬比较。
+_Avoid_: 在业务代码里散落 `if (taskType === "subagent_child")`
+
 **Host（宿主）**:
 承载本地 workspace 会话运行时的进程。每个窗口一个 window-scoped Local Host，本地 workspace 共享该 Host。
 _Avoid_: 远端 Host、手机专用 Host

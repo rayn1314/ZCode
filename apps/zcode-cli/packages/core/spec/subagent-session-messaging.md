@@ -4,6 +4,8 @@
 
 对标：OpenAI Codex 的 multi-agent v2 协作面（`spawn_agent` 立即返回句柄、`send_message`/`followup_task` 双语义、`list_agents`、agent message board）。本 spec 只取其中与本仓库现有能力缺口对应的部分，不引入消息板（channel/thread/post/subscription）。
 
+> **后续变更（未落地）**：子代理会话正被改造为「一等附属会话」——可输入、可续聊、列表按父会话层级展示。本文 D2/D8 隐含的「子代理会话只读」前提，以及 D8 末条「`history` 行只能按 `childSessionId` 寻址、不可投递」的结论，将由 `subagent-session-as-first-class.md` 取代。本文件其余决策（D1、D3–D7）继续有效。
+
 ## 背景与问题
 
 ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
