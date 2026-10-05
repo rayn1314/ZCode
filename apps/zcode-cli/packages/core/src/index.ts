@@ -147,6 +147,7 @@ export type {
   AgentRuntimeDeps,
   ConversationRewindResult,
   ExecuteTurnOptions,
+  GuidePendingInputResult,
   ModelExecutionContext,
   PromptAdmissionOptions,
   PromptAdmissionReceipt,

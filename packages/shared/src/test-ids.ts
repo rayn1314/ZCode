@@ -537,6 +537,8 @@ export const TID_V4_COMPOSER_BACKGROUND_WORK_TRIGGER = "v4-composer-background-w
 export const TID_V4_COMPOSER_CUA_ENTRY = "v4-composer-cua-entry";
 /** v4 composer 发送按钮 */
 export const TID_V4_COMPOSER_SEND = "v4-composer-send";
+/** v4 composer 投递方式菜单（普通/插队引导/立即发送三选一）触发按钮 */
+export const TID_V4_COMPOSER_DELIVERY_MENU = "v4-composer-delivery-menu";
 /** v4 暂停队列发送确认：清空队列并发送 */
 export const TID_V4_COMPOSER_CLEAR_QUEUE_SEND = "v4-composer-clear-queue-send";
 /** v4 暂停队列发送确认：保留队列并发送 */
@@ -594,6 +596,8 @@ export const TID_V4_QUEUE_ITEM_DELETE = "v4-queue-item-delete";
 export const TID_V4_QUEUE_ITEM_EDIT = "v4-queue-item-edit";
 /** v4 queue 项立即发送按钮（动态后缀为 queueItemId） */
 export const TID_V4_QUEUE_ITEM_SEND_NOW = "v4-queue-item-send-now";
+/** v4 queue 项引导按钮（动态后缀为 queueItemId）：不打断当前命令，tool batch 边界行内注入 */
+export const TID_V4_QUEUE_ITEM_GUIDE = "v4-queue-item-guide";
 /** v4 queue 项上移按钮（动态后缀为 queueItemId） */
 export const TID_V4_QUEUE_ITEM_UP = "v4-queue-item-up";
 /** v4 输入控制：queue autoDrain 开关按钮（setAutoDrain 命令） */

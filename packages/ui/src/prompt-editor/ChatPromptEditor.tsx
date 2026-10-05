@@ -18,6 +18,7 @@ import {
   LexicalChatInput,
   type ChatComposerPasteEvent,
   type LexicalChatInputHandle,
+  type LexicalSubmitModifiers,
 } from "@/LexicalChatInput.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import type { AppSlashCommand } from "@/slashCommandHelpers.js";
@@ -135,7 +136,7 @@ export function ChatPromptEditor({
   onChange?: (value: string) => void;
   // 适配：返回 false 表示业务层拒绝/延迟本次提交，Lexical 不自行 reset（草稿保留）。
   onSubmit: (value: string) => boolean | void;
-  onModifiedSubmit?: (value: string) => boolean | void;
+  onModifiedSubmit?: (value: string, modifiers: LexicalSubmitModifiers) => boolean | void;
   onCancel?: () => void;
   onFocus?: () => void;
   onWhiteboardMentionSelected?: (boardId: string) => void | Promise<void>;

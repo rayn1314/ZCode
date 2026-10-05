@@ -65,6 +65,7 @@ import {
   editPendingInputById,
   emitModeChanged,
   emitModelSelected,
+  guidePendingInputById,
   markPendingInputPromoting,
   releasePendingInputReservation,
   removePendingInputById,
@@ -266,6 +267,7 @@ export function installAgentRuntimeMethods(ctor: AgentRuntimeConstructor): void 
   proto.markPendingInputPromoting = markPendingInputPromoting;
   proto.releasePendingInputReservation = releasePendingInputReservation;
   proto.editPendingInputById = editPendingInputById;
+  proto.guidePendingInputById = guidePendingInputById;
   proto.reorderPendingInput = reorderPendingInput;
   proto.setQueueAutoDrain = setQueueAutoDrain;
   proto.completeExternalQueueDrain = completeExternalQueueDrain;

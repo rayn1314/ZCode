@@ -32,6 +32,7 @@ import {
   TID_CHAT_ATTACHMENT_MENU_ITEM,
   TID_V4_COMPOSER,
   TID_V4_COMPOSER_CLEAR_QUEUE_SEND,
+  TID_V4_COMPOSER_DELIVERY_MENU,
   TID_V4_COMPOSER_INPUT,
   TID_V4_COMPOSER_KEEP_QUEUE_SEND,
   TID_V4_COMPOSER_SEND,
@@ -51,12 +52,20 @@ import type {
 } from "@zcode/shared/zcode-protocol-v4";
 import {
   ArrowUpIcon,
+  ChevronDownIcon,
   ClipboardPenLineIcon,
   InfoIcon,
   RotateCcwIcon,
   SquareIcon,
   XIcon,
 } from "lucide-react";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuShortcut,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import {
   ChatErrorBanner,
@@ -127,13 +136,13 @@ import {
 } from "@/v4/composer/composerAutoFocus.js";
 import { V4_DRAFT_SCOPE_ROOT, type V4ComposerDraft } from "@/v4/composer/composerDraftStore.js";
 import {
-  resolveOppositeFollowupDelivery,
   resolveFollowupModifierTooltip,
+  resolvePointerDelivery,
   shouldEnableModifiedEnterSubmit,
-  shouldReverseFollowupDeliveryForPointer,
+  type ModifierDelivery,
 } from "@/v4/composer/followupModeSettings.js";
 import { isAppleKeyboardPlatform } from "@/lib/keyboardShortcuts.js";
-import { usePrimaryFollowupModifier } from "@/v4/composer/usePrimaryFollowupModifier.js";
+import { useComposerDeliveryModifiers } from "@/v4/composer/useComposerDeliveryModifiers.js";
 import { consumeV4ComposerDraftWorkspaceTransferRequest } from "@/v4/composer/composerDraftWorkspaceTransfer.js";
 import { useComposerAttachments } from "@/v4/composer/useComposerAttachments.js";
 import type { ConversationDropTargetController } from "@/v4/composer/conversationDropTarget.js";
@@ -170,7 +179,9 @@ import type { ComposerSubmissionConfig } from "@/v4/composer/composerSubmissionC
 import { buildV4ConversationPromptTelemetryExtraDetail } from "@/v4/telemetry/conversationPromptTelemetry.js";
 import { resolveAttachableShareContext } from "@/lib/conversationShareContext.js";
 
-const MODEL_SELECTION_LOADING_STATE: ModelSelectionState = { status: "loading" };
+const MODEL_SELECTION_LOADING_STATE: ModelSelectionState = {
+  status: "loading",
+};
 
 export interface ConversationComposerSendOptions {
   /** 点击发送时复制的配置；null 表示未完成选择，Host 不得从 Session 补齐。 */
@@ -186,7 +197,10 @@ export interface ConversationComposerSendOptions {
   telemetrySeed?: ConversationPromptTelemetrySeed;
   /** 本次 busy input 的一次性投递覆盖，不改 session 偏好。 */
   requestedDelivery?: "startNow" | "queue" | "guide";
-  sharedContextRefs?: Array<{ kind: "shared_context_import"; context_id: string }>;
+  sharedContextRefs?: Array<{
+    kind: "shared_context_import";
+    context_id: string;
+  }>;
 }
 
 export type ConversationComposerSendResult = "sent" | "blocked" | "confirmationRequired";
@@ -590,6 +604,7 @@ function ConversationComposerImpl({
     requestedDelivery?: "startNow" | "queue" | "guide";
   } | null>(null);
   const [sendTooltipOpen, setSendTooltipOpen] = useState(false);
+  const [deliveryMenuOpen, setDeliveryMenuOpen] = useState(false);
   // submit 经 ref 读取最新文本/pending，避免回调随每次输入变更引用。
   const textRef = useRef("");
   const contentRevisionRef = useRef(0);
@@ -603,7 +618,7 @@ function ConversationComposerImpl({
   const pendingShareContext = activeShareContext?.status === "pending" ? activeShareContext : null;
   const inputApiRef = useRef<LexicalChatInputHandle | null>(null);
   const reportedErrorKeysRef = useRef(new Set<string>());
-  const primaryModifierPressed = usePrimaryFollowupModifier();
+  const deliveryModifiers = useComposerDeliveryModifiers();
   const appleKeyboardPlatform = isAppleKeyboardPlatform();
   const enterSubmits = true;
   const sendShortcut = resolveChatEnterShortcut({ enterSubmits });
@@ -815,8 +830,9 @@ function ConversationComposerImpl({
   // 发送键与 Enter 共用同一个 form submit；按钮 onClick 早于 submit 触发，
   // 借此区分 send_click 的 send_trigger，读取后立刻复位回默认的 shortcut。
   const sendTriggerRef = useRef<"button" | "shortcut">("shortcut");
-  // 修饰键点击先于 form submit；这里只保存这一拍的 delivery 反转意图，submit 消费后清零。
-  const reversePointerDeliveryRef = useRef(false);
+  // 修饰键点击先于 form submit；这里只保存这一拍的固定映射 delivery（⌘/Ctrl=立即、⌥=插队引导），
+  // submit 消费后清零。
+  const pointerDeliveryRef = useRef<ModifierDelivery | undefined>(undefined);
   const appliedComposerRestoreRequestRef = useRef<number | null>(null);
   const appliedExternalTextInsertRequestRef = useRef<number | null>(null);
   // 决策入参经 ref 读取，避免把 autoFocusEnabled/disabled/viewport 灌进 scope effect 依赖，
@@ -955,7 +971,10 @@ function ConversationComposerImpl({
         });
       if (shouldTransferDraft) {
         // 项目解绑只改变草稿的 cwd；输入正文、mention editor state 和组件内附件继续保留。
-        replaceComposerDraft({ ...ownerDraftRef.current.draft, ...previousDraft });
+        replaceComposerDraft({
+          ...ownerDraftRef.current.draft,
+          ...previousDraft,
+        });
         transferredDraft = previousDraft;
       }
     }
@@ -1377,7 +1396,10 @@ function ConversationComposerImpl({
             status: "fail",
             reasonCode: "blocked",
           });
-          sendAction.reject({ resultSource: "authority_ack", admissionResult: "rejected" });
+          sendAction.reject({
+            resultSource: "authority_ack",
+            admissionResult: "rejected",
+          });
           return;
         }
         if (sendResult === "confirmationRequired") {
@@ -1419,7 +1441,10 @@ function ConversationComposerImpl({
         // 发送成功：清本次提交捕获的 scope 草稿；prompt history 已在真实发送前同步写盘，
         // 避免首发 promote 丢失或误清 promotion 后的新 scope。
         finalizeSubmittedDraft();
-        sendAction.complete({ resultSource: "authority_ack", admissionResult: "accepted" });
+        sendAction.complete({
+          resultSource: "authority_ack",
+          admissionResult: "accepted",
+        });
       } catch (error) {
         rollbackPromptHistory();
         restoreSubmittedDraft();
@@ -1498,35 +1523,35 @@ function ConversationComposerImpl({
   const handleEditorSubmit = useCallback(
     (value: string) => {
       textRef.current = value;
-      const reverseDelivery = reversePointerDeliveryRef.current;
-      reversePointerDeliveryRef.current = false;
-      const followupMode = snapshotRef.current?.config.followupMode;
-      void submit(
-        undefined,
-        undefined,
-        undefined,
-        reverseDelivery && followupMode ? resolveOppositeFollowupDelivery(followupMode) : undefined,
-      );
+      const pointerDelivery = pointerDeliveryRef.current;
+      pointerDeliveryRef.current = undefined;
+      void submit(undefined, undefined, undefined, pointerDelivery);
       return false;
     },
     [submit],
   );
 
   const handleModifiedEditorSubmit = useCallback(
-    (value: string) => {
-      const followupMode = snapshotRef.current?.config.followupMode;
+    (value: string, modifiers: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }) => {
       textRef.current = value;
-      // inputRouting 在 turn 启动初期可能仍为 startNow，不能用它
-      // 推断空闲。组合键始终表达单次反向 delivery；空闲时 CLI 自然 startNow。
+      // 修饰组合键表达固定映射（⌘/Ctrl=立即、⌥=插队引导），与全局 followupMode 无关；
+      // 空闲时 ⌘/Ctrl 传 startNow 与 CLI 新 turn 等价，⌥ 不产生 guide。
       void submit(
         undefined,
         undefined,
         undefined,
-        followupMode ? resolveOppositeFollowupDelivery(followupMode) : undefined,
+        resolvePointerDelivery({
+          enabled: true,
+          metaKey: modifiers.metaKey,
+          ctrlKey: modifiers.ctrlKey,
+          altKey: modifiers.altKey,
+          busy: canStop,
+          isApplePlatform: appleKeyboardPlatform,
+        }),
       );
       return false;
     },
-    [submit],
+    [appleKeyboardPlatform, canStop, submit],
   );
 
   const handleClearQueueSend = useCallback(() => {
@@ -1551,7 +1576,11 @@ function ConversationComposerImpl({
 
   const handleStopClick = useCallback(() => {
     runUserAction({
-      input: { featureId: "conversation.composer.message", action: "stop", trigger: "button" },
+      input: {
+        featureId: "conversation.composer.message",
+        action: "stop",
+        trigger: "button",
+      },
       operation: onStop,
       completed: { resultSource: "optimistic_projection" },
       failureStage: "stop_generation",
@@ -1563,14 +1592,16 @@ function ConversationComposerImpl({
   const handleSendButtonClick = useCallback(
     (event: ReactMouseEvent<HTMLButtonElement>) => {
       sendTriggerRef.current = "button";
-      reversePointerDeliveryRef.current = shouldReverseFollowupDeliveryForPointer({
-        enabled: modifiedEnterReversesDelivery,
+      pointerDeliveryRef.current = resolvePointerDelivery({
+        enabled: modifiedEnterSubmits,
         metaKey: event.metaKey,
         ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        busy: canStop,
         isApplePlatform: appleKeyboardPlatform,
       });
     },
-    [appleKeyboardPlatform, modifiedEnterReversesDelivery],
+    [appleKeyboardPlatform, canStop, modifiedEnterSubmits],
   );
 
   // ── 「加入对话」全局事件（workspace file tree 右键/按钮）→ mention 插入 ──
@@ -1613,8 +1644,8 @@ function ConversationComposerImpl({
   const modifierTooltip = resolveFollowupModifierTooltip({
     enabled: modifiedEnterReversesDelivery,
     canSend,
-    modifierPressed: primaryModifierPressed,
-    followupMode: snapshot?.config.followupMode,
+    primaryPressed: deliveryModifiers.primary,
+    altPressed: deliveryModifiers.alt,
     isApplePlatform: appleKeyboardPlatform,
   });
   const resolvedSendTooltipTitle = modifierTooltip
@@ -1622,6 +1653,63 @@ function ConversationComposerImpl({
     : sendTooltipTitle;
   const resolvedSendTooltipShortcut = modifierTooltip?.shortcut ?? sendShortcut;
   const stopTooltipTitle = intl.formatMessage({ id: "chat.stop" });
+  // 投递方式菜单只在 busy 且有草稿时出现：idle 三方式收敛为普通发送，压缩/校验期间
+  // （enqueue）既不插队也不抢占。菜单是显式三选一，与修饰键同一组动作。
+  const showDeliveryMenu = canStop && !showStopControl && routingAllowsSend && mode !== "enqueue";
+  const deliveryMenuLabel = intl.formatMessage({
+    id: "chat.followup.deliveryMenuLabel",
+  });
+  const deliveryGuideUnsupported = intl.formatMessage({
+    id: "chat.followup.guideAttachmentsUnsupported",
+  });
+  // 菜单是显式三选一（都传明确 delivery），与修饰键固定映射同一组动作；复用三档既有标题文案。
+  const deliveryMenuItems = useMemo(() => {
+    const guideShortcut = appleKeyboardPlatform ? "⌥↵" : "Alt+↵";
+    const startNowShortcut = appleKeyboardPlatform ? "⌘↵" : "Ctrl+↵";
+    const guideDisabled = attachmentsApi.hasAttachments;
+    return [
+      {
+        key: "queue" as const,
+        titleId: "chat.followup.addToQueue",
+        descId: "chat.followup.queueDesc",
+        shortcut: sendShortcut ?? "",
+        disabled: false,
+        reason: undefined,
+        delivery: "queue" as const,
+      },
+      {
+        key: "guide" as const,
+        titleId: "chat.followup.guideCurrent",
+        descId: "chat.followup.guideDesc",
+        shortcut: guideShortcut,
+        disabled: guideDisabled,
+        reason: guideDisabled ? deliveryGuideUnsupported : undefined,
+        delivery: "guide" as const,
+      },
+      {
+        key: "startNow" as const,
+        titleId: "chat.followup.sendNow",
+        descId: "chat.followup.sendNowDesc",
+        shortcut: startNowShortcut,
+        disabled: false,
+        reason: undefined,
+        delivery: "startNow" as const,
+      },
+    ];
+  }, [
+    appleKeyboardPlatform,
+    attachmentsApi.hasAttachments,
+    deliveryGuideUnsupported,
+    sendShortcut,
+  ]);
+  const submitWithDelivery = useCallback(
+    (delivery: "startNow" | "queue" | "guide") => {
+      setDeliveryMenuOpen(false);
+      sendTriggerRef.current = "button";
+      void submit(undefined, undefined, undefined, delivery);
+    },
+    [submit],
+  );
   const visibleError = error && !shouldSuppressChatErrorBanner(error) ? error : null;
 
   useEffect(() => {
@@ -1816,7 +1904,9 @@ function ConversationComposerImpl({
                       : canPreviewImageAttachment
                         ? attachmentPreviewTitle
                         : canPreviewPdfAttachment
-                          ? intl.formatMessage({ id: "chat.attachments.preview.openPdf" })
+                          ? intl.formatMessage({
+                              id: "chat.attachments.preview.openPdf",
+                            })
                           : undefined
                   }
                 >
@@ -2079,25 +2169,66 @@ function ConversationComposerImpl({
             </Button>
           </ControlHintTooltip>
         ) : (
-          <ControlHintTooltip
-            title={resolvedSendTooltipTitle}
-            shortcut={resolvedSendTooltipShortcut}
-            open={Boolean(modifierTooltip) || sendTooltipOpen}
-            onOpenChange={setSendTooltipOpen}
-          >
-            <Button
-              type="submit"
-              size="icon-md"
-              disabled={!canSend}
-              onClick={handleSendButtonClick}
-              data-testid={TID_V4_COMPOSER_SEND}
-              aria-label={resolvedSendTooltipTitle}
-              className="cursor-pointer gap-1 rounded-lg bg-brand text-ui-base text-foreground-inverse hover:bg-brand/80"
+          <>
+            <ControlHintTooltip
+              title={resolvedSendTooltipTitle}
+              shortcut={resolvedSendTooltipShortcut}
+              open={Boolean(modifierTooltip) || sendTooltipOpen}
+              onOpenChange={setSendTooltipOpen}
             >
-              {pending ? <Spinner className="size-4" /> : <ArrowUpIcon className="size-4" />}
-              <span className="sr-only">{resolvedSendTooltipTitle}</span>
-            </Button>
-          </ControlHintTooltip>
+              <Button
+                type="submit"
+                size="icon-md"
+                disabled={!canSend}
+                onClick={handleSendButtonClick}
+                data-testid={TID_V4_COMPOSER_SEND}
+                aria-label={resolvedSendTooltipTitle}
+                className="cursor-pointer gap-1 rounded-lg bg-brand text-ui-base text-foreground-inverse hover:bg-brand/80"
+              >
+                {pending ? <Spinner className="size-4" /> : <ArrowUpIcon className="size-4" />}
+                <span className="sr-only">{resolvedSendTooltipTitle}</span>
+              </Button>
+            </ControlHintTooltip>
+            {showDeliveryMenu ? (
+              <DropdownMenu open={deliveryMenuOpen} onOpenChange={setDeliveryMenuOpen}>
+                <ControlHintTooltip title={deliveryMenuLabel}>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      size="icon-md"
+                      disabled={!canSend}
+                      aria-label={deliveryMenuLabel}
+                      data-testid={TID_V4_COMPOSER_DELIVERY_MENU}
+                    >
+                      <ChevronDownIcon className="size-4" />
+                      <span className="sr-only">{deliveryMenuLabel}</span>
+                    </Button>
+                  </DropdownMenuTrigger>
+                </ControlHintTooltip>
+                <DropdownMenuContent align="end" className="max-md:min-w-56 min-w-72">
+                  {deliveryMenuItems.map((item) => (
+                    <DropdownMenuItem
+                      key={item.key}
+                      disabled={item.disabled}
+                      title={item.reason}
+                      data-testid={testId(TID_V4_COMPOSER_DELIVERY_MENU, item.key)}
+                      className="flex-col items-start gap-0 py-1.5"
+                      onSelect={() => submitWithDelivery(item.delivery)}
+                    >
+                      <span className="flex w-full items-center gap-3">
+                        {intl.formatMessage({ id: item.titleId })}
+                        <DropdownMenuShortcut>{item.shortcut}</DropdownMenuShortcut>
+                      </span>
+                      <span className="whitespace-normal text-ui-xs font-normal text-foreground-subtle">
+                        {intl.formatMessage({ id: item.descId })}
+                      </span>
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
+          </>
         )}
       </div>
     ),
@@ -2130,6 +2261,11 @@ function ConversationComposerImpl({
       sendShortcut,
       sendTooltipTitle,
       sessionId,
+      showDeliveryMenu,
+      deliveryMenuOpen,
+      deliveryMenuLabel,
+      deliveryMenuItems,
+      submitWithDelivery,
       showStopControl,
       stopTooltipTitle,
       workspaceIdentity,

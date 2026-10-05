@@ -4826,8 +4826,11 @@ const enUS: Record<string, string> = {
   "chat.queue.enqueue": "Queue message",
   "chat.queue.title": "Queued messages ({count})",
   "chat.queue.drag": "Drag to reorder",
-  "chat.queue.sendNow": "Steer",
+  "chat.queue.sendNow": "Send now",
   "chat.queue.runNow": "Run now",
+  "chat.queue.guide": "Guide",
+  "chat.queue.guide.description":
+    "Insert after the current command finishes without interrupting the current task",
   "chat.queue.edit": "Edit",
   "chat.queue.editDraftConflict":
     "Send or clear the current draft before editing a queued message.",
@@ -4849,6 +4852,12 @@ const enUS: Record<string, string> = {
   "chat.followup.guideCurrent": "Steer current run",
   "chat.followup.sendNow": "Send now",
   "chat.followup.addToQueue": "Add to queue",
+  "chat.followup.deliveryMenuLabel": "Choose how to send",
+  "chat.followup.queueDesc": "Handle after the current task finishes",
+  "chat.followup.guideDesc":
+    "Don't interrupt; insert as soon as the current command finishes. Falls back to queue when steering isn't possible.",
+  "chat.followup.sendNowDesc": "Interrupt the current task and start now",
+  "chat.followup.guideAttachmentsUnsupported": "Steering doesn't support attachments",
   "chat.modelChangeNotice.changed": "Switched from {fromModel} to {toModel}",
   "chat.preparing": "Preparing...",
   "chat.remoteGenerating": "Another device is sending a message...",

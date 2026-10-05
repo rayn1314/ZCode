@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- 队列行的立即/引导/编辑/删除动作共享同一 row 与 dnd 上下文，先保持单文件收口。 */
 import {
   closestCenter,
   DndContext,
@@ -15,13 +16,20 @@ import {
   TID_V4_QUEUE_ITEM,
   TID_V4_QUEUE_ITEM_DELETE,
   TID_V4_QUEUE_ITEM_EDIT,
+  TID_V4_QUEUE_ITEM_GUIDE,
   TID_V4_QUEUE_ITEM_SEND_NOW,
   TID_V4_QUEUE_PAUSED_BANNER,
   TID_V4_QUEUE_RESUME,
   testId,
 } from "@zcode/shared";
 import type { QueueState } from "@zcode/shared/zcode-protocol-v4";
-import { ArrowUpFromLine, GripVertical, PencilIcon, Trash2Icon } from "lucide-react";
+import {
+  ArrowUpFromLine,
+  CornerDownRight,
+  GripVertical,
+  PencilIcon,
+  Trash2Icon,
+} from "lucide-react";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/components/lib/utils.js";
@@ -38,6 +46,13 @@ interface ConversationQueuePanelProps {
   pendingEditQueueItemId?: string | null;
   /** 立即发送队列项（sendQueuedNow command，stop 当前 + 消费该项）。 */
   onSendNow?: (queueItemId: string) => void;
+  /**
+   * 引导队列项（guideQueueItem command）：不打断当前命令，tool batch 边界行内注入。
+   * 仅 busy 且项为 text-only 时可用；canGuideItems=false 时按钮禁用。
+   */
+  onGuideItem?: (queueItemId: string) => void;
+  /** 引导按钮的总开关：仅 busy（存在 active turn）时有意义。 */
+  canGuideItems?: boolean;
   /** 拖拽排序项（reorderQueueItem，移动到锚点前；null=队尾）。 */
   onMoveItem?: (queueItemId: string, beforeQueueItemId: string | null) => void;
   /** 暂停队列恢复：CLI setAutoDrain(true)，idle 立即消费、busy 仅武装。 */
@@ -118,6 +133,8 @@ interface QueueRowProps {
   onEditItem?: (queueItemId: string) => Promise<void> | void;
   editPending: boolean;
   onSendNow?: (queueItemId: string) => void;
+  onGuideItem?: (queueItemId: string) => void;
+  canGuideItems: boolean;
 }
 
 const QueueRow = memo(function QueueRow({
@@ -128,11 +145,15 @@ const QueueRow = memo(function QueueRow({
   onDeleteItem,
   onEditItem,
   onSendNow,
+  onGuideItem,
+  canGuideItems,
   editPending,
 }: QueueRowProps) {
   const dispatchLocked = item.dispatch.state !== "queued";
   const rowLocked = dispatchLocked || editPending;
   const isCompact = item.kind === "compact";
+  // guide 仅 text-only 普通输入可用：附件项会被 CLI 拒绝，提前禁用。
+  const guideDisabled = !canGuideItems || rowLocked || item.attachments.length > 0;
   const {
     attributes,
     isDragging,
@@ -232,6 +253,34 @@ const QueueRow = memo(function QueueRow({
           {intl.formatMessage({ id: isCompact ? "chat.queue.runNow" : "chat.queue.sendNow" })}
         </Button>
       ) : null}
+      {onGuideItem && !isCompact && item.kind !== "sendGoalCommand" ? (
+        <ControlHintTooltip title={intl.formatMessage({ id: "chat.queue.guide.description" })}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="default"
+            data-icon="inline-start"
+            data-testid={testId(TID_V4_QUEUE_ITEM_GUIDE, item.queueItemId)}
+            data-queue-item-id={item.queueItemId}
+            disabled={guideDisabled}
+            onClick={() =>
+              runUserAction({
+                input: {
+                  featureId: "conversation.queue.item",
+                  action: "guide",
+                  trigger: "button",
+                },
+                operation: () => onGuideItem(item.queueItemId),
+                completed: { resultSource: "optimistic_projection" },
+                failureStage: "queue_guide",
+              })
+            }
+          >
+            <CornerDownRight className="size-3.5" />
+            {intl.formatMessage({ id: "chat.queue.guide" })}
+          </Button>
+        </ControlHintTooltip>
+      ) : null}
       {onEditItem && !isCompact ? (
         <ControlHintTooltip title={intl.formatMessage({ id: "chat.queue.edit" })}>
           <Button
@@ -278,6 +327,8 @@ function ConversationQueuePanelImpl({
   onEditItem,
   pendingEditQueueItemId = null,
   onSendNow,
+  onGuideItem,
+  canGuideItems = false,
   onMoveItem,
   onResume,
 }: ConversationQueuePanelProps) {
@@ -379,6 +430,8 @@ function ConversationQueuePanelImpl({
                 onDeleteItem={onDeleteItem}
                 onEditItem={onEditItem}
                 onSendNow={onSendNow}
+                onGuideItem={onGuideItem}
+                canGuideItems={canGuideItems}
                 editPending={pendingEditQueueItemId === item.queueItemId}
               />
             ))}

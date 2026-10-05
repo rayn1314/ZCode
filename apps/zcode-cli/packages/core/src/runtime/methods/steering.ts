@@ -918,6 +918,147 @@ export async function editPendingInputById(
 }
 
 /**
+ * （v4 queue 单项引导）：把一条排队输入原地改投 guide，注入当前 active turn，
+ * 由 tool batch 边界的行内 drain（turn-guide-drain）在不打断当前命令的前提下消费。
+ * - 内存项（fallback 产物等）：原地改 delivery/intent 后重发同 id TurnSteerQueued。
+ * - 投影项（busy 期间排队的常态，权威在事件日志）：按投影构造 PendingTurnInput
+ *   push 进 pendingInputs，再重发同 id TurnSteerQueued——v4 reducer 同 id 原地更新
+ *   （保位，key 是 queueItemId 而非 targetTurnId），UI 队列项随即分流到「等待引导」。
+ * - 提升后若 turn 被打断或无 tool 边界，fallbackPendingGuidesToQueue 会把它转回
+ *   普通 queue，不丢消息。
+ */
+export type GuidePendingInputResult =
+  | { kind: "guided" }
+  | { kind: "missing" }
+  | { kind: "reserved" }
+  | { kind: "no_active_turn" }
+  | { kind: "not_steerable" }
+  | { kind: "unsupported_item" };
+
+function isGuideUnsupportedCommandKind(commandKind: string | undefined): boolean {
+  // compact / sendGoalCommand 是 typed maintenance intent，引导会把它伪装成普通输入。
+  return commandKind === "sendGoalCommand" || commandKind === "compact";
+}
+
+export async function guidePendingInputById(
+  this: AgentRuntimeInternal,
+  options: {
+    pendingInputId: string;
+    traceContext: TraceContext;
+  },
+): Promise<GuidePendingInputResult> {
+  if (this.pendingInputReservations.has(options.pendingInputId)) return { kind: "reserved" };
+  const activeTurn = this.activeTurn;
+  if (!activeTurn) return { kind: "no_active_turn" };
+  // permissionFullAccessPending 时行内 drain 一律暂停（见 hasInlineGuidePendingInput），
+  // 提升只会让项卡在 guide 车道，直接按不可引导拒绝。
+  if (!activeTurn.steerable || this.permissionFullAccessPending) {
+    return { kind: "not_steerable" };
+  }
+
+  const emitGuideQueuedEvent = async (pendingInput: PendingTurnInput): Promise<void> => {
+    const event = createSessionEvent(
+      SessionEventType.TurnSteerQueued,
+      this.sessionId,
+      {
+        queryId: pendingInput.queryId,
+        pendingInputId: pendingInput.id,
+        input: pendingInput.input,
+        inputPreview: previewInput(pendingInput.input),
+        inputSize: measureUtf8Bytes(pendingInput.input),
+        ...(pendingInput.commandKind ? { commandKind: pendingInput.commandKind } : {}),
+        ...(pendingInput.source ? { source: pendingInput.source } : {}),
+        ...(pendingInput.inputPresentation
+          ? { inputPresentation: pendingInput.inputPresentation }
+          : {}),
+        delivery: "guide" as const,
+        ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
+        ...(pendingInput.toolDisallowlist ? { toolDisallowlist: pendingInput.toolDisallowlist } : {}),
+        targetTurnId: activeTurn.turnId,
+        queueLength: activeTurn.pendingInputs.length,
+      },
+      {
+        traceId: activeTurn.traceContext.traceId,
+        turnId: activeTurn.turnId,
+      },
+    );
+    await this.appendEvent(event, options.traceContext);
+    this.logger?.debug("Queue item promoted to inline guide", {
+      ...traceContextToLogContext(activeTurn.traceContext),
+      event: "turn.guide.promoted",
+      module: "core.runtime",
+      pendingInputId: pendingInput.id,
+      status: "waiting",
+      targetTurnId: activeTurn.turnId,
+    });
+  };
+
+  // 分支 A：项已在当前 turn 的 pendingInputs（fallback 产物等内存态）。
+  const pendingInput = activeTurn.pendingInputs.find((item) => item.id === options.pendingInputId);
+  if (pendingInput) {
+    if (
+      isGuideUnsupportedCommandKind(pendingInput.commandKind) ||
+      pendingInput.attachments?.length
+    ) {
+      return { kind: "unsupported_item" };
+    }
+    if (pendingInput.intent) {
+      const intent: TurnInputIntentMetadata = {
+        ...pendingInput.intent,
+        admittedDelivery: "guide",
+        queuePosition: activeTurn.pendingInputs.indexOf(pendingInput),
+      };
+      delete intent.fallbackReasonCode;
+      pendingInput.intent = intent;
+    }
+    pendingInput.delivery = "guide";
+    pendingInput.turnId = activeTurn.turnId;
+    await emitGuideQueuedEvent(pendingInput);
+    return { kind: "guided" };
+  }
+
+  // 分支 B：项只在投影/事件日志（busy 排队入 deferred 的常态）。经投影定位后
+  // 以同 id 注入当前 turn 的 guide 车道，再重发同 id TurnSteerQueued 原地改流。
+  const projection = await this.rebuildProjection();
+  const deferred = projection.pendingSteerInputs.find(
+    (item) => item.pendingInputId === options.pendingInputId,
+  );
+  if (!deferred) return { kind: "missing" };
+  if (
+    isGuideUnsupportedCommandKind(deferred.commandKind) ||
+    (deferred.intent?.attachmentRefs?.length ?? 0) > 0
+  ) {
+    return { kind: "unsupported_item" };
+  }
+  let intent: TurnInputIntentMetadata | undefined;
+  if (deferred.intent) {
+    intent = {
+      ...deferred.intent,
+      admittedDelivery: "guide",
+      queuePosition: activeTurn.pendingInputs.length,
+    };
+    delete intent.fallbackReasonCode;
+  }
+  const promotedInput: PendingTurnInput = {
+    id: deferred.pendingInputId,
+    input: deferred.input,
+    queuedAt: deferred.queuedAt,
+    traceId: deferred.traceId,
+    queryId: createQueryId(),
+    ...(deferred.commandKind ? { commandKind: deferred.commandKind } : {}),
+    ...(deferred.source ? { source: deferred.source } : {}),
+    ...(deferred.inputPresentation ? { inputPresentation: deferred.inputPresentation } : {}),
+    delivery: "guide",
+    ...(intent ? { intent } : {}),
+    ...(deferred.toolDisallowlist ? { toolDisallowlist: deferred.toolDisallowlist } : {}),
+    turnId: activeTurn.turnId,
+  };
+  activeTurn.pendingInputs.push(promotedInput);
+  await emitGuideQueuedEvent(promotedInput);
+  return { kind: "guided" };
+}
+
+/**
  * （v4 queue 重排）：把 pendingInputId 移到 beforePendingInputId 之前（null = 移到队尾），
  * 发 TurnSteerReordered(新序)。v4 reducer 按新序重排 queue rows。未命中 → false。
  */

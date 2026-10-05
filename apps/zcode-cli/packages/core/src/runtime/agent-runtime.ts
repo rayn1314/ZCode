@@ -11,6 +11,7 @@ import {
   ToolScheduler,
   traceContextToLogContext,
 } from "./deps.js";
+import type { GuidePendingInputResult } from "./methods/steering.js";
 import type {
   CollaborationMode,
   Logger,
@@ -463,6 +464,11 @@ export interface AgentRuntime {
     newText: string;
     traceContext?: TraceContext;
   }): Promise<boolean>;
+  /** v4 queue 单项引导：把排队项原地改投 guide 注入当前 turn（不打断）。 */
+  guidePendingInputById(options: {
+    pendingInputId: string;
+    traceContext?: TraceContext;
+  }): Promise<GuidePendingInputResult>;
   /** v4 queue 重排：移动 pendingInputId 到 beforePendingInputId 之前（null=队尾）。 */
   reorderPendingInput(options: {
     pendingInputId: string;

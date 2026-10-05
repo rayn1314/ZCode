@@ -103,6 +103,7 @@ interface LexicalEnterSubmitOptions {
 
 interface LexicalModifiedEnterSubmitOptions {
   allowSubmitWhenEmpty?: boolean;
+  altKey?: boolean;
   ctrlKey?: boolean;
   isComposing?: boolean;
   metaKey?: boolean;
@@ -112,6 +113,13 @@ interface LexicalModifiedEnterSubmitOptions {
 }
 
 type LexicalSubmitResult = boolean | void;
+
+/** 修饰组合提交时的按键修饰键快照，供上层区分 ⌘/Ctrl（立即）与 ⌥/Alt（插队引导）。 */
+export interface LexicalSubmitModifiers {
+  altKey: boolean;
+  ctrlKey: boolean;
+  metaKey: boolean;
+}
 
 interface LeadingChineseSlashAliasInputOptions {
   data: string | null;
@@ -145,6 +153,7 @@ function shouldSubmitLexicalEnter({
 
 function shouldSubmitLexicalModifiedEnter({
   allowSubmitWhenEmpty = false,
+  altKey = false,
   ctrlKey = false,
   isComposing = false,
   metaKey = false,
@@ -154,7 +163,7 @@ function shouldSubmitLexicalModifiedEnter({
 }: LexicalModifiedEnterSubmitOptions): boolean {
   return (
     modifiedEnterSubmits &&
-    (ctrlKey || metaKey) &&
+    (ctrlKey || metaKey || altKey) &&
     !shiftKey &&
     !isComposing &&
     Boolean(text.trim() || allowSubmitWhenEmpty)
@@ -515,7 +524,7 @@ function KeyboardPlugin({
   enterSubmits,
 }: {
   onSubmit: (text: string) => LexicalSubmitResult;
-  onModifiedSubmit?: (text: string) => LexicalSubmitResult;
+  onModifiedSubmit?: (text: string, modifiers: LexicalSubmitModifiers) => LexicalSubmitResult;
   disabled?: boolean;
   submitDisabled?: boolean;
   allowSubmitWhenEmpty?: boolean;
@@ -601,6 +610,7 @@ function KeyboardPlugin({
           onModifiedSubmit &&
           shouldSubmitLexicalModifiedEnter({
             allowSubmitWhenEmpty,
+            altKey: event.altKey,
             ctrlKey: event.ctrlKey,
             metaKey: event.metaKey,
             modifiedEnterSubmits: true,
@@ -609,7 +619,11 @@ function KeyboardPlugin({
           })
         ) {
           event.preventDefault();
-          const submitResult = onModifiedSubmit(text);
+          const submitResult = onModifiedSubmit(text, {
+            altKey: event.altKey,
+            ctrlKey: event.ctrlKey,
+            metaKey: event.metaKey,
+          });
           if (shouldResetLexicalEditorAfterSubmit(submitResult)) {
             resetEditor(editor);
           }
@@ -1315,7 +1329,7 @@ interface LexicalChatInputProps {
   allowSubmitWhenEmpty?: boolean;
   enterSubmits?: boolean;
   onSubmit: (text: string) => LexicalSubmitResult;
-  onModifiedSubmit?: (text: string) => LexicalSubmitResult;
+  onModifiedSubmit?: (text: string, modifiers: LexicalSubmitModifiers) => LexicalSubmitResult;
   onChange?: (text: string) => void;
   onFocus?: () => void;
   triggerPanelContainer?: HTMLElement | null;

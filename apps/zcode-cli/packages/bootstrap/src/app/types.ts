@@ -21,6 +21,7 @@ import type {
   WorkspaceHookReviewTarget,
   WorkspaceHookPolicyProvider,
 } from "@zcode/core";
+import type { GuidePendingInputResult } from "@zcode/core";
 import type {
   WorkspaceHookReviewDecision,
   WorkspaceHookTrustRevokeTarget,
@@ -705,6 +706,11 @@ export interface ZCodeApp {
     newText: string,
     options?: { traceContext?: TraceContext },
   ): Promise<boolean>;
+  /** v4 queue 单项引导：把排队项原地改投 guide 注入当前 turn（不打断）。 */
+  guideQueueItem(
+    pendingInputId: string,
+    options?: { traceContext?: TraceContext },
+  ): Promise<GuidePendingInputResult>;
   /** v4 queue 重排：移动 pendingInputId 到 beforePendingInputId 之前（null=队尾）。 */
   reorderQueueItem(
     pendingInputId: string,

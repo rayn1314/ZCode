@@ -24,6 +24,7 @@ type InputFacade = Pick<
   | "enqueueDeferredInput"
   | "recordInputHistory"
   | "editQueueItem"
+  | "guideQueueItem"
   | "recallPreviousInputHistory"
   | "removeQueueItem"
   | "reserveQueueItem"
@@ -334,6 +335,13 @@ export function createInputFacade(deps: CreateInputFacadeDeps): InputFacade {
       return deps.runtime.editPendingInputById({
         pendingInputId,
         newText,
+        traceContext: options?.traceContext ?? deps.traceContext,
+      });
+    },
+    guideQueueItem: async (pendingInputId, options) => {
+      // v4 queue 单项引导：排队项原地改投 guide 注入当前 turn（不打断，边界行内消费）。
+      return deps.runtime.guidePendingInputById({
+        pendingInputId,
         traceContext: options?.traceContext ?? deps.traceContext,
       });
     },

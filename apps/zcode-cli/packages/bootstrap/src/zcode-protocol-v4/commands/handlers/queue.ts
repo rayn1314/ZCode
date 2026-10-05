@@ -56,6 +56,16 @@ class V4QueueItemNotEditableError extends Error {
   }
 }
 
+/** guideQueueItem 的语义性拒绝：核心 guard 原因码直传 UI（guard.queueGuide*）。 */
+class V4QueueItemNotGuideableError extends Error {
+  readonly reasonCode: string;
+  constructor(reasonCode: string, queueItemId: string) {
+    super(`v4 guideQueueItem rejected (${reasonCode}): ${queueItemId}`);
+    this.reasonCode = reasonCode;
+    this.name = "V4QueueItemNotGuideableError";
+  }
+}
+
 export class V4QueuePromotionLeaseUnavailableError extends Error {
   readonly reasonCode = "guard.queuePromotionBusy";
   constructor(activeLeaseId?: string) {
@@ -290,9 +300,52 @@ async function sendQueuedNow(
   }
 }
 
+/**
+ * guideQueueItem：把排队项原地改投 guide，注入当前 active turn（不打断、不起新 turn）。
+ * 与 sendQueuedNow 的抢占语义互斥——这里没有 lease/reserve/preempt/start/remove 序列，
+ * 提升由 core 原子完成（改投 + 重发同 id TurnSteerQueued），失败即原项原位保留。
+ */
+async function guideQueueItem(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult | undefined> {
+  const payload = envelope.payload as CommandPayloadMap["guideQueueItem"];
+  const record = requireRecord(host, envelope.sessionId);
+  const queueItem = host.getQueueItem?.(record.app.sessionId, payload.queueItemId) ?? null;
+  if (queueItem === null) {
+    throw new V4CommandNoopError("queue.itemMissing");
+  }
+  // guide 只支持 text-only 普通输入：compact/goal 是 typed maintenance intent；
+  // 附件项会被行内 drain 拒绝后回落 queue——UI 按钮已禁用，这里仍 fail-fast。
+  if (queueItem.kind !== "sendText" || queueItem.attachments.length > 0) {
+    throw new V4QueueItemNotGuideableError("guard.queueGuideUnsupported", payload.queueItemId);
+  }
+  const result = await record.app.guideQueueItem(payload.queueItemId, {
+    traceContext: record.traceContext,
+  });
+  switch (result.kind) {
+    case "guided":
+      return undefined;
+    case "missing":
+      throw new V4CommandNoopError("queue.itemMissing");
+    case "reserved":
+      throw new V4QueueItemReservedError(payload.queueItemId);
+    case "no_active_turn":
+      throw new V4QueueItemNotGuideableError(
+        "guard.queueGuideNoActiveTurn",
+        payload.queueItemId,
+      );
+    case "not_steerable":
+      throw new V4QueueItemNotGuideableError("guard.queueGuideNotSteerable", payload.queueItemId);
+    case "unsupported_item":
+      throw new V4QueueItemNotGuideableError("guard.queueGuideUnsupported", payload.queueItemId);
+  }
+}
+
 export const queueHandlers = {
   deleteQueueItem,
   editQueueItem,
+  guideQueueItem,
   reorderQueueItem,
   setAutoDrain,
   setFollowupMode,

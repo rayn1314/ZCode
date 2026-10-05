@@ -37,6 +37,7 @@ import type {
 } from "./deps.js";
 import type { BackgroundResultOriginMeta, ContextUsageBreakdownItem } from "@zcode/contracts";
 import type { RuntimeCommand, RuntimeCommandId } from "./command-queue.js";
+import type { GuidePendingInputResult } from "./methods/steering.js";
 import type { RuntimeMessageEntry } from "../agent/message-history.js";
 import type {
   ActiveTurnInfo,
@@ -214,6 +215,10 @@ export interface AgentRuntimeCoreMethods {
     newText: string;
     traceContext: TraceContext;
   }): Promise<boolean>;
+  guidePendingInputById(options: {
+    pendingInputId: string;
+    traceContext: TraceContext;
+  }): Promise<GuidePendingInputResult>;
   reorderPendingInput(options: {
     pendingInputId: string;
     beforePendingInputId: string | null;

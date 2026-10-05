@@ -175,6 +175,9 @@ export const commandPayloadSchemas = {
     feedback: z.enum(["like", "dislike"]).nullable(),
   }),
   sendQueuedNow: z.object({ queueItemId: z.string() }),
+  // 把排队项原地改投 guide（不打断当前命令，tool batch 边界行内注入）；
+  // 与 sendQueuedNow 的抢占语义不同，独立成命令让 guard/失败形态各自干净。
+  guideQueueItem: z.object({ queueItemId: z.string() }),
   editQueueItem: z.object({ queueItemId: z.string(), newText: z.string() }),
   // beforeQueueItemId = null → 移到队尾。
   reorderQueueItem: z.object({
@@ -319,6 +322,7 @@ export const COMMANDS_REQUIRING_BASE_REVISION: ReadonlySet<CommandType> = new Se
   "retryTurn",
   "setAssistantFeedback",
   "sendQueuedNow",
+  "guideQueueItem",
   "editQueueItem",
   "reorderQueueItem",
   "deleteQueueItem",

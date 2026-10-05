@@ -8,11 +8,24 @@ export function resolveAppFollowupMode(
   return settings.zcodeInteractionBehavior === "guide" ? "guide" : "queue";
 }
 
-export function resolveOppositeFollowupDelivery(
-  mode: SessionConfigState["followupMode"],
-): "startNow" | "queue" {
-  // queue 模式的修饰键发送曾被解释成 guide；“立即发送”实际是队列既有的抢占语义。
-  return mode === "guide" ? "queue" : "startNow";
+/**
+ * 修饰键到投递模式的固定映射，与全局 followupMode 无关（spec: composer-per-send-delivery）。
+ * guide 只在 busy 时有意义；primary（⌘/Ctrl=立即）恒有效——idle 时 CLI 自然按新 turn 处理。
+ */
+export type ModifierDelivery = "startNow" | "guide";
+
+export function resolveDeliveryForModifiers({
+  primary,
+  alt,
+  busy,
+}: {
+  primary: boolean;
+  alt: boolean;
+  busy: boolean;
+}): ModifierDelivery | undefined {
+  if (primary) return "startNow";
+  if (alt && busy) return "guide";
+  return undefined;
 }
 
 export function shouldEnableModifiedEnterSubmit({
@@ -23,23 +36,27 @@ export function shouldEnableModifiedEnterSubmit({
   return inputRoutingMode !== "reject";
 }
 
-export function shouldReverseFollowupDeliveryForPointer({
+export function resolvePointerDelivery({
   enabled,
   metaKey = false,
   ctrlKey = false,
+  altKey = false,
+  busy,
   isApplePlatform,
 }: {
   enabled: boolean;
   metaKey?: boolean;
   ctrlKey?: boolean;
+  altKey?: boolean;
+  busy: boolean;
   isApplePlatform?: boolean;
-}): boolean {
-  return (
-    enabled &&
-    (isApplePlatform === undefined
+}): ModifierDelivery | undefined {
+  if (!enabled) return undefined;
+  const primary =
+    isApplePlatform === undefined
       ? metaKey || ctrlKey
-      : isPrimaryFollowupModifierPressed({ isApplePlatform, metaKey, ctrlKey }))
-  );
+      : isPrimaryFollowupModifierPressed({ isApplePlatform, metaKey, ctrlKey });
+  return resolveDeliveryForModifiers({ primary, alt: altKey, busy });
 }
 
 export function isPrimaryFollowupModifierPressed({
@@ -55,29 +72,42 @@ export function isPrimaryFollowupModifierPressed({
 }
 
 interface FollowupModifierTooltip {
-  delivery: "startNow" | "queue";
+  delivery: ModifierDelivery;
   shortcut: string;
-  titleId: "chat.followup.sendNow" | "chat.followup.addToQueue";
+  titleId: "chat.followup.sendNow" | "chat.followup.guideCurrent";
 }
 
 export function resolveFollowupModifierTooltip({
   enabled,
   canSend,
-  modifierPressed,
-  followupMode,
+  primaryPressed,
+  altPressed,
   isApplePlatform,
 }: {
   enabled: boolean;
   canSend: boolean;
-  modifierPressed: boolean;
-  followupMode: SessionConfigState["followupMode"] | undefined;
+  primaryPressed: boolean;
+  altPressed: boolean;
   isApplePlatform: boolean;
 }): FollowupModifierTooltip | null {
-  if (!enabled || !canSend || !modifierPressed || !followupMode) return null;
-  const delivery = resolveOppositeFollowupDelivery(followupMode);
+  if (!enabled || !canSend) return null;
+  // enabled 已含 busy 条件，这里 alt 恒可表达 guide。
+  const delivery = resolveDeliveryForModifiers({
+    primary: primaryPressed,
+    alt: altPressed,
+    busy: true,
+  });
+  if (!delivery) return null;
   return {
     delivery,
-    shortcut: isApplePlatform ? "⌘ + Enter" : "Ctrl + Enter",
-    titleId: delivery === "startNow" ? "chat.followup.sendNow" : "chat.followup.addToQueue",
+    shortcut:
+      delivery === "startNow"
+        ? isApplePlatform
+          ? "⌘ + Enter"
+          : "Ctrl + Enter"
+        : isApplePlatform
+          ? "⌥ + Enter"
+          : "Alt + Enter",
+    titleId: delivery === "startNow" ? "chat.followup.sendNow" : "chat.followup.guideCurrent",
   };
 }

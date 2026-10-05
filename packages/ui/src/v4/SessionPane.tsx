@@ -3241,6 +3241,23 @@ export function SessionPane({
     [dispatchCommand, focusTimelineToLatest, sessionId],
   );
 
+  const handleGuideQueueItem = useCallback(
+    (queueItemId: string) => {
+      const current = snapshotRef.current;
+      if (!sessionId || current === null) return;
+      // 引导 = 该项不打断当前命令，由 CLI 在 tool batch 边界行内注入；
+      // 成功后投影把该项分流到 timeline「等待引导当前任务…」，队列面板自动消失。
+      void dispatchCommand("guideQueueItem", { queueItemId }, sessionId, current.revision).then(
+        (ack) => {
+          if (ack.status !== "accepted" && ack.status !== "noop") {
+            logger.warn(`[v4-pane] guideQueueItem 被拒绝: ${ack.status} ${ack.reasonCode ?? ""}`);
+          }
+        },
+      );
+    },
+    [dispatchCommand, sessionId],
+  );
+
   const handleReorderQueueItem = useCallback(
     (queueItemId: string, beforeQueueItemId: string | null) => {
       const current = snapshotRef.current;
@@ -4534,6 +4551,8 @@ export function SessionPane({
             queueEditActiveForCurrentComposer ? queueEditOperation.queueItemId : null
           }
           onSendNow={handleSendQueuedNow}
+          onGuideItem={handleGuideQueueItem}
+          canGuideItems={Boolean(snapshot.control.canStop)}
           onMoveItem={handleReorderQueueItem}
           onResume={handleResumeQueue}
         />

@@ -4,6 +4,7 @@ export type {
   WorkspaceGenerateTextResult,
 } from "./runtime/methods/workspace-generate-text.js";
 export type { StartSavedWorkflowRunResult } from "./runtime/methods/dynamic-workflow-run-start.js";
+export type { GuidePendingInputResult } from "./runtime/methods/steering.js";
 export type {
   AmendWorkflowRunSettingsInput,
   AmendWorkflowRunSettingsResult,
