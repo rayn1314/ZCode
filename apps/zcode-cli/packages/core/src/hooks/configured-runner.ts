@@ -118,6 +118,9 @@ interface CanonicalWorkspaceHookEntryLike {
   args?: string[];
   async?: boolean;
   shell?: true | string;
+  /** P3：digest（packages/shared/workspace-hook-digest.ts）尚未透传 once/failClosed，宽接口保留读取路径。 */
+  once?: boolean;
+  failClosed?: boolean;
   url?: string;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   headers?: Record<string, string>;
@@ -149,6 +152,8 @@ function workspaceEntryToHookConfig(
     source: { kind: "project" as const, ...(sourcePath ? { path: sourcePath } : {}) },
     ...(entry.statusMessage ? { statusMessage: entry.statusMessage } : {}),
     timeoutMs: entry.resolvedTimeoutMs,
+    ...(entry.once === undefined ? {} : { once: entry.once }),
+    ...(entry.failClosed === undefined ? {} : { failClosed: entry.failClosed }),
   };
   switch (entry.type) {
     case "command":
@@ -171,9 +176,7 @@ function workspaceEntryToHookConfig(
         url: entry.url ?? entry.command,
         ...(entry.method !== undefined ? { method: entry.method } : {}),
         ...(entry.headers !== undefined ? { headers: entry.headers } : {}),
-        ...(entry.allowedEnvVars !== undefined
-          ? { allowedEnvVars: entry.allowedEnvVars }
-          : {}),
+        ...(entry.allowedEnvVars !== undefined ? { allowedEnvVars: entry.allowedEnvVars } : {}),
         ...(entry.body !== undefined ? { body: entry.body } : {}),
         ...(entry.allowPrivateNetwork !== undefined
           ? { allowPrivateNetwork: entry.allowPrivateNetwork }
@@ -233,6 +236,8 @@ function createHookRegistration(input: {
     source: input.source,
     sourceKind: input.sourceKind,
     timeoutMs: input.timeoutMs,
+    ...(input.hook.once === undefined ? {} : { once: input.hook.once }),
+    ...(input.hook.failClosed === undefined ? {} : { failClosed: input.hook.failClosed }),
   };
 }
 

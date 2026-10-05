@@ -1,5 +1,6 @@
 import {
   CoreErrorType,
+  HookEventName,
   createCoreError,
   isCoreError,
   traceContextToLogContext,
@@ -17,7 +18,11 @@ import { normalizeToolExecutionInput } from "../input-normalization.js";
 import { resolveToolApproval } from "./approval-gate.js";
 import { createErrorResult, createPermissionErrorResult } from "./errors.js";
 import { emitPermissionDenied, emitPermissionRequested, emitPermissionResolved } from "./events.js";
-import { applyPreToolPermissionDecision, runPermissionRequestHooks } from "./hook-flow.js";
+import {
+  applyPreToolPermissionDecision,
+  runPermissionDeniedHooks,
+  runPermissionRequestHooks,
+} from "./hook-flow.js";
 import { racePermissionResponders } from "./permission-responder-race.js";
 import {
   loadProjectPermissionRuleset,
@@ -128,6 +133,21 @@ export async function resolveToolPermission(
   if (permissionDecision.decision === "deny") {
     telemetry?.setPermissionDecision("denied");
     await emitPermissionDenied(deps, toolCall, permissionDecision.reason, traceContext);
+    // PermissionDenied hook（P3）：权限拒绝落地后触发，供外部系统记录/联动。
+    // 触发点选在 executor（deps.hookRunner 与 runtime 同源），避免 runtime 事件侧
+    // 重复触发；hook 的 additionalContext 仅注入消息历史，不改变已拒绝的结果。
+    const permissionDeniedHookResult = await runPermissionDeniedHooks(
+      deps,
+      toolCall,
+      permissionDecision.reason,
+      traceContext,
+      signal,
+    );
+    // PermissionDenied 声明“可注入上下文”（spec §4.2）：hook 返回的上下文写入消息历史。
+    deps.injectHookAdditionalContext?.(
+      HookEventName.PermissionDenied,
+      permissionDeniedHookResult.additionalContexts,
+    );
 
     deps.logger?.warn("Tool permission denied", {
       ...traceContextToLogContext(traceContext),

@@ -23,6 +23,10 @@ export const workspaceHookProcessConfigSchema = z
     args: z.array(z.string()).optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    // P3 行为字段（spec: core/spec/hook-framework-expansion.md §8）：
+    // once 仅执行一次；failClosed 失败/超时时阻断（默认 fail-open）。
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
   .passthrough();
 
@@ -36,6 +40,8 @@ export const workspaceHookCommandConfigSchema = z
     timeout: positiveNumberSchema.optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
   .passthrough();
 
@@ -51,6 +57,8 @@ export const workspaceHookHttpConfigSchema = z
     allowPrivateNetwork: z.boolean().optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
   .passthrough();
 
@@ -63,6 +71,8 @@ export const workspaceHookMcpToolConfigSchema = z
     enabled: z.boolean().optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
   .passthrough();
 
@@ -99,6 +109,11 @@ const workspaceHookEventsMap = {
   SubagentStart: z.array(workspaceHookMatcherConfigSchema).optional(),
   SubagentStop: z.array(workspaceHookMatcherConfigSchema).optional(),
   SessionEnd: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PermissionDenied: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PostToolBatch: z.array(workspaceHookMatcherConfigSchema).optional(),
+  Notification: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PreModelSwitch: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PostModelSwitch: z.array(workspaceHookMatcherConfigSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 export const workspaceHooksConfigSchema = z

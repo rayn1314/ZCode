@@ -1,4 +1,4 @@
-import { createMessageId, traceContextToLogContext } from "../deps.js";
+import { createMessageId, HookEventName, traceContextToLogContext } from "../deps.js";
 import type { MessageId, TraceContext } from "../deps.js";
 import type { BackgroundResultOriginMeta } from "@zcode/contracts";
 import { createRuntimeCommandId, type TaskNotificationRuntimeCommand } from "../command-queue.js";
@@ -55,6 +55,30 @@ export function enqueueBackgroundTaskNotification(
     toolName: notification.toolName,
     traceContext: notification.traceContext,
   });
+  // Notification hook（P3）：后台任务通知入队成功后触发，供外部系统联动。
+  // 通知文本与入队载荷同源；hook 的 additionalContext 只注入消息历史，不改变入队结果。
+  void this.runNotificationHooks(
+    {
+      notification: notification.text,
+      notificationType: "background_task",
+    },
+    notification.traceContext,
+  )
+    .then((result) => {
+      this.injectHookAdditionalContextIntoMessageHistory(
+        HookEventName.Notification,
+        result.additionalContexts,
+      );
+    })
+    .catch((error) => {
+      this.logger?.warn("Notification hook failed", {
+        ...traceContextToLogContext(notification.traceContext),
+        errorMessage: error instanceof Error ? error.message : String(error),
+        event: "hook.notification.failed",
+        module: "core.runtime",
+        notificationType: "background_task",
+      });
+    });
   // wake 入账本（admitted）。runtime 命令队列是纯内存的，账本是唯一
   // durable 痕迹——崩溃重启后后台子进程已死、通知不可恢复，resume 会把残留
   // admitted 收口为 discarded(session_resumed)（留痕不静默，同一语义）。

@@ -6,6 +6,7 @@ import {
 import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js";
 import {
   CoreErrorType,
+  HookEventName,
   SessionEventType,
   createCoreError,
   createMessageId,
@@ -973,7 +974,9 @@ export async function guidePendingInputById(
           : {}),
         delivery: "guide" as const,
         ...(pendingInput.intent ? { intent: pendingInput.intent } : {}),
-        ...(pendingInput.toolDisallowlist ? { toolDisallowlist: pendingInput.toolDisallowlist } : {}),
+        ...(pendingInput.toolDisallowlist
+          ? { toolDisallowlist: pendingInput.toolDisallowlist }
+          : {}),
         targetTurnId: activeTurn.turnId,
         queueLength: activeTurn.pendingInputs.length,
       },
@@ -1229,6 +1232,22 @@ export async function emitModelSelected(
   },
 ): Promise<void> {
   const model = options.model ?? createRuntimeModel(this, { selection: options.modelSelection });
+  const previousModel = modelSelectionDisplayString(options.previousModelSelection);
+  const nextModel = modelSelectionDisplayString(options.modelSelection);
+  // PreModelSwitch hook（P3）：模型选型变更落事件前触发（可观测到切换前状态）。
+  const preModelSwitchHookResult = await this.runPreModelSwitchHooks(
+    {
+      previousModel,
+      model: nextModel,
+      ...(options.origin ? { reason: options.origin } : {}),
+    },
+    options.traceContext,
+  );
+  // PreModelSwitch 声明“可注入上下文”（spec §4.2）：hook 返回的上下文写入消息历史。
+  this.injectHookAdditionalContextIntoMessageHistory(
+    HookEventName.PreModelSwitch,
+    preModelSwitchHookResult.additionalContexts,
+  );
   const event = createSessionEvent(
     SessionEventType.ModelSelected,
     this.sessionId,
@@ -1255,6 +1274,20 @@ export async function emitModelSelected(
     { traceId: options.traceContext.traceId },
   );
   await this.appendEvent(event, options.traceContext);
+  // PostModelSwitch hook（P3）：模型选型变更落事件后触发。
+  const postModelSwitchHookResult = await this.runPostModelSwitchHooks(
+    {
+      previousModel,
+      model: nextModel,
+      ...(options.origin ? { reason: options.origin } : {}),
+    },
+    options.traceContext,
+  );
+  // PostModelSwitch 声明“可注入上下文”（spec §4.2）：hook 返回的上下文写入消息历史。
+  this.injectHookAdditionalContextIntoMessageHistory(
+    HookEventName.PostModelSwitch,
+    postModelSwitchHookResult.additionalContexts,
+  );
 }
 
 /**
@@ -1557,4 +1590,12 @@ export async function discardPersistedPendingSteerInputs(
   }
 
   return pendingInputs.length;
+}
+
+/** 模型选型展示串（providerId/modelId），与 SessionStart hook 的 model 字段一致。 */
+function modelSelectionDisplayString(
+  selection: ModelSelection | null | undefined,
+): string | undefined {
+  if (!selection) return undefined;
+  return `${selection.providerId}/${selection.modelId}`;
 }

@@ -1,6 +1,7 @@
+/* oxlint-disable max-lines -- runtime 生命周期/观察类 hook 方法集中维护，拆分前保持单一执行入口。 */
 import { HookEventName } from "../deps.js";
 import type { HookRunResult, Model, TraceContext, TurnState } from "../deps.js";
-import type { HookEventName as HookEventNameType, SessionId } from "@zcode/contracts";
+import type { HookEventName as HookEventNameType, SessionId, ToolCallId } from "@zcode/contracts";
 import type { AgentRuntimeInternal } from "../internal.js";
 import {
   systemReminderAttachmentEntry,
@@ -257,6 +258,151 @@ export async function runSessionEndHooks(
       endReason: input.endReason,
       hookEventName: HookEventName.SessionEnd,
       mode: this.getMode(),
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runPermissionDeniedHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    toolName: string;
+    toolCallId: string;
+    reason?: string;
+    inputSummary?: string;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.PermissionDenied,
+      inputSummary: input.inputSummary,
+      mode: this.getMode(),
+      reason: input.reason,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      toolCallId: input.toolCallId,
+      toolName: input.toolName,
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runPostToolBatchHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    toolCallIds: (string | ToolCallId)[];
+    successCount: number;
+    errorCount: number;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      errorCount: input.errorCount,
+      hookEventName: HookEventName.PostToolBatch,
+      mode: this.getMode(),
+      sessionId: this.sessionId,
+      successCount: input.successCount,
+      timestamp: new Date().toISOString(),
+      toolCallIds: input.toolCallIds,
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runNotificationHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    notification: string;
+    notificationType?: string;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.Notification,
+      mode: this.getMode(),
+      notification: input.notification,
+      notificationType: input.notificationType,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runPreModelSwitchHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    previousModel?: string;
+    model?: string;
+    reason?: string;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.PreModelSwitch,
+      model: input.model,
+      mode: this.getMode(),
+      previousModel: input.previousModel,
+      reason: input.reason,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runPostModelSwitchHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    previousModel?: string;
+    model?: string;
+    reason?: string;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.PostModelSwitch,
+      model: input.model,
+      mode: this.getMode(),
+      previousModel: input.previousModel,
+      reason: input.reason,
       sessionId: this.sessionId,
       timestamp: new Date().toISOString(),
       traceId: traceContext.traceId,

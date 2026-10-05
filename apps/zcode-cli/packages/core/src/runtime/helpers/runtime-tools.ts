@@ -225,6 +225,10 @@ function createRuntimeToolExecutor(
         : undefined,
     getBashShellSelection: () => getSessionShellSelectionFromConfig(runtime.config),
     hookRunner,
+    // P3：executor 侧 hook 的 additionalContext 由父 runtime 注入消息历史（PermissionDenied 等）。
+    injectHookAdditionalContext: (eventName, additionalContexts) => {
+      runtime.injectHookAdditionalContextIntoMessageHistory(eventName, additionalContexts);
+    },
     getWorkingDirectory: () => runtime.workingDirectory,
     setWorkingDirectory: runtime.setWorkingDirectory.bind(runtime),
     getWorkspaceRoot: () => runtime.workspaceRoot,

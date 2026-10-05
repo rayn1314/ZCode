@@ -193,6 +193,8 @@ const canonicalEntryBaseShape = {
   resolvedTimeoutMs: positiveIntegerSchema,
   resolvedMaxOutputBytes: positiveIntegerSchema,
   statusMessage: nonEmptyStringSchema.optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
   sourceRootEnabled: z.boolean(),
   declarationEnabled: z.boolean(),
   runtimeHooksEnabled: z.boolean(),

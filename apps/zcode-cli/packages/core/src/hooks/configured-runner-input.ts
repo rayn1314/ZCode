@@ -29,8 +29,7 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
   compatible.transcript_path = transcriptPath;
   compatible.transcriptPath = transcriptPath;
 
-  if ("toolName" in input) {
-
+  if ("toolInput" in input) {
     // 这里只补无损 alias，继续保留 ZCode camelCase 字段作为内部主契约。
     compatible.tool_name = input.toolName;
     compatible.tool_input = input.toolInput;
@@ -45,7 +44,6 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
       compatible.tool_response = input.toolResponse;
       break;
     case HookEventName.PostToolUseFailure:
-
       compatible.error_details = input.error;
       compatible.error = input.error.message;
       compatible.is_interrupt = input.isInterrupt;
@@ -76,6 +74,27 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
     case HookEventName.SessionStart:
     case HookEventName.UserPromptSubmit:
     case HookEventName.PreToolUse:
+      break;
+    case HookEventName.PermissionDenied:
+      compatible.tool_name = input.toolName;
+      compatible.tool_use_id = input.toolCallId;
+      compatible.reason = input.reason;
+      compatible.input_summary = input.inputSummary;
+      break;
+    case HookEventName.PostToolBatch:
+      compatible.tool_call_ids = input.toolCallIds;
+      compatible.success_count = input.successCount;
+      compatible.error_count = input.errorCount;
+      break;
+    case HookEventName.Notification:
+      compatible.notification = input.notification;
+      compatible.notification_type = input.notificationType;
+      break;
+    case HookEventName.PreModelSwitch:
+    case HookEventName.PostModelSwitch:
+      compatible.previous_model = input.previousModel;
+      compatible.model = input.model;
+      compatible.reason = input.reason;
       break;
     default:
       // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改判定语义）。

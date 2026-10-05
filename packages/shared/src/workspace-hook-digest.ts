@@ -38,6 +38,9 @@ export interface CanonicalWorkspaceHookEntryData {
   resolvedTimeoutMs: number;
   resolvedMaxOutputBytes: number;
   statusMessage?: string;
+  /** P3 行为字段透传（spec §8）。contracts 的 canonical entry schema 已同步收这两个键。 */
+  once?: boolean;
+  failClosed?: boolean;
   sourceRootEnabled: boolean;
   declarationEnabled: boolean;
   runtimeHooksEnabled: boolean;
@@ -112,6 +115,8 @@ export function resolveWorkspaceHookEntries(input: {
             resolvedTimeoutMs,
             resolvedMaxOutputBytes: input.runtimeRoot.maxOutputBytes,
             ...(hook.statusMessage ? { statusMessage: hook.statusMessage } : {}),
+            ...(hook.once !== undefined ? { once: hook.once } : {}),
+            ...(hook.failClosed !== undefined ? { failClosed: hook.failClosed } : {}),
             ...gates,
             editable: source.editable,
             declarationDigestAlgorithm: "sha256" as const,

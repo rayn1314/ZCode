@@ -192,6 +192,36 @@ export async function runPostToolUseFailureHooks(
   );
 }
 
+export async function runPermissionDeniedHooks(
+  deps: ToolExecutorDeps,
+  toolCall: ExecutableToolCall,
+  reason: string | undefined,
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!deps.hookRunner) return { additionalContexts: [] };
+  return deps.hookRunner.run(
+    {
+      cwd: deps.getWorkingDirectory(),
+      hookEventName: HookEventName.PermissionDenied,
+      inputSummary: previewHookValue(toolCall.input),
+      mode: deps.getMode(),
+      reason,
+      sessionId: deps.sessionId,
+      timestamp: new Date().toISOString(),
+      toolCallId: toolCall.id,
+      toolName: toolCall.name,
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId ?? deps.turnId,
+    },
+    {
+      matchValue: toolCall.name,
+      matchValues: hookMatcherToolNamesForTool(toolCall.name),
+      signal,
+    },
+  );
+}
+
 export function applyPreToolPermissionDecision(
   permissionDecision: PermissionDecisionResult,
   hookResult: HookRunResult,

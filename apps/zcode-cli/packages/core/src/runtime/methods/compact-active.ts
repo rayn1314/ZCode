@@ -3,6 +3,7 @@ import {
   CompactReason,
   CompactTrigger,
   CompactTimelineStatus,
+  HookEventName,
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   SessionEventType,
   createChildTraceContext,
@@ -179,7 +180,6 @@ async function compactActiveConversationImpl(
     createRuntimeModel(this, {
       selection: this.getSessionModelSelection(),
     });
-  const executionMaxOutputTokens = compactModel.optionSpecs.maxOutputTokens.max;
   // Active compact 会跨多个 await 保留这份成员浅快照；它依赖 RuntimeMessageEntry
   // 不可变约定。selection、provider render 和最终 replace 会创建各自拥有的副本，
   // 禁止在 compact 期间原地修改 activeEntries 内共享的 entry/message/content。
@@ -232,10 +232,15 @@ async function compactActiveConversationImpl(
       turnTraceContext,
       events,
     );
-    await this.runPostCompactHooks(
+    const postCompactHookResult = await this.runPostCompactHooks(
       { compactTrigger, outcome: "skipped", preCompactTokenCount },
       turnTraceContext,
       options.abortSignal,
+    );
+    // PostCompact 声明“仅观察 + 注入上下文”（spec §4.1）：hook 返回的上下文写入消息历史。
+    this.injectHookAdditionalContextIntoMessageHistory(
+      HookEventName.PostCompact,
+      postCompactHookResult.additionalContexts,
     );
     return {
       displayText: "Context is up to date; no compression needed",
@@ -249,6 +254,11 @@ async function compactActiveConversationImpl(
     { compactTrigger, preCompactTokenCount },
     turnTraceContext,
     options.abortSignal,
+  );
+  // PreCompact 声明“可注入上下文”（spec §4.1）：无论是否阻断，hook 返回的上下文都写入消息历史。
+  this.injectHookAdditionalContextIntoMessageHistory(
+    HookEventName.PreCompact,
+    preCompactHookResult.additionalContexts,
   );
   // PreCompact 可阻断（spec §4.1）：hook 返回阻断信号时中止压缩，按 skipped 记账并回填 UI。
   if (preCompactHookResult.blockRequested || preCompactHookResult.preventContinuation) {
@@ -645,7 +655,7 @@ async function compactActiveConversationImpl(
         turnTraceContext,
         events,
       );
-      await this.runPostCompactHooks(
+      const postCompactHookResult = await this.runPostCompactHooks(
         {
           boundaryId: compactBoundary.boundaryId,
           compactTrigger,
@@ -655,6 +665,10 @@ async function compactActiveConversationImpl(
         },
         turnTraceContext,
         options.abortSignal,
+      );
+      this.injectHookAdditionalContextIntoMessageHistory(
+        HookEventName.PostCompact,
+        postCompactHookResult.additionalContexts,
       );
 
       this.latestConversationMessageId = summaryMessageId;

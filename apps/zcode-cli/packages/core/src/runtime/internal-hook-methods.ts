@@ -1,5 +1,5 @@
 import type { HookRunResult, Model, TraceContext, TurnState } from "./deps.js";
-import type { HookEventName, SessionId } from "@zcode/contracts";
+import type { HookEventName, SessionId, ToolCallId } from "@zcode/contracts";
 import type { RuntimeMessageEntry } from "../agent/message-history.js";
 
 // 从 internal-methods.ts 拆出，避免该文件越过
@@ -74,6 +74,51 @@ export interface AgentRuntimeHookMethods {
   ): Promise<HookRunResult>;
   runSessionEndHooks(
     input: { endReason?: string },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runPermissionDeniedHooks(
+    input: {
+      toolName: string;
+      toolCallId: string;
+      reason?: string;
+      inputSummary?: string;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runPostToolBatchHooks(
+    input: {
+      toolCallIds: (string | ToolCallId)[];
+      successCount: number;
+      errorCount: number;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runNotificationHooks(
+    input: {
+      notification: string;
+      notificationType?: string;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runPreModelSwitchHooks(
+    input: {
+      previousModel?: string;
+      model?: string;
+      reason?: string;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runPostModelSwitchHooks(
+    input: {
+      previousModel?: string;
+      model?: string;
+      reason?: string;
+    },
     traceContext: TraceContext,
     signal?: AbortSignal,
   ): Promise<HookRunResult>;

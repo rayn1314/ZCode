@@ -57,6 +57,12 @@ export function processHookOutput(
   if (output.additionalContext) result.additionalContexts.push(output.additionalContext);
   if (output.additional_context) result.additionalContexts.push(output.additional_context);
 
+  // 顶层 updatedToolOutput 是 hookSpecificOutput.updatedToolOutput 的兼容别名（P3）。
+  // 优先级低于 hookSpecificOutput：后者在 applyHookSpecificOutput 中后写覆盖。
+  if (expectedEvent === HookEventName.PostToolUse && output.updatedToolOutput !== undefined) {
+    result.updatedToolOutput = output.updatedToolOutput;
+  }
+
   const specific = output.hookSpecificOutput;
   if (!specific) return result;
   if (specific.hookEventName !== expectedEvent) {
@@ -89,6 +95,9 @@ export function mergeHookRunResult(target: HookRunResult, next: HookRunResult): 
   }
   if (next.updatedInput !== undefined) {
     target.updatedInput = next.updatedInput;
+  }
+  if (next.updatedToolOutput !== undefined) {
+    target.updatedToolOutput = next.updatedToolOutput;
   }
   if (next.permissionRequestResult) {
     target.permissionRequestResult = next.permissionRequestResult;
@@ -147,6 +156,11 @@ function applyHookSpecificOutput(result: HookRunResult, specific: HookSpecificOu
       }
       break;
     case HookEventName.PostToolUse:
+      if (specific.updatedToolOutput !== undefined) {
+        result.updatedToolOutput = specific.updatedToolOutput;
+      }
+      if (specific.additionalContext) result.additionalContexts.push(specific.additionalContext);
+      break;
     case HookEventName.PostToolUseFailure:
     case HookEventName.UserPromptSubmit:
     case HookEventName.SessionStart:
@@ -156,6 +170,11 @@ function applyHookSpecificOutput(result: HookRunResult, specific: HookSpecificOu
     case HookEventName.SubagentStart:
     case HookEventName.SubagentStop:
     case HookEventName.SessionEnd:
+    case HookEventName.PermissionDenied:
+    case HookEventName.PostToolBatch:
+    case HookEventName.Notification:
+    case HookEventName.PreModelSwitch:
+    case HookEventName.PostModelSwitch:
       if (specific.additionalContext) result.additionalContexts.push(specific.additionalContext);
       break;
     default:

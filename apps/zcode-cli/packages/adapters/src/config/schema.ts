@@ -246,6 +246,9 @@ const hookProcessSchema = z
     args: z.array(z.string()).optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    // P3 行为字段，与 shared/workspace-hook-config 等价（once/failClosed）。
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
 
   .passthrough();
@@ -260,6 +263,8 @@ const hookCommandSchema = z
     timeout: positiveNumberSchema.optional(),
     timeoutMs: positiveNumberSchema.optional(),
     statusMessage: z.string().min(1).optional(),
+    once: z.boolean().optional(),
+    failClosed: z.boolean().optional(),
   })
   .passthrough();
 
@@ -274,6 +279,8 @@ const hookHttpSchema = z.object({
   allowPrivateNetwork: z.boolean().optional(),
   timeoutMs: positiveNumberSchema.optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 const hookMcpToolSchema = z.object({
@@ -284,6 +291,8 @@ const hookMcpToolSchema = z.object({
   enabled: z.boolean().optional(),
   timeoutMs: positiveNumberSchema.optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 const hookMatcherSchema = z
@@ -317,6 +326,11 @@ const hooksEventsMap = {
   SubagentStart: z.array(hookMatcherSchema).optional(),
   SubagentStop: z.array(hookMatcherSchema).optional(),
   SessionEnd: z.array(hookMatcherSchema).optional(),
+  PermissionDenied: z.array(hookMatcherSchema).optional(),
+  PostToolBatch: z.array(hookMatcherSchema).optional(),
+  Notification: z.array(hookMatcherSchema).optional(),
+  PreModelSwitch: z.array(hookMatcherSchema).optional(),
+  PostModelSwitch: z.array(hookMatcherSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 const hooksSchema = z

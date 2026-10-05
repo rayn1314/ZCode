@@ -131,6 +131,11 @@ export interface ExploreSubagentPortOptions {
   logger?: Logger;
   /** 父 runtime 的 hook runner；存在时在 SubagentSpawned/SubagentStopped 发射点同步跑生命周期 hook。 */
   hookRunner?: HookRunner;
+  /** P3：父 runtime 的消息历史注入回调；生命周期 hook 返回 additionalContext 时调用。 */
+  injectHookAdditionalContext?: (
+    eventName: HookEventName,
+    additionalContexts: readonly string[],
+  ) => void;
 }
 
 /**
@@ -1625,32 +1630,32 @@ async function finalizeBackgroundCompletion(
   }
 
   const completedPayload = {
-      agentId: lifecycle.agentId,
-      agentType: request.agentType,
-      background: true,
-      childSessionId: lifecycle.childSessionId,
-      parentToolCallId: request.parentToolCallId,
-      status: "completed",
-      outputFile: lifecycle.outputFile,
-      totalDurationMs: completed.output.totalDurationMs,
-      totalToolUseCount: completed.output.totalToolUseCount,
-      totalTokens: completed.output.totalTokens,
-    };
-    await emitSubagentEvent(
-      options,
-      SessionEventType.SubagentStopped,
-      request,
-      lifecycle.runTraceContext,
-      completedPayload,
-    );
-    await runSubagentLifecycleHooks(
-      options,
-      SessionEventType.SubagentStopped,
-      request,
-      completedPayload,
-    );
+    agentId: lifecycle.agentId,
+    agentType: request.agentType,
+    background: true,
+    childSessionId: lifecycle.childSessionId,
+    parentToolCallId: request.parentToolCallId,
+    status: "completed",
+    outputFile: lifecycle.outputFile,
+    totalDurationMs: completed.output.totalDurationMs,
+    totalToolUseCount: completed.output.totalToolUseCount,
+    totalTokens: completed.output.totalTokens,
+  };
+  await emitSubagentEvent(
+    options,
+    SessionEventType.SubagentStopped,
+    request,
+    lifecycle.runTraceContext,
+    completedPayload,
+  );
+  await runSubagentLifecycleHooks(
+    options,
+    SessionEventType.SubagentStopped,
+    request,
+    completedPayload,
+  );
 
-    options.logger?.info("Subagent background task completed", {
+  options.logger?.info("Subagent background task completed", {
     ...traceContextToLogContext(lifecycle.runTraceContext),
     agentId: lifecycle.agentId,
     durationMs: completed.output.totalDurationMs,
@@ -1710,31 +1715,31 @@ async function finalizeBackgroundFailure(
   }
 
   const failedPayload = {
-      agentId: lifecycle.agentId,
-      agentType: request.agentType,
-      background: true,
-      childSessionId: lifecycle.childSessionId,
-      parentToolCallId: request.parentToolCallId,
-      status: "failed",
-      outputFile: lifecycle.outputFile,
-      totalDurationMs,
-      error: errorMessage,
-    };
-    await emitSubagentEvent(
-      options,
-      SessionEventType.SubagentStopped,
-      request,
-      lifecycle.runTraceContext,
-      failedPayload,
-    );
-    await runSubagentLifecycleHooks(
-      options,
-      SessionEventType.SubagentStopped,
-      request,
-      failedPayload,
-    );
+    agentId: lifecycle.agentId,
+    agentType: request.agentType,
+    background: true,
+    childSessionId: lifecycle.childSessionId,
+    parentToolCallId: request.parentToolCallId,
+    status: "failed",
+    outputFile: lifecycle.outputFile,
+    totalDurationMs,
+    error: errorMessage,
+  };
+  await emitSubagentEvent(
+    options,
+    SessionEventType.SubagentStopped,
+    request,
+    lifecycle.runTraceContext,
+    failedPayload,
+  );
+  await runSubagentLifecycleHooks(
+    options,
+    SessionEventType.SubagentStopped,
+    request,
+    failedPayload,
+  );
 
-    options.logger?.warn("Subagent background task failed", {
+  options.logger?.warn("Subagent background task failed", {
     ...traceContextToLogContext(lifecycle.runTraceContext),
     agentId: lifecycle.agentId,
     errorMessage,
@@ -2078,14 +2083,16 @@ async function runSubagentLifecycleHooks(
       turnId: request.turnId ?? request.trace.turnId,
     };
     if (eventType === SessionEventType.SubagentSpawned) {
-      await options.hookRunner.run({
+      const result = await options.hookRunner.run({
         ...baseInput,
         hookEventName: HookEventName.SubagentStart,
         model: payload.model as string | undefined,
         prompt: String(payload.prompt ?? request.prompt ?? ""),
       });
+      // SubagentStart 声明“仅注入上下文”（spec §4.1）：hook 返回的上下文写入父会话消息历史。
+      options.injectHookAdditionalContext?.(HookEventName.SubagentStart, result.additionalContexts);
     } else if (eventType === SessionEventType.SubagentStopped) {
-      await options.hookRunner.run({
+      const result = await options.hookRunner.run({
         ...baseInput,
         error: payload.error as string | undefined,
         hookEventName: HookEventName.SubagentStop,
@@ -2094,6 +2101,8 @@ async function runSubagentLifecycleHooks(
         totalTokens: payload.totalTokens as number | undefined,
         totalToolUseCount: payload.totalToolUseCount as number | undefined,
       });
+      // SubagentStop 声明“可阻断 + 注入上下文”（spec §4.1）：hook 返回的上下文写入父会话消息历史。
+      options.injectHookAdditionalContext?.(HookEventName.SubagentStop, result.additionalContexts);
     }
   } catch (error) {
     options.logger?.warn("Subagent lifecycle hook failed", {

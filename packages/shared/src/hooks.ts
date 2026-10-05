@@ -20,6 +20,11 @@ export const HOOK_EVENT_NAMES = [
   "SubagentStart",
   "SubagentStop",
   "SessionEnd",
+  "PermissionDenied",
+  "PostToolBatch",
+  "Notification",
+  "PreModelSwitch",
+  "PostModelSwitch",
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENT_NAMES)[number];
@@ -107,6 +112,36 @@ export const HOOK_EVENT_DESCRIPTORS: Record<HookEvent, HookEventDescriptor> = {
     blockable: false,
     injectsContext: true,
     labelKey: "settings.hooks.event.sessionEnd",
+  },
+  PermissionDenied: {
+    matcherKind: "toolName",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.permissionDenied",
+  },
+  PostToolBatch: {
+    matcherKind: "none",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.postToolBatch",
+  },
+  Notification: {
+    matcherKind: "none",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.notification",
+  },
+  PreModelSwitch: {
+    matcherKind: "none",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.preModelSwitch",
+  },
+  PostModelSwitch: {
+    matcherKind: "none",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.postModelSwitch",
   },
 };
 

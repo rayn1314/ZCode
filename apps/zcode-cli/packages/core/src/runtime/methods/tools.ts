@@ -1,4 +1,5 @@
 import {
+  HookEventName,
   RewindScope,
   SessionEventType,
   getCurrentTraceContext,
@@ -114,6 +115,21 @@ export async function executeTools(
       );
       await this.appendEvent(batchCompleteEvent, traceContext);
       events.push(batchCompleteEvent);
+      // PostToolBatch hook（P3）：整批工具调用结束后触发，供外部系统做批级联动。
+      const postToolBatchHookResult = await this.runPostToolBatchHooks(
+        {
+          toolCallIds: batchResults.map((result) => result.toolCallId as ToolCallId),
+          successCount: batchResults.filter((result) => result.success).length,
+          errorCount: batchResults.filter((result) => !result.success).length,
+        },
+        traceContext,
+        options?.signal,
+      );
+      // PostToolBatch 声明“可注入上下文”（spec §4.2）：hook 返回的上下文写入消息历史。
+      this.injectHookAdditionalContextIntoMessageHistory(
+        HookEventName.PostToolBatch,
+        postToolBatchHookResult.additionalContexts,
+      );
     }
   }
 

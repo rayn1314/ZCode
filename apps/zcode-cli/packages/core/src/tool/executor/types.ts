@@ -4,6 +4,7 @@ import type {
   BackgroundResultOriginMeta,
   CollaborationMode,
   CoordinatorResponsePort,
+  HookEventName,
   DynamicWorkflowRunPort,
   DynamicWorkflowSnippetPort,
   ModelCatalogPort,
@@ -146,6 +147,11 @@ export interface ToolExecutorOptions {
   getMode?: () => CollaborationMode;
   maxConcurrency?: number;
   hookRunner?: HookRunner;
+  /** P3：executor 侧 hook（PermissionDenied 等）返回的 additionalContext 注入父 runtime 消息历史。 */
+  injectHookAdditionalContext?: (
+    eventName: HookEventName,
+    additionalContexts: readonly string[],
+  ) => void;
 }
 
 export interface ToolExecutor {
@@ -254,4 +260,9 @@ export interface ToolExecutorDeps {
   getMode: () => CollaborationMode;
   maxConcurrency: number;
   hookRunner?: HookRunner;
+  /** P3：executor 侧 hook（PermissionDenied 等）返回的 additionalContext 注入父 runtime 消息历史。 */
+  injectHookAdditionalContext?: (
+    eventName: HookEventName,
+    additionalContexts: readonly string[],
+  ) => void;
 }

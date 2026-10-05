@@ -58,6 +58,10 @@ export interface HookRegistration {
   callback: HookCallback;
   descriptor?: HookExecutionDescriptor | ((input: HookInput) => HookExecutionDescriptor);
   event: HookEventName;
+  /** 同一会话内只执行一次（P3）：以 source 为身份键，执行后（成功或失败）不再触发。 */
+  once?: boolean;
+  /** 失败时按事件可阻断性转化为阻断（P3）：仅对 blockable 事件生效，默认 fail-open。 */
+  failClosed?: boolean;
   matcher?: string;
   source?: string;
   sourceKind?: HookSourceKind;
@@ -80,6 +84,8 @@ export interface HookRunResult {
   stopShouldContinue?: boolean;
   stopReason?: string;
   updatedInput?: unknown;
+  /** PostToolUse hook 改写后的工具输出（P3），由 tool executor 写回模型消费内容。 */
+  updatedToolOutput?: unknown;
 }
 
 export interface HookRunner {

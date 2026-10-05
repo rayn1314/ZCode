@@ -1,4 +1,5 @@
 import {
+  HookEventName,
   HookOutcome,
   SessionEventType,
   isCoreError,
@@ -9,6 +10,7 @@ import {
   type Logger,
   type SessionEvent,
 } from "@zcode/contracts";
+import { HOOK_EVENT_DESCRIPTORS } from "@zcode/shared";
 import { mergeHookRunResult, processHookOutput } from "./output.js";
 import { sanitizeHookDisplayText } from "./display-metadata.js";
 import {
@@ -37,6 +39,8 @@ export class InMemoryHookRunner implements HookRunner {
   private readonly emitEvent?: (event: SessionEvent) => Promise<void>;
   private readonly hooks: HookRegistration[];
   private readonly logger?: Logger;
+  /** once hook 的执行身份键（P3）：同一会话内每个 once hook 只执行一次。 */
+  private readonly onceExecuted = new Set<string>();
 
   constructor(options: HookRunnerOptions = {}) {
     this.defaultTimeoutMs = options.defaultTimeoutMs ?? 60000;
@@ -80,6 +84,12 @@ export class InMemoryHookRunner implements HookRunner {
     let clientVisibleHookIndex = 0;
 
     for (const [runtimeIndex, { hook }] of participatingHooks.entries()) {
+      // once hook 以 source（配置/项目路径已保证唯一）为身份键，同一会话只执行一次。
+      // 无 source 的裸注册（测试/内嵌）回退到 event:matcher 复合键。
+      const onceKey = hook.once === true ? resolveOnceKey(hook) : undefined;
+      if (onceKey !== undefined && this.onceExecuted.has(onceKey)) {
+        continue;
+      }
       const descriptor = resolveHookDescriptor(hook, this.defaultTimeoutMs, input);
       const hookIndex = descriptor.clientVisible ? clientVisibleHookIndex++ : runtimeIndex;
       const hookRunId = crypto.randomUUID();
@@ -150,6 +160,8 @@ export class InMemoryHookRunner implements HookRunner {
             source: hook.source,
           });
         });
+        // async 的“执行”在 dispatch 时即已发生：立即记账，避免同一会话内重复触发。
+        if (onceKey !== undefined) this.onceExecuted.add(onceKey);
         continue;
       }
 
@@ -208,12 +220,28 @@ export class InMemoryHookRunner implements HookRunner {
               : {}),
           },
         );
+        if (onceKey !== undefined) this.onceExecuted.add(onceKey);
       } catch (error) {
         const durationMs = Date.now() - startedAt;
         const outcome = resolveHookFailureOutcome(error);
         const errorMessage = sanitizeHookDisplayText(readHookErrorMessage(error));
+        // failClosed（P3）：同步 hook 失败/超时且事件可阻断时，把失败转化为阻断。
+        // 默认 fail-open 行为保持不变（不设置任何阻断字段）。
+        const failClosedBlocked =
+          hook.failClosed === true &&
+          HOOK_EVENT_DESCRIPTORS[input.hookEventName]?.blockable === true;
+        if (failClosedBlocked) {
+          result.blockRequested = true;
+          result.stopReason = errorMessage;
+          if (shouldPreventContinuationForEvent(input.hookEventName)) {
+            result.preventContinuation = true;
+          }
+          if (isPermissionEventName(input.hookEventName)) {
+            result.permissionBehavior = "deny";
+          }
+        }
         await this.emitHookEvent(
-          SessionEventType.HookRunFailed,
+          failClosedBlocked ? SessionEventType.HookRunBlocked : SessionEventType.HookRunFailed,
           input,
           hookInvocationId,
           hookRunId,
@@ -226,8 +254,9 @@ export class InMemoryHookRunner implements HookRunner {
             durationMs,
             errorCode: isCoreError(error) ? error.code : undefined,
             errorMessage,
-            outcome,
+            outcome: failClosedBlocked ? HookOutcome.Blocked : outcome,
             stderrPreview: errorMessage,
+            ...(failClosedBlocked ? { blockReason: errorMessage } : {}),
           },
         );
 
@@ -245,6 +274,7 @@ export class InMemoryHookRunner implements HookRunner {
           module: "core.hooks",
           source: hook.source,
         });
+        if (onceKey !== undefined) this.onceExecuted.add(onceKey);
       }
     }
 
@@ -455,6 +485,27 @@ function sanitizeHookDiagnostics(
     ...(stderrPreview ? { stderrPreview } : {}),
     ...(stdoutPreview ? { stdoutPreview } : {}),
   };
+}
+
+/**
+ * once hook 的身份键（P3）：配置/项目路径的 source 已保证每个注册唯一；
+ * 无 source 的裸注册回退到 event:matcher 复合键。
+ */
+function resolveOnceKey(hook: HookRegistration): string {
+  if (hook.source) return hook.source;
+  return `${hook.event}:${hook.matcher ?? "*"}`;
+}
+
+function shouldPreventContinuationForEvent(event: HookEventName): boolean {
+  return (
+    event === HookEventName.PreToolUse ||
+    event === HookEventName.PermissionRequest ||
+    event === HookEventName.UserPromptSubmit
+  );
+}
+
+function isPermissionEventName(event: HookEventName): boolean {
+  return event === HookEventName.PreToolUse || event === HookEventName.PermissionRequest;
 }
 
 export function createInMemoryHookRunner(options?: HookRunnerOptions): InMemoryHookRunner {

@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch.js";
 import {
   HOOK_EVENT_NAMES,
+  HOOK_EVENT_DESCRIPTORS,
   type Hook,
   type HookConfig,
   type HookEvent,
@@ -166,6 +167,10 @@ export function HookForm({
   const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(
     Boolean(hook?.custom?.allowPrivateNetwork),
   );
+  // P3 行为开关（spec: core/spec/hook-framework-expansion-plan.md §5.2）：
+  // 状态存 custom.once / custom.failClosed，读取时从 custom 还原。
+  const [once, setOnce] = useState(Boolean(hook?.custom?.once));
+  const [failClosed, setFailClosed] = useState(Boolean(hook?.custom?.failClosed));
   // mcp_tool 专有字段：通过 custom.server / custom.tool / custom.input 承载。
   const [mcpServer, setMcpServer] = useState(
     typeof hook?.custom?.server === "string" ? hook.custom.server : "",
@@ -209,6 +214,8 @@ export function HookForm({
     if (type === "mcp_tool") return Boolean(mcpServer.trim() && mcpTool.trim());
     return Boolean(command.trim());
   })();
+  // failClosed 仅在事件可阻断时可用（描述符 blockable:false 时禁用并提示）。
+  const eventBlockable = HOOK_EVENT_DESCRIPTORS[event].blockable;
 
   const handleSave = useCallback(() => {
     let custom: Record<string, unknown> | undefined;
@@ -225,6 +232,9 @@ export function HookForm({
         return;
       }
     }
+
+    // 行为开关是 once / failClosed 的唯一权威来源，覆盖用户在 JSON 文本框里的同名键。
+    const customWithBehavior = { ...custom, once, failClosed };
 
     const baseConfig = {
       event,
@@ -272,7 +282,7 @@ export function HookForm({
         // 兼容 contracts 的读取路径：http 的 url 也暴露为 command。
         command: trimmedUrl,
         custom: {
-          ...custom,
+          ...customWithBehavior,
           url: trimmedUrl,
           ...(method ? { method } : {}),
           ...(headers ? { headers } : {}),
@@ -304,7 +314,7 @@ export function HookForm({
         // 兼容 contracts 的读取路径：mcp_tool 的 tool 也暴露为 command。
         command: trimmedTool,
         custom: {
-          ...custom,
+          ...customWithBehavior,
           server: trimmedServer,
           tool: trimmedTool,
           ...(input ? { input } : {}),
@@ -330,7 +340,7 @@ export function HookForm({
             async: asyncCommand,
             shell: shell.trim() || (hook?.shell === true ? true : undefined),
           }),
-      custom,
+      custom: customWithBehavior,
     });
   }, [
     allowPrivateNetwork,
@@ -341,6 +351,7 @@ export function HookForm({
     command,
     customJson,
     event,
+    failClosed,
     headersJson,
     hook?.enabled,
     hook?.shell,
@@ -350,6 +361,7 @@ export function HookForm({
     mcpServer,
     mcpTool,
     method,
+    once,
     onSave,
     shell,
     statusMessage,
@@ -636,6 +648,37 @@ export function HookForm({
             </Field>
           </div>
         )}
+
+        {/* P3 行为开关（spec: core/spec/hook-framework-expansion-plan.md §5.2），对所有 handler 类型生效。 */}
+        <div className="grid gap-3 border-t border-border pt-3 sm:grid-cols-2">
+          <div className="flex items-end justify-between gap-4 pb-1">
+            <div className="min-w-0">
+              <Label htmlFor="hook-once">{intl.formatMessage({ id: "settings.hooks.once" })}</Label>
+              <p className="text-ui-base text-foreground-subtlest">
+                {intl.formatMessage({ id: "settings.hooks.onceHint" })}
+              </p>
+            </div>
+            <Switch id="hook-once" checked={once} onCheckedChange={setOnce} />
+          </div>
+          <div className="flex items-end justify-between gap-4 pb-1">
+            <div className="min-w-0">
+              <Label htmlFor="hook-fail-closed">
+                {intl.formatMessage({ id: "settings.hooks.failClosed" })}
+              </Label>
+              <p className="text-ui-base text-foreground-subtlest">
+                {eventBlockable
+                  ? intl.formatMessage({ id: "settings.hooks.failClosedHint" })
+                  : intl.formatMessage({ id: "settings.hooks.failClosedDisabledHint" })}
+              </p>
+            </div>
+            <Switch
+              id="hook-fail-closed"
+              checked={failClosed}
+              disabled={!eventBlockable}
+              onCheckedChange={setFailClosed}
+            />
+          </div>
+        </div>
 
         <details className="group/advanced border-t border-border pt-3">
           <summary className="flex cursor-pointer list-none items-center gap-1 text-ui-base font-medium text-foreground-subtle">

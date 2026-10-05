@@ -5,7 +5,9 @@ import {
   createCoreError,
   createRootTraceContext,
   getCurrentTraceContext,
+  modelMessageContentToText,
   traceContextToLogContext,
+  type ModelMessageContent,
   type ToolExecutionSpanWriter,
   type SessionEvent,
 } from "@zcode/contracts";
@@ -19,7 +21,11 @@ import {
 } from "../input-normalization.js";
 import { hasOfficialCuaFrameAuthority } from "../../mcp/image-normalization.js";
 import type { SkillTelemetryMetadata } from "@zcode/contracts";
-import type { ToolExecutionContext, ToolExecutionResult } from "../types.js";
+import type {
+  ToolExecutionContext,
+  ToolExecutionResult,
+  ToolResultSerialization,
+} from "../types.js";
 import type { ToolEntry } from "../types.js";
 import type { BackgroundTaskTracker } from "./background-tasks.js";
 import {
@@ -488,6 +494,11 @@ async function executeToolCallImpl(
       [...preToolHookResult.additionalContexts, ...postToolHookResult.additionalContexts],
       modelOutputEntry,
     );
+    // PostToolUse hook 改写工具输出（P3）：updatedToolOutput 直接替换模型消费的
+    // 工具结果。content（事件展示/持久化）与 modelContent（模型请求）同步更新。
+    if (postToolHookResult.updatedToolOutput !== undefined) {
+      serialization = applyUpdatedToolOutput(serialization, postToolHookResult.updatedToolOutput);
+    }
     const display = createToolResultDisplay(canonicalToolCall.name, output, {
       mcp: entry.metadata.mcpPresentation,
       officialCua: entry.modelContentProtection === OFFICIAL_CUA_FRAME_MODEL_CONTENT_PROTECTION,
@@ -705,4 +716,34 @@ function appendPreToolAdditionalContextsToErrorResult(
     ...result,
     modelContent: [baseModelContent, formatHookAdditionalContexts(additionalContexts)].join("\n\n"),
   };
+}
+
+/**
+ * 用 PostToolUse hook 的 updatedToolOutput 替换模型消费的工具结果（P3）。
+ * modelContent 是模型请求使用的字段（字符串或结构化块），content 是事件展示/持久化
+ * 用的文本投影；两者必须同步，returnedBytes 也随之更新以维持用量观测一致。
+ */
+function applyUpdatedToolOutput(
+  serialization: ToolResultSerialization,
+  updatedToolOutput: unknown,
+): ToolResultSerialization {
+  const modelContent = toModelMessageContent(updatedToolOutput);
+  const content =
+    typeof modelContent === "string" ? modelContent : modelMessageContentToText(modelContent);
+  return {
+    ...serialization,
+    modelContent,
+    content,
+    returnedBytes: Buffer.byteLength(content, "utf8"),
+  };
+}
+
+function toModelMessageContent(value: unknown): ModelMessageContent {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value) ?? "";
+  } catch {
+    return String(value);
+  }
 }

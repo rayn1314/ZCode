@@ -23,6 +23,11 @@ export const HookEventName = {
   SubagentStart: "SubagentStart",
   SubagentStop: "SubagentStop",
   SessionEnd: "SessionEnd",
+  PermissionDenied: "PermissionDenied",
+  PostToolBatch: "PostToolBatch",
+  Notification: "Notification",
+  PreModelSwitch: "PreModelSwitch",
+  PostModelSwitch: "PostModelSwitch",
 } as const satisfies Record<HookEvent, string>;
 
 export type HookEventName = (typeof HookEventName)[keyof typeof HookEventName];
@@ -197,6 +202,43 @@ export interface SessionEndHookInput extends BaseHookInput {
   endReason?: string;
 }
 
+export interface PermissionDeniedHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PermissionDenied;
+  toolName: string;
+  toolCallId: ToolCallId | string;
+  reason?: string;
+  inputSummary?: string;
+}
+
+export interface PostToolBatchHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PostToolBatch;
+  toolCallIds: (ToolCallId | string)[];
+  successCount: number;
+  errorCount: number;
+}
+
+export interface NotificationHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.Notification;
+  /** 通知文本（面向模型的后台任务/子代理通知）。 */
+  notification: string;
+  /** 通知来源类型，如 "background_task" | "subagent" | "permission" | "error"。 */
+  notificationType?: string;
+}
+
+export interface PreModelSwitchHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PreModelSwitch;
+  previousModel?: string;
+  model?: string;
+  reason?: string;
+}
+
+export interface PostModelSwitchHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PostModelSwitch;
+  previousModel?: string;
+  model?: string;
+  reason?: string;
+}
+
 export type HookInput =
   | PreToolUseHookInput
   | PermissionRequestHookInput
@@ -209,7 +251,12 @@ export type HookInput =
   | PostCompactHookInput
   | SubagentStartHookInput
   | SubagentStopHookInput
-  | SessionEndHookInput;
+  | SessionEndHookInput
+  | PermissionDeniedHookInput
+  | PostToolBatchHookInput
+  | NotificationHookInput
+  | PreModelSwitchHookInput
+  | PostModelSwitchHookInput;
 
 export type PermissionRequestHookDecision =
   | {
@@ -243,6 +290,8 @@ export type HookSpecificOutput =
   | {
       additionalContext?: string;
       hookEventName: typeof HookEventName.PostToolUse;
+      /** PostToolUse 专属：允许 hook 改写工具输出（P3 协议补全）。 */
+      updatedToolOutput?: unknown;
     }
   | {
       additionalContext?: string;
@@ -275,6 +324,26 @@ export type HookSpecificOutput =
   | {
       additionalContext?: string;
       hookEventName: typeof HookEventName.SessionEnd;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PermissionDenied;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PostToolBatch;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.Notification;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PreModelSwitch;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PostModelSwitch;
     };
 
 export interface HookJSONOutput {
@@ -287,6 +356,8 @@ export interface HookJSONOutput {
   stopReason?: string;
   suppressOutput?: boolean;
   systemMessage?: string;
+  /** 顶层兼容字段（P3）：等价于 hookSpecificOutput.updatedToolOutput（PostToolUse）。 */
+  updatedToolOutput?: unknown;
 }
 
 const PermissionRequestHookDecisionSchema = z.union([
@@ -348,6 +419,7 @@ export const HookSpecificOutputSchema = z.discriminatedUnion("hookEventName", [
   z.object({
     additionalContext: z.string().optional(),
     hookEventName: z.literal(HookEventName.PostToolUse),
+    updatedToolOutput: z.unknown().optional(),
   }),
   z.object({
     additionalContext: z.string().optional(),
@@ -381,6 +453,26 @@ export const HookSpecificOutputSchema = z.discriminatedUnion("hookEventName", [
     additionalContext: z.string().optional(),
     hookEventName: z.literal(HookEventName.SessionEnd),
   }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PermissionDenied),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PostToolBatch),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.Notification),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PreModelSwitch),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PostModelSwitch),
+  }),
 ]);
 
 export const HookJSONOutputSchema = z.object({
@@ -393,6 +485,7 @@ export const HookJSONOutputSchema = z.object({
   stopReason: z.string().optional(),
   suppressOutput: z.boolean().optional(),
   systemMessage: z.string().optional(),
+  updatedToolOutput: z.unknown().optional(),
 });
 
 export interface HookPluginContext {
@@ -408,6 +501,8 @@ export interface HookCommandConfig {
   async?: boolean;
   command: string;
   enabled?: boolean;
+  failClosed?: boolean;
+  once?: boolean;
   plugin?: HookPluginContext;
   shell?: true | string;
   /** Runtime-only provenance; the public config schema deliberately strips this field. */
@@ -422,6 +517,8 @@ export interface HookProcessConfig {
   args?: string[];
   command: string;
   enabled?: boolean;
+  failClosed?: boolean;
+  once?: boolean;
   plugin?: HookPluginContext;
   /** Runtime-only provenance; the public config schema deliberately strips this field. */
   source?: HookConfigSource;
@@ -437,8 +534,10 @@ export interface HookHttpConfig {
   /** 兼容既有 HookConfig.command 读取路径：http 的 url 也暴露为 command。 */
   command: string;
   enabled?: boolean;
+  failClosed?: boolean;
   headers?: Record<string, string>;
   method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  once?: boolean;
   plugin?: HookPluginContext;
   source?: HookConfigSource;
   statusMessage?: string;
@@ -451,7 +550,9 @@ export interface HookMcpToolConfig {
   /** 兼容既有 HookConfig.command 读取路径：mcp_tool 的 tool 也暴露为 command。 */
   command: string;
   enabled?: boolean;
+  failClosed?: boolean;
   input?: Record<string, unknown>;
+  once?: boolean;
   plugin?: HookPluginContext;
   server: string;
   source?: HookConfigSource;
@@ -516,6 +617,8 @@ export const HookProcessConfigSchema = z.object({
   args: z.array(z.string()).optional(),
   timeoutMs: z.number().int().positive().optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 export const HookCommandConfigSchema = z.object({
@@ -527,6 +630,8 @@ export const HookCommandConfigSchema = z.object({
   timeout: z.number().positive().optional(),
   timeoutMs: z.number().int().positive().optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 export const HookHttpConfigSchema = z.object({
@@ -540,6 +645,8 @@ export const HookHttpConfigSchema = z.object({
   allowPrivateNetwork: z.boolean().optional(),
   timeoutMs: z.number().int().positive().optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 export const HookMcpToolConfigSchema = z.object({
@@ -550,6 +657,8 @@ export const HookMcpToolConfigSchema = z.object({
   enabled: z.boolean().optional(),
   timeoutMs: z.number().int().positive().optional(),
   statusMessage: z.string().optional(),
+  once: z.boolean().optional(),
+  failClosed: z.boolean().optional(),
 });
 
 export const HookConfigSchema = z.discriminatedUnion("type", [
@@ -579,6 +688,11 @@ const hooksRuntimeEventsMap = {
   SubagentStart: z.array(HookMatcherConfigSchema).optional(),
   SubagentStop: z.array(HookMatcherConfigSchema).optional(),
   SessionEnd: z.array(HookMatcherConfigSchema).optional(),
+  PermissionDenied: z.array(HookMatcherConfigSchema).optional(),
+  PostToolBatch: z.array(HookMatcherConfigSchema).optional(),
+  Notification: z.array(HookMatcherConfigSchema).optional(),
+  PreModelSwitch: z.array(HookMatcherConfigSchema).optional(),
+  PostModelSwitch: z.array(HookMatcherConfigSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 export const HooksRuntimeConfigPatchSchema = z.object({

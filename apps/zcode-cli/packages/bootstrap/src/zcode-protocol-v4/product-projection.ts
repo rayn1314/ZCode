@@ -1765,6 +1765,11 @@ export class ProductProjection {
       case "SubagentStart":
       case "SubagentStop":
       case "SessionEnd":
+      case "PermissionDenied":
+      case "PostToolBatch":
+      case "Notification":
+      case "PreModelSwitch":
+      case "PostModelSwitch":
         return "assistantWork";
       default:
         // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改 lane 判定语义）。

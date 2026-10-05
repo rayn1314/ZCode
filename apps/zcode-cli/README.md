@@ -197,6 +197,11 @@ Supported hook events:
 - `SubagentStart`: runs when a subagent starts, before its first prompt is dispatched.
 - `SubagentStop`: runs when a subagent stops, after its final result has been produced.
 - `SessionEnd`: runs when a session ends and is about to be finalized.
+- `PermissionDenied`: runs when a permission request is denied. It can add context. Its matcher sees the tool name.
+- `PostToolBatch`: runs after a parallel tool batch completes. It can add context.
+- `Notification`: runs when a model-side notification (background task, subagent, permission, or error) is surfaced. It can add context.
+- `PreModelSwitch`: runs before the model switches. It can add context.
+- `PostModelSwitch`: runs after the model switches. It can add context.
 
 Example:
 
@@ -262,6 +267,9 @@ Configuration shape:
 - `args`: optional argv array.
 - `timeoutMs`: optional per-hook timeout override.
 - `statusMessage`: optional status label for future UI projection.
+- `once`: optional; when `true`, the hook runs only once per session and is not triggered again.
+- `failClosed`: optional; when `true`, the hook blocks the action if the script fails or times out. Defaults to `false` (fail open).
+- `updatedToolOutput`: a `PostToolUse` hook may return this field (top-level or inside `hookSpecificOutput`) to replace the tool output that is returned to the model.
 
 Each process hook receives one JSON hook input on stdin and may print one JSON object to stdout. Empty stdout is treated as no-op. Non-JSON stdout, schema-invalid stdout, timeouts, and non-zero exits other than exit code `2` are recorded as hook failures and do not crash the turn by default. Exit code `2` is treated as an explicit block/deny request.
 

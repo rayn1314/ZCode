@@ -1,6 +1,6 @@
 // 事件名副本一致性（shared 侧）：每一份 shared 包内可达的 schema 都必须
-// 接受全部 7 个合法事件名、拒绝非法事件名。CLI 侧 contracts/adapters 的副本
-// 由其它代理覆盖，本文件只覆盖 shared 包内副本。
+// 接受全部合法事件名（数量随 HOOK_EVENT_NAMES 增长）、拒绝非法事件名。CLI 侧
+// contracts/adapters 的副本由其它代理覆盖，本文件只覆盖 shared 包内副本。
 import assert from "node:assert/strict";
 import test from "node:test";
 import { HOOK_EVENT_NAMES } from "../src/hooks.js";
@@ -108,7 +108,7 @@ const SCHEMA_CASES = [
 ] as const;
 
 for (const { name, schema, build } of SCHEMA_CASES) {
-  test(`${name} 接受全部 7 个合法事件名`, () => {
+  test(`${name} 接受全部 ${HOOK_EVENT_NAMES.length} 个合法事件名`, () => {
     for (const event of HOOK_EVENT_NAMES) {
       const parsed = schema.safeParse(build(event));
       assert.equal(

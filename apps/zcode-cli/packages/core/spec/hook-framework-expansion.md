@@ -140,7 +140,16 @@ v1 提交给一个无上下文的对抗式评审后，四个基础前提被证�
 
 ### 4.2 第二波（P3，观察类）
 
-`Notification`、`StopFailure`、`PostToolBatch`、`PermissionDenied`、`PreModelSwitch` / `PostModelSwitch`（与"模型降档提前压"配套）。
+| 事件 | 实施状态 | 说明 |
+| --- | --- | --- |
+| `PermissionDenied` | **已实施（P3）** | 权限被拒后触发，可注入上下文。 |
+| `PostToolBatch` | **已实施（P3）** | 并行工具批次完成后触发，可注入上下文。 |
+| `Notification` | **已实施（P3）** | 后台任务/子代理/权限/错误等模型侧通知时触发，可注入上下文。 |
+| `PreModelSwitch` | **已实施（P3）** | 模型切换前触发，可注入上下文（与"模型降档提前压"配套）。 |
+| `PostModelSwitch` | **已实施（P3）** | 模型切换后触发，可注入上下文。 |
+| `StopFailure` | 未实施 | 与既有 `PostToolUseFailure` 事件重叠，未单独立事件。 |
+
+> **P3 实施说明（additionalContext 注入）**：上表所有标注“可注入上下文/仅注入上下文”的事件均已接入消息历史注入——hook 返回的 `additionalContext` 经 `injectHookAdditionalContextIntoMessageHistory` 写入会话消息历史（系统提醒）。调用点：`PermissionDenied` 走 executor 的 `injectHookAdditionalContext` 回调（`runtime/helpers/runtime-tools.ts` 装配）；`PostToolBatch` 在 `runtime/methods/tools.ts`；`Notification` 在 `runtime/methods/background-notifications.ts`；`PreModelSwitch`/`PostModelSwitch` 在 `runtime/methods/steering.ts`；`PreCompact`/`PostCompact` 在 `runtime/methods/compact-active.ts`；`SubagentStart`/`SubagentStop` 经 `ExploreSubagentPortOptions.injectHookAdditionalContext` 回调注入父会话（`runtime/methods/subagent.ts` 装配）。
 
 ### 4.3 第三波（评估，视 ZCode 场景取舍）
 
@@ -287,18 +296,19 @@ markdown 不参与编译。改为一个**测试**：读取 `apps/zcode-cli/READM
 - **`SessionEnded` 事件追加点**只新增事件，不改变现有会话终止语义。
 - **身份迁移边界不变**：hooks 声明参与迁移（按事件 + matcher 合并），**信任不迁移**（`packages/services/src/migration/domains/hookDeclarations.ts`、`identity-data-migration.md:39,112,163` 已定）。注意该迁移域自带第 8 份事件名白名单，P0 必须一并派生，否则新事件在迁移时被判"未知 hook 事件，跳过"。
 - **插件兼容**：`hooks/hooks.json` 与 manifest `hooks` 字段的发现逻辑不变；插件声明了不支持的事件时继续发 `plugin_hook_unsupported_event` 警告（`adapters/src/plugins/hook-sources.ts:130-135`、`contracts/src/plugins/index.ts:41`）。
+- **P3 配置合并评估结论（维持现状）**：CLI 侧 `mergeHooksConfig` 与 services 侧已是「各层分别读取、事件追加合并、root 标量后写覆盖、enabled OR」语义。评估后**维持现状**，不改为覆盖语义——覆盖会破坏现有叠加行为（同一事件多配置层各自追加 hook，关闭低层配置不应抹掉高层事件）。改为覆盖语义作为单独立项候选，需要单独兼容说明与回归验证。
 
 ---
 
-## 9. 未决项（P0 需核实后固化）
+## 9. 未决项（已逐条核实并固化）
 
-1. **matcher 字符串语义**：现状按工具名的何种规则匹配（精确 / 前缀 / 正则）？是否支持 `*` 与 `|`？草拟对齐 Claude：纯 `[A-Za-z0-9_-]` 精确，含其它字符视为未锚定正则，`*`/空全匹配。核实后写回本节。
-2. **同组 hook 的执行模型**：现有 `runner.ts` 逐条执行，且该顺序**承载准入重算窗口**（§6.2 不变式）：逐条 dispatch 前重算准入，正是让"前序 hook 运行期间的 revoke / 策略收紧"对后续 hook 生效的机制。改为并行会**抹掉这个窗口**，与 §6.2 冲突。是否改并行需作为**安全相关变更**单独评审，并说明新模型下如何保持该不变式。`configured-runner.ts:174-191` 定义了 user/project/plugin 的插入顺序，改动需评估是否保留顺序保证。
-3. **`PostToolBatch` 是否纳入本轮**：ZCode 是否有并行工具批次概念未核实。
-4. **`Notification` 的通知源定义**：ZCode 的通知来源（权限弹窗、错误、后台任务完成）需先盘点，否则事件没有明确触发点。
-5. **`if` 字段语义**：v1 已把 `if` 列进 P3 验收表却未给语义。要么补设计，要么在 P3 明确不实现。
-6. **描述符副本的处置**：§5.4 的四个分歧轴，哪些收敛、哪些标注为有意为之。
-7. **`once` 的状态所有权**：状态存哪（内存 / 磁盘）、跨 resume 是否重置、是否随身份隔离。
+1. **matcher 字符串语义**：已核实并固化。`matchesHookMatcher` 的规则是：空 / `*` 全匹配；纯 `[A-Za-z0-9_|]` 字符按 `|` 分隔做精确匹配；含其它字符视为未锚定正则（`new RegExp(matcher)`，非法正则返回不匹配）。该语义已由 P0 测试固化。
+2. **同组 hook 的执行模型**：**保持逐条串行执行**，不改为并行。逐条 dispatch 前重算准入是 `revoke` / 策略收紧对后续 hook 生效的窗口（§6.2 不变式）；并行会抹掉该窗口，且与 §6.2 冲突。若未来改并行，需作为安全相关变更单独评审并说明如何保持该不变式。
+3. **`PostToolBatch` 是否纳入本轮**：ZCode 存在并行工具批次，事件已纳入并在 **P3 实施**（见 §4.2）。
+4. **`Notification` 的通知源定义**：通知源定义为后台任务 / 子代理 / 权限 / 错误等模型侧通知，已盘点并在 **P3 实施**（见 §4.2）。
+5. **`if` 字段语义**：**明确不实现**。`if` 的预期条件场景（按工具名 / matcher 过滤触发）已由 `matcher` 覆盖，不再引入第二套条件 DSL。
+6. **描述符副本的处置**：四个分歧轴的处置已在 P0 测试固化（`hook-copy-parity.test.ts` / `hook-schema-divergence.test.ts` 等），结论是「事件键集合相等 + 各轴显式 accept/reject 契约」，不再宣称三方判定处处等价。
+7. **`once` 的状态所有权**：`once` 状态所有权为 **runtime 内存**，不落盘、不跨 resume 保留；同一 runtime 进程内生效，resume 新会话后重置。
 
 ---
 

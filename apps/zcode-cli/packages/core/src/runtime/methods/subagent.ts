@@ -67,6 +67,10 @@ export function createDefaultSubagentPort(
   return createExploreSubagentPort({
     logger: this.logger,
     hookRunner: this.hookRunner,
+    // P3：子代理生命周期 hook 的 additionalContext 由父 runtime 注入消息历史。
+    injectHookAdditionalContext: (eventName, additionalContexts) => {
+      this.injectHookAdditionalContextIntoMessageHistory(eventName, additionalContexts);
+    },
     inactivityTimeoutMs: this.config.subagents?.inactivityTimeoutMs,
     autoBackgroundMs: this.config.subagents?.autoBackgroundMs,
     outputRootDir: this.config.subagents?.outputRootDir,
