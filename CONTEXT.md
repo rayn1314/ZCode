@@ -29,12 +29,12 @@ _Avoid_: 把一次会话当成一个任务
 _Avoid_: 与 Task 混用
 
 **Subagent Session（子代理会话）**:
-子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。它是可输入、可续聊、可被单独唤醒的**附属**会话；父会话被卸载或删除时级联中止。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
-_Avoid_: 把子代理当一次性执行体，或当与父会话平级的独立会话
+子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系、同一条会话构造路径），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。**改造目标**是让它成为可输入、可续聊、可被单独唤醒的**附属**会话（当前仍被只读门挡住输入，尚不可输入）；删除父会话时递归删除，中止父会话运行轮时沿树级联，关闭标签页与空闲回收不级联。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
+_Avoid_: 把子代理当一次性执行体，或当与父会话平级的独立会话；把目标态当作现状
 
 **Session Role Policy（会话角色策略）**:
-以 `taskType` 为输入、输出该会话能力面（可用命令集、工具面修正、嵌套闸、交互归属、列表归属、usage 归属）的唯一判据表。会话能力差异一律加策略项，不再新增业务代码里的 `taskType` 硬比较。
-_Avoid_: 在业务代码里散落 `if (taskType === "subagent_child")`
+以 `taskType` 为主键、输出该会话能力面（可用命令集、工具面修正、嵌套闸、交互归属、列表归属、usage 归属）的策略表，集中一处便于审查；运行期条件（身份是否已还原、目标是否可达、是否闲时轮）作为叠加项，不塞回业务代码。它的价值是"不漂移"，不是"减少分支"——把散落的分支收成一张同样复杂的表并不降低复杂度。
+_Avoid_: 在业务代码里散落 `if (taskType === "subagent_child")`；把策略表当成复杂度削减
 
 **Host（宿主）**:
 承载本地 workspace 会话运行时的进程。每个窗口一个 window-scoped Local Host，本地 workspace 共享该 Host。
