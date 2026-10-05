@@ -90,7 +90,18 @@ export interface PluginHookDetail {
   statusMessage?: string;
   timeout?: number;
   timeoutMs?: number;
-  type: "command" | "process";
+  type: "command" | "process" | "http" | "mcp_tool";
+  /** http handler 配置（type === "http" 时存在）。 */
+  url?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  allowedEnvVars?: string[];
+  body?: string;
+  allowPrivateNetwork?: boolean;
+  /** mcp_tool handler 配置（type === "mcp_tool" 时存在）。 */
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
 }
 
 /** 详情 UI 的组件分组类型，顺序与展示一致：agent / command / skill / hook / mcp。 */

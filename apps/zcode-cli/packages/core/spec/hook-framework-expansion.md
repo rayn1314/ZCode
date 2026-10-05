@@ -304,12 +304,37 @@ markdown 不参与编译。改为一个**测试**：读取 `apps/zcode-cli/READM
 
 ## 10. 安全模型（`http` / `mcp_tool`，P2 前置）
 
-v1 只给了字段表。`http` 与 `mcp_tool` 引入了新的**出网**与**凭据外带**面，P2 开工前必须补：
+`http` 与 `mcp_tool` 引入了新的**出网**与**凭据外带**面。P2 的放行条件如下（已定稿）：
 
-- **SSRF 防护**：禁止回环 / 链路本地 / 云 metadata 地址；重定向策略（是否跟随、跟随几次）。
-- **凭据处理**：`headers` 值支持 `$ENV_VAR` 是明确的凭据外带面——需定义 `allowedEnvVars` 默认白名单、日志与诊断中的脱敏规则。
-- **响应体**：大小上限、非 JSON 处理、超限行为。
-- **MCP 调用的权限归属**：hook 调用的 MCP 工具**是否重新进入原生权限 broker**。若不进入，就是"hook allow 绕过原生策略"的新路径（违反 §6.4）。
-- **并发与阻塞**：默认 fail-open + 60000ms 意味着一个挂死的网络 hook 可卡住单个 turn 60 秒；需定义并发上限与是否允许后台化。
+### 10.1 `http` handler
 
-未补齐本节内容前，P2 不予放行。
+- **协议白名单**：`url` 必须是 `http:` 或 `https:`，否则配置校验拒绝。
+- **SSRF 防护**：
+  - 请求发出前用 `dns.lookup(host, { all: true })` 解析主机名（IP 直连时即该 IP）。
+  - 解析结果命中以下网段直接拒绝：回环 `127.0.0.0/8`、`::1`；链路本地 `169.254.0.0/16`、`fe80::/10`（覆盖云 metadata `169.254.169.254`）；默认同时拒绝私网 `10/8`、`172.16/12`、`192.168/16`、`fc00::/7`，除非配置显式 `allowPrivateNetwork: true`（面向自建内网服务的合法用例，默认关闭）。
+  - **重定向策略**：`redirect: "manual"`，不跟随任何重定向；3xx 响应体作为普通文本/JSON 处理（不会二次出网到重定向目标）。
+  - DNS rebinding 残余窗口：本地 CLI 工具的威胁模型下可接受，文档标注不承诺防 rebinding。
+- **凭据处理**：
+  - `headers` 值支持 `$ENV_VAR` 展开，但只展开 `allowedEnvVars` 白名单中的变量；白名单为空时**不展开任何环境变量**（内置 ZCode/CLAUDE 会话变量除外，沿用 `expandPluginVariables` 的既有集合）。
+  - 日志与诊断（commandDisplay、生命周期事件 payload）统一走 `sanitizeHookDisplayText` 脱敏（URL userinfo、Authorization、敏感键值）。
+- **响应体**：
+  - 大小上限 `maxOutputBytes`（默认 32768），超限截断并标记 `truncated`（复用 hook 诊断的截断语义）。
+  - 非 JSON 响应体作为文本进入 stdout 诊断；以 `{` 开头时尝试 `JSON.parse`，解析成功则走 `HookJSONOutputSchema` 校验，失败按诊断文本处理（不阻断）。
+
+### 10.2 `mcp_tool` handler
+
+- **调用通道**：通过 runtime 的 MCP port 执行工具调用。
+- **权限归属**：`mcp_tool` hook **不重新进入原生权限 broker**，但必须满足：
+  - workspace hook 仍走既有 admission（未信任/策略拒绝时不执行）；
+  - configured hook 是用户显式配置的执行意图。
+  - 不变式：hook 的 MCP 工具结果**不进入模型上下文**（只作为附加上下文/诊断供后续使用），因此不构成"hook allow 绕过原生策略"的新路径（§6.4 不变）。
+- **输入**：`input` 为 JSON 对象，经 schema 校验后原样传给工具。
+- **错误**：工具调用失败按非阻断错误处理（recoverable），与 command/process 的非零退出同级。
+
+### 10.3 并发与阻塞
+
+- `http` / `mcp_tool` 与 command/process 同样受 `timeoutMs`（默认 60000）约束；超时按 `timed_out` 记入生命周期事件，**fail-open**（不阻断 turn）。
+- 不新增后台化：`async` 字段仅对 `command` 生效，`http` / `mcp_tool` 的 schema 不提供 `async` 字段。
+- 同一事件多个网络 hook 仍按现有逐条顺序执行，复用 runner 的准入重算窗口（§6.2 不变式）。
+
+未实现上述任一约束，P2 不予放行。

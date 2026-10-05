@@ -25,7 +25,17 @@ export interface PluginHookDetail {
   statusMessage?: string;
   timeout?: number;
   timeoutMs?: number;
-  type: "command" | "process";
+  type: "command" | "process" | "http" | "mcp_tool";
+  // http / mcp_tool handler 的专有字段（spec: core/spec/hook-framework-expansion.md §10）。
+  url?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  allowedEnvVars?: string[];
+  body?: string;
+  allowPrivateNetwork?: boolean;
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
 }
 
 export interface AvailablePluginSummary {

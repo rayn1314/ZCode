@@ -39,6 +39,33 @@ export const workspaceHookCommandConfigSchema = z
   })
   .passthrough();
 
+export const workspaceHookHttpConfigSchema = z
+  .object({
+    type: z.literal("http"),
+    url: z.string().url(),
+    enabled: z.boolean().optional(),
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    allowedEnvVars: z.array(z.string()).optional(),
+    body: z.string().optional(),
+    allowPrivateNetwork: z.boolean().optional(),
+    timeoutMs: positiveNumberSchema.optional(),
+    statusMessage: z.string().min(1).optional(),
+  })
+  .passthrough();
+
+export const workspaceHookMcpToolConfigSchema = z
+  .object({
+    type: z.literal("mcp_tool"),
+    server: z.string().min(1),
+    tool: z.string().min(1),
+    input: z.record(z.string(), z.unknown()).optional(),
+    enabled: z.boolean().optional(),
+    timeoutMs: positiveNumberSchema.optional(),
+    statusMessage: z.string().min(1).optional(),
+  })
+  .passthrough();
+
 export const workspaceHookMatcherConfigSchema = z
   .object({
     matcher: z.string().min(1).optional(),
@@ -47,6 +74,8 @@ export const workspaceHookMatcherConfigSchema = z
         z.discriminatedUnion("type", [
           workspaceHookProcessConfigSchema,
           workspaceHookCommandConfigSchema,
+          workspaceHookHttpConfigSchema,
+          workspaceHookMcpToolConfigSchema,
         ]),
       )
       .min(1),
@@ -83,7 +112,9 @@ export const workspaceHooksConfigSchema = z
 
 export type WorkspaceHookDefinition =
   | z.infer<typeof workspaceHookCommandConfigSchema>
-  | z.infer<typeof workspaceHookProcessConfigSchema>;
+  | z.infer<typeof workspaceHookProcessConfigSchema>
+  | z.infer<typeof workspaceHookHttpConfigSchema>
+  | z.infer<typeof workspaceHookMcpToolConfigSchema>;
 export type WorkspaceHooksConfig = z.infer<typeof workspaceHooksConfigSchema>;
 
 export interface WorkspaceHookSourceInput {

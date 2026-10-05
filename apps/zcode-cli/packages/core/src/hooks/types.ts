@@ -7,10 +7,11 @@ import type {
   HookPermissionDecision,
   HookSourceKind,
   HooksRuntimeConfig,
-  WorkspaceHookBundleSnapshot,
   Logger,
+  McpPort,
   PermissionRequestHookDecision,
   SessionEvent,
+  WorkspaceHookBundleSnapshot,
 } from "@zcode/contracts";
 
 import type { WorkspaceHookRuntimeAdmissionPort } from "./workspace-hook-runtime-admission.js";
@@ -98,6 +99,8 @@ export interface ConfiguredHookRunnerOptions {
   executionPort: ExecutionPort;
   getWorkingDirectory: () => string;
   logger?: Logger;
+  /** mcp_tool hook 通过 runtime 的 MCP port 执行工具调用（spec §10.2）。 */
+  mcpPort?: McpPort;
   workspaceHookAdmission?: WorkspaceHookRuntimeAdmissionPort;
   workspaceHookSnapshot?: WorkspaceHookBundleSnapshot;
 }

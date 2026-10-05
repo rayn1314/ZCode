@@ -20,11 +20,21 @@ export interface CanonicalWorkspaceHookEntryData {
   sourceFileIndex: number;
   sourceRelativePath: string;
   matcher: string | null;
-  type: "command" | "process";
+  type: "command" | "process" | "http" | "mcp_tool";
   command: string;
   args?: string[];
   async?: boolean;
   shell?: true | string;
+  // http / mcp_tool 的配置字段透传到审查展示与 digest（spec §10）。
+  url?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  allowedEnvVars?: string[];
+  body?: string;
+  allowPrivateNetwork?: boolean;
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
   resolvedTimeoutMs: number;
   resolvedMaxOutputBytes: number;
   statusMessage?: string;
@@ -91,7 +101,14 @@ export function resolveWorkspaceHookEntries(input: {
             sourceFileIndex,
             sourceRelativePath,
             matcher: matcher.matcher ?? null,
-            command: hook.command,
+            // http/mcp_tool 没有 command 字段；为了兼容既有读取路径（Hook.command / 审查展示），
+            // http 用 url、mcp_tool 用 tool 作为展示命令。
+            command:
+              hook.type === "http"
+                ? (hook.url ?? "")
+                : hook.type === "mcp_tool"
+                  ? (hook.tool ?? "")
+                  : hook.command,
             resolvedTimeoutMs,
             resolvedMaxOutputBytes: input.runtimeRoot.maxOutputBytes,
             ...(hook.statusMessage ? { statusMessage: hook.statusMessage } : {}),
@@ -111,20 +128,41 @@ export function resolveWorkspaceHookEntries(input: {
             }),
           };
 
-          entries.push(
-            hook.type === "process"
-              ? {
-                  ...common,
-                  type: "process",
-                  ...(hook.args && hook.args.length > 0 ? { args: [...hook.args] } : {}),
-                }
-              : {
-                  ...common,
-                  type: "command",
-                  ...(hook.async === true ? { async: true } : {}),
-                  ...(hook.shell !== undefined ? { shell: hook.shell } : {}),
-                },
-          );
+          if (hook.type === "process") {
+            entries.push({
+              ...common,
+              type: "process",
+              ...(hook.args && hook.args.length > 0 ? { args: [...hook.args] } : {}),
+            });
+          } else if (hook.type === "command") {
+            entries.push({
+              ...common,
+              type: "command",
+              ...(hook.async === true ? { async: true } : {}),
+              ...(hook.shell !== undefined ? { shell: hook.shell } : {}),
+            });
+          } else if (hook.type === "http") {
+            entries.push({
+              ...common,
+              type: "http",
+              ...(hook.url !== undefined ? { url: hook.url } : {}),
+              ...(hook.method !== undefined ? { method: hook.method } : {}),
+              ...(hook.headers !== undefined ? { headers: hook.headers } : {}),
+              ...(hook.allowedEnvVars !== undefined ? { allowedEnvVars: hook.allowedEnvVars } : {}),
+              ...(hook.body !== undefined ? { body: hook.body } : {}),
+              ...(hook.allowPrivateNetwork !== undefined
+                ? { allowPrivateNetwork: hook.allowPrivateNetwork }
+                : {}),
+            });
+          } else {
+            entries.push({
+              ...common,
+              type: "mcp_tool",
+              ...(hook.server !== undefined ? { server: hook.server } : {}),
+              ...(hook.tool !== undefined ? { tool: hook.tool } : {}),
+              ...(hook.input !== undefined ? { input: hook.input } : {}),
+            });
+          }
         }
       }
     }
@@ -222,16 +260,28 @@ function canonicalDeclarationPayload(input: {
   const execution =
     input.hook.type === "process"
       ? ["process", input.hook.command, [...(input.hook.args ?? [])]]
-      : [
-          "command",
-          input.hook.command,
-          input.hook.async === true,
-          input.hook.shell === undefined
-            ? ["unset"]
-            : input.hook.shell === true
-              ? ["true"]
-              : ["string", input.hook.shell],
-        ];
+      : input.hook.type === "command"
+        ? [
+            "command",
+            input.hook.command,
+            input.hook.async === true,
+            input.hook.shell === undefined
+              ? ["unset"]
+              : input.hook.shell === true
+                ? ["true"]
+                : ["string", input.hook.shell],
+          ]
+        : input.hook.type === "http"
+          ? [
+              "http",
+              input.hook.url,
+              input.hook.method ?? "GET",
+              input.hook.headers ?? {},
+              input.hook.allowedEnvVars ?? [],
+              input.hook.body ?? "",
+              input.hook.allowPrivateNetwork === true,
+            ]
+          : ["mcp_tool", input.hook.server, input.hook.tool, input.hook.input ?? {}];
   return [
     "workspace-hook-declaration",
     WORKSPACE_HOOK_DIGEST_SCHEMA_VERSION,

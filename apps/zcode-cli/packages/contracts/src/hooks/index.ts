@@ -60,7 +60,7 @@ export interface HookExecutionDescriptor {
   pluginId?: string;
   pluginName?: string;
   statusMessage?: string;
-  executionType: "process" | "command";
+  executionType: "process" | "command" | "http" | "mcp_tool";
   executionMode: "foreground" | "background";
   commandDisplay: string;
   timeoutMs: number;
@@ -430,7 +430,38 @@ export interface HookProcessConfig {
   type: "process";
 }
 
-export type HookConfig = HookCommandConfig | HookProcessConfig;
+export interface HookHttpConfig {
+  allowedEnvVars?: string[];
+  allowPrivateNetwork?: boolean;
+  body?: string;
+  /** 兼容既有 HookConfig.command 读取路径：http 的 url 也暴露为 command。 */
+  command: string;
+  enabled?: boolean;
+  headers?: Record<string, string>;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  plugin?: HookPluginContext;
+  source?: HookConfigSource;
+  statusMessage?: string;
+  timeoutMs?: number;
+  type: "http";
+  url?: string;
+}
+
+export interface HookMcpToolConfig {
+  /** 兼容既有 HookConfig.command 读取路径：mcp_tool 的 tool 也暴露为 command。 */
+  command: string;
+  enabled?: boolean;
+  input?: Record<string, unknown>;
+  plugin?: HookPluginContext;
+  server: string;
+  source?: HookConfigSource;
+  statusMessage?: string;
+  timeoutMs?: number;
+  tool: string;
+  type: "mcp_tool";
+}
+
+export type HookConfig = HookCommandConfig | HookProcessConfig | HookHttpConfig | HookMcpToolConfig;
 
 export interface HookMatcherConfig {
   hooks: HookConfig[];
@@ -498,9 +529,34 @@ export const HookCommandConfigSchema = z.object({
   statusMessage: z.string().optional(),
 });
 
+export const HookHttpConfigSchema = z.object({
+  type: z.literal("http"),
+  url: z.string().url(),
+  enabled: z.boolean().optional(),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  allowedEnvVars: z.array(z.string()).optional(),
+  body: z.string().optional(),
+  allowPrivateNetwork: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  statusMessage: z.string().optional(),
+});
+
+export const HookMcpToolConfigSchema = z.object({
+  type: z.literal("mcp_tool"),
+  server: z.string().min(1),
+  tool: z.string().min(1),
+  input: z.record(z.string(), z.unknown()).optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: z.number().int().positive().optional(),
+  statusMessage: z.string().optional(),
+});
+
 export const HookConfigSchema = z.discriminatedUnion("type", [
   HookProcessConfigSchema,
   HookCommandConfigSchema,
+  HookHttpConfigSchema,
+  HookMcpToolConfigSchema,
 ]);
 
 export const HookMatcherConfigSchema = z.object({

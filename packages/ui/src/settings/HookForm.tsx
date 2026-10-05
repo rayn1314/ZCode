@@ -40,8 +40,50 @@ interface HookFormProps {
 
 const HOOK_EVENTS = HOOK_EVENT_NAMES;
 
+const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+type HttpMethod = (typeof HTTP_METHODS)[number];
+
+/** 类型下拉 → i18n key 映射（mcp_tool 的 key 是驼峰写法）。 */
+const HOOK_TYPE_LABEL_KEYS: Record<HookType, string> = {
+  process: "settings.hooks.type.process",
+  command: "settings.hooks.type.command",
+  http: "settings.hooks.type.http",
+  mcp_tool: "settings.hooks.type.mcpTool",
+};
+
 function formatCustomJson(custom?: Record<string, unknown>): string {
   return custom && Object.keys(custom).length > 0 ? JSON.stringify(custom, null, 2) : "";
+}
+
+/** 把任意 JSON object 值格式化为多行文本；非对象或空对象返回空串。 */
+function formatJsonObject(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+  return Object.keys(value as Record<string, unknown>).length > 0
+    ? JSON.stringify(value, null, 2)
+    : "";
+}
+
+/** 解析 JSON 文本为 object；空文本返回 undefined，非法或非对象时抛错。 */
+function parseJsonObject(raw: string): Record<string, unknown> | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Expected a JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+/** 校验 url 必填且协议为 http/https（spec §10.1 协议白名单）。 */
+function isValidHttpUrl(raw: string): boolean {
+  const trimmed = raw.trim();
+  if (!trimmed) return false;
+  try {
+    const parsed = new URL(trimmed);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function HookScopeMenu({
@@ -102,6 +144,37 @@ export function HookForm({
   const [timeout, setTimeout] = useState(String(hook?.timeout ?? 60));
   const [customJson, setCustomJson] = useState(formatCustomJson(hook?.custom));
   const [customError, setCustomError] = useState<string | null>(null);
+  // http 专有字段：通过 custom.url / custom.method / custom.headers /
+  // custom.allowedEnvVars / custom.body / custom.allowPrivateNetwork 承载
+  // （shared Hook/HookConfig 只提供 custom，http 字段不内联到顶层）。
+  const [url, setUrl] = useState(typeof hook?.custom?.url === "string" ? hook.custom.url : "");
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [method, setMethod] = useState<HttpMethod | "">(() => {
+    const initial = hook?.custom?.method;
+    return typeof initial === "string" && (HTTP_METHODS as readonly string[]).includes(initial)
+      ? (initial as HttpMethod)
+      : "";
+  });
+  const [headersJson, setHeadersJson] = useState(formatJsonObject(hook?.custom?.headers));
+  const [headersError, setHeadersError] = useState<string | null>(null);
+  const [allowedEnvVarsText, setAllowedEnvVarsText] = useState(
+    Array.isArray(hook?.custom?.allowedEnvVars)
+      ? (hook.custom.allowedEnvVars as string[]).join("\n")
+      : "",
+  );
+  const [body, setBody] = useState(typeof hook?.custom?.body === "string" ? hook.custom.body : "");
+  const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(
+    Boolean(hook?.custom?.allowPrivateNetwork),
+  );
+  // mcp_tool 专有字段：通过 custom.server / custom.tool / custom.input 承载。
+  const [mcpServer, setMcpServer] = useState(
+    typeof hook?.custom?.server === "string" ? hook.custom.server : "",
+  );
+  const [mcpTool, setMcpTool] = useState(
+    typeof hook?.custom?.tool === "string" ? hook.custom.tool : "",
+  );
+  const [mcpInputJson, setMcpInputJson] = useState(formatJsonObject(hook?.custom?.input));
+  const [mcpInputError, setMcpInputError] = useState<string | null>(null);
   const customJsonValid = (() => {
     if (!customJson.trim()) return true;
     try {
@@ -111,11 +184,33 @@ export function HookForm({
       return false;
     }
   })();
-  const canSave = Boolean(command.trim() && customJsonValid);
+  const headersJsonValid = (() => {
+    if (!headersJson.trim()) return true;
+    try {
+      const parsed = JSON.parse(headersJson) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
+      return Object.values(parsed).every((value) => typeof value === "string");
+    } catch {
+      return false;
+    }
+  })();
+  const mcpInputJsonValid = (() => {
+    if (!mcpInputJson.trim()) return true;
+    try {
+      const parsed = JSON.parse(mcpInputJson) as unknown;
+      return Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed));
+    } catch {
+      return false;
+    }
+  })();
+  const canSave = (() => {
+    if (!customJsonValid || !headersJsonValid || !mcpInputJsonValid) return false;
+    if (type === "http") return isValidHttpUrl(url);
+    if (type === "mcp_tool") return Boolean(mcpServer.trim() && mcpTool.trim());
+    return Boolean(command.trim());
+  })();
 
   const handleSave = useCallback(() => {
-    if (!command.trim()) return;
-
     let custom: Record<string, unknown> | undefined;
     if (customJson.trim()) {
       try {
@@ -131,11 +226,98 @@ export function HookForm({
       }
     }
 
-    setCustomError(null);
-    onSave({
+    const baseConfig = {
       event,
       matcher: matcher.trim() || undefined,
       type,
+      statusMessage: statusMessage.trim() || undefined,
+      timeout: Number.parseInt(timeout, 10) || 60,
+      enabled: hook?.enabled ?? true,
+      storageLevel,
+    };
+
+    if (type === "http") {
+      const trimmedUrl = url.trim();
+      if (!isValidHttpUrl(trimmedUrl)) {
+        setUrlError(intl.formatMessage({ id: "settings.hooks.http.urlInvalid" }));
+        return;
+      }
+      let headers: Record<string, string> | undefined;
+      if (headersJson.trim()) {
+        try {
+          const parsed = JSON.parse(headersJson) as unknown;
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            setHeadersError(intl.formatMessage({ id: "settings.hooks.http.headersObjectError" }));
+            return;
+          }
+          if (Object.values(parsed).some((value) => typeof value !== "string")) {
+            setHeadersError(intl.formatMessage({ id: "settings.hooks.http.headersStringError" }));
+            return;
+          }
+          headers = parsed as Record<string, string>;
+        } catch {
+          setHeadersError(intl.formatMessage({ id: "settings.hooks.http.headersParseError" }));
+          return;
+        }
+      }
+      const envVars = allowedEnvVarsText
+        .split("\n")
+        .map((item) => item.trim())
+        .filter(Boolean);
+      setCustomError(null);
+      setUrlError(null);
+      setHeadersError(null);
+      onSave({
+        ...baseConfig,
+        // 兼容 contracts 的读取路径：http 的 url 也暴露为 command。
+        command: trimmedUrl,
+        custom: {
+          ...custom,
+          url: trimmedUrl,
+          ...(method ? { method } : {}),
+          ...(headers ? { headers } : {}),
+          ...(envVars.length > 0 ? { allowedEnvVars: envVars } : {}),
+          ...(body.trim() ? { body: body.trim() } : {}),
+          ...(allowPrivateNetwork ? { allowPrivateNetwork: true } : {}),
+        },
+      });
+      return;
+    }
+
+    if (type === "mcp_tool") {
+      const trimmedServer = mcpServer.trim();
+      const trimmedTool = mcpTool.trim();
+      if (!trimmedServer || !trimmedTool) return;
+      let input: Record<string, unknown> | undefined;
+      if (mcpInputJson.trim()) {
+        try {
+          input = parseJsonObject(mcpInputJson);
+        } catch {
+          setMcpInputError(intl.formatMessage({ id: "settings.hooks.mcpTool.inputParseError" }));
+          return;
+        }
+      }
+      setCustomError(null);
+      setMcpInputError(null);
+      onSave({
+        ...baseConfig,
+        // 兼容 contracts 的读取路径：mcp_tool 的 tool 也暴露为 command。
+        command: trimmedTool,
+        custom: {
+          ...custom,
+          server: trimmedServer,
+          tool: trimmedTool,
+          ...(input ? { input } : {}),
+        },
+      });
+      return;
+    }
+
+    // process / command
+    if (!command.trim()) return;
+    setCustomError(null);
+    onSave({
+      ...baseConfig,
       command: command.trim(),
       ...(type === "process"
         ? {
@@ -148,27 +330,33 @@ export function HookForm({
             async: asyncCommand,
             shell: shell.trim() || (hook?.shell === true ? true : undefined),
           }),
-      statusMessage: statusMessage.trim() || undefined,
-      timeout: Number.parseInt(timeout, 10) || 60,
-      enabled: hook?.enabled ?? true,
       custom,
-      storageLevel,
     });
   }, [
+    allowPrivateNetwork,
+    allowedEnvVarsText,
     args,
     asyncCommand,
+    body,
     command,
     customJson,
     event,
+    headersJson,
     hook?.enabled,
+    hook?.shell,
     intl,
     matcher,
+    mcpInputJson,
+    mcpServer,
+    mcpTool,
+    method,
     onSave,
     shell,
     statusMessage,
     storageLevel,
     timeout,
     type,
+    url,
   ]);
 
   return (
@@ -207,10 +395,10 @@ export function HookForm({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  {(["process", "command"] as const).map((hookType) => (
+                  {(["process", "command", "http", "mcp_tool"] as const).map((hookType) => (
                     <SelectItem key={hookType} value={hookType}>
                       {intl.formatMessage({
-                        id: `settings.hooks.type.${hookType}`,
+                        id: HOOK_TYPE_LABEL_KEYS[hookType],
                       })}
                     </SelectItem>
                   ))}
@@ -245,18 +433,20 @@ export function HookForm({
             </p>
           </Field>
 
-          <Field label={intl.formatMessage({ id: "settings.hooks.command" })} htmlFor="command">
-            <Input
-              id="command"
-              size="lg"
-              value={command}
-              onChange={(event) => setCommand(event.target.value)}
-              placeholder={intl.formatMessage({
-                id: "settings.hooks.commandPlaceholder",
-              })}
-              className="font-mono"
-            />
-          </Field>
+          {type === "process" || type === "command" ? (
+            <Field label={intl.formatMessage({ id: "settings.hooks.command" })} htmlFor="command">
+              <Input
+                id="command"
+                size="lg"
+                value={command}
+                onChange={(event) => setCommand(event.target.value)}
+                placeholder={intl.formatMessage({
+                  id: "settings.hooks.commandPlaceholder",
+                })}
+                className="font-mono"
+              />
+            </Field>
+          ) : null}
         </div>
 
         {type === "process" ? (
@@ -275,7 +465,7 @@ export function HookForm({
               {intl.formatMessage({ id: "settings.hooks.argsHint" })}
             </p>
           </Field>
-        ) : (
+        ) : type === "command" ? (
           <div className="grid gap-5 sm:grid-cols-2">
             <Field label={intl.formatMessage({ id: "settings.hooks.shell" })} htmlFor="hook-shell">
               <Input
@@ -299,6 +489,151 @@ export function HookForm({
                 onCheckedChange={setAsyncCommand}
               />
             </div>
+          </div>
+        ) : type === "http" ? (
+          <div className="space-y-3">
+            <Field
+              label={intl.formatMessage({ id: "settings.hooks.http.url" })}
+              htmlFor="hook-http-url"
+            >
+              <Input
+                id="hook-http-url"
+                size="lg"
+                value={url}
+                onChange={(event) => {
+                  setUrl(event.target.value);
+                  setUrlError(null);
+                }}
+                placeholder="https://example.com/hook"
+                className="font-mono"
+              />
+              {urlError ? <p className="text-ui-base text-destructive">{urlError}</p> : null}
+            </Field>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label={intl.formatMessage({ id: "settings.hooks.http.method" })}
+                htmlFor="hook-http-method"
+              >
+                <Select value={method} onValueChange={(value) => setMethod(value as HttpMethod)}>
+                  <SelectTrigger id="hook-http-method" size="lg" className="w-full">
+                    <SelectValue
+                      placeholder={intl.formatMessage({ id: "settings.hooks.http.method" })}
+                    />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {HTTP_METHODS.map((httpMethod) => (
+                      <SelectItem key={httpMethod} value={httpMethod}>
+                        {httpMethod}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <div className="flex items-end justify-between gap-4 pb-1">
+                <Label htmlFor="hook-http-private-network">
+                  {intl.formatMessage({ id: "settings.hooks.http.allowPrivateNetwork" })}
+                </Label>
+                <Switch
+                  id="hook-http-private-network"
+                  checked={allowPrivateNetwork}
+                  onCheckedChange={setAllowPrivateNetwork}
+                />
+              </div>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label={intl.formatMessage({ id: "settings.hooks.http.headers" })}
+                htmlFor="hook-http-headers"
+              >
+                <SettingsFormTextarea
+                  id="hook-http-headers"
+                  value={headersJson}
+                  onChange={(event) => {
+                    setHeadersJson(event.target.value);
+                    setHeadersError(null);
+                  }}
+                  rows={4}
+                  className="resize-y font-mono"
+                  placeholder={'{\n  "Authorization": "Bearer $TOKEN"\n}'}
+                />
+                {headersError ? (
+                  <p className="text-ui-base text-destructive">{headersError}</p>
+                ) : null}
+              </Field>
+              <Field
+                label={intl.formatMessage({ id: "settings.hooks.http.allowedEnvVars" })}
+                htmlFor="hook-http-env-vars"
+              >
+                <SettingsFormTextarea
+                  id="hook-http-env-vars"
+                  value={allowedEnvVarsText}
+                  onChange={(event) => setAllowedEnvVarsText(event.target.value)}
+                  rows={4}
+                  className="resize-y font-mono"
+                  placeholder={"TOKEN\nAPI_KEY"}
+                />
+              </Field>
+            </div>
+            <Field
+              label={intl.formatMessage({ id: "settings.hooks.http.body" })}
+              htmlFor="hook-http-body"
+            >
+              <SettingsFormTextarea
+                id="hook-http-body"
+                value={body}
+                onChange={(event) => setBody(event.target.value)}
+                rows={3}
+                className="resize-y font-mono"
+              />
+            </Field>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <Field
+              label={intl.formatMessage({ id: "settings.hooks.mcpTool.server" })}
+              htmlFor="hook-mcp-server"
+            >
+              <Input
+                id="hook-mcp-server"
+                size="lg"
+                value={mcpServer}
+                onChange={(event) => setMcpServer(event.target.value)}
+                placeholder={intl.formatMessage({ id: "settings.hooks.mcpTool.empty" })}
+                className="font-mono"
+              />
+            </Field>
+            <Field
+              label={intl.formatMessage({ id: "settings.hooks.mcpTool.tool" })}
+              htmlFor="hook-mcp-tool"
+            >
+              <Input
+                id="hook-mcp-tool"
+                size="lg"
+                value={mcpTool}
+                onChange={(event) => setMcpTool(event.target.value)}
+                placeholder="e.g. read_file"
+                className="font-mono"
+              />
+            </Field>
+            <Field
+              label={intl.formatMessage({ id: "settings.hooks.mcpTool.input" })}
+              htmlFor="hook-mcp-input"
+            >
+              <SettingsFormTextarea
+                id="hook-mcp-input"
+                value={mcpInputJson}
+                onChange={(event) => {
+                  setMcpInputJson(event.target.value);
+                  setMcpInputError(null);
+                }}
+                rows={4}
+                className="resize-y font-mono"
+                placeholder={'{\n  "path": "/workspace"\n}'}
+              />
+              {mcpInputError ? (
+                <p className="text-ui-base text-destructive">{mcpInputError}</p>
+              ) : null}
+            </Field>
           </div>
         )}
 

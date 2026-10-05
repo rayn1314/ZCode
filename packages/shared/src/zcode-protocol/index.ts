@@ -2488,7 +2488,7 @@ export const zcodePluginHookDetailSchema = z
   .object({
     event: nonEmptyString,
     matcher: z.string().optional(),
-    type: z.enum(["command", "process"]),
+    type: z.enum(["command", "process", "http", "mcp_tool"]),
     command: nonEmptyString,
     args: z.array(z.string()).optional(),
     async: z.boolean().optional(),
@@ -2496,6 +2496,16 @@ export const zcodePluginHookDetailSchema = z
     timeout: z.number().positive().optional(),
     timeoutMs: z.number().int().positive().optional(),
     statusMessage: z.string().optional(),
+    // http / mcp_tool handler 的专有字段（spec: core/spec/hook-framework-expansion.md §10）。
+    url: z.string().optional(),
+    method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
+    allowedEnvVars: z.array(z.string()).optional(),
+    body: z.string().optional(),
+    allowPrivateNetwork: z.boolean().optional(),
+    server: z.string().optional(),
+    tool: z.string().optional(),
+    input: z.record(z.string(), z.unknown()).optional(),
     sourcePath: z.string(),
     runnable: z.boolean(),
   })

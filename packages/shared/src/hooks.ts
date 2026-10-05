@@ -110,7 +110,7 @@ export const HOOK_EVENT_DESCRIPTORS: Record<HookEvent, HookEventDescriptor> = {
   },
 };
 
-export type HookType = "command" | "process";
+export type HookType = "command" | "process" | "http" | "mcp_tool";
 
 export interface HookConfiguredState {
   sourceRootEnabled: boolean;

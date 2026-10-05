@@ -13,7 +13,11 @@ export function createHookExecutionDescriptor(
   const commandDisplay =
     hook.type === "process"
       ? [hook.command, ...(hook.args ?? [])].map(expandDisplayValue).map(quoteCommandPart).join(" ")
-      : expandDisplayValue(hook.command);
+      : hook.type === "http"
+        ? expandDisplayValue(hook.url ?? hook.command)
+        : hook.type === "mcp_tool"
+          ? `${expandDisplayValue(hook.server)}/${expandDisplayValue(hook.tool)}`
+          : expandDisplayValue(hook.command);
   const plugin = hook.plugin;
   const sourceKind = plugin ? "plugin" : (hook.source?.kind ?? "internal");
   return {

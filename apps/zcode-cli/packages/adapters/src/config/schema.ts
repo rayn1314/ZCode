@@ -1,7 +1,12 @@
 /* eslint-disable max-lines -- zcode-cli 配置 schema 需要集中维护文件解析和 provider 继承，拆散会让配置语义更难对齐。 */
 import { z } from "zod";
 import type { HookEvent } from "@zcode/shared";
-import type { RuntimeConfigPatch } from "@zcode/contracts";
+import type {
+  HookEventName,
+  HookHttpConfig,
+  HookMcpToolConfig,
+  RuntimeConfigPatch,
+} from "@zcode/contracts";
 
 const stringRecordSchema = z.record(z.string(), z.string());
 const unknownRecordSchema = z.record(z.string(), z.unknown());
@@ -258,10 +263,42 @@ const hookCommandSchema = z
   })
   .passthrough();
 
+const hookHttpSchema = z.object({
+  type: z.literal("http"),
+  url: z.string().url(),
+  enabled: z.boolean().optional(),
+  method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
+  allowedEnvVars: z.array(z.string()).optional(),
+  body: z.string().optional(),
+  allowPrivateNetwork: z.boolean().optional(),
+  timeoutMs: positiveNumberSchema.optional(),
+  statusMessage: z.string().optional(),
+});
+
+const hookMcpToolSchema = z.object({
+  type: z.literal("mcp_tool"),
+  server: z.string().min(1),
+  tool: z.string().min(1),
+  input: z.record(z.string(), z.unknown()).optional(),
+  enabled: z.boolean().optional(),
+  timeoutMs: positiveNumberSchema.optional(),
+  statusMessage: z.string().optional(),
+});
+
 const hookMatcherSchema = z
   .object({
     matcher: z.string().min(1).optional(),
-    hooks: z.array(z.discriminatedUnion("type", [hookProcessSchema, hookCommandSchema])).min(1),
+    hooks: z
+      .array(
+        z.discriminatedUnion("type", [
+          hookProcessSchema,
+          hookCommandSchema,
+          hookHttpSchema,
+          hookMcpToolSchema,
+        ]),
+      )
+      .min(1),
   })
   .strict();
 
@@ -426,9 +463,42 @@ function parsedConfigFileToRuntimePatch(parsed: ZCodeConfigFile): RuntimeConfigP
   if (parsed.ui) config.ui = parsed.ui;
   if (parsed.toolConcurrency) config.toolConcurrency = parsed.toolConcurrency;
   if (parsed.modelAnomalyGuard) config.modelAnomalyGuard = parsed.modelAnomalyGuard;
-  if (parsed.hooks) config.hooks = parsed.hooks;
+  if (parsed.hooks) config.hooks = parsedHooksToRuntimePatch(parsed.hooks);
 
   return config;
+}
+
+/**
+ * 配置文件里的 http/mcp_tool hook 没有 command 字段（分别用 url/tool 表达执行目标）。
+ * 运行态契约 HookConfig 的 command 是兼容既有读取路径的必填字段，这里在装载入口补齐：
+ * http -> url、mcp_tool -> tool。process/command 原样透传。
+ */
+function parsedHooksToRuntimePatch(
+  hooks: NonNullable<ZCodeConfigFile["hooks"]>,
+): NonNullable<RuntimeConfigPatch["hooks"]> {
+  const result: NonNullable<RuntimeConfigPatch["hooks"]> = {};
+  if (hooks.enabled !== undefined) result.enabled = hooks.enabled;
+  if (hooks.timeoutMs !== undefined) result.timeoutMs = hooks.timeoutMs;
+  if (hooks.maxOutputBytes !== undefined) result.maxOutputBytes = hooks.maxOutputBytes;
+  if (hooks.events) {
+    result.events = {};
+    for (const [eventName, matchers] of Object.entries(hooks.events)) {
+      if (!matchers || matchers.length === 0) continue;
+      result.events[eventName as HookEventName] = matchers.map((matcher) => ({
+        ...(matcher.matcher !== undefined ? { matcher: matcher.matcher } : {}),
+        hooks: matcher.hooks.map((hook) => {
+          if (hook.type === "http") {
+            return { ...hook, command: hook.url } satisfies HookHttpConfig;
+          }
+          if (hook.type === "mcp_tool") {
+            return { ...hook, command: hook.tool } satisfies HookMcpToolConfig;
+          }
+          return hook;
+        }),
+      }));
+    }
+  }
+  return result;
 }
 
 function normalizePluginConfig(

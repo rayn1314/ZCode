@@ -218,6 +218,27 @@ export const canonicalWorkspaceHookEntrySchema = z.discriminatedUnion("type", [
       args: z.array(z.string()).optional(),
     })
     .strict(),
+  z
+    .object({
+      ...canonicalEntryBaseShape,
+      type: z.literal("http"),
+      url: nonEmptyStringSchema,
+      method: z.enum(["GET", "POST", "PUT", "PATCH", "DELETE"]).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
+      allowedEnvVars: z.array(z.string()).optional(),
+      body: z.string().optional(),
+      allowPrivateNetwork: z.boolean().optional(),
+    })
+    .strict(),
+  z
+    .object({
+      ...canonicalEntryBaseShape,
+      type: z.literal("mcp_tool"),
+      server: nonEmptyStringSchema,
+      tool: nonEmptyStringSchema,
+      input: z.record(z.string(), z.unknown()).optional(),
+    })
+    .strict(),
 ]);
 export type CanonicalWorkspaceHookEntry = z.infer<typeof canonicalWorkspaceHookEntrySchema>;
 

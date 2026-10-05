@@ -2,10 +2,14 @@ import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type {
   CustomCommandRoot,
+  HookCommandConfig,
   HookConfig,
   HookEventName,
+  HookHttpConfig,
   HookMatcherConfig,
+  HookMcpToolConfig,
   HookPluginContext,
+  HookProcessConfig,
   PluginConfig,
   PluginDiagnostic,
   PluginDiscoverRequest,
@@ -553,14 +557,16 @@ function parsePluginHookEvents(input: {
       }
       const withPlugin: HookMatcherConfig = {
         ...validation.data,
-        hooks: validation.data.hooks.map((hook) => attachPluginToHook(hook, plugin)),
+        hooks: validation.data.hooks.map((hook) =>
+          attachPluginToHook(toRuntimeHookConfig(hook), plugin),
+        ),
       };
       (inspection.events[event] ??= []).push(withPlugin);
       for (const hook of validation.data.hooks) {
         inspection.details.push(
           toPluginHookDetail({
             event,
-            hook,
+            hook: toRuntimeHookConfig(hook),
             ...(validation.data.matcher !== undefined ? { matcher: validation.data.matcher } : {}),
             runnable: input.runnable,
             sourcePath: input.sourcePath,
@@ -581,7 +587,15 @@ function toPluginHookDetail(input: {
   sourcePath: string;
 }): PluginHookDetail {
   const detail: PluginHookDetail = {
-    command: input.hook.command,
+    // 插件配置的 http/mcp_tool hook 在 schema 层没有 command 字段，这里回退到 url/tool。
+    command:
+      input.hook.command ??
+      (input.hook.type === "http"
+        ? input.hook.url
+        : input.hook.type === "mcp_tool"
+          ? input.hook.tool
+          : "") ??
+      "",
     event: input.event,
     runnable: input.runnable,
     sourcePath: input.sourcePath,
@@ -594,10 +608,46 @@ function toPluginHookDetail(input: {
     if (input.hook.args !== undefined) detail.args = input.hook.args;
     return detail;
   }
-  if (input.hook.async !== undefined) detail.async = input.hook.async;
-  if (input.hook.shell !== undefined) detail.shell = input.hook.shell;
-  if (input.hook.timeout !== undefined) detail.timeout = input.hook.timeout;
+  if (input.hook.type === "command") {
+    if (input.hook.async !== undefined) detail.async = input.hook.async;
+    if (input.hook.shell !== undefined) detail.shell = input.hook.shell;
+    if (input.hook.timeout !== undefined) detail.timeout = input.hook.timeout;
+    return detail;
+  }
+  if (input.hook.type === "http") {
+    if (input.hook.url !== undefined) detail.url = input.hook.url;
+    if (input.hook.method !== undefined) detail.method = input.hook.method;
+    if (input.hook.headers !== undefined) detail.headers = input.hook.headers;
+    if (input.hook.allowedEnvVars !== undefined) {
+      detail.allowedEnvVars = input.hook.allowedEnvVars;
+    }
+    if (input.hook.body !== undefined) detail.body = input.hook.body;
+    if (input.hook.allowPrivateNetwork !== undefined) {
+      detail.allowPrivateNetwork = input.hook.allowPrivateNetwork;
+    }
+    return detail;
+  }
+  if (input.hook.server !== undefined) detail.server = input.hook.server;
+  if (input.hook.tool !== undefined) detail.tool = input.hook.tool;
+  if (input.hook.input !== undefined) detail.input = input.hook.input;
   return detail;
+}
+
+/** 契约 schema 校验产出的 hook：http/mcp_tool 没有 command 字段。 */
+type ValidatedHookConfig =
+  | HookCommandConfig
+  | HookProcessConfig
+  | (Omit<HookHttpConfig, "command"> & { command?: string })
+  | (Omit<HookMcpToolConfig, "command"> & { command?: string });
+
+/**
+ * 插件配置校验产出的 http/mcp_tool hook 没有 command 字段（schema 用 url/tool 表达执行目标），
+ * 而运行态契约 HookConfig 的 command 是兼容既有读取路径的必填字段，这里在进入运行态前补齐。
+ */
+function toRuntimeHookConfig(hook: ValidatedHookConfig): HookConfig {
+  if (hook.type === "http") return { ...hook, command: hook.url ?? "" };
+  if (hook.type === "mcp_tool") return { ...hook, command: hook.tool ?? "" };
+  return hook;
 }
 
 function createHookPluginContext(

@@ -100,9 +100,48 @@ function createWorkspaceHookRegistrations(
   });
 }
 
+/**
+ * canonical workspace hook entry 的 http/mcp_tool 扩展字段（shared/workspace-hook-digest.ts
+ * 已透传；contracts 的 canonical schema 由并行代理同步）。宽接口保留全部字段，
+ * 避免依赖 contracts 判别联合的落地顺序。
+ */
+interface CanonicalWorkspaceHookEntryLike {
+  reviewItemId: CanonicalWorkspaceHookEntry["reviewItemId"];
+  event: CanonicalWorkspaceHookEntry["event"];
+  matcherIndex: CanonicalWorkspaceHookEntry["matcherIndex"];
+  hookIndex: CanonicalWorkspaceHookEntry["hookIndex"];
+  sourceFileIndex: CanonicalWorkspaceHookEntry["sourceFileIndex"];
+  sourceRelativePath: CanonicalWorkspaceHookEntry["sourceRelativePath"];
+  matcher: CanonicalWorkspaceHookEntry["matcher"];
+  type: "command" | "process" | "http" | "mcp_tool";
+  command: CanonicalWorkspaceHookEntry["command"];
+  args?: string[];
+  async?: boolean;
+  shell?: true | string;
+  url?: string;
+  method?: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers?: Record<string, string>;
+  allowedEnvVars?: string[];
+  body?: string;
+  allowPrivateNetwork?: boolean;
+  server?: string;
+  tool?: string;
+  input?: Record<string, unknown>;
+  resolvedTimeoutMs: CanonicalWorkspaceHookEntry["resolvedTimeoutMs"];
+  resolvedMaxOutputBytes: CanonicalWorkspaceHookEntry["resolvedMaxOutputBytes"];
+  statusMessage?: CanonicalWorkspaceHookEntry["statusMessage"];
+  sourceRootEnabled: CanonicalWorkspaceHookEntry["sourceRootEnabled"];
+  declarationEnabled: CanonicalWorkspaceHookEntry["declarationEnabled"];
+  runtimeHooksEnabled: CanonicalWorkspaceHookEntry["runtimeHooksEnabled"];
+  configuredEnabled: CanonicalWorkspaceHookEntry["configuredEnabled"];
+  editable: CanonicalWorkspaceHookEntry["editable"];
+  declarationDigestAlgorithm: CanonicalWorkspaceHookEntry["declarationDigestAlgorithm"];
+  hookDeclarationDigest: CanonicalWorkspaceHookEntry["hookDeclarationDigest"];
+}
+
 function workspaceEntryToHookConfig(
   snapshot: NonNullable<ConfiguredHookRunnerOptions["workspaceHookSnapshot"]>,
-  entry: CanonicalWorkspaceHookEntry,
+  entry: CanonicalWorkspaceHookEntryLike,
 ): HookConfig {
   const sourcePath = snapshot.sourceFiles[entry.sourceFileIndex]?.canonicalPath;
   const common = {
@@ -111,18 +150,44 @@ function workspaceEntryToHookConfig(
     ...(entry.statusMessage ? { statusMessage: entry.statusMessage } : {}),
     timeoutMs: entry.resolvedTimeoutMs,
   };
-  return entry.type === "command"
-    ? {
+  switch (entry.type) {
+    case "command":
+      return {
         ...common,
         type: "command",
         ...(entry.async === undefined ? {} : { async: entry.async }),
         ...(entry.shell === undefined ? {} : { shell: entry.shell }),
-      }
-    : {
+      };
+    case "process":
+      return {
         ...common,
         type: "process",
         ...(entry.args ? { args: [...entry.args] } : {}),
       };
+    case "http":
+      return {
+        ...common,
+        type: "http",
+        url: entry.url ?? entry.command,
+        ...(entry.method !== undefined ? { method: entry.method } : {}),
+        ...(entry.headers !== undefined ? { headers: entry.headers } : {}),
+        ...(entry.allowedEnvVars !== undefined
+          ? { allowedEnvVars: entry.allowedEnvVars }
+          : {}),
+        ...(entry.body !== undefined ? { body: entry.body } : {}),
+        ...(entry.allowPrivateNetwork !== undefined
+          ? { allowPrivateNetwork: entry.allowPrivateNetwork }
+          : {}),
+      };
+    case "mcp_tool":
+      return {
+        ...common,
+        type: "mcp_tool",
+        server: entry.server ?? entry.command,
+        tool: entry.tool ?? entry.command,
+        ...(entry.input !== undefined ? { input: entry.input } : {}),
+      };
+  }
 }
 
 function createHookRegistration(input: {

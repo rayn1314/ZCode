@@ -115,7 +115,7 @@ export const workspaceHookReviewRequestPayloadSchema = z
           // 事件名单一来源是 ../hooks.js，此处直接派生。
           event: z.enum(HOOK_EVENT_NAMES),
           matcher: z.string().optional(),
-          type: z.enum(["command", "process"]),
+          type: z.enum(["command", "process", "http", "mcp_tool"]),
           displayName: nonEmptyStringSchema,
           displayCommand: nonEmptyStringSchema,
           sourcePath: nonEmptyStringSchema,
