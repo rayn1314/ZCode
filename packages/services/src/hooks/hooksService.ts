@@ -1,11 +1,12 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type {
-  Hook,
-  HookEvent,
-  SettingsDirectoryLocation,
-  SettingsDirectorySource,
+import {
+  HOOK_EVENT_NAMES,
+  type Hook,
+  type HookEvent,
+  type SettingsDirectoryLocation,
+  type SettingsDirectorySource,
 } from "@zcode/shared";
 import {
   buildWorkspaceHookBundleSnapshot,
@@ -34,15 +35,7 @@ import {
 
 const SETTINGS_FILE = "settings.json";
 const ZCODE_CONFIG_FILE = "config.json";
-const HOOK_EVENTS: readonly HookEvent[] = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-];
+const HOOK_EVENTS: readonly HookEvent[] = HOOK_EVENT_NAMES;
 
 interface ZCodeConfigFile {
   hooks?: WorkspaceHooksConfig;

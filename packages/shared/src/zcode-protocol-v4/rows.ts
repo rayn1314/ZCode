@@ -2,6 +2,7 @@
 // 三条结构性规则：row 自包含（渲染任一行不需看别的行）；
 // 结构变化换整行（row.upserted），文本增长用 append（row.delta）；turn 是 row 上的标签不是容器。
 import { z } from "zod";
+import { HOOK_EVENT_NAMES } from "../hooks.js";
 import { executionOutputPreviewSchema } from "../execution-output-preview.js";
 import { timestampSchema } from "./core.js";
 import { backgroundResultOriginMetaSchema, workflowLaunchMetaSchema } from "./workflow-row-meta.js";
@@ -307,15 +308,8 @@ export const hookInvocationRowSchema = z.object({
   ...rowBaseFields,
   kind: z.literal("hookInvocation"),
   hookInvocationId: z.string().min(1),
-  hookEventName: z.enum([
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Stop",
-  ]),
+  // 事件名单一来源是 ./hooks.js，此处直接派生。
+  hookEventName: z.enum(HOOK_EVENT_NAMES),
   hookCount: z.number().int().positive(),
   state: z.enum(["running", "completed", "failed"]),
   startedAt: timestampSchema,

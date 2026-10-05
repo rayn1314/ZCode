@@ -408,6 +408,10 @@ type TurnModelBaseline =
   | { kind: "sourceLess" }
   | { kind: "known"; provider: string; model: string; thought: string };
 
+function assertNever(value: never): never {
+  throw new Error(`Unexpected hook event: ${String(value)}`);
+}
+
 export class ProductProjection {
   private snapshot: ConversationSnapshot;
   // reducer 内部的 rowId 查找必须与 rows.window 同步；冷恢复过去每次 find 都扫描全表，
@@ -1746,9 +1750,21 @@ export class ProductProjection {
   private hookInvocationLane(
     eventName: HookRunLifecyclePayload["hookEventName"],
   ): HookInvocationRow["lane"] {
-    if (eventName === "PreToolUse" || eventName === "PermissionRequest") return "toolBefore";
-    if (eventName === "PostToolUse" || eventName === "PostToolUseFailure") return "toolAfter";
-    return "assistantWork";
+    switch (eventName) {
+      case "PreToolUse":
+      case "PermissionRequest":
+        return "toolBefore";
+      case "PostToolUse":
+      case "PostToolUseFailure":
+        return "toolAfter";
+      case "SessionStart":
+      case "UserPromptSubmit":
+      case "Stop":
+        return "assistantWork";
+      default:
+        // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改 lane 判定语义）。
+        return assertNever(eventName);
+    }
   }
 
   /**

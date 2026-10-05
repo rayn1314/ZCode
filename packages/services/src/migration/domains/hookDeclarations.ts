@@ -1,3 +1,4 @@
+import { HOOK_EVENT_NAMES } from "@zcode/shared";
 import { atomicWriteText } from "../../fs/atomicFileUtils.js";
 import type { MigrationDomainResult, MigrationDomainSummary } from "../migration.js";
 import {
@@ -15,22 +16,14 @@ import {
  * hooks 声明。
  *
  * 不引入 CLI workspace（`apps/zcode-cli/packages/contracts`）依赖：那是独立 pnpm workspace，
- * services 不能跨 workspace 引它的源码。这里按结构校验最小子集——事件名固定枚举，每个事件下是
- * `{ matcher?, hooks: [...] }` 的数组；未知/损坏条目跳过并计入 details，不因单条坏数据整域失败。
+ * services 不能跨 workspace 引它的源码。事件名单一来源是 `@zcode/shared`（根 workspace 内跨包可达，
+ * 不能依赖 CLI contracts）。这里按结构校验最小子集——每个事件下是 `{ matcher?, hooks: [...] }`
+ * 的数组；未知/损坏条目跳过并计入 details，不因单条坏数据整域失败。
  *
  * 合并键 = 事件名 + matcher。只搬声明（events），不搬 `enabled` / `timeoutMs` 这类本地运行时旋钮，
  * 也不搬信任记录：目标身份首次触发这些 hook 时仍按 fail-closed 流程重新授权。
  */
 const CONFIG_JSON_REL = ["cli", "config.json"] as const;
-const HOOK_EVENT_NAMES = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-] as const;
 type HookEventName = (typeof HOOK_EVENT_NAMES)[number];
 
 const HOOK_EVENT_NAME_SET = new Set<string>(HOOK_EVENT_NAMES);

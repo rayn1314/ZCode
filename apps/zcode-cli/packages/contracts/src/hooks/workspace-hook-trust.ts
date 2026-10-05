@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HOOK_EVENT_NAMES } from "@zcode/shared";
 
 export const WORKSPACE_HOOK_DIGEST_SCHEMA_VERSION = 1 as const;
 export const WORKSPACE_HOOK_REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
@@ -6,15 +7,8 @@ export const WORKSPACE_HOOK_REVIEW_TIMEOUT_MS = 10 * 60 * 1000;
 export const WORKSPACE_HOOK_SCHEMA_FIELDS = {
   root: ["enabled", "timeoutMs", "maxOutputBytes", "events"],
   matcher: ["matcher", "hooks"],
-  events: [
-    "SessionStart",
-    "UserPromptSubmit",
-    "PreToolUse",
-    "PermissionRequest",
-    "PostToolUse",
-    "PostToolUseFailure",
-    "Stop",
-  ],
+  // 事件名单一来源是 @zcode/shared 的 HOOK_EVENT_NAMES；此处只派生，不再维护双份。
+  events: [...HOOK_EVENT_NAMES] as const,
   process: ["type", "command", "enabled", "args", "timeoutMs", "statusMessage"],
   command: [
     "type",
@@ -185,15 +179,7 @@ export const workspaceHookEffectiveStateSchema = z
   });
 export type WorkspaceHookEffectiveState = z.infer<typeof workspaceHookEffectiveStateSchema>;
 
-export const workspaceHookEventNameSchema = z.enum([
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-]);
+export const workspaceHookEventNameSchema = z.enum(HOOK_EVENT_NAMES);
 
 const canonicalEntryBaseShape = {
   reviewItemId: nonEmptyStringSchema,

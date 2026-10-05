@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HOOK_EVENT_NAMES } from "../hooks.js";
 import { timestampSchema } from "./core.js";
 
 const nonEmptyStringSchema = z.string().trim().min(1);
@@ -111,15 +112,8 @@ export const workspaceHookReviewRequestPayloadSchema = z
       z
         .object({
           reviewItemId: nonEmptyStringSchema,
-          event: z.enum([
-            "SessionStart",
-            "UserPromptSubmit",
-            "PreToolUse",
-            "PermissionRequest",
-            "PostToolUse",
-            "PostToolUseFailure",
-            "Stop",
-          ]),
+          // 事件名单一来源是 ../hooks.js，此处直接派生。
+          event: z.enum(HOOK_EVENT_NAMES),
           matcher: z.string().optional(),
           type: z.enum(["command", "process"]),
           displayName: nonEmptyStringSchema,

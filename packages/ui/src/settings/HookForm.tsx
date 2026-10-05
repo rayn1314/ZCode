@@ -12,7 +12,13 @@ import {
   SelectValue,
 } from "@/components/ui/select.js";
 import { Switch } from "@/components/ui/switch.js";
-import type { Hook, HookConfig, HookEvent, HookType } from "@zcode/shared";
+import {
+  HOOK_EVENT_NAMES,
+  type Hook,
+  type HookConfig,
+  type HookEvent,
+  type HookType,
+} from "@zcode/shared";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { SettingsFormTextarea } from "@/settings/SettingsFormTextarea.js";
 import { SettingsFormActions } from "@/settings/SettingsFormActions.js";
@@ -32,15 +38,7 @@ interface HookFormProps {
   onScopeKeyChange?: (scopeKey: string) => void;
 }
 
-const HOOK_EVENTS: HookEvent[] = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-];
+const HOOK_EVENTS = HOOK_EVENT_NAMES;
 
 function formatCustomJson(custom?: Record<string, unknown>): string {
   return custom && Object.keys(custom).length > 0 ? JSON.stringify(custom, null, 2) : "";

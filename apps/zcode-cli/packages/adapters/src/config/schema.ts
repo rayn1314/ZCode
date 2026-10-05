@@ -1,5 +1,6 @@
 /* eslint-disable max-lines -- zcode-cli 配置 schema 需要集中维护文件解析和 provider 继承，拆散会让配置语义更难对齐。 */
 import { z } from "zod";
+import type { HookEvent } from "@zcode/shared";
 import type { RuntimeConfigPatch } from "@zcode/contracts";
 
 const stringRecordSchema = z.record(z.string(), z.string());
@@ -226,7 +227,8 @@ const modelAnomalyGuardSchema = z.object({
 
 // Hooks schema：
 // 理想态是 re-export shared/workspace-hook-config，但两个 pnpm workspace 解析出物理
-// 不同的 zod 实例（adapters 4.4.3 / shared 4.3.6）：shared schema 嵌入本包组合 schema
+// 不同的 zod 实例（adapters 4.6.5 / shared 4.6.5，实测各自 node_modules 解析版本）：
+// shared schema 嵌入本包组合 schema
 // 会让 dts 引用 foreign zod 内部类型（TS2742），typeof/ZodType 注解都会落入类型循环。
 // 因此本副本按原样保留（本包 zod 构造），并保持与 shared 的校验语义等价；
 // 运行时校验语义仍以 shared 为准（discovery/trust 装配入口都走 shared schema——
@@ -263,23 +265,24 @@ const hookMatcherSchema = z
   })
   .strict();
 
+// 事件键映射：每个键显式写出，用 satisfies Record<HookEvent, z.ZodTypeAny> 保住字面量键与穷尽性。
+// 新增事件时此映射缺键即编译报错（spec §5.2）。
+const hooksEventsMap = {
+  SessionStart: z.array(hookMatcherSchema).optional(),
+  UserPromptSubmit: z.array(hookMatcherSchema).optional(),
+  PreToolUse: z.array(hookMatcherSchema).optional(),
+  PermissionRequest: z.array(hookMatcherSchema).optional(),
+  PostToolUse: z.array(hookMatcherSchema).optional(),
+  PostToolUseFailure: z.array(hookMatcherSchema).optional(),
+  Stop: z.array(hookMatcherSchema).optional(),
+} satisfies Record<HookEvent, z.ZodTypeAny>;
+
 const hooksSchema = z
   .object({
     enabled: z.boolean().optional(),
     timeoutMs: positiveNumberSchema.optional(),
     maxOutputBytes: positiveNumberSchema.optional(),
-    events: z
-      .object({
-        SessionStart: z.array(hookMatcherSchema).optional(),
-        UserPromptSubmit: z.array(hookMatcherSchema).optional(),
-        PreToolUse: z.array(hookMatcherSchema).optional(),
-        PermissionRequest: z.array(hookMatcherSchema).optional(),
-        PostToolUse: z.array(hookMatcherSchema).optional(),
-        PostToolUseFailure: z.array(hookMatcherSchema).optional(),
-        Stop: z.array(hookMatcherSchema).optional(),
-      })
-      .strict()
-      .optional(),
+    events: z.object(hooksEventsMap).strict().optional(),
   })
   .strict();
 

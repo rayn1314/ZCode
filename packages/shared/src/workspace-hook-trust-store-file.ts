@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HOOK_EVENT_NAMES } from "./hooks.js";
 
 /**
  * Workspace Hook Trust store 文件格式（`workspace-hook-trust-v1.json`）的
@@ -19,16 +20,8 @@ import { z } from "zod";
 
 export const WORKSPACE_HOOK_TRUST_STORE_SCHEMA_VERSION = 1 as const;
 
-/** 与 contracts 的 workspaceHookEventNameSchema 保持一致（7 个现有事件）。 */
-const workspaceHookEventNameSchema = z.enum([
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-]);
+/** 事件名单一来源是 ./hooks.js，此处直接派生，不再维护同名双份。 */
+const workspaceHookEventNameSchema = z.enum(HOOK_EVENT_NAMES);
 
 const nonEmptyStringSchema = z.string().trim().min(1);
 const sha256DigestSchema = z.string().regex(/^[a-f0-9]{64}$/u);

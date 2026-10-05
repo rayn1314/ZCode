@@ -1,9 +1,15 @@
 import { z } from "zod";
+import type { HookEvent } from "@zcode/shared";
 import type { ModelToolSideEffectScope } from "../model/index.js";
 import type { CollaborationMode, RiskLevel } from "../interfaces/session.port.js";
 import type { PermissionUpdate } from "../interfaces/permission.port.js";
 import type { SessionId, ToolCallId, TraceId, TurnId } from "../interfaces/shared.js";
 
+// 类型级穷尽守卫（spec §5.3）：断言 HookInput/HookSpecificOutput 的事件键集合
+// 与事件单源 HOOK_EVENT_NAMES 完全一致。side-effect import 让断言进入编译。
+import "./event-exhaustiveness.js";
+
+// 事件键派生自 @zcode/shared 的 HookEvent（单源）；satisfies 保证新增事件时此处缺键即编译报错。
 export const HookEventName = {
   SessionStart: "SessionStart",
   UserPromptSubmit: "UserPromptSubmit",
@@ -12,7 +18,7 @@ export const HookEventName = {
   PostToolUse: "PostToolUse",
   PostToolUseFailure: "PostToolUseFailure",
   Stop: "Stop",
-} as const;
+} as const satisfies Record<HookEvent, string>;
 
 export type HookEventName = (typeof HookEventName)[keyof typeof HookEventName];
 
@@ -404,22 +410,23 @@ export const HookMatcherConfigSchema = z.object({
   hooks: z.array(HookConfigSchema).min(1),
 });
 
+// 事件键映射：每个键显式写出，用 satisfies Record<HookEvent, z.ZodTypeAny> 保住字面量键与穷尽性。
+// 新增事件时此映射缺键即编译报错（spec §5.2）。
+const hooksRuntimeEventsMap = {
+  SessionStart: z.array(HookMatcherConfigSchema).optional(),
+  UserPromptSubmit: z.array(HookMatcherConfigSchema).optional(),
+  PreToolUse: z.array(HookMatcherConfigSchema).optional(),
+  PermissionRequest: z.array(HookMatcherConfigSchema).optional(),
+  PostToolUse: z.array(HookMatcherConfigSchema).optional(),
+  PostToolUseFailure: z.array(HookMatcherConfigSchema).optional(),
+  Stop: z.array(HookMatcherConfigSchema).optional(),
+} satisfies Record<HookEvent, z.ZodTypeAny>;
+
 export const HooksRuntimeConfigPatchSchema = z.object({
   enabled: z.boolean().optional(),
   timeoutMs: z.number().int().positive().optional(),
   maxOutputBytes: z.number().int().positive().optional(),
-  events: z
-    .object({
-      SessionStart: z.array(HookMatcherConfigSchema).optional(),
-      UserPromptSubmit: z.array(HookMatcherConfigSchema).optional(),
-      PreToolUse: z.array(HookMatcherConfigSchema).optional(),
-      PermissionRequest: z.array(HookMatcherConfigSchema).optional(),
-      PostToolUse: z.array(HookMatcherConfigSchema).optional(),
-      PostToolUseFailure: z.array(HookMatcherConfigSchema).optional(),
-      Stop: z.array(HookMatcherConfigSchema).optional(),
-    })
-    .strict()
-    .optional(),
+  events: z.object(hooksRuntimeEventsMap).strict().optional(),
 });
 
 export const DefaultHooksRuntimeConfig: HooksRuntimeConfig = {

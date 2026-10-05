@@ -2,21 +2,15 @@ import { existsSync, statSync } from "node:fs";
 import { access, readFile, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
 import { z } from "zod";
+import { HOOK_EVENT_NAMES, type HookEvent } from "./hooks.js";
 
 export const WORKSPACE_HOOK_DIGEST_SCHEMA_VERSION = 1 as const;
 export const DEFAULT_WORKSPACE_HOOK_TIMEOUT_MS = 60_000;
 export const DEFAULT_WORKSPACE_HOOK_MAX_OUTPUT_BYTES = 32_768;
-export const WORKSPACE_HOOK_EVENT_NAMES = [
-  "SessionStart",
-  "UserPromptSubmit",
-  "PreToolUse",
-  "PermissionRequest",
-  "PostToolUse",
-  "PostToolUseFailure",
-  "Stop",
-] as const;
+/** 事件名单一来源是 ./hooks.js；此处只 re-export，不再维护同名双份（spec §1.4 站点 2）。 */
+export const WORKSPACE_HOOK_EVENT_NAMES = HOOK_EVENT_NAMES;
 
-export type WorkspaceHookEventName = (typeof WORKSPACE_HOOK_EVENT_NAMES)[number];
+export type WorkspaceHookEventName = HookEvent;
 export type WorkspaceHookConfigFileKind = "zcode.json" | ".zcode/config.json" | "explicit";
 
 const positiveNumberSchema = z.number().finite().positive();
@@ -59,23 +53,26 @@ export const workspaceHookMatcherConfigSchema = z
   })
   .strict();
 
+/**
+ * 事件键映射：每个键显式写出，用 satisfies Record<HookEvent, …> 保住字面量键与穷尽性。
+ * 新增事件时此映射缺键即编译报错（spec §5.2）。
+ */
+const workspaceHookEventsMap = {
+  SessionStart: z.array(workspaceHookMatcherConfigSchema).optional(),
+  UserPromptSubmit: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PreToolUse: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PermissionRequest: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PostToolUse: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PostToolUseFailure: z.array(workspaceHookMatcherConfigSchema).optional(),
+  Stop: z.array(workspaceHookMatcherConfigSchema).optional(),
+} satisfies Record<HookEvent, z.ZodTypeAny>;
+
 export const workspaceHooksConfigSchema = z
   .object({
     enabled: z.boolean().optional(),
     timeoutMs: positiveNumberSchema.optional(),
     maxOutputBytes: positiveNumberSchema.optional(),
-    events: z
-      .object({
-        SessionStart: z.array(workspaceHookMatcherConfigSchema).optional(),
-        UserPromptSubmit: z.array(workspaceHookMatcherConfigSchema).optional(),
-        PreToolUse: z.array(workspaceHookMatcherConfigSchema).optional(),
-        PermissionRequest: z.array(workspaceHookMatcherConfigSchema).optional(),
-        PostToolUse: z.array(workspaceHookMatcherConfigSchema).optional(),
-        PostToolUseFailure: z.array(workspaceHookMatcherConfigSchema).optional(),
-        Stop: z.array(workspaceHookMatcherConfigSchema).optional(),
-      })
-      .strict()
-      .optional(),
+    events: z.object(workspaceHookEventsMap).strict().optional(),
   })
   .strict();
 

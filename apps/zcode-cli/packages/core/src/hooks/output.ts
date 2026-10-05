@@ -6,6 +6,7 @@ import {
   type HookPermissionDecision,
   type HookSpecificOutput,
 } from "@zcode/contracts";
+import { assertNever } from "./assertNever.js";
 import type { HookRunResult } from "./types.js";
 
 export function processHookOutput(
@@ -139,6 +140,9 @@ function applyHookSpecificOutput(result: HookRunResult, specific: HookSpecificOu
     case HookEventName.Stop:
       if (specific.additionalContext) result.additionalContexts.push(specific.additionalContext);
       break;
+    default:
+      // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改判定语义）。
+      assertNever(specific);
   }
 }
 

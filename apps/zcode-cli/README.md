@@ -252,7 +252,7 @@ Configuration shape:
 - `hooks.events.<EventName>`: an array of matcher groups. Groups run in config order.
 - `matcher`: optional JavaScript regular expression string. If omitted, the group matches all inputs for that event.
 - `hooks`: process hook list for the matcher group. Hooks run in order.
-- `type`: currently only `process` is supported.
+- `type`: `process` or `command`.
 - `command`: executable to run, using argv execution rather than a shell string.
 - `args`: optional argv array.
 - `timeoutMs`: optional per-hook timeout override.

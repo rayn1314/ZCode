@@ -10,6 +10,7 @@ import {
   type HookInput,
   type HookPluginContext,
 } from "@zcode/contracts";
+import { assertNever } from "./assertNever.js";
 
 export async function createCompatibleHookStdin(input: HookInput): Promise<{
   cleanup: () => Promise<void>;
@@ -57,6 +58,9 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
     case HookEventName.UserPromptSubmit:
     case HookEventName.PreToolUse:
       break;
+    default:
+      // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改判定语义）。
+      assertNever(input);
   }
 
   return {
