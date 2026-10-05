@@ -8,7 +8,7 @@ import { mergeHookRunResult, processHookOutput } from "../src/hooks/output.js";
  * - permissionBehavior 最严获胜（deny>ask>allow）；
  * - permissionRequestResult / updatedInput / stopShouldContinue 后写覆盖；
  * - PreToolUse/PermissionRequest 是权限事件，continue:false 会带 deny 与 preventContinuation；
- * - PostToolUse/PostToolUseFailure 只阻断，不参与权限合并。
+ * - PostToolUse/PostToolUseFailure 是观察类事件（blockable:false，P1 接引擎后 continue:false 不阻断）。
  */
 
 test("PreToolUse：continue:false 阻断且 preventContinuation + deny", () => {
@@ -62,17 +62,19 @@ test("PermissionRequest：hookSpecificOutput decision 写入 permissionRequestRe
   assert.deepEqual(result.permissionRequestResult, { behavior: "deny", message: "no" });
 });
 
-test("PostToolUse：continue:false 阻断但不参与权限合并", () => {
+test("PostToolUse：观察类，continue:false 不阻断且不参与权限合并", () => {
   const result = processHookOutput(HookEventName.PostToolUse, {
+    additionalContext: "done",
     continue: false,
     reason: "stop",
   });
-  assert.equal(result.blockRequested, true);
+  assert.equal(result.blockRequested, undefined);
   assert.equal(result.preventContinuation, undefined);
   assert.equal(result.permissionBehavior, undefined);
+  assert.deepEqual(result.additionalContexts, ["done"]);
 });
 
-test("PostToolUseFailure：additionalContext 注入，continue:false 同样阻断", () => {
+test("PostToolUseFailure：additionalContext 注入，continue:false 不阻断（观察类）", () => {
   const ctx = processHookOutput(HookEventName.PostToolUseFailure, {
     hookSpecificOutput: {
       hookEventName: HookEventName.PostToolUseFailure,
@@ -81,9 +83,13 @@ test("PostToolUseFailure：additionalContext 注入，continue:false 同样阻�
   });
   assert.deepEqual(ctx.additionalContexts, ["recover"]);
 
-  const blocked = processHookOutput(HookEventName.PostToolUseFailure, { continue: false });
-  assert.equal(blocked.blockRequested, true);
+  const blocked = processHookOutput(HookEventName.PostToolUseFailure, {
+    additionalContext: "still",
+    continue: false,
+  });
+  assert.equal(blocked.blockRequested, undefined);
   assert.equal(blocked.preventContinuation, undefined);
+  assert.deepEqual(blocked.additionalContexts, ["still"]);
 });
 
 test("processHookOutput：hookSpecificOutput 事件名不匹配抛错", () => {

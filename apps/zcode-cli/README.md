@@ -192,6 +192,11 @@ Supported hook events:
 - `PostToolUse`: runs after a tool succeeds and before the tool result is returned to the model. It can add context. Its matcher sees the tool name.
 - `PostToolUseFailure`: runs after a tool fails and before the failure is returned to the model. It can add recovery context. Its matcher sees the tool name.
 - `Stop`: runs when a turn is about to complete without another client-side tool call. It can add feedback and request one more model step with `continue: true`. Empty `continue: true` output is ignored, and repeated continuations are capped to avoid loops.
+- `PreCompact`: runs before context compaction starts, allowing a hook to inspect the compaction trigger and add context before the conversation history is collapsed.
+- `PostCompact`: runs after compaction completes and the compacted boundary has been persisted.
+- `SubagentStart`: runs when a subagent starts, before its first prompt is dispatched.
+- `SubagentStop`: runs when a subagent stops, after its final result has been produced.
+- `SessionEnd`: runs when a session ends and is about to be finalized.
 
 Example:
 

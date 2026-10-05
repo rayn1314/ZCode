@@ -1,5 +1,5 @@
 import type { HookRunResult, Model, TraceContext, TurnState } from "./deps.js";
-import type { HookEventName } from "@zcode/contracts";
+import type { HookEventName, SessionId } from "@zcode/contracts";
 import type { RuntimeMessageEntry } from "../agent/message-history.js";
 
 // 从 internal-methods.ts 拆出，避免该文件越过
@@ -23,6 +23,59 @@ export interface AgentRuntimeHookMethods {
     traceContext: TraceContext,
     signal?: AbortSignal,
     stopHookActive?: boolean,
+  ): Promise<HookRunResult>;
+  runPreCompactHooks(
+    input: {
+      compactTrigger: "manual" | "auto" | "reactive";
+      preCompactTokenCount?: number;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runPostCompactHooks(
+    input: {
+      boundaryId?: string;
+      compactTrigger: "manual" | "auto" | "reactive";
+      outcome: "completed" | "skipped" | "failed";
+      postCompactTokenCount?: number;
+      preCompactTokenCount?: number;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runSubagentStartHooks(
+    input: {
+      agentId: string;
+      agentType: string;
+      childSessionId: SessionId;
+      description?: string;
+      model?: string;
+      parentToolCallId?: string;
+      prompt: string;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runSubagentStopHooks(
+    input: {
+      agentId: string;
+      agentType: string;
+      childSessionId: SessionId;
+      description?: string;
+      error?: string;
+      parentToolCallId?: string;
+      status: "completed" | "failed" | "stopped";
+      totalDurationMs?: number;
+      totalToolUseCount?: number;
+      totalTokens?: number;
+    },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
+  ): Promise<HookRunResult>;
+  runSessionEndHooks(
+    input: { endReason?: string },
+    traceContext: TraceContext,
+    signal?: AbortSignal,
   ): Promise<HookRunResult>;
   injectHookAdditionalContextIntoMessageHistory(
     eventName: HookEventName,

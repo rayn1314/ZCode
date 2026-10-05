@@ -54,6 +54,25 @@ export async function createCompatibleHookStdin(input: HookInput): Promise<{
       compatible.last_assistant_message = input.responseText ?? input.responsePreview;
       compatible.stop_hook_active = input.stopHookActive;
       break;
+    case HookEventName.PreCompact:
+      compatible.compact_trigger = input.compactTrigger;
+      break;
+    case HookEventName.PostCompact:
+      compatible.compact_trigger = input.compactTrigger;
+      compatible.compact_outcome = input.outcome;
+      break;
+    case HookEventName.SubagentStart:
+      compatible.subagent_id = input.agentId;
+      compatible.subagent_type = input.agentType;
+      break;
+    case HookEventName.SubagentStop:
+      compatible.subagent_id = input.agentId;
+      compatible.subagent_type = input.agentType;
+      compatible.subagent_status = input.status;
+      break;
+    case HookEventName.SessionEnd:
+      compatible.end_reason = input.endReason;
+      break;
     case HookEventName.SessionStart:
     case HookEventName.UserPromptSubmit:
     case HookEventName.PreToolUse:

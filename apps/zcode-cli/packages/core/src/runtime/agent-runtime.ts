@@ -3,11 +3,13 @@ import type { BackgroundBashOutputResult } from "@zcode/shared";
 import {
   createDenyPermissionBroker,
   createRootTraceContext,
+  createSessionEvent,
   createToolRegistry,
   defaultPermissionConfig,
   EventReducer,
   MessageHistoryImpl,
   PermissionService,
+  SessionEventType,
   ToolScheduler,
   traceContextToLogContext,
 } from "./deps.js";
@@ -151,6 +153,8 @@ export class AgentRuntime {
   private executor: ToolExecutor;
   private hookRunner?: HookRunner;
   private workspaceHookAdmission?: WorkspaceHookRuntimeAdmissionPort;
+  /** SessionEnd 只发射一次（spec D9 幂等）。 */
+  private sessionEndHookRan = false;
   private modelFactory: AgentRuntimeDeps["modelFactory"];
   private modelIoDir?: string;
   private providerRuntimeHeadersPort?: AgentRuntimeDeps["providerRuntimeHeadersPort"];
@@ -346,11 +350,40 @@ export class AgentRuntime {
     // 因此必须先终止该 runtime 的 Extraction，不能只在超时后放弃等待。
     this.memoryExtractionScheduler?.shutdown();
   }
+
+  /**
+   * 正常结束会话：发射一次 SessionEnded 事件并运行 SessionEnd hook（spec D9）。
+   * 必须在 session store 关闭之前调用，否则事件无法落库。幂等：只执行一次。
+   * hook 失败只告警，不得阻断会话关闭主链路。
+   */
+  async endSession(reason?: string): Promise<void> {
+    if (this.sessionEndHookRan) return;
+    this.sessionEndHookRan = true;
+    try {
+      const event = createSessionEvent(
+        SessionEventType.SessionEnded,
+        this.sessionId,
+        { reason },
+        { traceId: this.rootTraceContext.traceId },
+      );
+      await this.appendEvent(event, this.rootTraceContext);
+      const runtime = this as unknown as AgentRuntimeInternal;
+      await runtime.runSessionEndHooks({ endReason: reason }, this.rootTraceContext);
+    } catch (error) {
+      this.logger?.warn("Session end hook failed", {
+        ...traceContextToLogContext(this.rootTraceContext),
+        errorMessage: error instanceof Error ? error.message : String(error),
+        event: "session.end_hook.failed",
+        module: "core.runtime",
+      });
+    }
+  }
 }
 
 export interface AgentRuntime {
   lastPermissionGrantId?: string;
   beginShutdown(): void;
+  endSession(reason?: string): Promise<void>;
   closeBrowserSession(): Promise<void>;
   updateConfig(
     patch: Pick<AgentRuntimeConfig, "mode" | "planEnabled" | "language" | "outputStyle">,

@@ -7,6 +7,7 @@ import {
   AgentErrorCode,
   CoreErrorType,
   DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS,
+  HookEventName,
   SessionEventType,
   createChildTraceContext,
   createCoreError,
@@ -39,10 +40,12 @@ import {
   type SubagentTaskSnapshot,
   type SubagentWaitOptions,
   type TraceContext,
+  type TurnId,
 } from "@zcode/contracts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import type { HookRunner } from "../hooks/types.js";
 import {
   isBuiltInExploreAgentProfile,
   normalizeAgentProfiles,
@@ -126,6 +129,8 @@ export interface ExploreSubagentPortOptions {
   inactivityTimeoutMs?: number;
   autoBackgroundMs?: number;
   logger?: Logger;
+  /** 父 runtime 的 hook runner；存在时在 SubagentSpawned/SubagentStopped 发射点同步跑生命周期 hook。 */
+  hookRunner?: HookRunner;
 }
 
 /**
@@ -275,24 +280,31 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         },
         {
           onSessionReady: async () => {
+            const spawnedPayload = {
+              agentId: lifecycle.agentId,
+              agentType: request.agentType,
+              childSessionId: lifecycle.childSessionId,
+              description: request.description,
+              prompt: request.prompt,
+              parentToolCallId: request.parentToolCallId,
+              status: "running",
+              allowedTools: [...resolveAllowedTools(profile, options)],
+              model: profile.modelSelection
+                ? `${profile.modelSelection.providerId}/${profile.modelSelection.modelId}`
+                : undefined,
+            };
             await emitSubagentEvent(
               options,
               SessionEventType.SubagentSpawned,
               request,
               lifecycle.runTraceContext,
-              {
-                agentId: lifecycle.agentId,
-                agentType: request.agentType,
-                childSessionId: lifecycle.childSessionId,
-                description: request.description,
-                prompt: request.prompt,
-                parentToolCallId: request.parentToolCallId,
-                status: "running",
-                allowedTools: [...resolveAllowedTools(profile, options)],
-                model: profile.modelSelection
-                  ? `${profile.modelSelection.providerId}/${profile.modelSelection.modelId}`
-                  : undefined,
-              },
+              spawnedPayload,
+            );
+            await runSubagentLifecycleHooks(
+              options,
+              SessionEventType.SubagentSpawned,
+              request,
+              spawnedPayload,
             );
             readyGate.resolve();
           },
@@ -393,21 +405,28 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           },
         }));
 
+        const stoppedPayload = {
+          agentId: lifecycle.agentId,
+          agentType: request.agentType,
+          childSessionId: lifecycle.childSessionId,
+          parentToolCallId: request.parentToolCallId,
+          status: "completed",
+          totalDurationMs: completed.output.totalDurationMs,
+          totalToolUseCount: completed.output.totalToolUseCount,
+          totalTokens: completed.output.totalTokens,
+        };
         await emitSubagentEvent(
           options,
           SessionEventType.SubagentStopped,
           request,
           lifecycle.runTraceContext,
-          {
-            agentId: lifecycle.agentId,
-            agentType: request.agentType,
-            childSessionId: lifecycle.childSessionId,
-            parentToolCallId: request.parentToolCallId,
-            status: "completed",
-            totalDurationMs: completed.output.totalDurationMs,
-            totalToolUseCount: completed.output.totalToolUseCount,
-            totalTokens: completed.output.totalTokens,
-          },
+          stoppedPayload,
+        );
+        await runSubagentLifecycleHooks(
+          options,
+          SessionEventType.SubagentStopped,
+          request,
+          stoppedPayload,
         );
 
         options.logger?.info("Explore subagent completed", {
@@ -438,20 +457,27 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
             durationMs: totalDurationMs,
           },
         }));
+        const failedPayload = {
+          agentId: lifecycle.agentId,
+          agentType: request.agentType,
+          childSessionId: lifecycle.childSessionId,
+          parentToolCallId: request.parentToolCallId,
+          status: "failed",
+          totalDurationMs,
+          error: errorMessage,
+        };
         await emitSubagentEvent(
           options,
           SessionEventType.SubagentStopped,
           request,
           lifecycle.runTraceContext,
-          {
-            agentId: lifecycle.agentId,
-            agentType: request.agentType,
-            childSessionId: lifecycle.childSessionId,
-            parentToolCallId: request.parentToolCallId,
-            status: "failed",
-            totalDurationMs,
-            error: errorMessage,
-          },
+          failedPayload,
+        );
+        await runSubagentLifecycleHooks(
+          options,
+          SessionEventType.SubagentStopped,
+          request,
+          failedPayload,
         );
 
         if (isCoreError(error)) {
@@ -521,26 +547,33 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         },
         {
           onSessionReady: async () => {
+            const spawnedPayload = {
+              agentId: lifecycle.agentId,
+              agentType: request.agentType,
+              background: true,
+              childSessionId: lifecycle.childSessionId,
+              description: request.description,
+              prompt: request.prompt,
+              parentToolCallId: request.parentToolCallId,
+              status: "running",
+              allowedTools: [...resolveAllowedTools(profile, options)],
+              outputFile: lifecycle.outputFile,
+              model: profile.modelSelection
+                ? `${profile.modelSelection.providerId}/${profile.modelSelection.modelId}`
+                : undefined,
+            };
             await emitSubagentEvent(
               options,
               SessionEventType.SubagentSpawned,
               request,
               lifecycle.runTraceContext,
-              {
-                agentId: lifecycle.agentId,
-                agentType: request.agentType,
-                background: true,
-                childSessionId: lifecycle.childSessionId,
-                description: request.description,
-                prompt: request.prompt,
-                parentToolCallId: request.parentToolCallId,
-                status: "running",
-                allowedTools: [...resolveAllowedTools(profile, options)],
-                outputFile: lifecycle.outputFile,
-                model: profile.modelSelection
-                  ? `${profile.modelSelection.providerId}/${profile.modelSelection.modelId}`
-                  : undefined,
-              },
+              spawnedPayload,
+            );
+            await runSubagentLifecycleHooks(
+              options,
+              SessionEventType.SubagentSpawned,
+              request,
+              spawnedPayload,
             );
             readyGate.resolve();
           },
@@ -1064,23 +1097,30 @@ async function resumeTerminalAgentInBackground(
     {
       resumeFromStore: true,
       onSessionReady: async () => {
+        const spawnedPayload = {
+          agentId: lifecycle.agentId,
+          agentType: resumeRequest.agentType,
+          background: true,
+          childSessionId: lifecycle.childSessionId,
+          description: resumeRequest.description,
+          outputFile: lifecycle.outputFile,
+          parentToolCallId: resumeRequest.parentToolCallId,
+          prompt: resumeRequest.prompt,
+          resumed: true,
+          status: "running",
+        };
         await emitSubagentEvent(
           options,
           SessionEventType.SubagentSpawned,
           resumeRequest,
           lifecycle.runTraceContext,
-          {
-            agentId: lifecycle.agentId,
-            agentType: resumeRequest.agentType,
-            background: true,
-            childSessionId: lifecycle.childSessionId,
-            description: resumeRequest.description,
-            outputFile: lifecycle.outputFile,
-            parentToolCallId: resumeRequest.parentToolCallId,
-            prompt: resumeRequest.prompt,
-            resumed: true,
-            status: "running",
-          },
+          spawnedPayload,
+        );
+        await runSubagentLifecycleHooks(
+          options,
+          SessionEventType.SubagentSpawned,
+          resumeRequest,
+          spawnedPayload,
         );
         readyGate.resolve();
       },
@@ -1584,12 +1624,7 @@ async function finalizeBackgroundCompletion(
     await emitBackgroundTaskCompletedEvent(options, request, lifecycle.runTraceContext, task);
   }
 
-  await emitSubagentEvent(
-    options,
-    SessionEventType.SubagentStopped,
-    request,
-    lifecycle.runTraceContext,
-    {
+  const completedPayload = {
       agentId: lifecycle.agentId,
       agentType: request.agentType,
       background: true,
@@ -1600,10 +1635,22 @@ async function finalizeBackgroundCompletion(
       totalDurationMs: completed.output.totalDurationMs,
       totalToolUseCount: completed.output.totalToolUseCount,
       totalTokens: completed.output.totalTokens,
-    },
-  );
+    };
+    await emitSubagentEvent(
+      options,
+      SessionEventType.SubagentStopped,
+      request,
+      lifecycle.runTraceContext,
+      completedPayload,
+    );
+    await runSubagentLifecycleHooks(
+      options,
+      SessionEventType.SubagentStopped,
+      request,
+      completedPayload,
+    );
 
-  options.logger?.info("Subagent background task completed", {
+    options.logger?.info("Subagent background task completed", {
     ...traceContextToLogContext(lifecycle.runTraceContext),
     agentId: lifecycle.agentId,
     durationMs: completed.output.totalDurationMs,
@@ -1662,12 +1709,7 @@ async function finalizeBackgroundFailure(
     await emitBackgroundTaskCompletedEvent(options, request, lifecycle.runTraceContext, task);
   }
 
-  await emitSubagentEvent(
-    options,
-    SessionEventType.SubagentStopped,
-    request,
-    lifecycle.runTraceContext,
-    {
+  const failedPayload = {
       agentId: lifecycle.agentId,
       agentType: request.agentType,
       background: true,
@@ -1677,10 +1719,22 @@ async function finalizeBackgroundFailure(
       outputFile: lifecycle.outputFile,
       totalDurationMs,
       error: errorMessage,
-    },
-  );
+    };
+    await emitSubagentEvent(
+      options,
+      SessionEventType.SubagentStopped,
+      request,
+      lifecycle.runTraceContext,
+      failedPayload,
+    );
+    await runSubagentLifecycleHooks(
+      options,
+      SessionEventType.SubagentStopped,
+      request,
+      failedPayload,
+    );
 
-  options.logger?.warn("Subagent background task failed", {
+    options.logger?.warn("Subagent background task failed", {
     ...traceContextToLogContext(lifecycle.runTraceContext),
     agentId: lifecycle.agentId,
     errorMessage,
@@ -1870,6 +1924,28 @@ async function emitRuntimeTaskSubagentStoppedEvent(
     },
   );
   await options.emitParentEvent(event, traceContext);
+  await runSubagentLifecycleHooks(
+    options,
+    SessionEventType.SubagentStopped,
+    {
+      agentType: task.agentType,
+      description: task.description,
+      parentToolCallId: task.parentToolCallId,
+      prompt: task.prompt,
+      sessionId: task.parentSessionId,
+      trace: traceContextFromRuntimeTask(task),
+      turnId: task.turnId,
+    },
+    {
+      agentId: task.agentId,
+      agentType: task.agentType,
+      childSessionId: task.childSessionId,
+      parentToolCallId: task.parentToolCallId,
+      status: BACKGROUND_AGENT_STOPPED_STATE.subagentEventStatus,
+      totalDurationMs,
+      error: task.error,
+    },
+  );
 }
 
 function enqueueBackgroundNotification(
@@ -1963,6 +2039,71 @@ async function emitSubagentEvent(
     traceId: traceContext.traceId,
   });
   await options.emitParentEvent(event, traceContext);
+}
+
+interface SubagentHookRequestLike {
+  agentType: string;
+  description: string;
+  parentToolCallId?: string;
+  prompt?: string;
+  sessionId: SessionId;
+  trace: TraceContext;
+  turnId?: TurnId;
+  workingDirectory?: string;
+}
+
+/**
+ * 在 SubagentSpawned/SubagentStopped 事件发射点同步运行父 runtime 的
+ * SubagentStart/SubagentStop hook。hook 执行失败只告警，不阻断子代理生命周期。
+ */
+async function runSubagentLifecycleHooks(
+  options: ExploreSubagentPortOptions,
+  eventType: SessionEventType,
+  request: SubagentHookRequestLike,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  if (!options.hookRunner) return;
+  try {
+    const baseInput = {
+      agentId: String(payload.agentId ?? ""),
+      agentType: request.agentType,
+      childSessionId: (payload.childSessionId ?? request.sessionId) as SessionId,
+      cwd: request.workingDirectory ?? "",
+      description: request.description,
+      mode: "build" as const,
+      parentToolCallId: request.parentToolCallId,
+      sessionId: request.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: request.trace.traceId,
+      turnId: request.turnId ?? request.trace.turnId,
+    };
+    if (eventType === SessionEventType.SubagentSpawned) {
+      await options.hookRunner.run({
+        ...baseInput,
+        hookEventName: HookEventName.SubagentStart,
+        model: payload.model as string | undefined,
+        prompt: String(payload.prompt ?? request.prompt ?? ""),
+      });
+    } else if (eventType === SessionEventType.SubagentStopped) {
+      await options.hookRunner.run({
+        ...baseInput,
+        error: payload.error as string | undefined,
+        hookEventName: HookEventName.SubagentStop,
+        status: payload.status as "completed" | "failed" | "stopped",
+        totalDurationMs: payload.totalDurationMs as number | undefined,
+        totalTokens: payload.totalTokens as number | undefined,
+        totalToolUseCount: payload.totalToolUseCount as number | undefined,
+      });
+    }
+  } catch (error) {
+    options.logger?.warn("Subagent lifecycle hook failed", {
+      ...traceContextToLogContext(request.trace),
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.hook.failed",
+      module: "core.subagent",
+      subagentEvent: eventType,
+    });
+  }
 }
 
 async function writeCompletedAgentArtifacts(

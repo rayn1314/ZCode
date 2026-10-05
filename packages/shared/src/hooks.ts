@@ -15,6 +15,11 @@ export const HOOK_EVENT_NAMES = [
   "PostToolUse",
   "PostToolUseFailure",
   "Stop",
+  "PreCompact",
+  "PostCompact",
+  "SubagentStart",
+  "SubagentStop",
+  "SessionEnd",
 ] as const;
 
 export type HookEvent = (typeof HOOK_EVENT_NAMES)[number];
@@ -72,6 +77,36 @@ export const HOOK_EVENT_DESCRIPTORS: Record<HookEvent, HookEventDescriptor> = {
     blockable: false,
     injectsContext: true,
     labelKey: "settings.hooks.event.stop",
+  },
+  PreCompact: {
+    matcherKind: "compactTrigger",
+    blockable: true,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.preCompact",
+  },
+  PostCompact: {
+    matcherKind: "compactTrigger",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.postCompact",
+  },
+  SubagentStart: {
+    matcherKind: "subagent",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.subagentStart",
+  },
+  SubagentStop: {
+    matcherKind: "subagent",
+    blockable: true,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.subagentStop",
+  },
+  SessionEnd: {
+    matcherKind: "none",
+    blockable: false,
+    injectsContext: true,
+    labelKey: "settings.hooks.event.sessionEnd",
   },
 };
 

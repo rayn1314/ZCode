@@ -1760,6 +1760,11 @@ export class ProductProjection {
       case "SessionStart":
       case "UserPromptSubmit":
       case "Stop":
+      case "PreCompact":
+      case "PostCompact":
+      case "SubagentStart":
+      case "SubagentStop":
+      case "SessionEnd":
         return "assistantWork";
       default:
         // 全部事件已在上方覆盖；default 只作类型级穷尽守卫（P0 不改 lane 判定语义）。

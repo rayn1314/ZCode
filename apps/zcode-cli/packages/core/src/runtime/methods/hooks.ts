@@ -1,6 +1,6 @@
 import { HookEventName } from "../deps.js";
 import type { HookRunResult, Model, TraceContext, TurnState } from "../deps.js";
-import type { HookEventName as HookEventNameType } from "@zcode/contracts";
+import type { HookEventName as HookEventNameType, SessionId } from "@zcode/contracts";
 import type { AgentRuntimeInternal } from "../internal.js";
 import {
   systemReminderAttachmentEntry,
@@ -96,6 +96,169 @@ export async function runStopHooks(
       stopHookActive,
       timestamp: new Date().toISOString(),
       toolCallCount,
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runPreCompactHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    compactTrigger: "manual" | "auto" | "reactive";
+    preCompactTokenCount?: number;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      compactTrigger: input.compactTrigger,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.PreCompact,
+      mode: this.getMode(),
+      preCompactTokenCount: input.preCompactTokenCount,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { matchValue: input.compactTrigger, signal },
+  );
+}
+
+export async function runPostCompactHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    boundaryId?: string;
+    compactTrigger: "manual" | "auto" | "reactive";
+    outcome: "completed" | "skipped" | "failed";
+    postCompactTokenCount?: number;
+    preCompactTokenCount?: number;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      boundaryId: input.boundaryId,
+      compactTrigger: input.compactTrigger,
+      cwd: this.workingDirectory,
+      hookEventName: HookEventName.PostCompact,
+      mode: this.getMode(),
+      outcome: input.outcome,
+      postCompactTokenCount: input.postCompactTokenCount,
+      preCompactTokenCount: input.preCompactTokenCount,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { matchValue: input.compactTrigger, signal },
+  );
+}
+
+export async function runSubagentStartHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    agentId: string;
+    agentType: string;
+    childSessionId: SessionId;
+    description?: string;
+    model?: string;
+    parentToolCallId?: string;
+    prompt: string;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentId: input.agentId,
+      agentName: this.config.agentName,
+      agentType: input.agentType,
+      childSessionId: input.childSessionId,
+      cwd: this.workingDirectory,
+      description: input.description,
+      hookEventName: HookEventName.SubagentStart,
+      mode: this.getMode(),
+      model: input.model,
+      parentToolCallId: input.parentToolCallId,
+      prompt: input.prompt,
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runSubagentStopHooks(
+  this: AgentRuntimeInternal,
+  input: {
+    agentId: string;
+    agentType: string;
+    childSessionId: SessionId;
+    description?: string;
+    error?: string;
+    parentToolCallId?: string;
+    status: "completed" | "failed" | "stopped";
+    totalDurationMs?: number;
+    totalToolUseCount?: number;
+    totalTokens?: number;
+  },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentId: input.agentId,
+      agentName: this.config.agentName,
+      agentType: input.agentType,
+      childSessionId: input.childSessionId,
+      cwd: this.workingDirectory,
+      description: input.description,
+      error: input.error,
+      hookEventName: HookEventName.SubagentStop,
+      mode: this.getMode(),
+      parentToolCallId: input.parentToolCallId,
+      sessionId: this.sessionId,
+      status: input.status,
+      timestamp: new Date().toISOString(),
+      totalDurationMs: input.totalDurationMs,
+      totalToolUseCount: input.totalToolUseCount,
+      totalTokens: input.totalTokens,
+      traceId: traceContext.traceId,
+      turnId: traceContext.turnId,
+    },
+    { signal },
+  );
+}
+
+export async function runSessionEndHooks(
+  this: AgentRuntimeInternal,
+  input: { endReason?: string },
+  traceContext: TraceContext,
+  signal?: AbortSignal,
+): Promise<HookRunResult> {
+  if (!this.hookRunner) return EMPTY_HOOK_RESULT;
+  return this.hookRunner.run(
+    {
+      agentName: this.config.agentName,
+      cwd: this.workingDirectory,
+      endReason: input.endReason,
+      hookEventName: HookEventName.SessionEnd,
+      mode: this.getMode(),
+      sessionId: this.sessionId,
+      timestamp: new Date().toISOString(),
       traceId: traceContext.traceId,
       turnId: traceContext.turnId,
     },

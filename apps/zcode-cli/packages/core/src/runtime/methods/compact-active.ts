@@ -169,6 +169,9 @@ async function compactActiveConversationImpl(
 }> {
   throwIfTurnAborted(options.abortSignal);
   const trigger = options.trigger ?? CompactTrigger.Manual;
+  // 三个调用点（manual/auto/reactive）只传 Manual/Auto/Reactive，字符串值恰好与
+  // hook 的 compactTrigger 一致；Partial/SessionMemory 不经过这些路径。
+  const compactTrigger = trigger as "manual" | "auto" | "reactive";
   const phase = options.phase ?? defaultCompactPhaseForTrigger(trigger);
   const compactReason = options.compactReason ?? defaultCompactReasonForTrigger(trigger);
   const compactModel =
@@ -229,6 +232,11 @@ async function compactActiveConversationImpl(
       turnTraceContext,
       events,
     );
+    await this.runPostCompactHooks(
+      { compactTrigger, outcome: "skipped", preCompactTokenCount },
+      turnTraceContext,
+      options.abortSignal,
+    );
     return {
       displayText: "Context is up to date; no compression needed",
       entries: activeEntries,
@@ -237,6 +245,32 @@ async function compactActiveConversationImpl(
     };
   }
 
+  const preCompactHookResult = await this.runPreCompactHooks(
+    { compactTrigger, preCompactTokenCount },
+    turnTraceContext,
+    options.abortSignal,
+  );
+  // PreCompact 可阻断（spec §4.1）：hook 返回阻断信号时中止压缩，按 skipped 记账并回填 UI。
+  if (preCompactHookResult.blockRequested || preCompactHookResult.preventContinuation) {
+    const blockedPayload = this.buildCompactTimelinePayload(compactTimeline, {
+      endedAt: Date.now(),
+      replace: true,
+      status: CompactTimelineStatus.Skipped,
+    });
+    await persistCompactTimelineEvent(
+      this,
+      SessionEventType.CompactCompleted,
+      blockedPayload,
+      turnTraceContext,
+      events,
+    );
+    return {
+      displayText: "Compaction blocked by PreCompact hook",
+      entries: activeEntries,
+      outcome: "skipped",
+      tokenCount: preCompactTokenCount,
+    };
+  }
   const compactStartedPayload = this.buildCompactTimelinePayload(compactTimeline, {
     ...(maxAttempts > 1 ? { attempt, maxAttempts } : {}),
     status: CompactTimelineStatus.Started,
@@ -610,6 +644,17 @@ async function compactActiveConversationImpl(
         compactCompletedPayload,
         turnTraceContext,
         events,
+      );
+      await this.runPostCompactHooks(
+        {
+          boundaryId: compactBoundary.boundaryId,
+          compactTrigger,
+          outcome: CompactTimelineStatus.Completed as "completed",
+          postCompactTokenCount: providerPostCompactTokenCount,
+          preCompactTokenCount,
+        },
+        turnTraceContext,
+        options.abortSignal,
       );
 
       this.latestConversationMessageId = summaryMessageId;

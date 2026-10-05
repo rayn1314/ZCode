@@ -65,6 +65,11 @@ const workspaceHookEventsMap = {
   PostToolUse: z.array(workspaceHookMatcherConfigSchema).optional(),
   PostToolUseFailure: z.array(workspaceHookMatcherConfigSchema).optional(),
   Stop: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PreCompact: z.array(workspaceHookMatcherConfigSchema).optional(),
+  PostCompact: z.array(workspaceHookMatcherConfigSchema).optional(),
+  SubagentStart: z.array(workspaceHookMatcherConfigSchema).optional(),
+  SubagentStop: z.array(workspaceHookMatcherConfigSchema).optional(),
+  SessionEnd: z.array(workspaceHookMatcherConfigSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 export const workspaceHooksConfigSchema = z

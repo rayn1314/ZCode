@@ -18,6 +18,11 @@ export const HookEventName = {
   PostToolUse: "PostToolUse",
   PostToolUseFailure: "PostToolUseFailure",
   Stop: "Stop",
+  PreCompact: "PreCompact",
+  PostCompact: "PostCompact",
+  SubagentStart: "SubagentStart",
+  SubagentStop: "SubagentStop",
+  SessionEnd: "SessionEnd",
 } as const satisfies Record<HookEvent, string>;
 
 export type HookEventName = (typeof HookEventName)[keyof typeof HookEventName];
@@ -144,6 +149,54 @@ export interface StopHookInput extends BaseHookInput {
   toolCallCount: number;
 }
 
+export interface PreCompactHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PreCompact;
+  /** 压缩触发来源：manual（用户/命令）/ auto（上下文策略）/ reactive（溢出后响应式）。 */
+  compactTrigger: "manual" | "auto" | "reactive";
+  /** 压缩前的预估 token 数（可能尚未完成精确统计）。 */
+  preCompactTokenCount?: number;
+}
+
+export interface PostCompactHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.PostCompact;
+  compactTrigger: "manual" | "auto" | "reactive";
+  outcome: "completed" | "skipped" | "failed";
+  boundaryId?: string;
+  preCompactTokenCount?: number;
+  postCompactTokenCount?: number;
+}
+
+export interface SubagentStartHookInput extends BaseHookInput {
+  agentId: string;
+  agentType: string;
+  childSessionId: SessionId;
+  description?: string;
+  prompt: string;
+  parentToolCallId?: string;
+  /** providerId/modelId 展示串，与 SessionStartHookInput.model 一致。 */
+  model?: string;
+  hookEventName: typeof HookEventName.SubagentStart;
+}
+
+export interface SubagentStopHookInput extends BaseHookInput {
+  agentId: string;
+  agentType: string;
+  childSessionId: SessionId;
+  description?: string;
+  parentToolCallId?: string;
+  status: "completed" | "failed" | "stopped";
+  totalDurationMs?: number;
+  totalToolUseCount?: number;
+  totalTokens?: number;
+  error?: string;
+  hookEventName: typeof HookEventName.SubagentStop;
+}
+
+export interface SessionEndHookInput extends BaseHookInput {
+  hookEventName: typeof HookEventName.SessionEnd;
+  endReason?: string;
+}
+
 export type HookInput =
   | PreToolUseHookInput
   | PermissionRequestHookInput
@@ -151,7 +204,12 @@ export type HookInput =
   | PostToolUseFailureHookInput
   | UserPromptSubmitHookInput
   | SessionStartHookInput
-  | StopHookInput;
+  | StopHookInput
+  | PreCompactHookInput
+  | PostCompactHookInput
+  | SubagentStartHookInput
+  | SubagentStopHookInput
+  | SessionEndHookInput;
 
 export type PermissionRequestHookDecision =
   | {
@@ -197,6 +255,26 @@ export type HookSpecificOutput =
   | {
       additionalContext?: string;
       hookEventName: typeof HookEventName.Stop;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PreCompact;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.PostCompact;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.SubagentStart;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.SubagentStop;
+    }
+  | {
+      additionalContext?: string;
+      hookEventName: typeof HookEventName.SessionEnd;
     };
 
 export interface HookJSONOutput {
@@ -282,6 +360,26 @@ export const HookSpecificOutputSchema = z.discriminatedUnion("hookEventName", [
   z.object({
     additionalContext: z.string().optional(),
     hookEventName: z.literal(HookEventName.Stop),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PreCompact),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.PostCompact),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.SubagentStart),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.SubagentStop),
+  }),
+  z.object({
+    additionalContext: z.string().optional(),
+    hookEventName: z.literal(HookEventName.SessionEnd),
   }),
 ]);
 
@@ -420,6 +518,11 @@ const hooksRuntimeEventsMap = {
   PostToolUse: z.array(HookMatcherConfigSchema).optional(),
   PostToolUseFailure: z.array(HookMatcherConfigSchema).optional(),
   Stop: z.array(HookMatcherConfigSchema).optional(),
+  PreCompact: z.array(HookMatcherConfigSchema).optional(),
+  PostCompact: z.array(HookMatcherConfigSchema).optional(),
+  SubagentStart: z.array(HookMatcherConfigSchema).optional(),
+  SubagentStop: z.array(HookMatcherConfigSchema).optional(),
+  SessionEnd: z.array(HookMatcherConfigSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 export const HooksRuntimeConfigPatchSchema = z.object({

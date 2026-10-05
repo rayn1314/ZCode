@@ -6,6 +6,7 @@ import {
   type HookPermissionDecision,
   type HookSpecificOutput,
 } from "@zcode/contracts";
+import { HOOK_EVENT_DESCRIPTORS } from "@zcode/shared";
 import { assertNever } from "./assertNever.js";
 import type { HookRunResult } from "./types.js";
 
@@ -19,13 +20,17 @@ export function processHookOutput(
   if (!output) return result;
 
   if (output.continue === false && expectedEvent !== HookEventName.Stop) {
-    result.blockRequested = true;
-    result.stopReason = output.stopReason ?? output.reason;
-    if (shouldPreventContinuation(expectedEvent)) {
-      result.preventContinuation = true;
-    }
-    if (isPermissionEvent(expectedEvent)) {
-      result.permissionBehavior = "deny";
+    // P1 起 blockable 接引擎（spec D5）：不可阻断事件（PostCompact/SubagentStart/
+    // SessionEnd 等）即使返回 continue:false 也不产生任何阻断字段，只保留上下文注入。
+    if (isBlockableEvent(expectedEvent)) {
+      result.blockRequested = true;
+      result.stopReason = output.stopReason ?? output.reason;
+      if (shouldPreventContinuation(expectedEvent)) {
+        result.preventContinuation = true;
+      }
+      if (isPermissionEvent(expectedEvent)) {
+        result.permissionBehavior = "deny";
+      }
     }
   }
   if (expectedEvent === HookEventName.Stop && output.continue === true) {
@@ -36,10 +41,13 @@ export function processHookOutput(
     result.permissionBehavior = "allow";
   }
   if (output.decision === "block") {
-    result.blockRequested = true;
-    result.stopReason = output.stopReason ?? output.reason ?? output.systemMessage;
-    if (isPermissionEvent(expectedEvent)) result.permissionBehavior = "deny";
-    if (shouldPreventContinuation(expectedEvent)) result.preventContinuation = true;
+    // Stop 的 decision:"block" 语义是"请求继续"，不受 blockable 约束（见下方 Stop 分支）。
+    if (isBlockableEvent(expectedEvent)) {
+      result.blockRequested = true;
+      result.stopReason = output.stopReason ?? output.reason ?? output.systemMessage;
+      if (isPermissionEvent(expectedEvent)) result.permissionBehavior = "deny";
+      if (shouldPreventContinuation(expectedEvent)) result.preventContinuation = true;
+    }
     if (expectedEvent === HookEventName.Stop) {
       result.stopShouldContinue = true;
       if (output.systemMessage) result.additionalContexts.push(output.systemMessage);
@@ -116,6 +124,11 @@ function isPermissionEvent(event: HookEventName): boolean {
   return event === HookEventName.PreToolUse || event === HookEventName.PermissionRequest;
 }
 
+/** 事件是否允许 hook 阻断流程，来自单源描述符（P1 接引擎，spec D5）。 */
+function isBlockableEvent(event: HookEventName): boolean {
+  return HOOK_EVENT_DESCRIPTORS[event].blockable;
+}
+
 function applyHookSpecificOutput(result: HookRunResult, specific: HookSpecificOutput): void {
   switch (specific.hookEventName) {
     case HookEventName.PreToolUse:
@@ -138,6 +151,11 @@ function applyHookSpecificOutput(result: HookRunResult, specific: HookSpecificOu
     case HookEventName.UserPromptSubmit:
     case HookEventName.SessionStart:
     case HookEventName.Stop:
+    case HookEventName.PreCompact:
+    case HookEventName.PostCompact:
+    case HookEventName.SubagentStart:
+    case HookEventName.SubagentStop:
+    case HookEventName.SessionEnd:
       if (specific.additionalContext) result.additionalContexts.push(specific.additionalContext);
       break;
     default:

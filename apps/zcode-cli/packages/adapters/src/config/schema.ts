@@ -275,6 +275,11 @@ const hooksEventsMap = {
   PostToolUse: z.array(hookMatcherSchema).optional(),
   PostToolUseFailure: z.array(hookMatcherSchema).optional(),
   Stop: z.array(hookMatcherSchema).optional(),
+  PreCompact: z.array(hookMatcherSchema).optional(),
+  PostCompact: z.array(hookMatcherSchema).optional(),
+  SubagentStart: z.array(hookMatcherSchema).optional(),
+  SubagentStop: z.array(hookMatcherSchema).optional(),
+  SessionEnd: z.array(hookMatcherSchema).optional(),
 } satisfies Record<HookEvent, z.ZodTypeAny>;
 
 const hooksSchema = z
