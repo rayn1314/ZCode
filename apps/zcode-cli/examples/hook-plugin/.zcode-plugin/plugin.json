@@ -1,0 +1,7 @@
+{
+  "name": "hook-example",
+  "version": "0.1.0",
+  "description": "Example plugin demonstrating the ZCode hook framework: events, matchers, process/http/mcp_tool handlers, once, and failClosed.",
+  "author": "ZCode",
+  "license": "MIT"
+}

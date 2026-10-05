@@ -306,6 +306,74 @@ Common stdout examples:
 }
 ```
 
+### Plugin hooks
+
+Plugins can also ship hooks in `hooks/hooks.json` inside the plugin bundle (or point `manifest.hooks`
+at a relative file). The shape is the same matcher groups, keyed directly by event name — there is no
+`events` wrapper:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["./scripts/session-start.mjs"],
+            "once": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+A runnable example plugin lives in `apps/zcode-cli/examples/hook-plugin` and covers process, `http`,
+and `mcp_tool` handlers plus `once`, `failClosed`, and `updatedToolOutput`.
+
+### HTTP and MCP tool hooks
+
+`http` hooks run an HTTP request instead of a process; `mcp_tool` hooks call a tool on a configured
+MCP server. Both support the common fields (`timeoutMs`, `statusMessage`, `once`, `failClosed`).
+
+`http` fields:
+
+- `url`: target URL (required). Loopback and link-local addresses are always rejected by the SSRF
+  guard; private (RFC1918) networks require `allowPrivateNetwork: true`.
+- `method`: `GET` / `POST` / `PUT` / `PATCH` / `DELETE`, defaults to `GET`.
+- `headers`: optional object of request headers.
+- `body`: optional string request body.
+- `allowedEnvVars`: optional allowlist of environment variable names whose values are injected into
+  the request.
+- `allowPrivateNetwork`: optional boolean enabling private-network targets.
+
+`mcp_tool` fields:
+
+- `server`: MCP server name (required).
+- `tool`: tool name to call (required).
+- `input`: optional object passed as tool arguments.
+
+### Hook trust CLI
+
+Workspace hook declarations are reviewed before execution. Use the `zcode hooks trust` command to
+inspect and manage trust:
+
+```text
+zcode hooks trust status [--workspace <path-or-identity>] [--json]
+zcode hooks trust review [--workspace <path-or-identity>] [--json]
+zcode hooks trust grant --workspace <path-or-identity> --hook-digest <sha256> [--hook-digest <sha256> ...]
+zcode hooks trust grant --workspace <path-or-identity> --all-current --bundle-digest <sha256>
+zcode hooks trust revoke --workspace <path-or-identity> [--hook-digest <sha256> ... | --all]
+```
+
+- `status`: prints whether the current workspace hooks are trusted.
+- `review`: prints the hook declarations pending review with their digests.
+- `grant`: marks declarations as trusted by digest, or all current declarations by bundle digest.
+- `revoke`: removes trust for specific digests or for all declarations.
+
 ## Packaging Strategy
 
 1. Start with the normal Node CLI bundle from `npm run build`.

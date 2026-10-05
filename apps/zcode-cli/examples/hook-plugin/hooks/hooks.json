@@ -1,0 +1,84 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["./scripts/session-start.mjs"],
+            "once": true
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|Write|Edit)$",
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["./scripts/pre-tool.mjs"],
+            "timeoutMs": 5000,
+            "failClosed": true
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^(Bash|Write|Edit)$",
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["./scripts/post-tool.mjs"]
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "process",
+            "command": "node",
+            "args": ["./scripts/stop.mjs"]
+          }
+        ]
+      }
+    ],
+    "PermissionDenied": [
+      {
+        "hooks": [
+          {
+            "type": "http",
+            "url": "http://localhost:8080/hooks/permission-denied",
+            "method": "POST",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"event\":\"permission_denied\"}",
+            "timeoutMs": 3000
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "hooks": [
+          {
+            "type": "mcp_tool",
+            "server": "my-mcp",
+            "tool": "notify",
+            "input": {
+              "level": "info"
+            },
+            "timeoutMs": 3000
+          }
+        ]
+      }
+    ]
+  }
+}
