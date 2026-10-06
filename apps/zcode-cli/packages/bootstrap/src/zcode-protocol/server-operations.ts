@@ -109,6 +109,10 @@ import {
 import { createWorkspaceZCodeApp, ensureSessionModelAvailable } from "./workspace-model-runtime.js";
 import { buildAppUsageSnapshot, resolveTzOffsetMs } from "./usage-stats-builder.js";
 import { createProtocolInteractionBroker } from "./interaction-broker.js";
+import {
+  buildSubagentChildRuntimeConfigOverrides,
+  readSubagentLaunchSpec,
+} from "./subagent-launch-spec.js";
 import { createProtocolAutomationPort } from "./automation-port.js";
 import { createProtocolOffPeakPort } from "./offpeak-port.js";
 import { createProtocolBrowserControlBroker } from "./browser-control-broker.js";
@@ -3324,6 +3328,18 @@ async function createRecord(
       ? (params.parentSessionId as SessionId)
       : undefined;
   const taskType = params.taskType ?? "interactive";
+  // 子会话的身份事实（工具面 / agentName / maxTurns）spawn 时由 core 冻结落库，重推不出来
+  // （白名单来自父 runtime 的实时工具注册表）。冷恢复在这里把它折回 runtimeConfig；
+  // 没有规格的存量子会话退化成受限模式，绝不猜一个工具面出来（spec D2 / S1a）。
+  const subagentLaunchSpec =
+    taskType === "subagent_child"
+      ? await readSubagentLaunchSpec({
+          sessionStore: context.deps.sessionStore,
+          sessionId,
+          logger: context.logger,
+          traceContext,
+        })
+      : undefined;
   const runtimeMcp = protocolMcpServersToRuntimeMcpConfig(params.mcpServers);
   // 会话级压缩覆盖是**稀疏**的：只有用户真正表达过的字段才会出现。
   // 全默认时返回 {}，下面对应的 runtimeConfig 键整段省略，让 CLI 文件级
@@ -3364,6 +3380,12 @@ async function createRecord(
       // 不能只依赖 prompt 文本约束，否则内置工具和动态 MCP 工具仍可能越过调用面。
       toolAllowlist: "toolAllowlist" in params ? params.toolAllowlist : undefined,
       toolDisallowlist: "toolDenylist" in params ? params.toolDenylist : undefined,
+      // 子会话覆盖上面两条会话级工具面：spawn 时冻结的快照才是真相。`enabled: false` 是无条件的，
+      // 它同时是"子代理不得再派生子代理"的闸门（`Agent` 工具的注册门读 `Boolean(runtime.subagentPort)`，
+      // 端口只在 `enabled === false` 时收回）——规格缺失也必须写，否则冷恢复的子会话重新拿到 `Agent`。
+      ...(taskType === "subagent_child"
+        ? buildSubagentChildRuntimeConfigOverrides(subagentLaunchSpec)
+        : {}),
       nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
       modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
       // Memory Settings 是现有 CLI features.memory/use 之外的总开关。只在关闭时

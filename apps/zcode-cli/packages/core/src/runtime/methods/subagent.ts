@@ -45,6 +45,10 @@ import { isSubagentDispatchToolName } from "../../tool/compat.js";
 import { resolveEmbeddedSearchBranchCapability } from "../../embedded-search/capability.js";
 import { getSessionShellEnvironment } from "./session-shell-environment.js";
 import { deriveChildClientPorts } from "../helpers/child-client-ports.js";
+import {
+  buildSubagentLaunchSpecEntry,
+  persistSubagentLaunchSpec,
+} from "../../subagent/launch-spec.js";
 import { createCoordinatorResponsePort } from "../../subagent/coordinator-response.js";
 import { isStaleBranchRuntimeTaskEvent } from "./runtime-command-generation.js";
 import { loadPersistentAgentMemory } from "../../subagent/persistent-memory.js";
@@ -389,6 +393,29 @@ export function createDefaultSubagentPort(
         // 父会话过去先发布 SubagentSpawned，child 的首轮 executeTurn 才落库。
         // 并发派生时目录查询会在两者之间读到少一个 child。这里把持久化提升为发布前闸门。
         await childRuntime.ensureSessionPersistedForExternalActivity(request.prompt, {
+          traceContext: request.traceContext,
+        });
+        // 必须在 session 行落库之后写：entry 对 session(id) 有外键约束。只在首次 spawn
+        // 写一次，resume 不覆写（规格不可变，见 spec D2）。
+        await persistSubagentLaunchSpec({
+          sessionStore: deps.sessionStore,
+          logger: this.logger,
+          entry: buildSubagentLaunchSpecEntry({
+            childSessionId: request.sessionId,
+            data: {
+              agentType: request.agentType,
+              agentName: `zcode-${request.agentType}`,
+              profileName: request.profile.name,
+              profileSource: request.profile.source,
+              toolset: builtInExplore ? "explore" : "main",
+              toolAllowlist: childToolAllowlist,
+              ...(this.config.toolDisallowlist
+                ? { toolDisallowlist: this.config.toolDisallowlist }
+                : {}),
+              maxTurns: request.maxTurns ?? this.config.subagents?.maxTurns ?? 4,
+              background: request.background,
+            },
+          }),
           traceContext: request.traceContext,
         });
       }

@@ -813,6 +813,38 @@ export const SESSION_ENTRY_WORKSPACE_FILE_REWIND = "runtime/workspace_file_rewin
  * 行数 = 该会话派发过的子代理数，不随事件数增长。仅落最小事实集，不塞 prompt/工具清单。
  */
 export const SESSION_ENTRY_SUBAGENT_LIFECYCLE = "runtime/subagent_lifecycle" as const;
+/**
+ * 子代理启动规格（spec D2）。id 稳定为 `subagent-launch-spec:<childSessionId>`：spawn 时写一次、
+ * 之后不可变，冷恢复据此还原子会话身份。
+ *
+ * 只存**推导不出来**的事实。三条「不存」的判据：
+ * - persona 正文不存——owner 是 profile，恢复时按 `profileName` 重解析；
+ * - `permissionMode` 不存——owner 是 `session.permission.mode` + `runtime/execution_state`；
+ * - `modelSelection` 不存——已有专用 entry `runtime/model_selection`。
+ *
+ * `toolAllowlist` 必须存：子代理「继承父全部工具」的那份白名单来自父 runtime 的实时工具
+ * 注册表，bootstrap 侧无从重推，只能快照。
+ */
+export const SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC = "runtime/subagent_launch_spec" as const;
+
+/**
+ * `SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC` 的 payload。字段名与子代理 hook 载荷
+ * （`SubagentStart` / `SubagentStop`）同词，不另造第二套「子代理身份」表达。
+ */
+export interface SubagentLaunchSpecEntryData {
+  agentType: string;
+  /** 子代理呈现名（`zcode-<agentType>`）。 */
+  agentName: string;
+  /** persona 的寻址键：恢复时按它重解析 profile，不落正文。 */
+  profileName: string;
+  profileSource: string;
+  toolset: "main" | "explore";
+  /** spawn 时冻结的工具白名单（含 `respond_to_coordinator`）。 */
+  toolAllowlist: readonly string[];
+  toolDisallowlist?: readonly string[];
+  maxTurns?: number;
+  background: boolean;
+}
 
 export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
@@ -823,6 +855,7 @@ export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_WORKSPACE_CHECKPOINT,
   SESSION_ENTRY_WORKSPACE_FILE_REWIND,
   SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+  SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC,
 ] as const;
 
 export type SessionEntryType = (typeof SESSION_ENTRY_TYPES)[number];
