@@ -2053,6 +2053,33 @@ const zhCN: Record<string, string> = {
   "settings.memory.viewer.fileTooLarge": "该记忆文件超过 5 MiB 预览上限。",
   "settings.memory.viewer.fileChanged": "该记忆文件在读取期间已更新，请重新打开或刷新文件列表。",
   "settings.memory.viewer.noSelection": "选择一个记忆文件以查看内容。",
+  "settings.contextCompaction.title": "上下文压缩",
+  "settings.contextCompaction.description":
+    "控制会话上下文如何自动压缩。默认全部关闭，保持当前行为。",
+  "settings.contextCompaction.threshold.label": "自动压缩阈值",
+  "settings.contextCompaction.threshold.auto": "自动（当前模型约 {percent}%）",
+  "settings.contextCompaction.threshold.autoUnknown": "自动",
+  "settings.contextCompaction.threshold.explicit": "窗口的 {percent}%",
+  "settings.contextCompaction.threshold.reset": "恢复自动",
+  "settings.contextCompaction.thresholdInvalid": "请输入 1–100 之间的整数。",
+  "settings.contextCompaction.keepRecentInvalid": "请输入 1–50 之间的整数。",
+  "settings.contextCompaction.microcompact.label": "局部压缩",
+  "settings.contextCompaction.microcompact.description":
+    "清理较早的工具结果正文，只保留最近若干条，降低上下文占用。",
+  "settings.contextCompaction.microcompact.thresholdHint": "局部压缩的触发点跟随自动压缩阈值。",
+  "settings.contextCompaction.microcompact.keepRecentLabel": "保留最近工具结果组数",
+  "settings.contextCompaction.microcompact.keepRecentDescription":
+    "超出的旧工具结果正文会被清理，最近的这些保持完整。",
+  "settings.contextCompaction.microcompact.clearErrorsLabel": "同时清理失败的工具结果",
+  "settings.contextCompaction.microcompact.clearErrorsDescription":
+    "开启后，执行失败的工具结果正文也会一起清理。",
+  "settings.contextCompaction.postTurn.label": "轮末压缩",
+  "settings.contextCompaction.postTurn.description":
+    "一轮回答结束后就主动压缩，而不是等下一次提问前才压。",
+  "settings.contextCompaction.modelDownshift.label": "模型降档提前压",
+  "settings.contextCompaction.modelDownshift.description":
+    "切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。",
+  "settings.contextCompaction.saveFailed": "保存失败，请重试。",
   "settings.httpProxy": "HTTP 代理",
   "settings.httpProxyDescription":
     "模型、MCP、命令工具与应用渲染层的出口流量将经此代理，不读取系统环境变量。留空时这些流量直连，内置浏览器则跟随系统代理设置。修改后需重启应用生效。",

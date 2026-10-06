@@ -2187,6 +2187,34 @@ const enUS: Record<string, string> = {
   "settings.memory.viewer.fileChanged":
     "This memory file was updated while being read. Reopen it or refresh the file list.",
   "settings.memory.viewer.noSelection": "Select a memory file to preview it.",
+  "settings.contextCompaction.title": "Context compaction",
+  "settings.contextCompaction.description":
+    "Control how the conversation context is compacted automatically. Everything is off by default, keeping the current behavior.",
+  "settings.contextCompaction.threshold.label": "Auto-compaction threshold",
+  "settings.contextCompaction.threshold.auto": "Automatic (about {percent}% for the current model)",
+  "settings.contextCompaction.threshold.autoUnknown": "Automatic",
+  "settings.contextCompaction.threshold.explicit": "{percent}% of the window",
+  "settings.contextCompaction.threshold.reset": "Reset to automatic",
+  "settings.contextCompaction.thresholdInvalid": "Enter an integer between 1 and 100.",
+  "settings.contextCompaction.keepRecentInvalid": "Enter an integer between 1 and 50.",
+  "settings.contextCompaction.microcompact.label": "Local compaction",
+  "settings.contextCompaction.microcompact.description":
+    "Clear the body of older tool results and keep only the most recent ones to reduce context usage.",
+  "settings.contextCompaction.microcompact.thresholdHint":
+    "Local compaction triggers along with the auto-compaction threshold.",
+  "settings.contextCompaction.microcompact.keepRecentLabel": "Recent tool result groups to keep",
+  "settings.contextCompaction.microcompact.keepRecentDescription":
+    "Older tool result bodies beyond this count are cleared; the most recent ones stay intact.",
+  "settings.contextCompaction.microcompact.clearErrorsLabel": "Also clear failed tool results",
+  "settings.contextCompaction.microcompact.clearErrorsDescription":
+    "When enabled, the body of failed tool results is cleared as well.",
+  "settings.contextCompaction.postTurn.label": "Compact after each turn",
+  "settings.contextCompaction.postTurn.description":
+    "Compact right after a response finishes instead of waiting until the next request.",
+  "settings.contextCompaction.modelDownshift.label": "Compact before model downshift",
+  "settings.contextCompaction.modelDownshift.description":
+    "Compact before switching to a model with a smaller context window, avoiding an overflow on the first request after the switch.",
+  "settings.contextCompaction.saveFailed": "Saving failed. Please try again.",
   "settings.httpProxy": "HTTP Proxy",
   "settings.httpProxyDescription":
     "Route model, MCP, command-tool, and app renderer egress traffic through this proxy; system environment variables are not read. Leave blank and that traffic connects directly, while the embedded browser follows your system proxy settings. Restart the app to take effect.",

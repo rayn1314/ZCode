@@ -18,6 +18,7 @@ import {
   Cable,
   WandSparkles,
   Keyboard,
+  Layers,
   FileSearch,
 } from "lucide-react";
 import { isSettingsSectionEnabled, type SettingsSectionId } from "@/lib/settingsNavigation.js";
@@ -78,6 +79,13 @@ const BASE_SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     id: "memory",
     icon: Brain,
     titleId: "settings.memory",
+    groupId: "agentCapabilities",
+  },
+  // 「上下文压缩」紧跟「记忆」：两者都管"上下文里放什么、留多少"，相邻便于理解关系。
+  {
+    id: "contextCompaction",
+    icon: Layers,
+    titleId: "settings.contextCompaction.title",
     groupId: "agentCapabilities",
   },
   {
