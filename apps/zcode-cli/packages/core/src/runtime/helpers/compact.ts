@@ -41,6 +41,11 @@ export function defaultCompactPhaseForTrigger(trigger: CompactTrigger): CompactP
       return CompactPhase.PreRequest;
     case CompactTrigger.Reactive:
       return CompactPhase.Reactive;
+    case CompactTrigger.PostTurn:
+      return CompactPhase.PostTurn;
+    case CompactTrigger.ModelDownshift:
+      // 降档压缩发生在提交开始、模型切换之前，语义上属于"请求前"，不新增独立 phase。
+      return CompactPhase.PreRequest;
     case CompactTrigger.Manual:
     case CompactTrigger.Partial:
     case CompactTrigger.SessionMemory:
@@ -51,9 +56,12 @@ export function defaultCompactPhaseForTrigger(trigger: CompactTrigger): CompactP
 export function defaultCompactReasonForTrigger(trigger: CompactTrigger): CompactReason {
   switch (trigger) {
     case CompactTrigger.Auto:
+    case CompactTrigger.PostTurn:
       return CompactReason.ContextLimit;
     case CompactTrigger.Reactive:
       return CompactReason.ProviderOverflow;
+    case CompactTrigger.ModelDownshift:
+      return CompactReason.ModelDownshift;
     case CompactTrigger.Manual:
     case CompactTrigger.Partial:
       return CompactReason.UserRequested;

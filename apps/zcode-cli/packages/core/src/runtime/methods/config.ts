@@ -22,7 +22,7 @@ import {
   type ChildClientPortsContext,
   type ClientFacingPorts,
 } from "../helpers/child-client-ports.js";
-import type { AgentRuntimeConfig, ActiveTurnInfo } from "../types.js";
+import type { AgentRuntimeConfig, ActiveTurnInfo, AgentRuntimeCompactionPolicyPatch } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { cloneModelSelection } from "../model-selection.js";
 import { applyRuntimeExecutionState } from "../execution-state.js";
@@ -68,6 +68,15 @@ export function updateConfig(
       rebuildContextPrefix(this);
     }
   }
+}
+
+export function updateCompactionPolicy(
+  this: AgentRuntimeInternal,
+  patch: AgentRuntimeCompactionPolicyPatch,
+): void {
+  // 合并写入而不是整体替换：CLI 文件里的 compact 段（例如 enabled:false）必须活过
+  // 一次设置页热更新。设置侧总是显式下发六项（含 false），因此合并结果仍是完整状态。
+  this.config.compact = { ...this.config.compact, ...patch };
 }
 
 export function initializeSessionShellEnvironmentIfNeeded(

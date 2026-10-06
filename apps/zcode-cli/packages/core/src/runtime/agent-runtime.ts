@@ -96,6 +96,7 @@ import type {
   ActiveTurnStartReservation,
   ActiveTurnSteeringState,
   AgentRuntimeConfig,
+  AgentRuntimeCompactionPolicyPatch,
   AgentRuntimeDeps,
   ContinueActiveTargetLoopOptions,
   ConversationBeforeInputForkOptions,
@@ -388,6 +389,8 @@ export interface AgentRuntime {
   updateConfig(
     patch: Pick<AgentRuntimeConfig, "mode" | "planEnabled" | "language" | "outputStyle">,
   ): void;
+  /** 热更新会话压缩策略；下一次 turn-loop 迭代即生效（spec D3）。 */
+  updateCompactionPolicy(patch: AgentRuntimeCompactionPolicyPatch): void;
   initializeSessionShellEnvironmentIfNeeded(
     selection: ExecutionShellSelection | (() => ExecutionShellSelection),
   ): boolean;

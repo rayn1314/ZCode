@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { HookEvent } from "@zcode/shared";
+import type { CompactHookTrigger, CompactPhase } from "../compact/index.js";
 import type { ModelToolSideEffectScope } from "../model/index.js";
 import type { CollaborationMode, RiskLevel } from "../interfaces/session.port.js";
 import type { PermissionUpdate } from "../interfaces/permission.port.js";
@@ -156,15 +157,25 @@ export interface StopHookInput extends BaseHookInput {
 
 export interface PreCompactHookInput extends BaseHookInput {
   hookEventName: typeof HookEventName.PreCompact;
-  /** 压缩触发来源：manual（用户/命令）/ auto（上下文策略）/ reactive（溢出后响应式）。 */
-  compactTrigger: "manual" | "auto" | "reactive";
+  /**
+   * 压缩触发来源：manual（用户/命令）/ auto（上下文策略）/ reactive（溢出后响应式）
+   * / post_turn（轮末主动压）/ model_downshift（切换更小窗口模型前提前压）。
+   * matcher 匹配值即此字段。
+   */
+  compactTrigger: CompactHookTrigger;
+  /** 与 compactTrigger 同值；新写的 hook 脚本建议读这个语义更明确的字段。 */
+  trigger: CompactHookTrigger;
+  /** 压缩所处的阶段；matcher 不止按 trigger 区分时可用。 */
+  phase?: CompactPhase;
   /** 压缩前的预估 token 数（可能尚未完成精确统计）。 */
   preCompactTokenCount?: number;
 }
 
 export interface PostCompactHookInput extends BaseHookInput {
   hookEventName: typeof HookEventName.PostCompact;
-  compactTrigger: "manual" | "auto" | "reactive";
+  compactTrigger: CompactHookTrigger;
+  trigger: CompactHookTrigger;
+  phase?: CompactPhase;
   outcome: "completed" | "skipped" | "failed";
   boundaryId?: string;
   preCompactTokenCount?: number;

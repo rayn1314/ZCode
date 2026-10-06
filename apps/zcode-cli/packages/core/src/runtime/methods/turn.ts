@@ -63,6 +63,7 @@ import { scheduleProjectMemoryExtraction } from "../helpers/project-memory-extra
 import { appendBrowserTurnScreenshot } from "./browser-turn-screenshot.js";
 import { clearBrowserTurnState } from "../../repl/browser-turn-state.js";
 import { applySubmissionExecutionState, createTurnModel } from "./turn-model.js";
+import { maybeCompactAfterTurn } from "./post-turn-compact.js";
 import { rebuildContextPrefix } from "./context-refresh.js";
 
 const TARGET_RUN_HEARTBEAT_MS = 15_000;
@@ -293,6 +294,7 @@ export async function executeTurnCommand(
         turnTraceContext,
         options?.modelExecution,
         admittedModel,
+        { abortSignal: turnAbortSignal, events },
       );
       startedTarget = await this.readSessionTargetForContext(turnTraceContext);
       completeTurnPhase("target_read", phaseStartedAt);
@@ -689,6 +691,17 @@ export async function executeTurnCommand(
             userMessageId,
             turnTraceContext,
           );
+        }
+        if (activeTurn) {
+          // 轮末压缩（spec D8）：TurnComplete 与 usage 事实已发射，用户已看到本轮结束；
+          // 这里只多占一段 runtime 时间把上下文压好，失败也绝不能影响已完成的 turn。
+          await maybeCompactAfterTurn(this, {
+            abortSignal: turnAbortSignal,
+            activeTurn,
+            events,
+            model: loopState.model,
+            traceContext: turnTraceContext,
+          });
         }
         this.turnNumber++;
 

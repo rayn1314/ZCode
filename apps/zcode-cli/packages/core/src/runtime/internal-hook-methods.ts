@@ -1,5 +1,6 @@
 import type { HookRunResult, Model, TraceContext, TurnState } from "./deps.js";
 import type { HookEventName, SessionId, ToolCallId } from "@zcode/contracts";
+import type { CompactHookTrigger, CompactPhase } from "@zcode/contracts";
 import type { RuntimeMessageEntry } from "../agent/message-history.js";
 
 // 从 internal-methods.ts 拆出，避免该文件越过
@@ -26,7 +27,8 @@ export interface AgentRuntimeHookMethods {
   ): Promise<HookRunResult>;
   runPreCompactHooks(
     input: {
-      compactTrigger: "manual" | "auto" | "reactive";
+      compactTrigger: CompactHookTrigger;
+      phase?: CompactPhase;
       preCompactTokenCount?: number;
     },
     traceContext: TraceContext,
@@ -35,8 +37,9 @@ export interface AgentRuntimeHookMethods {
   runPostCompactHooks(
     input: {
       boundaryId?: string;
-      compactTrigger: "manual" | "auto" | "reactive";
+      compactTrigger: CompactHookTrigger;
       outcome: "completed" | "skipped" | "failed";
+      phase?: CompactPhase;
       postCompactTokenCount?: number;
       preCompactTokenCount?: number;
     },

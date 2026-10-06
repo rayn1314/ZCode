@@ -308,7 +308,7 @@ export {
   shouldAutoCompact,
   buildDefaultMicrocompactThreshold,
 } from "../compact/index.js";
-export type { AutoCompactPolicyConfig } from "../compact/index.js";
+export type { AutoCompactDecision, AutoCompactPolicyConfig } from "../compact/index.js";
 export type { AutoCompactTokenOverride } from "../compact/index.js";
 export type { LocalMicrocompactPolicyConfig } from "../compact/index.js";
 export {

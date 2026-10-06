@@ -45,6 +45,7 @@ import type {
   ActiveTurnKind,
   ActiveTurnSteeringState,
   AgentRuntimeConfig,
+  AgentRuntimeCompactionPolicyPatch,
   AgentRuntimeDeps,
   ContextUsageCategory,
   ContextUsageConfidence,
@@ -71,6 +72,7 @@ export interface AgentRuntimeCoreMethods {
   updateConfig(
     patch: Pick<AgentRuntimeConfig, "mode" | "planEnabled" | "language" | "outputStyle">,
   ): void;
+  updateCompactionPolicy(patch: AgentRuntimeCompactionPolicyPatch): void;
   initializeSessionShellEnvironmentIfNeeded(
     selection: ExecutionShellSelection | (() => ExecutionShellSelection),
   ): boolean;

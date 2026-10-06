@@ -23,6 +23,7 @@ export {
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   getAutoCompactOutputReserveTokens,
   getAutoCompactThreshold,
+  getAutoCompactThresholdPercent,
   getEffectiveContextWindowSize,
   shouldAutoCompact,
 } from "./policy.js";

@@ -1,7 +1,13 @@
 /* oxlint-disable max-lines -- runtime 生命周期/观察类 hook 方法集中维护，拆分前保持单一执行入口。 */
 import { HookEventName } from "../deps.js";
 import type { HookRunResult, Model, TraceContext, TurnState } from "../deps.js";
-import type { HookEventName as HookEventNameType, SessionId, ToolCallId } from "@zcode/contracts";
+import type {
+  CompactHookTrigger,
+  CompactPhase,
+  HookEventName as HookEventNameType,
+  SessionId,
+  ToolCallId,
+} from "@zcode/contracts";
 import type { AgentRuntimeInternal } from "../internal.js";
 import {
   systemReminderAttachmentEntry,
@@ -107,7 +113,8 @@ export async function runStopHooks(
 export async function runPreCompactHooks(
   this: AgentRuntimeInternal,
   input: {
-    compactTrigger: "manual" | "auto" | "reactive";
+    compactTrigger: CompactHookTrigger;
+    phase?: CompactPhase;
     preCompactTokenCount?: number;
   },
   traceContext: TraceContext,
@@ -121,10 +128,12 @@ export async function runPreCompactHooks(
       cwd: this.workingDirectory,
       hookEventName: HookEventName.PreCompact,
       mode: this.getMode(),
+      phase: input.phase,
       preCompactTokenCount: input.preCompactTokenCount,
       sessionId: this.sessionId,
       timestamp: new Date().toISOString(),
       traceId: traceContext.traceId,
+      trigger: input.compactTrigger,
       turnId: traceContext.turnId,
     },
     { matchValue: input.compactTrigger, signal },
@@ -135,8 +144,9 @@ export async function runPostCompactHooks(
   this: AgentRuntimeInternal,
   input: {
     boundaryId?: string;
-    compactTrigger: "manual" | "auto" | "reactive";
+    compactTrigger: CompactHookTrigger;
     outcome: "completed" | "skipped" | "failed";
+    phase?: CompactPhase;
     postCompactTokenCount?: number;
     preCompactTokenCount?: number;
   },
@@ -153,11 +163,13 @@ export async function runPostCompactHooks(
       hookEventName: HookEventName.PostCompact,
       mode: this.getMode(),
       outcome: input.outcome,
+      phase: input.phase,
       postCompactTokenCount: input.postCompactTokenCount,
       preCompactTokenCount: input.preCompactTokenCount,
       sessionId: this.sessionId,
       timestamp: new Date().toISOString(),
       traceId: traceContext.traceId,
+      trigger: input.compactTrigger,
       turnId: traceContext.turnId,
     },
     { matchValue: input.compactTrigger, signal },

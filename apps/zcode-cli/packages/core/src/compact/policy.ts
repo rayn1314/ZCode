@@ -20,9 +20,18 @@ export interface AutoCompactPolicyConfig {
   modelContextBudgetStrategy?: "legacy" | "preflight-v1";
   summaryReserveTokens?: number;
   bufferTokens?: number;
-  thresholdPercentOverride?: number;
+  /**
+   * 自动压缩阈值占模型完整上下文窗口的百分比（1–100）。
+   * 缺省时沿用「(窗口 − output reserve) − buffer」公式；显式设置时按窗口百分比计算。
+   * 越界值视为缺省，避免把阈值算成一个必然触发压缩的极小值。
+   */
+  thresholdPercent?: number;
   maxConsecutiveFailures?: number;
   microcompact?: LocalMicrocompactPolicyConfig;
+  /** 轮末主动压缩：一轮成功后、下一次请求前就先把上下文压好。 */
+  postTurnEnabled?: boolean;
+  /** 模型降档提前压：切到上下文窗口更小的模型前先压。 */
+  modelDownshiftEnabled?: boolean;
 }
 
 export type AutoCompactTokenSource = "estimate" | "provider_usage";
@@ -83,8 +92,41 @@ export function getAutoCompactOutputReserveTokens(config: AutoCompactPolicyConfi
 
 export function getAutoCompactThreshold(config: AutoCompactPolicyConfig = {}): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(config);
+  const percent = normalizeThresholdPercent(config.thresholdPercent);
+  if (percent !== undefined) {
+    // 显式百分比以「模型完整窗口」为分母：用户理解的是"窗口用到 80% 就压"，
+    // 而不是"扣掉 output reserve 之后再用掉 80%"。
+    const contextWindow = positiveInt(config.contextWindow) ?? DEFAULT_COMPACT_CONTEXT_WINDOW;
+    const percentThreshold = Math.floor((contextWindow * percent) / 100);
+    // 阈值不能越过输入侧上限：超过 effectiveContextWindow 等于永不触发。
+    return Math.min(effectiveContextWindow, Math.max(1, percentThreshold));
+  }
   const buffer = positiveInt(config.bufferTokens) ?? AUTOCOMPACT_BUFFER_TOKENS;
   return Math.max(0, effectiveContextWindow - buffer);
+}
+
+/**
+ * 归一化阈值百分比：只接受 1–100 的整数。
+ * 越界（含 0、负数、非有限数）一律按"未配置"处理并回落公式阈值——
+ * 这是 fail-safe 方向：宁可沿用既有阈值，也不把阈值压到一个必然触发的极小值。
+ * 三个配置入口（AppSettings / 协议偏好 / CLI config）都会先做范围校验，此处是最后一道防线。
+ */
+function normalizeThresholdPercent(value: number | undefined): number | undefined {
+  const normalized = positiveInt(value);
+  if (normalized === undefined || normalized < 1) return undefined;
+  return Math.min(normalized, 100);
+}
+
+/**
+ * 有效的阈值百分比（相对模型完整窗口）。
+ * 显式配置时即配置值；否则由实际阈值反算，便于决策日志如实反映"当前约到窗口的几成"。
+ */
+export function getAutoCompactThresholdPercent(config: AutoCompactPolicyConfig = {}): number {
+  const override = normalizeThresholdPercent(config.thresholdPercent);
+  if (override !== undefined) return override;
+  const contextWindow = positiveInt(config.contextWindow) ?? DEFAULT_COMPACT_CONTEXT_WINDOW;
+  if (contextWindow <= 0) return DEFAULT_AUTOCOMPACT_THRESHOLD_PERCENT;
+  return Math.min(100, Math.max(0, Math.floor((getAutoCompactThreshold(config) / contextWindow) * 100)));
 }
 
 export function shouldAutoCompact(input: {
@@ -98,7 +140,7 @@ export function shouldAutoCompact(input: {
   const effectiveContextWindow = getEffectiveContextWindowSize(config);
   const outputReserveTokens = Math.min(getAutoCompactOutputReserveTokens(config), contextWindow);
   const threshold = getAutoCompactThreshold(config);
-  const thresholdPercent = DEFAULT_AUTOCOMPACT_THRESHOLD_PERCENT;
+  const thresholdPercent = getAutoCompactThresholdPercent(config);
   const estimatedTokenCount = estimateMessageTokens(input.messages);
   const tokenCount = input.tokenOverride?.tokenCount ?? estimatedTokenCount;
   const tokenSource = input.tokenOverride?.source ?? "estimate";

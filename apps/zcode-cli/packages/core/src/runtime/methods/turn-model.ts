@@ -2,6 +2,7 @@ import {
   SESSION_ENTRY_MODEL_SELECTION,
   type Model,
   type ModelSelection,
+  type SessionEvent,
   type TraceContext,
   type TurnInputIntentMetadata,
 } from "@zcode/contracts";
@@ -11,6 +12,7 @@ import { cloneModelSelection } from "../model-selection.js";
 import { createRefreshRuntimeHeadersBeforeModelAttempt } from "./model-runtime-headers.js";
 import { createRuntimeModel, withModelInvocationContext } from "./runtime-model.js";
 import { applyRuntimeExecutionState } from "../execution-state.js";
+import { maybeCompactForModelDownshift } from "./model-downshift-compact.js";
 
 export function createTurnModel(
   runtime: AgentRuntimeInternal,
@@ -43,6 +45,7 @@ export async function applySubmissionExecutionState(
   traceContext: TraceContext,
   modelExecution?: import("../types.js").ModelExecutionContext,
   preparedModel?: Model,
+  compactionContext?: { abortSignal?: AbortSignal; events: SessionEvent[] },
 ): Promise<Model | undefined> {
   const selection = intent?.modelSelection;
   const previousSelection = runtime.getSessionModelSelection();
@@ -58,6 +61,17 @@ export async function applySubmissionExecutionState(
       runtime.setSessionModelSelection(appliedSelection);
       await persistRuntimeModelSelection(runtime, appliedSelection);
       if (!sameModelSelection(previousSelection, appliedSelection)) {
+        if (compactionContext) {
+          // 降档压缩必须先于 emitModelSelected：PreModelSwitch 的注入写在 messageHistory 末尾，
+          // 压缩会整体替换历史并只保留尾部轮次，注入后压缩等于把注入吞掉（spec D9）。
+          await maybeCompactForModelDownshift(runtime, {
+            abortSignal: compactionContext.abortSignal,
+            events: compactionContext.events,
+            model,
+            previousContextWindow: readSelectionContextWindow(runtime, previousSelection),
+            traceContext,
+          });
+        }
         await runtime.emitModelSelected({
           model,
           modelSelection: appliedSelection,
@@ -75,6 +89,23 @@ export async function applySubmissionExecutionState(
   }
 
   return model;
+}
+
+/**
+ * 读取某个选择对应的模型上下文窗口，只用于判定"新旧窗口是否变小"。
+ * 旧选择可能已经失效（provider 下线 / 模型被移除）：探测失败一律返回 undefined，
+ * 由调用方放弃降档压缩——探测本身绝不能挡住切模。
+ */
+function readSelectionContextWindow(
+  runtime: AgentRuntimeInternal,
+  selection: ModelSelection | undefined,
+): number | undefined {
+  if (!selection) return undefined;
+  try {
+    return createTurnModel(runtime, { selection }).properties.contextWindow;
+  } catch {
+    return undefined;
+  }
 }
 
 export function sameModelSelection(

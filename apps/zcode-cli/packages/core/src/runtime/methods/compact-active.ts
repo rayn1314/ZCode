@@ -18,6 +18,7 @@ import {
   getUsageTotalTokens,
 } from "../deps.js";
 import type { SessionEvent, TraceContext } from "../deps.js";
+import type { CompactHookTrigger } from "@zcode/contracts";
 import { resolveModelRequestSessionTypeFromTaskType } from "./model-request-session-type.js";
 import {
   defaultCompactPhaseForTrigger,
@@ -170,9 +171,9 @@ async function compactActiveConversationImpl(
 }> {
   throwIfTurnAborted(options.abortSignal);
   const trigger = options.trigger ?? CompactTrigger.Manual;
-  // 三个调用点（manual/auto/reactive）只传 Manual/Auto/Reactive，字符串值恰好与
-  // hook 的 compactTrigger 一致；Partial/SessionMemory 不经过这些路径。
-  const compactTrigger = trigger as "manual" | "auto" | "reactive";
+  // hook 的 compactTrigger 就是压缩触发器本身；Partial / SessionMemory 不经过本函数，
+  // 由 compactHookTriggerOf 显式挡掉，避免以后新增路径时静默给出错误的 hook 语义。
+  const compactTrigger = compactHookTriggerOf(trigger);
   const phase = options.phase ?? defaultCompactPhaseForTrigger(trigger);
   const compactReason = options.compactReason ?? defaultCompactReasonForTrigger(trigger);
   const compactModel =
@@ -233,7 +234,7 @@ async function compactActiveConversationImpl(
       events,
     );
     const postCompactHookResult = await this.runPostCompactHooks(
-      { compactTrigger, outcome: "skipped", preCompactTokenCount },
+      { compactTrigger, outcome: "skipped", phase, preCompactTokenCount },
       turnTraceContext,
       options.abortSignal,
     );
@@ -251,7 +252,7 @@ async function compactActiveConversationImpl(
   }
 
   const preCompactHookResult = await this.runPreCompactHooks(
-    { compactTrigger, preCompactTokenCount },
+    { compactTrigger, phase, preCompactTokenCount },
     turnTraceContext,
     options.abortSignal,
   );
@@ -660,6 +661,7 @@ async function compactActiveConversationImpl(
           boundaryId: compactBoundary.boundaryId,
           compactTrigger,
           outcome: CompactTimelineStatus.Completed as "completed",
+          phase,
           postCompactTokenCount: providerPostCompactTokenCount,
           preCompactTokenCount,
         },
@@ -735,8 +737,80 @@ async function compactActiveConversationImpl(
         timeline: compactTimeline,
         traceContext: turnTraceContext,
       });
+      await emitPostCompactFailedHook(this, {
+        compactTrigger,
+        error,
+        phase,
+        preCompactTokenCount,
+        turnTraceContext,
+        abortSignal: options.abortSignal,
+      });
       throw error;
     }
+  }
+}
+
+/**
+ * 压缩失败时补发 PostCompact(outcome="failed")。
+ *
+ * 契约允许 completed|skipped|failed，但过去只有前两者会发射，靠 hook 观察压缩结果的用户
+ * 收不到失败信号。这里只在「真实失败」时发射：被取消（Stop / 会话关闭导致的中断）不是失败，
+ * 且此刻注入上下文没有意义。
+ *
+ * hook 自身异常必须吞掉：它不能掩盖原始压缩错误（fail-open 默认），否则用户看到的是
+ * hook 的错误而不是压缩失败的原因。
+ */
+async function emitPostCompactFailedHook(
+  runtime: AgentRuntimeInternal,
+  input: {
+    abortSignal?: AbortSignal;
+    compactTrigger: CompactHookTrigger;
+    error: unknown;
+    phase: CompactPhase;
+    preCompactTokenCount: number;
+    turnTraceContext: TraceContext;
+  },
+): Promise<void> {
+  if (isTurnCancellationError(input.error, input.abortSignal)) return;
+  try {
+    const result = await runtime.runPostCompactHooks(
+      {
+        compactTrigger: input.compactTrigger,
+        outcome: "failed",
+        phase: input.phase,
+        preCompactTokenCount: input.preCompactTokenCount,
+      },
+      input.turnTraceContext,
+      input.abortSignal,
+    );
+    runtime.injectHookAdditionalContextIntoMessageHistory(
+      HookEventName.PostCompact,
+      result.additionalContexts,
+    );
+  } catch (error) {
+    runtime.logger?.warn("PostCompact failure hook threw", {
+      ...traceContextToLogContext(input.turnTraceContext),
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "compact.post_compact_hook_failed",
+      module: "core.runtime",
+      status: "failed",
+    });
+  }
+}
+
+function compactHookTriggerOf(trigger: CompactTrigger): CompactHookTrigger {
+  switch (trigger) {
+    case CompactTrigger.Manual:
+    case CompactTrigger.Auto:
+    case CompactTrigger.Reactive:
+    case CompactTrigger.PostTurn:
+    case CompactTrigger.ModelDownshift:
+      return trigger;
+    case CompactTrigger.Partial:
+    case CompactTrigger.SessionMemory:
+      // 这两条路径不经过 compactActiveConversation；走到这里说明调用方违约。
+      // 显式抛错而不是猜一个 hook 值，避免把错误的压缩来源告诉用户 hook。
+      throw new Error(`Compact trigger ${trigger} cannot be reported to hooks`);
   }
 }
 

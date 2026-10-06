@@ -12,9 +12,32 @@ export const CompactTrigger = {
   Partial: "partial",
   Reactive: "reactive",
   SessionMemory: "session_memory",
+  /** 一轮回答成功结束后主动压缩，而不是等下一次请求前的 PreRequest 阶段。 */
+  PostTurn: "post_turn",
+  /** 切换到上下文窗口更小的模型之前，先把上下文收敛到新窗口内。 */
+  ModelDownshift: "model_downshift",
 } as const;
 
 export type CompactTrigger = (typeof CompactTrigger)[keyof typeof CompactTrigger];
+
+/**
+ * 会经 `compactActiveConversation` 到达 hook 的触发器子集。
+ * Partial / SessionMemory 是另外两条路径的记账取值，不经过压缩主流程，
+ * 因此 hook 的 matcher 空间里没有它们的合法位置。
+ */
+export const COMPACT_HOOK_TRIGGERS = [
+  CompactTrigger.Manual,
+  CompactTrigger.Auto,
+  CompactTrigger.Reactive,
+  CompactTrigger.PostTurn,
+  CompactTrigger.ModelDownshift,
+] as const;
+
+export type CompactHookTrigger = (typeof COMPACT_HOOK_TRIGGERS)[number];
+
+export function isCompactHookTrigger(value: CompactTrigger): value is CompactHookTrigger {
+  return (COMPACT_HOOK_TRIGGERS as readonly CompactTrigger[]).includes(value);
+}
 
 export const MicrocompactTrigger = {
   TimeBased: "time_based",
@@ -34,6 +57,8 @@ export const CompactPhase = {
   PreRequest: "pre_request",
   MidTurn: "mid_turn",
   Reactive: "reactive",
+  /** 轮末阶段：turn 已成功返回，运行时空闲窗口内的主动压缩。 */
+  PostTurn: "post_turn",
 } as const;
 
 export type CompactPhase = (typeof CompactPhase)[keyof typeof CompactPhase];
@@ -108,6 +133,8 @@ const compactTimelinePayloadInputSchema = z
       CompactTrigger.Partial,
       CompactTrigger.Reactive,
       CompactTrigger.SessionMemory,
+      CompactTrigger.PostTurn,
+      CompactTrigger.ModelDownshift,
     ]),
     phase: z
       .enum([
@@ -115,6 +142,7 @@ const compactTimelinePayloadInputSchema = z
         CompactPhase.PreRequest,
         CompactPhase.MidTurn,
         CompactPhase.Reactive,
+        CompactPhase.PostTurn,
       ])
       .optional(),
     compactReason: z
@@ -185,6 +213,8 @@ export const compactBoundaryPayloadSchema = z
       CompactTrigger.Partial,
       CompactTrigger.Reactive,
       CompactTrigger.SessionMemory,
+      CompactTrigger.PostTurn,
+      CompactTrigger.ModelDownshift,
     ]),
     phase: z
       .enum([
@@ -192,6 +222,7 @@ export const compactBoundaryPayloadSchema = z
         CompactPhase.PreRequest,
         CompactPhase.MidTurn,
         CompactPhase.Reactive,
+        CompactPhase.PostTurn,
       ])
       .optional(),
     compactReason: z

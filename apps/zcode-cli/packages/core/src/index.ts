@@ -144,6 +144,7 @@ export type {
 export type {
   ActiveTurnInfo,
   AgentRuntimeConfig,
+  AgentRuntimeCompactionPolicyPatch,
   AgentRuntimeDeps,
   ConversationRewindResult,
   ExecuteTurnOptions,

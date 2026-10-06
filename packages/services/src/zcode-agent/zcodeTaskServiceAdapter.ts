@@ -6045,7 +6045,9 @@ function timelineTriggerValue(value: unknown): ZCodeTimelineTrigger | undefined 
     value === "auto" ||
     value === "reactive" ||
     value === "partial" ||
-    value === "session_memory"
+    value === "session_memory" ||
+    value === "post_turn" ||
+    value === "model_downshift"
     ? value
     : undefined;
 }

@@ -222,7 +222,13 @@ function splitRuntimeEntriesForCompactSelection(
   return {
     groups: groupRuntimeEntriesByCompactRound(bodyEntries),
     prefixEntries,
-    shouldPreserveRecent: trigger === CompactTrigger.Auto || trigger === CompactTrigger.Reactive,
+    // 轮末压缩与降档压缩都发生在「用户刚看到/即将继续」的位置，必须像 auto/reactive 一样
+    // 原地保留最近一轮对话，否则会把用户最后一条输入和刚拿到的回答一起摘要掉。
+    shouldPreserveRecent:
+      trigger === CompactTrigger.Auto ||
+      trigger === CompactTrigger.Reactive ||
+      trigger === CompactTrigger.PostTurn ||
+      trigger === CompactTrigger.ModelDownshift,
   };
 }
 

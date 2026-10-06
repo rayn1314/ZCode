@@ -118,6 +118,17 @@ import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-
 // Agent Runtime
 // -----------------------------------------------
 
+/**
+ * 会话级压缩策略的可写面。
+ *
+ * 只含用户可配置的字段：`contextWindow` / `maxOutputTokens` 由当前模型推导，
+ * 不允许外部写入（spec 不变式 I3）。`enabled:false` 仍是唯一的压缩总开关。
+ */
+export type AgentRuntimeCompactionPolicyPatch = Pick<
+  AutoCompactPolicyConfig,
+  "enabled" | "thresholdPercent" | "microcompact" | "postTurnEnabled" | "modelDownshiftEnabled"
+>;
+
 export interface AgentRuntimeConfig {
   /** shared-host CUA request routing metadata; desktop is the safe default. */
   clientMode?: "desktop-continuous" | "web-remote-replayable";

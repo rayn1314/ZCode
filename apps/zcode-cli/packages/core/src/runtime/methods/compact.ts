@@ -13,7 +13,6 @@ import {
   shouldAutoCompact,
 } from "../deps.js";
 import type {
-  AutoCompactPolicyConfig,
   AutoCompactTokenOverride,
   SessionEvent,
   TraceContext,
@@ -32,7 +31,7 @@ import type { Model } from "../deps.js";
 import type { ProviderContextUsageSnapshot } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { autoCompactDecisionLogContext } from "./compact-log-context.js";
-import { resolveNormalRequestMaxOutputTokens } from "./model-token-limits.js";
+import { resolveRuntimeCompactPolicyConfig } from "./compact-policy-config.js";
 import type {
   AutoCompactLoopContext,
   AutoCompactOutcome,
@@ -190,14 +189,7 @@ export async function autoCompactIfNeeded(
 ): Promise<AutoCompactOutcome> {
   throwIfTurnAborted(abortSignal);
 
-  const config: AutoCompactPolicyConfig = {
-    contextWindow: context.model.properties.contextWindow,
-    ...this.config.compact,
-    maxOutputTokens: resolveNormalRequestMaxOutputTokens({
-      modelMaxOutputTokens: context.model.optionSpecs.maxOutputTokens.max,
-    }),
-    modelContextBudgetStrategy: this.config.modelContextBudgetStrategy,
-  };
+  const config = resolveRuntimeCompactPolicyConfig(this.config, context.model);
   const activeEntries = context.turnRequestState.entries;
   const activeProjection = buildRuntimeProviderRequestMessages(this, {
     entries: activeEntries,
@@ -310,7 +302,7 @@ export async function autoCompactIfNeeded(
   }
 }
 
-function buildProviderUsageTokenOverride(
+export function buildProviderUsageTokenOverride(
   messages: RunModelTextRequestOptions["messages"],
   sourceEntries: readonly (RuntimeMessageEntry | undefined)[],
 ): AutoCompactTokenOverride | undefined {
