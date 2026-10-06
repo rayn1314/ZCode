@@ -2,7 +2,7 @@
 
 涉及包：`contracts`（`SubagentPort` 归属与入参、会话角色策略、session entry 常量与类型）、`core`（`Agent` 工具面、子代理派发入口、旧构造路径删除）、`bootstrap`（会话构造路径 `createRecord`、`SubagentPort` 实现、输入准入、阻塞交互 broker、生命周期级联）、`adapters`（mailbox 落盘/消费）、`services`（任务索引排除、usage 归属）、`shared`（协议 schema）、`ui`（层级列表、可输入子会话面板）。
 
-与既有 spec 的关系：本文取代 `subagent-session-messaging.md` 的两条前提——「子代理会话只读」（该文 D2/D8 的隐含前提）与「`history` 行只能用 `childSessionId` 寻址」。该文其余部分（D1 派发即句柄、D3 投递 owner、D4 身份模型、D5 树内通路、D6 调用级 model、D7 防环）继续有效。
+与既有 spec 的关系：本文接续 `subagent-session-messaging.md` 的 D1、D3–D7，并**取代**其中两处结论——该文 D8 末条「`history` 行只能用 `childSessionId` 走跨会话路径」（将扩展为"可投递、可输入"），以及本文改造前追加的一条注记所声称的"子代理会话只读"前提（**该文原文并未声明这一点**，只读是 `guard.subagentReadOnly` 的实现现状）。
 
 ## 背景与问题
 
@@ -10,7 +10,7 @@
 
 子会话与正式会话在**数据面**上已经是同一套：同一个 `AgentRuntime` 类、同一条 `sessionStore.createSession`、同一个 `sessionId` 体系（`sess_subagent_agent_<uuid>`）、同一套 V4 订阅协议（子会话已有自己的 topic 与 publisher，已能作为只读侧栏标签页打开）。
 
-差在**运行时的构造路径**：子会话的运行时由父会话在 core 进程内直接 `new AgentRuntime(childSessionId, {...}, {...})` 构造（`core/src/runtime/methods/subagent.ts`），它的依赖是一份**手写的字面量**（同文件 292–375 行）。这与 bootstrap 造正式会话的那条路径（`bootstrap/src/zcode-protocol/server-operations.ts` 的 `createRecord` → `createWorkspaceZCodeApp`）是**两条互不相干的路径**。
+差在**运行时的构造路径**：子会话的运行时由父会话在 core 进程内直接 `new AgentRuntime(childSessionId, config, deps)` 构造（`core/src/runtime/methods/subagent.ts`），其中 `deps` 是一份**手写的字面量**（同一文件里那次 `new AgentRuntime` 调用的第三个实参）。这与 bootstrap 造正式会话的那条路径（`bootstrap/src/zcode-protocol/server-operations.ts` 的 `createRecord` → `createWorkspaceZCodeApp`）是**两条互不相干的路径**。
 
 bootstrap 因此完全不知道这个运行时的存在：子会话没有 record，事件靠 `ingestDetachedLiveSession`（`server-operations.ts`）**借父 record 的 sink** 路由到自己的 topic，靠 `detachedChildParent` 记账，靠 `guard.subagentReadOnly` 挡住输入。
 
@@ -27,6 +27,14 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 本方案采用同一形状。
 
+### 同期落地的能力（已并入本方案）
+
+2026-10-05 / 10-06 主工作区落了三批与本方案直接相交的改动，方案已按它们校正：
+
+- **跨会话消息三档投递**（`d23d6ba`）：`sendText` 新增 `requestedDelivery: startNow | queue | guide`，新增 `guideQueueItem`，队列项可提升为引导。影响 D3 的命令清单（原稿"拒绝 `sendQueuedNow`"是错的，已修订）。
+- **hooks 框架改造**（`126b011` / `caca944` / `cc07cff` / `bcb73f4`）：子代理生命周期成为独立 hook 事件 `SubagentStart` / `SubagentStop`，载荷已带 `childSessionId` / `agentType` / `allowedTools` / `model`；`SessionEnd` 成为独立事件；事件名单下沉 `@zcode/shared` 单源并全量派生。影响 D2（launch spec 与 hook 载荷同词）、D5（终止不被阻断、发射点必须保留、发现 `SubagentStop` 声明可阻断但未消费）、S1（`subagent/runner.ts` 是重写目标也是 hook 宿主，冲突面大）。
+- **上下文压缩开关化**（`4c73c90` / `c7ec42d` / `5b39818` / `c08571c`）：压缩策略成为用户可配置项，且已修过一处"子会话继承到陈旧偏好"的问题。影响 D1（起始偏好必须走 `{ kind: "inherit", parent }`）与验证（新增继承回归断言）。
+
 ## 设计决策
 
 ### D1 · 子会话由同一条会话构造路径创建（根因修复）
@@ -34,6 +42,8 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 - 子会话的 record 与运行时由 bootstrap 的既有构造路径创建（`createRecord` → `createWorkspaceZCodeApp`），与任何会话一样进入 `context.sessions`。
 - 父会话的 `Agent` 工具不再自己 `new AgentRuntime`，改为经 `SubagentPort` 派发；该端口的实现从 core 移到 bootstrap，与 `sessionMessagePort` / `subagentRosterPort` 同层注入（`create-app.ts` 已有这三个端口的注入位）。
 - 子会话由此**天然**获得：`sessionMailboxPort`、正确的工具面、写死的 `subagents.enabled: false`、可裁决的输入准入、可被 `SendMessage` 命中的 record。症状 1–3 一次性消失，不需要任何"接线"。
+- **起始偏好复用既有形状**：bootstrap 已经为 fork 提供了"子会话沿用父会话起始偏好"的机制（`server-operations.ts` 的 `SessionStartupPreferencesSource = { kind: "inherit", parent }`，含 memory / modelContextBudgetStrategy / nativeSearchEnhancements / compaction / shell selection）。子会话走**同一份**，不另造继承逻辑。这一步不是可选的：压缩偏好已是用户可配置项（2026-10-06 落地的压缩开关化，四项控件），漏继承会让子会话沿用陈旧策略。
+- **治理纪律沿用仓库既有做法**：hook 事件名单已"下沉 `@zcode/shared` 单源 + 全量派生站点 + 奇偶校验测试"。本轮的会话角色策略照同一纪律办——单源表 + 类型级穷尽守卫 + 覆盖率/奇偶测试。策略表的价值是**不漂移**，不是减少分支；把散落分支收成一张同样复杂的表并不降低复杂度，这一点在决策里如实写明。
 - **删除清单**（不保留旧路径）：core 手写的子 runtime 依赖字面量、`ingestDetachedLiveSession`、`detachedChildParent` / `detachedChildrenByParent`（含 `collectMemoryDiagnostics` 的 `detachedLive` 指标）、`pruneDetachedChildPublishers` 及其低频 tick、`deriveChildClientPorts` + `subagent-interaction-broker` 的父改写（改由 D6 在 record 层承担）、`guard.subagentReadOnly`。
 - **遗留的旧路径**：`subagent-lifecycle` entry（roster）保留，它承载"跑过什么、什么状态"，与身份无关。
 
@@ -46,15 +56,21 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 - **工具面必须冻结**（新增理由）：子会话"继承父全部工具"的那份白名单来自**父 runtime 的实时工具注册表**（`resolveSubagentToolAllowlist` 用 `this.getTools()` 枚举），bootstrap 侧无从重推；它是 spawn 时事实，只能快照。
 - **不重复存已有事实**（避免第二真相源）：`permissionMode` 已在 `session.permission.mode` + `SESSION_ENTRY_EXECUTION_STATE`；`modelSelection` 已有专用 entry `SESSION_ENTRY_MODEL_SELECTION`。launch spec 只在 spawn 时**保证**这两处被写入，不另存一份。
 - **不存 persona 正文**：persona 的 owner 是 profile，恢复时按 `profileName` 重解析。
+- **与 hook 面同词**：子代理身份已在 `SubagentStart` / `SubagentStop` 载荷里被表达（`agentId` / `agentType` / `childSessionId` / `prompt` / `allowedTools` / `model`，见 `core/src/subagent/runner.ts` 的 `runSubagentLifecycleHooks`）。launch spec 复用同一套字段名与语义，不新增第二套"子代理身份"表达；差别只在 launch spec 是**持久**的那一份。
 
 ### D3 · 输入面：子会话就是一条普通会话的输入
 
 - 删除 `guard.subagentReadOnly`，改为**会话角色策略**裁决命令集，拒绝时返回细分 reasonCode（例如"子代理会话不支持分叉"），不再用笼统的只读错误。
-- **放行**：`sendText`（开新轮 / guide）、`compact`、`editUserQuery`、`retryTurn`、`switchModelConfig`（D9 允许子会话内切模型）。
-- **拒绝**：`sendGoalCommand`、`resumeGoal`、`sendQueuedNow`（长期自主循环 / 队列接管语义）、`forkAssistant`、`createSelectionSideSession`（会造出"子的子"或把树变成图）、`switchCollaborationMode`（D9 权限模式不可改）。
-- **强制点统一在 `admitCommandInput`**：该函数本就对每个命令被调用，目前只裁决 6 类、对 5 类返回 intent，`switchCollaborationMode` / `switchModelConfig` / queue 系列 / `stop` / `renameSession` 目前**完全没有**子会话判据——策略必须覆盖全部命令类型，不能只覆盖对话输入类。
+- **默认放行**——一切"在本会话内产生或管理输入"的命令：`sendText`（含三档投递）、`compact`、`editUserQuery`、`retryTurn`、`stop`、`switchModelConfig`、`setFollowupMode`、队列操作（`sendQueuedNow` / `guideQueueItem` / `editQueueItem` / `reorderQueueItem` / `deleteQueueItem` / `setAutoDrain`）、`renameSession`、`deleteSession`、`cancelBackgroundWork`。
+  - **对原稿的两处修订**：原稿把 `sendQueuedNow` 归入"队列接管语义"并拒绝，是错的——它只是"把已排队的那条立即发出"，与普通会话无异；落在子会话**自己**队列上的操作应当放行。2026-10-05 新增的 `guideQueueItem`（队列项提升为引导）同理。
+  - **`sendText` 的 `requestedDelivery: startNow | queue | guide` 三档与主会话一致**：对正在跑的子会话，"引导"就是在 tool batch 边界注入——正是 `subagentPort.sendMessage` 原本要做的同一件事。统一之后不再需要单独的子代理转向通道。
+- **拒绝（三类）**：
+  1. **从子会话派生新会话**：`createSession`、`createSelectionSideSession`、`forkAssistant`、`startSavedWorkflow`、`resumeWorkflowRun`、`amendWorkflowRunSettings`。归属是树不是图（D5）。
+  2. **权限提升**：`switchCollaborationMode`（D9：子会话内权限模式不可改）。
+  3. **会话级自主目标循环**：`sendGoalCommand`、`resumeGoal`、`pauseGoal`。目标循环是自主模式，会让"父级联中止"变得不可预测；子会话靠用户输入与消息驱动推进。
+- **不由本策略管**：工作区 hook 信任类命令（`respondWorkspaceHookReview` / `toggleWorkspaceHookReviewItem` / `revokeWorkspaceHookTrust` / `requestWorkspaceHookReview`）是**用户级信任决策**，不是会话能力面；保持现状准入，不塞进角色策略表——否则等于把用户级权限伪装成会话属性。
+- **强制点统一在 `admitCommandInput`**：该函数本就对每个命令被调用，但目前只裁决 6 类、对 5 类返回 intent，`switchCollaborationMode` / `switchModelConfig` / queue 系列 / `stop` / `renameSession` 目前**完全没有**子会话判据——策略必须覆盖**全部**命令类型，不能只覆盖对话输入类。
 - legacy `session/send` 与 V4 准入同时生效，不出现第二条绕过路径。
-- 并行开发中的新增命令 `guideQueueItem` 按同一策略表归类（不逐个硬编码）。
 - **闲时轮**：闲时轮内子会话输入与 `SendMessage` 同规则禁用并给出可执行提示（闲时轮借用前台模型，子会话输入会绕过预算语义）。
 
 ### D4 · 收件箱
@@ -74,6 +90,11 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 - **可单开**：子会话可被单独常驻、单独订阅、单独开轮，不要求父会话也在运行。
 - 子会话**自身**的常驻回收仍受"有活动轮"保护（现有 resident facts 语义不变）。
 - **终态不新增枚举**：级联中止复用 `cancelled`（协议投影现有取值 `success | failed | cancelled | lost`），不为"父中止"与"用户中止"的细微差别扩 schema。
+- **与 hook 面的关系**（2026-10-05/06 落地的 hook 改造）：
+  - 子代理生命周期已有独立 hook 事件 `SubagentStart` / `SubagentStop`，发射点在 `core/src/subagent/runner.ts` 的 `runSubagentLifecycleHooks`，用的是**父 runtime 的 hook runner**。S1 重写该文件时必须**保留这两个发射点**，hook 面不能因重构而丢。
+  - **级联终止不被 hook 阻断**：父删除/中止是 fail-closed 的收尾动作，不经过可阻断决定；否则"用户删掉父会话"可能被一个 hook 静默否决。
+  - **发现的不一致（需修，登记为遗留）**：`SubagentStop` 在共享事件表里声明 `blockable: true`（`packages/shared/src/hooks.ts`），但上面那个发射点只消费 `additionalContexts`、**没有消费阻断决定**——用户写 `"block"` 会静默无效。要么接线、要么取消 `blockable` 声明，不能保持"声明了但不生效"。
+  - `SessionEnd` 是独立的会话级事件，表达"会话结束"，与"删除"不是同一件事；递归删除只在删除路径触发。
 
 ### D6 · 阻塞交互仍落父会话（实现点从 spawn 移到 record）
 
@@ -165,8 +186,8 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - **存量子会话没有 launch spec**：冷恢复时退化为受限模式（不可输入）。不做批量回填——子会话的身份不能从窄化的 lifecycle entry 之外的地方可靠推断。用户若要继续使用，重新派发一个子代理即可。
 - **`agent_*` 寻址保持不变**：现有提示词、`ListAgents`、节奏型工作流仍可按 `agent_*` 使用；新增的是 `sess_subagent_*` 可投递、可输入。
 - **`ListAgents` / `SendMessage` 的模型可见描述必须同步**，且文案在 **core 的 handler**（`core/src/tool/handlers/list-agents.ts`、`send-message.ts`），不在 `contracts`。
-- **`subagent-session-messaging.md` 的两条前提作废**：落地时同步改该文 D2/D8 与失败语义。注意该文原文并**没有**"子代理会话只读"这几个字（那是本次改造前追加的注记），修的是结论不是措辞。
-- **主会话回归门覆盖全部 7 类 taskType**：`interactive` / `fork` / `workflow_parent` / `selection_side_chat` / `workflow_child` / `nested_workflow_child` 的能力面必须与改造前逐项一致。`workflow_child` 有自己的工具 denylist（`app/workflow-actor-tools.ts`），不能被本改造覆盖或绕过。
+- **`subagent-session-messaging.md` 的结论同步**：该文顶部注记已在本次改造中更新；落地时把 D8 末条改写为"可投递、可输入"。注意该文原文并**没有**"子代理会话只读"这几个字（那是改造前追加的注记），修的是结论不是措辞。
+- **主会话回归门覆盖 `SESSION_TASK_TYPES` 的全部 7 类**（`interactive` / `fork` / `selection_side_chat` / `workflow_parent` / `workflow_child` / `subagent_child` / `nested_workflow_child`，见 `contracts/src/interfaces/session-store.port.ts`）：除 `subagent_child` 外的 6 类能力面必须与改造前逐项一致。`workflow_child` 有自己的工具 denylist（`app/workflow-actor-tools.ts`），不能被本改造覆盖或绕过。
 
 ## 实施阶段（方案）
 
@@ -176,7 +197,11 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - `bootstrap`：`SubagentPort` 的新实现（创建子 record、写 launch spec、跑轮、回结果）；`createRecord` 的 `runtimeConfig` 对 `taskType === "subagent_child"` 读 launch spec，写死 `subagents: { enabled: false }`、`toolset`、`agentName`、`subagentContext`、冻结的工具白名单；交互 broker 的父改写。
 - `core`：`Agent` 工具改为走端口；删除手写的子 runtime 依赖字面量与 `new AgentRuntime` 分支；删除 `deriveChildClientPorts`。
 - `contracts`：`SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC` 常量与数据结构、`SESSION_ENTRY_TYPES` 同步、`SubagentPort` 入参补齐（需要携带父侧解析好的冻结工具面）。
+- `bootstrap` 起始偏好：子会话走 `{ kind: "inherit", parent }`，与 fork 同一条路（D1）。
+- `core` 必须保留 `subagent/runner.ts` 里的 `SubagentStart` / `SubagentStop` hook 发射点（D5）。
 - 本阶段**保留只读门**（D3 在 S2 才拆），避免半开状态。
+
+**已知冲突面**：`core/src/subagent/runner.ts` 刚被 hook 改造大改过（`SubagentStart` / `SubagentStop` 发射点、`injectHookAdditionalContext`、payload 组装），而它正是 S1 要重写的文件；`core/src/runtime/methods/subagent.ts` 手写的依赖字面量里也已包含 hook 相关字段。重写时以"保留 hook 发射点 + 保留 payload 字段"为硬约束，不能顺手删掉。
 
 验收：
 - 子会话创建后出现在 `context.sessions` 里，且 `SendMessage(to: sess_subagent_*)` 走到正常的会话投递路径（不再有第二份 runtime）。
@@ -190,9 +215,11 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 改动面：`contracts`（角色策略与细分 reasonCode）、`bootstrap`（`admitCommandInput`、legacy `session/send`、`switchCollaborationMode` 拒绝 / `switchModelConfig` 放行）、`core`（闲时轮拒绝路径）。
 
 验收：
-- 子会话可 `sendText` 开新轮并跑完；`compact` / `editUserQuery` / `retryTurn` / `switchModelConfig` 可用。
-- `forkAssistant` / `createSelectionSideSession` / `sendGoalCommand` / `resumeGoal` / `sendQueuedNow` / `switchCollaborationMode` 返回细分 reasonCode。
-- 表驱动矩阵：遍历全部命令类型 × 子会话，断言 admitted 或具体 reasonCode。
+- 子会话可 `sendText` 开新轮并跑完；三档投递（`startNow` / `queue` / `guide`）对子会话都生效，`guide` 能注入正在跑的子会话轮。
+- `compact` / `editUserQuery` / `retryTurn` / `switchModelConfig` / `stop` / 队列操作可用。
+- `forkAssistant` / `createSelectionSideSession` / `createSession` / `startSavedWorkflow` / `resumeWorkflowRun` / `amendWorkflowRunSettings` / `sendGoalCommand` / `resumeGoal` / `pauseGoal` / `switchCollaborationMode` 返回细分 reasonCode。
+- `sendQueuedNow` / `guideQueueItem` **放行**（修订原稿的拒绝判断）。
+- 表驱动矩阵：遍历**全部**命令类型 × 子会话，断言 admitted 或具体 reasonCode（命令类型以 `packages/shared/src/zcode-protocol-v4/command.ts` 的 `commandPayloadSchemas` 为准，当前 35 条）。
 - 主会话全部输入命令行为不变（回归）。
 
 ### S3 · 生命周期（递归删除 + 沿树中止）
@@ -245,10 +272,12 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - **输入区**：复用正式会话 composer。差异：
   - 隐藏权限模式切换（D9 不可改）。
   - 保留模型选择（可切）。
+  - **保留三档投递**（普通 / 引导 / 立即，`requestedDelivery: queue | guide | startNow`）：这是 2026-10-05 落地的 composer 能力，对子会话同样有意义——"引导"就是不打断当前轮、在 tool batch 边界注入，"立即"才抢占。
+  - **保留队列面板**：子会话忙时同样会排队，队列项操作（引导 / 立即 / 编辑 / 重排 / 删除 / 自动放行）按 D3 放行，不另做简化版。
   - 保留上下文用量与 compact 入口。
   - 保留行内 `editUserQuery` / `retryTurn` 控件（D3 放行）。
   - 受限模式（身份未还原）或孤儿会话：composer 禁用，顶部一行说明原因。
-- **现有 `readOnly` 形态不够用**：它是粗粒度开关，同时关掉 drop target、取消后台任务、edit/retry/fork。需要新增"可输入 + 能力黑名单"这一形态并明确道具名。
+- **形态选择**：`SessionPane` 现有的 `readOnly` 太粗（同时关掉 drop target、取消后台任务、edit/retry/fork），`selectionSideChat` 则已经实现了"保留 composer + 隐藏 edit/retry/fork/goal"这一形状——子会话要的是**第三种黑名单**（保留 edit/retry，去掉 fork/goal/权限模式）。实现上把黑名单参数化并给这一形态命名，不要新增一个整块的布尔开关。
 - **授权请求提示（新增，必需）**：当父会话上存在属于本子代理的待处理交互（`origin.kind === "subagent"` 且 childSessionId 匹配）时，面板顶部显示可点击提示，点击切到父会话标签页；无请求时隐藏。
 - **已终止子会话**：面板底部显示终态摘要；composer 仍可用（续聊=开新轮）。
 - **空态**：复用现有会话空态。
@@ -277,15 +306,22 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ## 验证
 
-- 单测（在 `apps/zcode-cli/packages/core` 与 `bootstrap` 下，`node --import tsx --test test/<file>.test.ts`）：
+- 单测入口（仓库没有统一 test 脚本覆盖这些包，需手工指定）：根 `pnpm test` 只跑 `packages/shared/test/**`；CLI 侧逐包 `node --import tsx --test apps/zcode-cli/packages/<pkg>/test/<file>.test.ts`；`packages/ui/test/**` 有测试文件但**没有脚本入口**，需手工跑且带 `TSX_TSCONFIG_PATH=packages/ui/tsconfig.json` 才能解析 `@/` 别名。
   - launch spec 写入（FK 顺序）与读取；无 spec → 受限分支。
   - 冷恢复的子 record：`subagentPort === undefined`、工具面不含 `Agent`、`subagents.enabled === false`。
   - 角色策略的**命令矩阵**（遍历全部命令类型）。
   - 删除递归与中止级联；`deactivateSession` **不**级联。
-- 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `session-mailbox-sender-kind.test.ts` 是同源先例）。
-- 端到端：上述 10 条验收路径（仓库无 Playwright 与 UI test 脚本，只能由 agent 驱动浏览器手工执行）。
-- 门禁：
-  - CLI：`pnpm typecheck:cli` + `pnpm --dir apps/zcode-cli run lint`（**根 `pnpm lint` 的 `ignorePatterns` 含 `apps/zcode-cli`，不检查 CLI 改动**）。
+  - 起始偏好继承：子会话的 compaction / memory / 预算策略与父一致；父偏好热更新后**新派生**的子会话不沿用旧值（既有回归面，见 `bootstrap/src/zcode-protocol/compaction-preferences.ts` 的快照刷新）。
+  - hook 发射点保持：`SubagentStart` / `SubagentStop` 仍按原 payload 字段发射。
+  - **策略表覆盖率**：照 `packages/shared/test/hook-event-copy-parity.test.ts` / `core/test/hook-copy-parity.test.ts` 的先例，断言"命令类型集合 ⊆ 策略表键集合"——新增命令时测试先红，而不是等准入处静默放行。
+- 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `core/test/session-mailbox-sender-kind.test.ts` 是同源先例）。
+- 端到端：上述 10 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。
+- 门禁（命令均已实测，不是照抄 AGENTS.md）：
+  - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。
+  - CLI 侧可用的类型门禁：`pnpm typecheck:cli`。
+  - CLI 侧可用的 lint：**逐子包**跑 `pnpm --dir apps/zcode-cli/packages/<pkg> run lint`（= 该子包的 `oxlint src --no-ignore`）。**不要写 `pnpm --dir apps/zcode-cli run lint`**——它的脚本是 `turbo run lint`，而该独立 workspace 里 `turbo` 不可解析（实测 `Command "turbo" not found`）。
+  - CLI 的 lint 是**既存红债**，不能当绿灯：本检出 `packages/core` 实测 31 errors / 10 warnings（`max-lines` 超 400、`NOOP_CALL` 未使用等）。CLI 改动按"不新增错误"衡量，不要求清零。
+  - CLI 的 `format:check` 只覆盖 `package.json` 与 `**/*.{json,ts,mjs}`，**不覆盖 markdown**——本文与其它 spec 不在任何格式化门禁内。
   - 触及根包（`packages/ui`、`packages/shared` 等）：`pnpm typecheck` + `pnpm lint` + `pnpm fmt:check`。
   - `pnpm architecture:check -- --changed`。
 
@@ -300,6 +336,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - 子会话归档与保留策略。
 - 子代理再派生（结构性禁止，不是待办）。
 - 存量无 launch spec 子会话的回填（已决策：不回填，重新派发即可）。
+- **`SubagentStop` 的可阻断声明与实现不一致**（D5）：共享事件表声明 `blockable: true`，但 `core/src/subagent/runner.ts` 的发射点不消费阻断决定。修法二选一（接线，或取消声明），与本改造无耦合，可独立处理。
 
 **已决策不做（保持现状）**：
 
