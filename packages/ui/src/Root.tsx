@@ -5,6 +5,7 @@ import {
   APP_RUNTIME_PREFERENCES_CHANGED_BROADCAST_CHANNEL,
   DesktopCommandIds,
   appRuntimePreferencesChangedBroadcastPayloadSchema,
+  resolveCompactionPreferencesFromSettings,
   type RemoteTarget,
 } from "@zcode/shared";
 import { TooltipProvider } from "@/components/ui/tooltip.js";
@@ -313,11 +314,14 @@ function RootInner({
     if (!appSettings) {
       return;
     }
+    // 压缩偏好是六项整体：任一变化都整份下发，运行态拿到的始终是自洽快照。
+    const compaction = resolveCompactionPreferencesFromSettings(appSettings);
     void services.zcodeAgentService
       .syncAppRuntimePreferences({
         askUserQuestionAutoResolutionEnabled:
           appSettings.askUserQuestionAutoResolutionEnabled !== false,
         modelIoFullRetentionEnabled: appSettings.modelIoFullRetentionEnabled === true,
+        compaction,
       })
       .catch((error) => {
         logger.warn("[settings] 初始化运行时偏好失败", error);
@@ -327,6 +331,7 @@ function RootInner({
         askUserQuestionAutoResolutionEnabled:
           appSettings.askUserQuestionAutoResolutionEnabled !== false,
         modelIoFullRetentionEnabled: appSettings.modelIoFullRetentionEnabled === true,
+        compaction,
       })
       .catch((error) => {
         logger.warn("[settings] 初始化 Bot 运行时偏好失败", error);
@@ -334,6 +339,12 @@ function RootInner({
   }, [
     appSettings?.askUserQuestionAutoResolutionEnabled,
     appSettings?.modelIoFullRetentionEnabled,
+    appSettings?.compactionThresholdPercent,
+    appSettings?.compactionMicrocompactEnabled,
+    appSettings?.compactionMicrocompactKeepRecentToolResults,
+    appSettings?.compactionMicrocompactClearErrorResults,
+    appSettings?.compactionPostTurnEnabled,
+    appSettings?.compactionModelDownshiftEnabled,
     services.botsService,
     services.zcodeAgentService,
   ]);

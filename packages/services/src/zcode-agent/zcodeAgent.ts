@@ -7,6 +7,7 @@ import type { ZCodeAutomation, ZCodeAutomationRun } from "@zcode/shared";
 import type {
   ZCodeStorageStartupState,
   ZCodeDeliveryKind,
+  ZCodeCompactionPreferences,
   ZCodeAgentMcpServer,
   ZCodeBackgroundTurnAttribution,
   TraceId,
@@ -567,6 +568,8 @@ export type ZCodeAgentServiceEvent =
 export interface ZCodeAgentAppRuntimePreferences {
   askUserQuestionAutoResolutionEnabled: boolean;
   modelIoFullRetentionEnabled?: boolean;
+  /** 上下文压缩偏好；缺省按「维持现状」默认值下发，旧调用方无需改动。 */
+  compaction?: ZCodeCompactionPreferences;
 }
 
 export interface ZCodeAgentLocalRuntimeChildProcesses {

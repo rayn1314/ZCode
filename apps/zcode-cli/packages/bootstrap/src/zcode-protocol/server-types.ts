@@ -21,6 +21,7 @@ import {
   type ZCodeAutomationBotDeliveryTarget,
   type ZCodeDeliveryKind,
   type ModelSelection,
+  type ZCodeCompactionPreferences,
   type ZCodeModelContextBudgetStrategy,
   type ZCodeProtocolMessage,
   type ZCodeProtocolMethod,
@@ -88,6 +89,8 @@ export interface ZCodeProtocolSessionRecord {
   memoryEnabled: boolean;
   nativeSearchEnhancementsEnabled: boolean;
   modelContextBudgetStrategy: ZCodeModelContextBudgetStrategy;
+  /** 会话起始压缩偏好；inherit 子会话直接沿用父会话这一份。 */
+  compaction: ZCodeCompactionPreferences;
   createdAt: number;
   deliveryKind?: ZCodeDeliveryKind;
   /**
@@ -143,6 +146,11 @@ export interface ZCodeProtocolAgentServerContext {
      * 工作流工具面、`/workflow` 与 dynamic-workflows 技能一律不露出。
      */
     dynamicWorkflowEnabled: boolean;
+    /**
+     * host 同步的上下文压缩偏好（六项）。
+     * 缺省为「维持现状」默认值：未知该方法的旧 Host 创建的会话行为与升级前一致。
+     */
+    compaction: ZCodeCompactionPreferences;
   };
   // 竖切：v4 conversation 通道（订阅/帧/命令），与旧 session/* 方法并存。
   // 构造顺序问题（gateway 闭包持有 context）用可选字段收口，server 构造完立即赋值。

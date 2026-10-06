@@ -1,9 +1,11 @@
 import type { ConfigResult } from "@zcode/adapters/config";
 import { resolveInitialModelSelection, type ModelSelectionOptions } from "@zcode/provider";
 import { resolveBashTimeoutPolicy, type AgentProfile, type AgentRuntimeConfig } from "@zcode/core";
+import type { AutoCompactPolicyConfig } from "@zcode/core";
 import { type BuiltInSubagentModelSelectionOverrides } from "@zcode/shared";
 import {
   type CollaborationMode,
+  type CompactConfig,
   type HookConfigSource,
   type HookEventName,
   type HookMatcherConfig,
@@ -163,6 +165,14 @@ export function resolveAppRuntimeConfig(input: {
         : configResult.config.hooks,
       input.pluginHooks,
     ),
+    // 压缩策略：CLI 文件级（config.compact）为底、会话级（runtimeConfig.compact）为覆盖。
+    // 会话级是稀疏补丁（见 compaction-policy.ts），因此必须逐字段深合并——
+    // 浅展开会让「只表达了一项的会话级 patch」把文件里没被表达的键（microcompact 的
+    // thresholdTokens / idleThresholdMinutes / minTokenSavings 等）整段抹掉。
+    compact: mergeCompactPolicyConfig(
+      configResult.config.compact,
+      options.runtimeConfig?.compact,
+    ),
     subagents: {
       ...options.runtimeConfig?.subagents,
       enabled: options.runtimeConfig?.subagents?.enabled ?? configResult.config.features.subagent,
@@ -188,6 +198,26 @@ export function resolveAppRuntimeConfig(input: {
     configuredMcpServers,
     runtimeConfig,
     untrustedProjectMcpServers,
+  };
+}
+
+/**
+ * 压缩策略的会话级覆盖合并。
+ *
+ * `over` 是稀疏补丁（`compactionPreferencesToPolicyOverride` 省略没被用户表达的键），
+ * 所以不能浅展开：`microcompact` 必须逐键合并，否则「只打开轮末压缩」会顺手把
+ * 文件里配置的 `thresholdTokens` / `idleThresholdMinutes` / `minTokenSavings` 清空。
+ */
+function mergeCompactPolicyConfig(
+  base: CompactConfig | undefined,
+  over: AutoCompactPolicyConfig | undefined,
+): AutoCompactPolicyConfig {
+  return {
+    ...base,
+    ...over,
+    ...(base?.microcompact || over?.microcompact
+      ? { microcompact: { ...base?.microcompact, ...over?.microcompact } }
+      : {}),
   };
 }
 

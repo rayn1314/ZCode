@@ -4,6 +4,7 @@ import {
   hostBotRemoteWorkspaceConnectionStatusResultMessageSchema,
   hostBotRemoteWorkspaceRuntimePortMessageSchema,
   hostBotRemoteWorkspaceReconnectResultMessageSchema,
+  resolveCompactionPreferencesFromSettings,
   type RemoteTarget,
 } from "@zcode/shared";
 import { type IZCodeTaskService as IZCodeTaskServiceShape } from "../session/zcodeTaskService.js";
@@ -321,6 +322,7 @@ export function createBotRemoteWorkspaceService(params: {
             askUserQuestionAutoResolutionEnabled:
               settings.askUserQuestionAutoResolutionEnabled !== false,
             modelIoFullRetentionEnabled: settings.modelIoFullRetentionEnabled === true,
+            compaction: resolveCompactionPreferencesFromSettings(settings),
           }));
       await services.zcodeAgentService.syncAppRuntimePreferences(preferences);
       if (revision === appRuntimePreferencesRevision) {

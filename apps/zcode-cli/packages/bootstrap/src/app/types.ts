@@ -2,6 +2,7 @@ import type { ZCodeToolExecResource, BackgroundBashOutputResult } from "@zcode/s
 import type { AiSdkModelAdapter } from "@zcode/adapters/model";
 import type {
   AgentRuntime,
+  AgentRuntimeCompactionPolicyPatch,
   AgentRuntimeConfig,
   ExecuteTurnOptions,
   ExpertWorkflowCommandResult,
@@ -627,6 +628,11 @@ export interface ZCodeApp {
     traceId: TraceContext["traceId"];
   }>;
   setModelIoFullRetentionEnabled?(enabled: boolean): void;
+  /**
+   * 热更新会话压缩策略（workspace/updateCompactionPreferences 逐个 session 调用）。
+   * 只写用户可配置字段；窗口/输出预留由运行时按当前模型推导。
+   */
+  setCompactionPolicy?(policy: AgentRuntimeCompactionPolicyPatch): void;
   setModel(
     modelId: string | ModelSelection,
     options?: {

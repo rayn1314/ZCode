@@ -230,6 +230,26 @@ const modelAnomalyGuardSchema = z.object({
   maxBudgetWarningsPerTurn: z.number().int().nonnegative().optional(),
 });
 
+// 压缩配置：只校验用户可写开关。阈值百分比限制在 1–100 整数，
+// 越界值在这里就被拒绝，避免把必然触发压缩的极小阈值写进运行态。
+const compactSchema = z.object({
+  enabled: z.boolean().optional(),
+  thresholdPercent: z.number().int().min(1).max(100).optional(),
+  microcompact: z
+    .object({
+      enabled: z.boolean().optional(),
+      thresholdTokens: positiveIntegerSchema.optional(),
+      idleThresholdMinutes: positiveIntegerSchema.optional(),
+      keepRecentToolResults: z.number().int().min(1).max(50).optional(),
+      compactableToolNames: z.array(z.string().trim().min(1)).optional(),
+      clearErrorResults: z.boolean().optional(),
+      minTokenSavings: z.number().int().nonnegative().optional(),
+    })
+    .optional(),
+  postTurnEnabled: z.boolean().optional(),
+  modelDownshiftEnabled: z.boolean().optional(),
+});
+
 // Hooks schema：
 // 理想态是 re-export shared/workspace-hook-config，但两个 pnpm workspace 解析出物理
 // 不同的 zod 实例（adapters 4.6.5 / shared 4.6.5，实测各自 node_modules 解析版本）：
@@ -360,6 +380,7 @@ export const ZCodeConfigFileSchema = z
     ui: uiSchema.optional(),
     toolConcurrency: toolConcurrencySchema.optional(),
     modelAnomalyGuard: modelAnomalyGuardSchema.optional(),
+    compact: compactSchema.optional(),
     hooks: hooksSchema.optional(),
   })
   .passthrough();
@@ -477,6 +498,7 @@ function parsedConfigFileToRuntimePatch(parsed: ZCodeConfigFile): RuntimeConfigP
   if (parsed.ui) config.ui = parsed.ui;
   if (parsed.toolConcurrency) config.toolConcurrency = parsed.toolConcurrency;
   if (parsed.modelAnomalyGuard) config.modelAnomalyGuard = parsed.modelAnomalyGuard;
+  if (parsed.compact) config.compact = parsed.compact;
   if (parsed.hooks) config.hooks = parsedHooksToRuntimePatch(parsed.hooks);
 
   return config;

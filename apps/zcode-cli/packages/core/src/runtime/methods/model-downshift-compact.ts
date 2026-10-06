@@ -36,8 +36,22 @@ export async function maybeCompactForModelDownshift(
   const nextWindow = input.model.properties.contextWindow;
   const previousWindow = input.previousContextWindow;
   // 上一个窗口未知时只能放弃：无法区分"降档"与"升级"，而升级时压缩是纯浪费。
-  if (!isFinitePositive(previousWindow) || !isFinitePositive(nextWindow)) return;
-  if (nextWindow >= previousWindow) return;
+  if (
+    !isFinitePositive(previousWindow) ||
+    !isFinitePositive(nextWindow) ||
+    nextWindow >= previousWindow
+  ) {
+    runtime.logger?.debug("Model downshift compact not applicable", {
+      ...traceContextToLogContext(input.traceContext),
+      event: "compact.model_downshift.skipped",
+      modelId: input.model.modelId,
+      module: "core.runtime",
+      nextContextWindow: nextWindow,
+      previousContextWindow: previousWindow,
+      reason: isFinitePositive(previousWindow) ? "window_not_shrinking" : "previous_window_unknown",
+    });
+    return;
+  }
 
   const decision = evaluateRuntimeAutoCompactDecision(runtime, input.model);
   if (!decision.shouldCompact) {

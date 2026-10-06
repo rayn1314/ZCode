@@ -34,8 +34,16 @@ export async function maybeCompactAfterTurn(
   if (runtime.config.compact?.enabled === false) return;
   if (runtime.config.compact?.postTurnEnabled !== true) return;
   // 用户马上要发下一轮时不抢跑：那种情况下一轮的 PreRequest 会自动压，且用户能立刻看到新轮开始。
-  if (input.activeTurn.pendingInputs.length > 0) return;
-  if (runtime.runtimeCommandQueue.hasPending()) return;
+  if (input.activeTurn.pendingInputs.length > 0 || runtime.runtimeCommandQueue.hasPending()) {
+    runtime.logger?.debug("Post-turn compact skipped because input is already queued", {
+      ...traceContextToLogContext(input.traceContext),
+      event: "compact.post_turn.skipped",
+      module: "core.runtime",
+      pendingSteerInputCount: input.activeTurn.pendingInputs.length,
+      reason: "queued_input",
+    });
+    return;
+  }
 
   const decision = evaluateRuntimeAutoCompactDecision(runtime, input.model);
   if (!decision.shouldCompact) {

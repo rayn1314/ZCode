@@ -266,6 +266,7 @@ export * from "./subagents-types.js";
 export * from "./settings-source.js";
 export * from "./settings-errors.js";
 export * from "./app-runtime-preferences.js";
+export * from "./app-compaction-preferences.js";
 export * from "./command-types.js";
 export * from "./plugin-marketplaces.js";
 export * from "./lineChangeStat.js";

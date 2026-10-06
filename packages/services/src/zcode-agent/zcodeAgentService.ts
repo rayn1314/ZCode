@@ -98,6 +98,8 @@ import {
   zcodeWorkspaceHookTrustGrantResultSchema,
   zcodeWorkspaceUpdateInteractionPreferencesResultSchema,
   zcodeWorkspaceUpdateModelIoPreferencesResultSchema,
+  zcodeWorkspaceUpdateCompactionPreferencesResultSchema,
+  DEFAULT_ZCODE_COMPACTION_PREFERENCES,
   zcodeProviderUpdateAccountConfigResultSchema,
   type ZCodeSessionStateSnapshot,
   type ZCodeAutomation,
@@ -1494,6 +1496,19 @@ export function createZCodeAgentService(
           );
         } catch (error) {
           // 新 Host 兼容尚未升级的 CLI：只有 method-not-found 可降级，其他同步失败仍需上抛。
+          if (!isProtocolMethodNotFoundError(error)) throw error;
+        }
+        try {
+          await params.client.request(
+            zcodeProtocolMethods.workspaceUpdateCompactionPreferences,
+            {
+              workspace: buildWorkspaceRef(params.workspace),
+              preferences: params.preferences.compaction ?? DEFAULT_ZCODE_COMPACTION_PREFERENCES,
+            },
+            zcodeWorkspaceUpdateCompactionPreferencesResultSchema,
+          );
+        } catch (error) {
+          // 同上：只有 method-not-found 可降级（旧 CLI 不认识压缩偏好方法）。
           if (!isProtocolMethodNotFoundError(error)) throw error;
         }
       });
@@ -3430,6 +3445,8 @@ export function createZCodeAgentService(
       const normalizedPreferences: ZCodeAgentAppRuntimePreferences = {
         ...preferences,
         modelIoFullRetentionEnabled: preferences.modelIoFullRetentionEnabled === true,
+        // 缺省按「维持现状」默认值规范化，保证 latestAppRuntimePreferences 快照始终携带完整六项。
+        compaction: preferences.compaction ?? DEFAULT_ZCODE_COMPACTION_PREFERENCES,
       };
       latestAppRuntimePreferences = normalizedPreferences;
       const activeClients = [...activeClientsByWorkspaceKey.values()];

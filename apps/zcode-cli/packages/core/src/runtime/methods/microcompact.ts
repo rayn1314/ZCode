@@ -1,20 +1,11 @@
-import {
-  CompactPhase,
-  SessionEventType,
-  buildDefaultMicrocompactThreshold,
-  getAutoCompactThreshold,
-  traceContextToLogContext,
-} from "../deps.js";
-import type {
-  AutoCompactPolicyConfig,
-  LocalMicrocompactPolicyConfig,
-  Model,
-  SessionEvent,
-  TraceContext,
-} from "../deps.js";
+import { CompactPhase, SessionEventType, traceContextToLogContext } from "../deps.js";
+import type { Model, SessionEvent, TraceContext } from "../deps.js";
 import { maybeLocalMicrocompactRuntimeEntries, throwIfTurnAborted } from "../helpers/index.js";
 import type { AgentRuntimeInternal } from "../internal.js";
-import { resolveRuntimeCompactPolicyConfig } from "./compact-policy-config.js";
+import {
+  resolveLocalMicrocompactConfig,
+  resolveRuntimeCompactPolicyConfig,
+} from "./compact-policy-config.js";
 import type { TurnRequestState } from "./turn-loop-state.js";
 import {
   filterOutputTokenContinuationEntries,
@@ -93,17 +84,4 @@ export async function microcompactIfNeeded(
     tokensSaved: payload.tokensSaved,
     trigger: payload.trigger,
   });
-}
-
-function resolveLocalMicrocompactConfig(
-  config: AutoCompactPolicyConfig,
-): LocalMicrocompactPolicyConfig {
-  const fullCompactThreshold = getAutoCompactThreshold(config);
-  return {
-    ...config.microcompact,
-    enabled: config.microcompact?.enabled === true,
-    thresholdTokens:
-      config.microcompact?.thresholdTokens ??
-      buildDefaultMicrocompactThreshold(fullCompactThreshold),
-  };
 }

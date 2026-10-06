@@ -1700,6 +1700,35 @@ export const DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY = "preflight-v1" as con
 export const zcodeModelContextBudgetStrategySchema = z.enum(["legacy", "preflight-v1"]);
 export type ZCodeModelContextBudgetStrategy = z.infer<typeof zcodeModelContextBudgetStrategySchema>;
 
+/**
+ * 上下文压缩偏好（协议层六项）。
+ *
+ * 刻意**不含** `contextWindow`：窗口由当前模型推导，禁止由配置覆盖（spec 不变式 I3）。
+ * `.strict()` 让任何多余字段（含 contextWindow）在解析边界就被拒绝。
+ */
+export const zcodeCompactionPreferencesSchema = z
+  .object({
+    /** 自动压缩阈值占模型完整窗口的百分比；null = 沿用运行时公式阈值。 */
+    thresholdPercent: z.number().int().min(1).max(100).nullable(),
+    microcompactEnabled: z.boolean(),
+    microcompactKeepRecentToolResults: z.number().int().min(1).max(50),
+    microcompactClearErrorResults: z.boolean(),
+    postTurnEnabled: z.boolean(),
+    modelDownshiftEnabled: z.boolean(),
+  })
+  .strict();
+export type ZCodeCompactionPreferences = z.infer<typeof zcodeCompactionPreferencesSchema>;
+
+/** 「维持现状」默认值：不显式配置任何开关时的压缩行为。 */
+export const DEFAULT_ZCODE_COMPACTION_PREFERENCES: ZCodeCompactionPreferences = {
+  thresholdPercent: null,
+  microcompactEnabled: false,
+  microcompactKeepRecentToolResults: 5,
+  microcompactClearErrorResults: false,
+  postTurnEnabled: false,
+  modelDownshiftEnabled: false,
+};
+
 export const zcodeSessionRuntimePreferencesResultSchema = z
   .object({
     nativeSearchEnhancementsEnabled: z.boolean(),
@@ -1710,6 +1739,8 @@ export const zcodeSessionRuntimePreferencesResultSchema = z
     modelContextBudgetStrategy: zcodeModelContextBudgetStrategySchema.default(
       DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
     ),
+    // 兼容旧 Host：缺少压缩偏好时按「维持现状」默认值处理。
+    compaction: zcodeCompactionPreferencesSchema.default(DEFAULT_ZCODE_COMPACTION_PREFERENCES),
   })
   .strict();
 export type ZCodeSessionRuntimePreferencesResult = z.infer<
@@ -2232,6 +2263,28 @@ export const zcodeWorkspaceUpdateModelIoPreferencesResultSchema = z
   .strict();
 export type ZCodeWorkspaceUpdateModelIoPreferencesResult = z.infer<
   typeof zcodeWorkspaceUpdateModelIoPreferencesResultSchema
+>;
+
+export const zcodeWorkspaceUpdateCompactionPreferencesParamsSchema = z
+  .object({
+    workspace: zcodeWorkspaceRefSchema,
+    preferences: zcodeCompactionPreferencesSchema,
+  })
+  .strict();
+export type ZCodeWorkspaceUpdateCompactionPreferencesParams = z.infer<
+  typeof zcodeWorkspaceUpdateCompactionPreferencesParamsSchema
+>;
+
+export const zcodeWorkspaceUpdateCompactionPreferencesResultSchema = z
+  .object({
+    workspace: zcodeWorkspaceRefSchema,
+    // 回显已应用的偏好：调用方可据此确认解析/归一化结果。
+    preferences: zcodeCompactionPreferencesSchema,
+    updatedSessionCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ZCodeWorkspaceUpdateCompactionPreferencesResult = z.infer<
+  typeof zcodeWorkspaceUpdateCompactionPreferencesResultSchema
 >;
 
 export const zcodeWorkspaceUpdateOffPeakToolPolicyParamsSchema = z
@@ -3613,6 +3666,8 @@ export const zcodeProtocolMethods = {
   providerUpdateAccountConfig: "provider/updateAccountConfig",
   workspaceUpdateInteractionPreferences: "workspace/updateInteractionPreferences",
   workspaceUpdateModelIoPreferences: "workspace/updateModelIoPreferences",
+  // 压缩偏好是 workspace 级事实：handler 缓存后立即热更新已有 session（无需重启会话）。
+  workspaceUpdateCompactionPreferences: "workspace/updateCompactionPreferences",
   // Off-Peak 工具面门禁是 workspace 级事实（灰度 + 本地/远程），由 host 在 agent 就绪时同步；
   // CLI 对 legacy create/resume 与 v4 冷恢复统一读取。旧 CLI method-not-found → host 降级忽略。
   workspaceUpdateOffPeakToolPolicy: "workspace/updateOffPeakToolPolicy",

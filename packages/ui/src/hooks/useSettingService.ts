@@ -2,10 +2,27 @@
  * useSettingService —— 设置服务 hooks
  */
 import { useState, useEffect, useCallback } from "react";
-import { APP_RUNTIME_PREFERENCES_CHANGED_BROADCAST_CHANNEL, type AppSettings } from "@zcode/shared";
+import {
+  APP_RUNTIME_PREFERENCES_CHANGED_BROADCAST_CHANNEL,
+  resolveCompactionPreferencesFromSettings,
+  type AppSettings,
+} from "@zcode/shared";
 import type { ISettingService } from "@zcode/services";
 import { useServices } from "./useServices.js";
 import { usePlatform } from "./usePlatform.js";
+
+/**
+ * 压缩偏好的六个设置键：任一变更都要把完整压缩偏好下发给运行态。
+ * 与 AppSettings / 协议 schema 的字段一一对应，增删必须同步。
+ */
+const COMPACTION_SETTING_KEYS = [
+  "compactionThresholdPercent",
+  "compactionMicrocompactEnabled",
+  "compactionMicrocompactKeepRecentToolResults",
+  "compactionMicrocompactClearErrorResults",
+  "compactionPostTurnEnabled",
+  "compactionModelDownshiftEnabled",
+] as const satisfies readonly (keyof AppSettings)[];
 
 type SettingsSnapshot = {
   settings: AppSettings | null;
@@ -144,15 +161,19 @@ export function useSettings() {
       await refresh();
       if (
         typeof patch.askUserQuestionAutoResolutionEnabled === "boolean" ||
-        typeof patch.modelIoFullRetentionEnabled === "boolean"
+        typeof patch.modelIoFullRetentionEnabled === "boolean" ||
+        COMPACTION_SETTING_KEYS.some((key) => patch[key] !== undefined)
       ) {
+        const settings = settingsStore.snapshot.settings;
         const preferences = {
           askUserQuestionAutoResolutionEnabled:
             patch.askUserQuestionAutoResolutionEnabled ??
-            settingsStore.snapshot.settings?.askUserQuestionAutoResolutionEnabled !== false,
+            settings?.askUserQuestionAutoResolutionEnabled !== false,
           modelIoFullRetentionEnabled:
-            patch.modelIoFullRetentionEnabled ??
-            settingsStore.snapshot.settings?.modelIoFullRetentionEnabled === true,
+            patch.modelIoFullRetentionEnabled ?? settings?.modelIoFullRetentionEnabled === true,
+          // 压缩偏好从刷新后的设置快照整体归一化：六个键任一变更都整份下发，
+          // 避免增量补丁与运行态策略出现「只对了一半」的中间态。
+          compaction: resolveCompactionPreferencesFromSettings(settings ?? {}),
         };
         const syncResults = await Promise.allSettled([
           zcodeAgentService.syncAppRuntimePreferences(preferences),

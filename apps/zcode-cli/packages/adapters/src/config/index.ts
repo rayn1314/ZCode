@@ -194,6 +194,26 @@ class ConfigStore {
         scope,
       );
     }
+    if (config.compact) {
+      // 压缩策略逐字段写入：microcompact 深合并，避免只改一个子键时把同段其余配置清空。
+      const previous = this.get(ConfigKey.Compact) ?? DefaultConfig.compact;
+      this.set(
+        ConfigKey.Compact,
+        {
+          ...previous,
+          ...config.compact,
+          ...(previous.microcompact || config.compact.microcompact
+            ? {
+                microcompact: {
+                  ...previous.microcompact,
+                  ...config.compact.microcompact,
+                },
+              }
+            : {}),
+        },
+        scope,
+      );
+    }
     if (config.hooks) {
       const previous = this.get(ConfigKey.Hooks) ?? DefaultConfig.hooks;
       this.set(
@@ -328,6 +348,7 @@ export class ConfigPortImpl implements ConfigPort {
       },
       modelAnomalyGuard:
         this.store.get(ConfigKey.ModelAnomalyGuard) ?? DefaultConfig.modelAnomalyGuard,
+      compact: this.store.get(ConfigKey.Compact) ?? DefaultConfig.compact,
       hooks: this.store.get(ConfigKey.Hooks) ?? DefaultConfig.hooks,
       ui: {
         locale: this.store.get(ConfigKey.UiLocale) ?? DefaultConfig.ui.locale,
@@ -437,6 +458,8 @@ function getDefaultValue(key: ConfigKey): unknown {
       return defaults.toolConcurrency.maxConcurrency;
     case ConfigKey.ModelAnomalyGuard:
       return defaults.modelAnomalyGuard;
+    case ConfigKey.Compact:
+      return defaults.compact;
     case ConfigKey.Hooks:
       return defaults.hooks;
     case ConfigKey.UiLocale:

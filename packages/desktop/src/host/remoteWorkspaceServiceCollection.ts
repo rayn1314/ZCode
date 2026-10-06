@@ -70,6 +70,7 @@ import {
   BIGMODEL_PROVIDER_ID,
   buildRuntimeZCodeApiUrl,
   DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
+  resolveCompactionPreferencesFromSettings,
   type ProviderFamilyDomain,
   type ZCodeSessionRuntimePreferencesResult,
   ZAI_PROVIDER_ID,
@@ -269,6 +270,9 @@ export function createRemoteWorkspaceServiceCollection(params: {
               nativeSearchEnhancementsEnabled: settings.nativeSearchEnhancementsEnabled !== false,
               memoryEnabled: settings.memoryEnabled === true,
               modelContextBudgetStrategy,
+              // 压缩偏好与本地 Host 同口径：手机远控 / desktop-attached remote 创建的会话
+              // 也必须带上设置页的六项，否则手机用户改了设置却不生效（且不报错）。
+              compaction: resolveCompactionPreferencesFromSettings(settings),
               // remote workspace 与本地 Host 保持同一 scope 边界，首次执行不得再次等待 client config。
               ...(request.scope === "user-execution" && settings.integratedTerminalShell
                 ? { integratedTerminalShell: settings.integratedTerminalShell }

@@ -119,15 +119,27 @@ import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-
 // -----------------------------------------------
 
 /**
- * 会话级压缩策略的可写面。
+ * 会话级压缩策略的可写面，**稀疏语义**。
  *
- * 只含用户可配置的字段：`contextWindow` / `maxOutputTokens` 由当前模型推导，
- * 不允许外部写入（spec 不变式 I3）。`enabled:false` 仍是唯一的压缩总开关。
+ * - `undefined` = 不修改（保持 `config.compact` 里的现值 / CLI 文件值）；
+ * - `thresholdPercent: null` = 显式清除百分比覆盖，回到公式阈值；
+ * - 布尔 `false` = 显式关闭。
+ *
+ * 刻意**不含** `enabled`：压缩总开关归 CLI 文件配置所有，设置页不得关掉自动压缩路径。
+ * 也刻意不含 `contextWindow` / `maxOutputTokens`：由当前模型推导（spec 不变式 I3）。
+ * `microcompact` 的子键全部可选，`updateCompactionPolicy` 逐键合并，因此这里没表达的
+ * 键（如文件里的 `thresholdTokens`）不会被写空。
  */
-export type AgentRuntimeCompactionPolicyPatch = Pick<
-  AutoCompactPolicyConfig,
-  "enabled" | "thresholdPercent" | "microcompact" | "postTurnEnabled" | "modelDownshiftEnabled"
->;
+export type AgentRuntimeCompactionPolicyPatch = {
+  thresholdPercent?: number | null;
+  microcompact?: {
+    enabled?: boolean;
+    keepRecentToolResults?: number;
+    clearErrorResults?: boolean;
+  };
+  postTurnEnabled?: boolean;
+  modelDownshiftEnabled?: boolean;
+};
 
 export interface AgentRuntimeConfig {
   /** shared-host CUA request routing metadata; desktop is the safe default. */

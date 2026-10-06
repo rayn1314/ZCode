@@ -1,5 +1,6 @@
+import { getAutoCompactThreshold, buildDefaultMicrocompactThreshold } from "../deps.js";
 import type { Model } from "../deps.js";
-import type { AutoCompactPolicyConfig } from "../deps.js";
+import type { AutoCompactPolicyConfig, LocalMicrocompactPolicyConfig } from "../deps.js";
 import type { AgentRuntimeConfig } from "../types.js";
 import { resolveNormalRequestMaxOutputTokens } from "./model-token-limits.js";
 
@@ -24,5 +25,23 @@ export function resolveRuntimeCompactPolicyConfig(
       modelMaxOutputTokens: model.optionSpecs.maxOutputTokens.max,
     }),
     modelContextBudgetStrategy: config.modelContextBudgetStrategy,
+  };
+}
+
+/**
+ * 把 session 级策略里的 microcompact 段收敛成局部压缩的实际配置。
+ *
+ * 这里的门是 `=== true`：未配置即关闭。局部压缩会就地改写历史里的工具结果正文，
+ * 属于改变模型所见内容的行为，必须显式开启，"缺省即开"是这里最危险的默认方向。
+ */
+export function resolveLocalMicrocompactConfig(
+  config: AutoCompactPolicyConfig,
+): LocalMicrocompactPolicyConfig {
+  const fullCompactThreshold = getAutoCompactThreshold(config);
+  return {
+    ...config.microcompact,
+    enabled: config.microcompact?.enabled === true,
+    thresholdTokens:
+      config.microcompact?.thresholdTokens ?? buildDefaultMicrocompactThreshold(fullCompactThreshold),
   };
 }

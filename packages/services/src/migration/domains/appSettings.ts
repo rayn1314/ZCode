@@ -50,6 +50,13 @@ const MIGRATABLE_SETTING_KEYS = [
   "nativeSearchEnhancementsEnabled",
   "proactiveSuggestionsEnabled",
   "memoryEnabled",
+  // 压缩偏好只表达用户意图，不含机器/工作区状态，跨身份迁移应带上。
+  "compactionThresholdPercent",
+  "compactionMicrocompactEnabled",
+  "compactionMicrocompactKeepRecentToolResults",
+  "compactionMicrocompactClearErrorResults",
+  "compactionPostTurnEnabled",
+  "compactionModelDownshiftEnabled",
   "receivePreviewUpdates",
   "autoDownloadAndInstallUpdates",
   "zcodeEndpointOrigin",

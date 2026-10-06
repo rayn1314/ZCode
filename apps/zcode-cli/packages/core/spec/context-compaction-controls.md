@@ -69,18 +69,30 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 
 ### D5. CLI 文件通道
 
-`ZCodeConfigFileSchema` 新增 `compact` 段，经 `RuntimeConfigPatch.compact` → `ConfigKey.Compact` → `RuntimeConfig.compact`，最后由 `resolveAppRuntimeConfig` 显式合并进 `AgentRuntimeConfig.compact`。合并顺序：`configResult.config.compact` 在前、`options.runtimeConfig?.compact` 在后（会话级覆盖文件级）。模式对齐 `modelAnomalyGuard`。
+`ZCodeConfigFileSchema` 新增 `compact` 段（`adapters/src/config/schema.ts` 的 `compactSchema`），经 `RuntimeConfigPatch.compact` → `ConfigKey.Compact` → `RuntimeConfig.compact`，最后由 `resolveAppRuntimeConfig` 逐字段并入 `AgentRuntimeConfig.compact`。模式对齐 `modelAnomalyGuard`。
 
-这一条保证纯 CLI / headless 用户（没有设置页）也能配置。
+这条保证纯 CLI / headless 用户（没有设置页）也能配置。
 
-### D6. 单一映射函数
+adapters 侧共三处必须同时改，缺一处就是**静默失效**（schema 校验通过、不报错、配置不生效）：
 
-`ZCodeCompactionPreferences`（协议层六项）→ `AutoCompactPolicyConfig`（core 层）的映射只在 bootstrap 写一份 `compactionPreferencesToPolicy()`，创建期与热更新期共用，避免两套语义漂移。
+1. `schema.ts`：段本身。
+2. `config-merger.ts`：该文件**逐段手写**合并（`if (config.X) result.X = {...}`），漏一段会在多层配置合并时整段丢弃。
+3. `index.ts`：写入 `ConfigKey.Compact`、读进 `resolveConfig()` 的返回对象、在 defaults 分支给默认值（对标 `modelAnomalyGuard` 的三处）。
+
+### D6. 两个映射函数，按"谁有权威"分工
+
+协议层六项 → core 策略的映射只在 bootstrap 写一份，但**创建期与热更新期的语义不同，因此是两个函数**（`bootstrap/src/compaction-policy.ts`）：
+
+- `compactionPreferencesToPolicy()`：**热更新用**。六项全量 present，语义是"用户当前选择"，因此能关掉刚打开的东西；`thresholdPercent` 为 `number | null`，`null` 表示显式清除覆盖、回到公式阈值。
+- `compactionPreferencesToPolicyOverride()`：**创建期用**。只含偏离默认值的字段，语义是"用户表达过的偏好"，因此文件段里设置页没表达过的配置一律存活（D12）。必须靠**条件构造省略键**，不能写成 `{thresholdPercent: x ?? undefined}`——后者键仍在，展开时会把文件值清成 `undefined`。
+
+两者都刻意为 `microcompact` 只产出设置页拥有的三个子键，且不产出 `enabled`。
 
 ### D7. 阈值采用"可选覆盖"，不改默认
 
 - 不设 `thresholdPercent`：沿用现有公式 `threshold = (contextWindow − outputReserve) − buffer`，`outputReserve = min(maxOutputTokens, 21000)`、`buffer = 13000`。
 - 设了 `thresholdPercent = p`：`threshold = clamp(floor(contextWindow × p / 100), 1, effectiveContextWindow)`。
+- 百分比越界（`<1`、`>100`、非整数、非有限数）一律**按未配置处理并回落公式阈值**（fail-safe：宁可沿用既有阈值，也不改成用户没要求过的值）。三个配置入口先做范围校验，`normalizeThresholdPercent` 是最后一道防线。
 
 即：**未显式配置的用户阈值一分不动**（200K 窗口仍是 166K ≈ 83%），避免了"给所有模型钉一个固定百分比"带来的静默行为变更（128K 窗口按公式是 94K ≈ 73%，按 83% 会变成 106K，属于静默提前压缩）。
 
@@ -128,6 +140,33 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 - 会话级运行态：`AgentRuntimeConfig.compact`，只由 `runtime.updateCompactionPolicy()` 与创建期初始化写。
 - 持久化的用户偏好：`AppSettings`（`settingService` 唯一写），是 UI 的事实源；它通过 preferences RPC 单向下发，不回读运行态。
 
+### D12. 设置层与文件层的叠加是"逐字段覆盖"，不是"整份替换"
+
+`AgentRuntimeConfig.compact` 有两个来源：CLI 文件段（headless/TUI 用户）与设置页（桌面/Web/移动）。二者**共同**拥有其中一部分字段、**各自**独占另一部分，所以叠加必须逐字段进行：
+
+| 字段 | 文件段 | 设置页 |
+| --- | --- | --- |
+| `enabled`（压缩总开关） | ✅ 独占 | ❌ 不写（设置页不得关掉自动压缩） |
+| `thresholdPercent` | ✅ | ✅ |
+| `postTurnEnabled` / `modelDownshiftEnabled` | ✅ | ✅ |
+| `microcompact.enabled` / `keepRecentToolResults` / `clearErrorResults` | ✅ | ✅ |
+| `microcompact.thresholdTokens` / `idleThresholdMinutes` / `compactableToolNames` / `minTokenSavings` | ✅ 独占 | ❌ 不写 |
+| `summaryReserveTokens` / `bufferTokens` / `maxConsecutiveFailures` | ✅ 独占 | ❌ 不写 |
+
+三条规则：
+
+1. **设置页只写属于自己的字段，且永不整体替换 `microcompact`**（`LocalMicrocompactPolicyConfig` 字段全 optional，逐键覆盖在类型上本就可行）。整体替换会在用户只切换「轮末压缩」时静默抹掉文件里独占的四个键。
+2. **"未表达"与"显式关闭"必须区分**。设置页六项都是布尔/数值，没有三态，所以：
+   - **热更新路径**（`workspace/updateCompactionPreferences`）总是整份下发六项，语义是"用户当前选择"，因此能关掉刚打开的东西；`thresholdPercent: null` 显式清除覆盖、回到公式阈值。
+   - **创建期路径**只下发**偏离默认值**的字段（靠条件构造省略键，而不是 `x ?? undefined`），语义是"用户表达过的偏好"，因此文件里设置页没表达过的东西一律存活。
+3. 因此"设置页能打开文件里关着的开关、但关不掉文件里打开的开关"这条性质**只成立于创建期**（因为创建期只下发用户表达过的偏离）。**热更新期的语义不同且有意如此**：用户在设置页的操作就是当前意图，因此六项全量下发，用户能把文件里打开的 `microcompact` 关掉。二者合起来的规则是：
+
+   > 用户没表达过的偏好一律让位给文件；用户当下表达的偏好覆盖文件（但对同一会话，只有在设置页真的操作过一次之后）。
+
+   这里存在一条**有意的、非静默的不对称**：`AppSettings` 没有三态，"没打开"与"用户点了关"不可区分，所以创建期只能选择"不表达"，代价是设置页无法在**新建会话**时关掉文件里打开的开关。取这个方向是因为它不会静默撤销文件里明确写下的配置；而热更新路径由用户显式动作触发，能完整表达"关掉"。
+
+`resolveAppRuntimeConfig` 与 `updateCompactionPolicy` 都必须按此语义逐字段合并；`microcompact` 那一层要深合并。`config-merger.ts` 也逐段手写，漏一段会让文件段在多层配置合并时被静默丢弃。
+
 ## 3. 行为
 
 ### 3.1 六个设置的生效点
@@ -157,6 +196,10 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 
 切到更小窗口模型前压一次；落事件 `trigger = model_downshift`、`compactReason = model_downshift`。宏观看：用户从 200K 模型切到 128K 模型时，不再在切换后第一次请求就撞上 `ProviderOverflow` 响应式压缩，而是切换前把上下文收敛到新窗口内。
 
+生效范围：只在**普通 Submission 的起始点**（`turn.ts` 调 `applySubmissionExecutionState` 时传入 `compactionContext`）执行。
+
+不覆盖链路（有意为之，不是漏接）：mid-turn 被提升为 guide 的排队输入若自带 `modelSelection`，走 `turn-guide-drain.ts` 的 `applySubmissionExecutionState`，那里不传 `compactionContext`，因此不做降档压缩。原因是那条路径的 `state.turnRequestState.entries` 已是 loop 自己的工作副本，压缩替换 history 后必须同步刷新它并重建 context prefix，改动面覆盖 turn-loop 主干；收益仅限"轮中途换模型"这一罕见形态，其安全性由下一轮的 PreRequest 自动压缩兜底。若日后要接，必须同时解决 loop entries 同步问题，不能只传 `compactionContext`。
+
 ### 3.5 hook 面的行为变化
 
 - `PreCompact` / `PostCompact` 的 matcher 现在可以写 `manual` / `auto` / `reactive` / `post_turn` / `model_downshift`；payload 新增 `phase` 与 `trigger`。
@@ -171,23 +214,22 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 - 页面结构（上到下）：
 
 1. **说明段**：一行灰色说明文案 `settings.contextCompaction.description`（zh: `控制会话上下文如何自动压缩。默认全部关闭，保持当前行为。`）。
-2. **卡片「自动压缩阈值」**（`SettingsGroupCard`）
-   - `SettingsRow`：标题 `自动压缩阈值`，副标题展示当前生效值：当阈值为自动时显示 `自动（当前模型约 XX%）`，XX 由当前模型的真实窗口算出；显式设置时显示 `窗口的 XX%`。
-   - 控件：数字输入（`Input`，`type="number"`，`min=1`，`max=100`，`step=1`）+ 后缀 `%`；右侧附「恢复自动」文字按钮，点击写 `null`。输入为空视为 `null`。
-   - 交互：失焦或回车提交；非法值（<1 或 >100 或非整数）不提交并在行内显示错误文案 `settings.contextCompaction.thresholdInvalid`。
-   - 禁用态：无（该值对任何模型都适用）。
-3. **卡片「局部压缩」**
-   - `SettingsRow` + `Switch`：`局部压缩`，副标题 `清理较早的工具结果正文，只保留最近若干条，降低上下文占用。`
-   - 展开区（仅 `compactionMicrocompactEnabled === true` 时可见，用主题化的可折叠区域）：
-     - `SettingsRow` + 数字输入：`保留最近工具结果组数`，`min=1`，`max=50`，默认 `5`。
-     - `SettingsRow` + `Switch`：`同时清理失败的工具结果`，默认关。
-4. **卡片「轮末压缩」**
-   - `SettingsRow` + `Switch`：`轮末压缩`，副标题 `一轮回答结束后就主动压缩，而不是等下一次提问前才压。`
-5. **卡片「模型降档提前压」**
-   - `SettingsRow` + `Switch`：`模型降档提前压`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。`
-6. **依赖与提示**：
-   - 若 `compactionMicrocompactEnabled === true` 而「自动压缩阈值」为自动，在局部压缩卡片内显示一条 info 提示：`局部压缩的触发点跟随自动压缩阈值。`
-   - 开关卡片的开关切换后立即生效（无需重启），不出现"需重启"提示。
+2. **唯一一张卡片**（`SettingsGroupCard`），内部按下面的顺序放行（`SettingsRow` + 分割线）。**不再拆成四张单行卡片**：四个控件同属"上下文压缩"一个话题，四张卡片只会多出三个容器边框，属于无谓的视觉噪音（Steve Krug：不要让用户费脑子）。
+   1. **自动压缩阈值**
+      - 标题 `自动压缩阈值`，副标题展示当前生效值：阈值为自动时显示 `自动（当前模型约 XX%）`（XX 由当前模型真实窗口算出；取不到窗口时只显示 `自动`，不编数字）；显式设置时显示 `窗口的 XX%`。
+      - 控件：数字输入（`Input`，`type="number"`，`min=1`，`max=100`，`step=1`）+ 后缀 `%`；右侧附「恢复自动」文字按钮（已为自动时禁用），点击写 `null`。输入为空视为 `null`。
+      - 交互：失焦或回车提交；非法值（<1 / >100 / 非整数）不提交并在行内显示错误文案 `settings.contextCompaction.thresholdInvalid`。
+      - 禁用态：无（该值对任何模型都适用）。
+   2. **局部压缩**
+      - `Switch`：`局部压缩`，副标题 `清理较早的工具结果正文，只保留最近若干条，降低上下文占用。`
+      - 展开区（`Collapsible`，仅 `compactionMicrocompactEnabled === true` 时可见）：
+        - 若阈值为自动，先显示一条提示 `局部压缩的触发点跟随自动压缩阈值。`
+        - 数字输入：`保留最近工具结果组数`，`min=1`，`max=50`，默认 `5`；非法值行内报错 `settings.contextCompaction.keepRecentInvalid`。
+        - `Switch`：`同时清理失败的工具结果`，默认关。
+   3. **轮末压缩**：`Switch`，副标题 `一轮回答结束后就主动压缩，而不是等下一次提问前才压。`
+   4. **模型降档提前压**：`Switch`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。`
+3. **写入中**（`saving`）时卡片内所有控件禁用，避免并发提交互相覆盖。
+4. 开关切换后立即生效（无需重启），不出现"需重启"提示。
 
 - 三个开关默认关；数字默认 `null` / `5`；`clearErrorResults` 默认关。
 - 空 / 加载 / 失败态：沿用设置页既有骨架（`settings.loading` 时该分区显示骨架行；写失败时用设置页既有错误提示通道，文案 `settings.contextCompaction.saveFailed`）。
@@ -211,10 +253,13 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 UI 切换 → settingService.update → useSettingService 同步门 → zcodeAgentService/botsService
         → client.request workspace/updateCompactionPreferences
         → bootstrap handler: 写 appRuntimePreferences.compaction
+                            + 刷新 record.compaction（inherit 子会话据此继承）
                             + 遍历 session 调 app.setCompactionPolicy(policy)
-                            → runtime.updateCompactionPolicy → this.config.compact = policy
+                            → runtime.updateCompactionPolicy → 逐字段并入 this.config.compact
         → 下一次 turn-loop 迭代读到新策略
 ```
+
+`record.compaction` 必须与 `setCompactionPolicy` 在同一个循环里刷新：`record.compaction` 是 `inherit` 分支继承子会话时读的唯一来源，只改 runtime 不改快照会让"用户改完设置后新建的子会话"拿到改之前的语义。
 
 **不变式**
 
@@ -223,7 +268,8 @@ UI 切换 → settingService.update → useSettingService 同步门 → zcodeAge
 - **I3**：`resolveRuntimeCompactPolicyConfig` 是三个入口唯一的策略合成点，且把由模型推导的 `contextWindow` / `maxOutputTokens` / `modelContextBudgetStrategy` 放在 `...config.compact` **之后**强制覆盖。因此策略对象即使误带 `contextWindow`，也不会把模型真实窗口覆盖成配置值（协议层同样不接受该字段）。任何入口都不得自行拼装 `AutoCompactPolicyConfig`。
 - **I4**：压缩对 messageHistory 的替换是原子的——所有模型调用成功后才执行 `replaceMessages`（`compact-active.ts:676`）；中断/失败路径不改历史。
 - **I5**：`CompactTrigger` 的新取值必须在 contract zod enum、hook 输入类型、matcher 匹配值三处同时可见；任一处漏改会被类型穷尽守卫或 schema 拒绝捕获。
-- **I6**：`Auto` / `Reactive` / `PostTurn` / `ModelDownshift` 压缩后，**最后一条真实用户消息仍须留在 `preservedEntries` 后缀里**（`metadata.source === "real_user"`）。它由 `shouldPreserveRecent`（`runtime/helpers/compact-selection.ts`）保证：这些触发器下至少保留最近一组轮次。`Manual`（`StandaloneTurn`）与 `SessionMemory` 有意摘要全部——手动 `/compact` 若保留那条悬空用户消息，下一轮模型会把它再答一遍，与 `suppressFollowup` 语义冲突。这条不变式用测试钉住，不写防御性分支。
+- **I6**：`Auto` / `Reactive` / `PostTurn` / `ModelDownshift` 压缩后，保留段必须是 history 的后缀，且**从最后一条 assistant 回答开始**（切分按「assistant 起始轮」分组，最近一组即"最后一条回答及其之后的消息"）。这条形态保证"正在被回答的用户输入"不会被摘要掉：Auto / Reactive 在请求前压缩时 history 末尾已是本轮用户输入；降档压缩发生在追加本轮输入之前，输入尚未进 history。`Manual`（`StandaloneTurn`）与 `SessionMemory` 有意摘要全部——手动 `/compact` 若保留那条悬空用户消息，下一轮模型会把它再答一遍，与 `suppressFollowup` 冲突。这条不变式用测试钉住（`core/test/compact-selection-preservation.test.ts`），不写防御性分支。
+- **I7**：设置层对 `config.compact` 的贡献**只覆盖它拥有的字段，且永不整体替换 `microcompact`**。设置页任何一次操作之后，文件段里设置页不拥有的键（`enabled`、`microcompact.thresholdTokens` / `idleThresholdMinutes` / `compactableToolNames` / `minTokenSavings`、`summaryReserveTokens` / `bufferTokens` / `maxConsecutiveFailures`）必须逐位不变；`compact.enabled: false` 尤其必须活过任意次热更新。这条同时由类型（patch 类型不含 `enabled`）与合并实现（逐字段 + `microcompact` 深合并）保证，并用测试钉住（`core/test/compact-policy-merge.test.ts`）。
 
 ## 5. 失败语义
 
@@ -265,7 +311,12 @@ UI 切换 → settingService.update → useSettingService 同步门 → zcodeAge
   - `shouldAutoCompact`：`post_turn` / `model_downshift` trigger 不影响阈值判定。
   - microcompact：`keepRecentToolResults`、`clearErrorResults` 生效且媒体结果受保护。
   - `defaultCompactPhaseForTrigger` / `defaultCompactReasonForTrigger` 对新触发器穷尽。
-  - 用户消息保真（I6）：`Auto` / `Reactive` / `PostTurn` / `ModelDownshift` 的 `selectCompactEntries` 结果中，最后一条真实用户消息落在 `preservedEntries` 内。
+  - 保留段（I6）：`Auto` / `Reactive` / `PostTurn` / `ModelDownshift` 的 `selectCompactEntries` 结果是非空后缀且首条为 assistant；收尾为用户输入的 history 里，最后一条用户输入必在保留段内；`Manual` / `SessionMemory` 保留段为空。
+  - 叠加语义（I7，`compact-policy-merge.test.ts`）：文件段 `microcompact = {enabled:true, thresholdTokens:1234}` + 会话级 patch 只含 `postTurnEnabled`（或只含 `microcompact.keepRecentToolResults`）→ 合并后 `thresholdTokens` 仍是 1234、`enabled` 仍是 true；热更新路径同样不动 `thresholdTokens`；`compact.enabled:false` 活过任意次热更新。
+  - 两个 mapper 的稀疏性（`compaction-policy.test.ts`）：全默认偏好 → `compactionPreferencesToPolicyOverride()` 返回 `{}`；`thresholdPercent: null` 时 override 结果**不含该键**（而不是含 `undefined`）；热更新用的全量 mapper 反之始终六项 present。
+  - 真实路径（`compact-trigger-paths.test.ts`）：开关打开且条件满足时，`maybeCompactForModelDownshift` / `maybeCompactAfterTurn` 必须以 `trigger = model_downshift` / `post_turn` 真的调用 `compactActiveConversation`；窗口未变小、有排队输入、开关为 false 时不得调用；轮末压缩抛错不冒泡。
 - 契约测试：`compactTimelinePayload` / `compactBoundaryPayload` 接受新 `trigger` / `phase`；hook 输入接受新 `compactTrigger`。
+- shared 契约：`AppSettings` 六项默认值为「维持现状」；阈值百分比只接受 1–100 整数或 `null`；patch 里 `null` 表示"恢复自动"、缺席表示"不修改"；协议 schema `.strict()` 拒绝 `contextWindow` 与缺项（`packages/shared/test/app-compaction-preferences.test.ts`）。
+- 文件通道可达性（**不能只断言 schema 能解析**）：含 `compact.microcompact.thresholdTokens` 的配置文件经 `ConfigStore`/merger 真实路径后，`RuntimeConfig.compact` 里该值必须还在——通道断在 `config-merger.ts` 或 `index.ts` 上时 schema 照样绿。
 - 门禁：`pnpm typecheck`、`pnpm lint`、`pnpm typecheck:cli`、两处 `node --import tsx --test` 全绿。
 - 端到端（手工，需真机验证并记录证据）：设置页切换 → 新会话 → 观察 `compact.micro.applied` / `compact.auto.skipped` / `compact.post_turn.*` 日志与压缩时间线横线。

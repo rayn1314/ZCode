@@ -15,6 +15,7 @@ import type {
   ToolExecutor,
   ToolRegistry,
   ContextBuilder,
+  AutoCompactPolicyConfig,
 } from "../deps.js";
 import { isInspectablePermissionBroker, projectIdFromDirectory } from "../helpers/index.js";
 import {
@@ -74,9 +75,27 @@ export function updateCompactionPolicy(
   this: AgentRuntimeInternal,
   patch: AgentRuntimeCompactionPolicyPatch,
 ): void {
-  // 合并写入而不是整体替换：CLI 文件里的 compact 段（例如 enabled:false）必须活过
-  // 一次设置页热更新。设置侧总是显式下发六项（含 false），因此合并结果仍是完整状态。
-  this.config.compact = { ...this.config.compact, ...patch };
+  // 逐字段合并，禁止整体替换：CLI 文件里的 compact 段（例如 enabled:false、
+  // microcompact.thresholdTokens、idleThresholdMinutes、minTokenSavings）必须活过一次
+  // 设置页热更新——设置页只拥有六个开关，它没表达的键一律保持文件值。
+  const current = this.config.compact;
+  const next: AutoCompactPolicyConfig = { ...current };
+  if (patch.thresholdPercent === null) {
+    // 显式清除：回到 core 的公式阈值，而不是把 null 写进策略对象。
+    delete next.thresholdPercent;
+  } else if (patch.thresholdPercent !== undefined) {
+    next.thresholdPercent = patch.thresholdPercent;
+  }
+  if (patch.microcompact) {
+    next.microcompact = { ...current?.microcompact, ...patch.microcompact };
+  }
+  if (patch.postTurnEnabled !== undefined) {
+    next.postTurnEnabled = patch.postTurnEnabled;
+  }
+  if (patch.modelDownshiftEnabled !== undefined) {
+    next.modelDownshiftEnabled = patch.modelDownshiftEnabled;
+  }
+  this.config.compact = next;
 }
 
 export function initializeSessionShellEnvironmentIfNeeded(

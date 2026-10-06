@@ -7,6 +7,7 @@ import {
 import { resolveEffectiveBashShellSelection } from "@zcode/adapters/exec";
 import { inputIntentMetadata } from "../zcode-protocol-v4/commands/input-intent.js";
 import { createModelExecutionContext } from "./model-execution.js";
+import { compactionPreferencesToPolicyOverride } from "../compaction-policy.js";
 import type { SendInputOptions } from "../app/types.js";
 import { repairPersistedRemoteSessionPaths, type TurnAttachment } from "@zcode/core";
 import {
@@ -41,7 +42,9 @@ import {
   type WorkspaceId,
 } from "@zcode/contracts";
 import {
+  DEFAULT_ZCODE_COMPACTION_PREFERENCES,
   DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
+  type ZCodeCompactionPreferences,
   ZCODE_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
   zcodeProtocolErrorCodes,
   zcodeProtocolMethods,
@@ -144,6 +147,8 @@ interface SessionStartupPreferences {
   memoryEnabled: boolean;
   modelContextBudgetStrategy: ZCodeModelContextBudgetStrategy;
   nativeSearchEnhancementsEnabled: boolean;
+  /** 会话起始压缩偏好；inherit 子会话直接沿用父会话这一份。 */
+  compaction: ZCodeCompactionPreferences;
   resolveInitialBashShellSelection: () => Promise<ExecutionShellSelection | undefined>;
 }
 
@@ -3225,6 +3230,8 @@ async function requestSessionRuntimePreferences(
         memoryEnabled: false,
         modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
         nativeSearchEnhancementsEnabled: true,
+        // 旧 Host / 纯 CLI：压缩偏好缺省 = 全部「维持现状」默认值。
+        compaction: { ...DEFAULT_ZCODE_COMPACTION_PREFERENCES },
       };
     }
     throw error;
@@ -3243,6 +3250,9 @@ async function resolveSessionStartupPreferences(
       memoryEnabled: source.parent.memoryEnabled,
       modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
       nativeSearchEnhancementsEnabled: source.parent.nativeSearchEnhancementsEnabled,
+      // 子会话继承父会话创建时的压缩偏好，而不是重新问一次 Host：
+      // 同一 workspace 里父子会话的压缩语义必须一致。
+      compaction: source.parent.compaction,
       resolveInitialBashShellSelection: async () => inheritedShellSelection,
     };
   }
@@ -3261,6 +3271,7 @@ async function resolveSessionStartupPreferences(
     memoryEnabled: runtimePreferences.memoryEnabled,
     modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
     nativeSearchEnhancementsEnabled: runtimePreferences.nativeSearchEnhancementsEnabled,
+    compaction: runtimePreferences.compaction,
     resolveInitialBashShellSelection: async () => {
       const executionPreferences = await requestSessionRuntimePreferences(
         context,
@@ -3314,6 +3325,10 @@ async function createRecord(
       : undefined;
   const taskType = params.taskType ?? "interactive";
   const runtimeMcp = protocolMcpServersToRuntimeMcpConfig(params.mcpServers);
+  // 会话级压缩覆盖是**稀疏**的：只有用户真正表达过的字段才会出现。
+  // 全默认时返回 {}，下面对应的 runtimeConfig 键整段省略，让 CLI 文件级
+  // `compact` 段（纯 CLI / headless 用户唯一的配置入口）完整生效（spec D5）。
+  const compactionOverride = compactionPreferencesToPolicyOverride(startupPreferences.compaction);
   context.logger?.info("ZCode Protocol createRecord MCP config", {
     event: "zcode_protocol.create_record.mcp_config",
     rootTraceId: traceContext.traceId,
@@ -3354,6 +3369,9 @@ async function createRecord(
       // Memory Settings 是现有 CLI features.memory/use 之外的总开关。只在关闭时
       // 写入 override，避免开启值反向覆盖用户已有的 CLI 禁用配置。
       ...(startupPreferences.memoryEnabled ? {} : { memory: { enabled: false } }),
+      // 压缩偏好：把 Host 解析出的六项映射成运行时可写策略面（稀疏，见上）。
+      // 会话级覆盖 CLI 文件级 config.compact；逐字段合并由 resolveAppRuntimeConfig 完成（spec D5/D6）。
+      ...(Object.keys(compactionOverride).length > 0 ? { compact: compactionOverride } : {}),
       // desktop-continuous session/create 由 UI 先解析 ~/.zcode/.agents 的 enabled MCP，
       // 但 protocol app-server 自己不会读取 UI/main 侧的 MCP store；之前 createRecord 没把
       // params.mcpServers 注入 runtimeConfig，导致日志里 runtimeHasMcpConfig=false，工具永远不启动。
@@ -3412,6 +3430,7 @@ async function createRecord(
     memoryEnabled: startupPreferences.memoryEnabled,
     modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
     nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
+    compaction: startupPreferences.compaction,
     ...(parentSessionId ? { parentSessionId } : {}),
     persistence: "persistence" in params ? (params.persistence ?? "immediate") : "immediate",
     protocolEventSequences: new Map(),

@@ -107,14 +107,14 @@ export function getAutoCompactThreshold(config: AutoCompactPolicyConfig = {}): n
 
 /**
  * 归一化阈值百分比：只接受 1–100 的整数。
- * 越界（含 0、负数、非有限数）一律按"未配置"处理并回落公式阈值——
- * 这是 fail-safe 方向：宁可沿用既有阈值，也不把阈值压到一个必然触发的极小值。
+ * 越界（0、负数、非有限数、大于 100）一律按"未配置"处理并回落公式阈值——
+ * 这是 fail-safe 方向：宁可沿用既有阈值，也不把阈值改成一个用户没要求过的值。
  * 三个配置入口（AppSettings / 协议偏好 / CLI config）都会先做范围校验，此处是最后一道防线。
  */
 function normalizeThresholdPercent(value: number | undefined): number | undefined {
   const normalized = positiveInt(value);
-  if (normalized === undefined || normalized < 1) return undefined;
-  return Math.min(normalized, 100);
+  if (normalized === undefined || normalized < 1 || normalized > 100) return undefined;
+  return normalized;
 }
 
 /**

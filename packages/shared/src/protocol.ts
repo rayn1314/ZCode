@@ -323,6 +323,21 @@ export interface AppSettings {
   nativeSearchEnhancementsEnabled?: boolean;
   /** 新建或冷恢复 Session 是否启用 Memory；默认关闭。 */
   memoryEnabled?: boolean;
+  /**
+   * 自动压缩阈值占模型完整上下文窗口的百分比（1–100 整数）。
+   * null/缺省 = 沿用既有公式阈值，不改变默认行为。
+   */
+  compactionThresholdPercent?: number | null;
+  /** 局部压缩：清理较早的工具结果正文，只保留最近若干组。默认关闭。 */
+  compactionMicrocompactEnabled?: boolean;
+  /** 局部压缩保留最近多少组工具结果（1–50）。默认 5。 */
+  compactionMicrocompactKeepRecentToolResults?: number;
+  /** 局部压缩是否连失败（isError）的工具结果一起清理。默认关闭。 */
+  compactionMicrocompactClearErrorResults?: boolean;
+  /** 轮末压缩：一轮成功后主动压缩，而不是等下一次提问前。默认关闭。 */
+  compactionPostTurnEnabled?: boolean;
+  /** 模型降档提前压：切换到上下文窗口更小的模型前先压缩。默认关闭。 */
+  compactionModelDownshiftEnabled?: boolean;
   onboardingOccupation?:
     | "office"
     | "developer"

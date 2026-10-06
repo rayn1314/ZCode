@@ -80,6 +80,9 @@ export const ConfigKey = {
   // Model anomaly guards
   ModelAnomalyGuard: "modelAnomalyGuard",
 
+  // Context compaction controls（用户可配置的压缩开关；窗口/预算仍由模型推导）
+  Compact: "compact",
+
   // Hooks
   Hooks: "hooks",
 
@@ -151,7 +154,9 @@ export type ConfigValue<K extends ConfigKey> = K extends "modelStream.idleTimeou
                                           ? number
                                           : K extends "modelAnomalyGuard"
                                             ? ModelAnomalyGuardConfig
-                                            : K extends "hooks"
+                                            : K extends "compact"
+                                              ? CompactConfig
+                                              : K extends "hooks"
                                               ? HooksRuntimeConfig
                                               : K extends "ui.locale"
                                                 ? UiLocale
@@ -259,6 +264,7 @@ export interface RuntimeConfig {
   };
   toolConcurrency: ToolConcurrencyConfig;
   modelAnomalyGuard: ModelAnomalyGuardConfig;
+  compact: CompactConfig;
   hooks: HooksRuntimeConfig;
   ui: {
     locale: UiLocale;
@@ -281,6 +287,7 @@ export interface RuntimeConfigPatch {
   logging?: Partial<RuntimeConfig["logging"]>;
   toolConcurrency?: Partial<RuntimeConfig["toolConcurrency"]>;
   modelAnomalyGuard?: Partial<RuntimeConfig["modelAnomalyGuard"]>;
+  compact?: Partial<RuntimeConfig["compact"]>;
   hooks?: HooksRuntimeConfigPatch;
   ui?: Partial<RuntimeConfig["ui"]>;
 }
@@ -355,6 +362,8 @@ export const DefaultRuntimeConfig: RuntimeConfig = {
     maxBudgetWarningsPerTurn: 3,
     repeatedToolCallWarningThreshold: 3,
   },
+  // 默认空对象 = 不写任何压缩开关，运行时按既有公式与默认门控运行。
+  compact: {},
   hooks: {
     enabled: false,
     events: {},
@@ -379,6 +388,55 @@ export interface ModelAnomalyGuardConfig {
   toolCallWarningThreshold?: number;
   repeatedToolCallWarningThreshold: number;
   maxBudgetWarningsPerTurn: number;
+}
+
+/**
+ * CLI 文件级压缩配置（`compact` 段）。
+ *
+ * 只含用户可配置开关：`contextWindow` / `maxOutputTokens` / 预算策略由运行时按当前模型
+ * 推导并强制覆盖，配置文件写不进来（core 不变式 I3）。字段与 core 的
+ * `AutoCompactPolicyConfig` 用户可写面结构兼容，可安全赋给 `AgentRuntimeConfig.compact`。
+ */
+export interface CompactConfig {
+  /** 压缩总开关；false 关闭全部自动/响应式压缩路径。 */
+  enabled?: boolean;
+  /** 自动压缩阈值占模型完整窗口的百分比（1–100）；缺省沿用运行时公式阈值。 */
+  thresholdPercent?: number;
+  /** 局部压缩：清理较早的工具结果正文。 */
+  microcompact?: {
+    enabled?: boolean;
+    thresholdTokens?: number;
+    idleThresholdMinutes?: number;
+    keepRecentToolResults?: number;
+    compactableToolNames?: readonly string[];
+    clearErrorResults?: boolean;
+    minTokenSavings?: number;
+  };
+  /** 轮末主动压缩。 */
+  postTurnEnabled?: boolean;
+  /** 模型降档提前压。 */
+  modelDownshiftEnabled?: boolean;
+}
+
+/**
+ * 压缩配置逐字段合并（`base` 为低优先级来源，`over` 为高优先级来源）。
+ *
+ * **不能浅展开**：`microcompact` 是嵌套对象，任何一层只表达一个子键时浅展开都会把
+ * 另一层的其余子键（`thresholdTokens` / `idleThresholdMinutes` / `minTokenSavings` /
+ * `compactableToolNames`）整段抹掉——配置写着但静默不生效。
+ * 三处合并（配置源之间、ConfigStore 写入、会话级覆盖文件级）共用这一份实现。
+ */
+export function mergeCompactConfig(
+  base: CompactConfig | undefined,
+  over: CompactConfig | undefined,
+): CompactConfig {
+  return {
+    ...base,
+    ...over,
+    ...(base?.microcompact || over?.microcompact
+      ? { microcompact: { ...base?.microcompact, ...over?.microcompact } }
+      : {}),
+  };
 }
 
 // ============================================================

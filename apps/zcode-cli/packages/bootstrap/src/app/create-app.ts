@@ -1010,6 +1010,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         workspaceHookRuntimeSecurity?.reloadTrust() ?? Promise.resolve(),
       setModelIoFullRetentionEnabled: (enabled) =>
         modelAdapter.setModelIoFullRetentionEnabled(enabled),
+      // 压缩策略热更新：runtime 每次 turn-loop 迭代重读 config.compact，因此改完即生效。
+      setCompactionPolicy: (policy) => getRuntime().updateCompactionPolicy(policy),
       readToolResultArtifact: (uri) =>
         artifactStore.readToolResultArtifact({ uri, trace: traceContext }),
       // wire/staging 全程是 decoded chunk；只有完整 checksum commit 后才在

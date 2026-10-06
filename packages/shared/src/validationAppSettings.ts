@@ -417,6 +417,11 @@ function migrateLegacyWorkspaceSession(value: unknown): unknown {
   return migrated;
 }
 
+// 上下文压缩阈值百分比：只接受 1–100 的整数，null 表示「自动」（沿用 core 的公式阈值）。
+// 越界值在这一层就拒绝，避免把必然触发压缩的极小阈值写进偏好。
+const compactionThresholdPercentSchema = z.number().int().min(1).max(100).nullable();
+const compactionMicrocompactKeepRecentToolResultsSchema = z.number().int().min(1).max(50);
+
 const appSettingsObjectSchema = z.object({
   recentProjects: z.array(z.string()).default([]),
   locale: localeSchema.default("zh-CN"),
@@ -462,6 +467,14 @@ const appSettingsObjectSchema = z.object({
   onboardingOccupation: appSettingsOccupationSchema.nullish(),
   proactiveSuggestionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().default(false),
+  // 上下文压缩控制（默认全部「维持现状」）：阈值缺省/null = 沿用 core 的公式阈值。
+  compactionThresholdPercent: compactionThresholdPercentSchema.optional(),
+  compactionMicrocompactEnabled: z.boolean().default(false),
+  compactionMicrocompactKeepRecentToolResults:
+    compactionMicrocompactKeepRecentToolResultsSchema.default(5),
+  compactionMicrocompactClearErrorResults: z.boolean().default(false),
+  compactionPostTurnEnabled: z.boolean().default(false),
+  compactionModelDownshiftEnabled: z.boolean().default(false),
   lastWorkspaceSession: z.array(appWorkspaceSessionEntrySchema).default([]),
   lastActiveTabIndex: z.number().int().nonnegative().default(0),
   lastActiveTaskByWorkspace: z.record(z.string(), z.string()).optional(),
@@ -547,6 +560,14 @@ export const appSettingsPatchSchema = z.object({
     .nullish(),
   proactiveSuggestionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().optional(),
+  // 压缩偏好 patch：显式 null 表示「恢复自动阈值」，区别于「不修改」。
+  compactionThresholdPercent: compactionThresholdPercentSchema.optional(),
+  compactionMicrocompactEnabled: z.boolean().optional(),
+  compactionMicrocompactKeepRecentToolResults:
+    compactionMicrocompactKeepRecentToolResultsSchema.optional(),
+  compactionMicrocompactClearErrorResults: z.boolean().optional(),
+  compactionPostTurnEnabled: z.boolean().optional(),
+  compactionModelDownshiftEnabled: z.boolean().optional(),
   lastWorkspaceSession: z.array(appWorkspaceSessionEntrySchema).optional(),
   lastActiveTabIndex: z.number().int().nonnegative().optional(),
   lastActiveTaskByWorkspace: z.record(z.string(), z.string()).optional(),

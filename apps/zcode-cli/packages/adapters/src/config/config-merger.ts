@@ -6,7 +6,7 @@ import type {
   PluginOptionValues,
   RuntimeConfigPatch,
 } from "@zcode/contracts";
-import { ConfigScope, ConfigScopePriority } from "@zcode/contracts";
+import { ConfigScope, ConfigScopePriority, mergeCompactConfig } from "@zcode/contracts";
 
 type PluginOptions = Record<string, PluginOptionValues>;
 
@@ -42,6 +42,9 @@ export function mergeConfigs(...configs: PrioritizedConfig[]): RuntimeConfigPatc
         : inputConfig;
     const previousHooks = result.hooks;
     const previousPlugins = result.plugins;
+    // `Object.assign` 是浅覆盖：嵌套对象必须在 assign **之前**留一份旧值，
+    // 否则下面拿到的 result.compact 已经是本层自己的值，低优先级来源会被吞掉。
+    const previousCompact = result.compact;
     Object.assign(result, config);
 
     // Deep merge nested objects
@@ -141,6 +144,11 @@ export function mergeConfigs(...configs: PrioritizedConfig[]): RuntimeConfigPatc
         ...result.modelAnomalyGuard,
         ...config.modelAnomalyGuard,
       };
+    }
+    // 压缩策略逐字段合并：microcompact 是嵌套对象，整段替换会丢掉低优先级来源里
+    // 没被高优先级来源表达的键（如 thresholdTokens）。
+    if (config.compact) {
+      result.compact = mergeCompactConfig(previousCompact, config.compact);
     }
     if (config.hooks) {
       result.hooks = mergeHooksConfig(previousHooks, config.hooks);
