@@ -267,7 +267,11 @@ UI 切换 → settingService.update → useSettingService 同步门 → zcodeAge
 - **I2**：设置项永不阻断压缩；只有 `PreCompact` hook 能阻断。
 - **I3**：`resolveRuntimeCompactPolicyConfig` 是三个入口唯一的策略合成点，且把由模型推导的 `contextWindow` / `maxOutputTokens` / `modelContextBudgetStrategy` 放在 `...config.compact` **之后**强制覆盖。因此策略对象即使误带 `contextWindow`，也不会把模型真实窗口覆盖成配置值（协议层同样不接受该字段）。任何入口都不得自行拼装 `AutoCompactPolicyConfig`。
 - **I4**：压缩对 messageHistory 的替换是原子的——所有模型调用成功后才执行 `replaceMessages`（`compact-active.ts:676`）；中断/失败路径不改历史。
-- **I5**：`CompactTrigger` 的新取值必须在 contract zod enum、hook 输入类型、matcher 匹配值三处同时可见；任一处漏改会被类型穷尽守卫或 schema 拒绝捕获。
+- **I5**：`CompactTrigger` / `CompactPhase` 的新取值必须在**所有消费端枚举副本**里同时可见。契约层（`contracts/src/compact/index.ts`）是唯一生产端，但取值会被复制成字符串枚举，共四处：legacy 时间线 zod（`shared/src/zcode-protocol-legacy-types.ts`）、v4 遥测 zod（`shared/src/zcode-protocol-v4/telemetry.ts` 的 `compaction.terminal`）、services 的手写 guard（`zcodeTaskServiceAdapter.ts` 的 `timelineTriggerValue`）、以及 bootstrap 的投影映射。
+
+  **不要指望编译器或类型穷尽守卫兜住这里**：副本是字符串字面量联合，漏改既不会编译失败，也不会在类型层面报错；`zod` 的 `.parse()` 只在**运行时**遇到新取值才抛错，表现为"该触发器的时间线/遥测整条丢失"，且只有真跑到那条路径才暴露（本方案实现期间就漏了 v4 遥测副本，靠 `contracts/test/compact-trigger-parity.test.ts` 才发现）。因此这条不变式由该奇偶校验测试钉住：对每个 `CompactTrigger` / `CompactPhase` 取值逐个跑真实 schema，漏改即红。
+
+  另外 `mapCompactMarkerOrigin` 之类的映射必须写成**总函数**（`manual` 之外一律归 `auto`），这样新取值不需要改映射也不会落进未定义分支。
 - **I6**：`Auto` / `Reactive` / `PostTurn` / `ModelDownshift` 压缩后，保留段必须是 history 的后缀，且**从最后一条 assistant 回答开始**（切分按「assistant 起始轮」分组，最近一组即"最后一条回答及其之后的消息"）。这条形态保证"正在被回答的用户输入"不会被摘要掉：Auto / Reactive 在请求前压缩时 history 末尾已是本轮用户输入；降档压缩发生在追加本轮输入之前，输入尚未进 history。`Manual`（`StandaloneTurn`）与 `SessionMemory` 有意摘要全部——手动 `/compact` 若保留那条悬空用户消息，下一轮模型会把它再答一遍，与 `suppressFollowup` 冲突。这条不变式用测试钉住（`core/test/compact-selection-preservation.test.ts`），不写防御性分支。
 - **I7**：设置层对 `config.compact` 的贡献**只覆盖它拥有的字段，且永不整体替换 `microcompact`**。设置页任何一次操作之后，文件段里设置页不拥有的键（`enabled`、`microcompact.thresholdTokens` / `idleThresholdMinutes` / `compactableToolNames` / `minTokenSavings`、`summaryReserveTokens` / `bufferTokens` / `maxConsecutiveFailures`）必须逐位不变；`compact.enabled: false` 尤其必须活过任意次热更新。这条同时由类型（patch 类型不含 `enabled`）与合并实现（逐字段 + `microcompact` 深合并）保证，并用测试钉住（`core/test/compact-policy-merge.test.ts`）。
 

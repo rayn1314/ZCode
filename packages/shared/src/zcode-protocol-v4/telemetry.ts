@@ -241,7 +241,17 @@ const compactionTerminalFactSchema = z
     messageId: z.string().min(1).optional(),
     summaryMessageId: z.string().min(1).optional(),
     status: z.enum(["completed", "failed", "interrupted"]),
-    trigger: z.enum(["manual", "auto", "partial", "reactive", "session_memory"]),
+    // 必须与 contracts 的 CompactTrigger、legacy 时间线的 trigger 枚举同步：这里少一个取值，
+    // 对应触发器的 compaction.terminal 事实会在 parse 时抛错、整条遥测丢失（且只在真跑时暴露）。
+    trigger: z.enum([
+      "manual",
+      "auto",
+      "partial",
+      "reactive",
+      "session_memory",
+      "post_turn",
+      "model_downshift",
+    ]),
     compactReason: z.string().optional(),
     reason: z.string().optional(),
     attempt: z.number().int().positive().optional(),
