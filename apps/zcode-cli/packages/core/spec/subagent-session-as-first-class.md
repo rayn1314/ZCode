@@ -228,11 +228,13 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 改动面：
 - `contracts`：`SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC = "runtime/subagent_launch_spec"` 常量、entry 数据结构、`SESSION_ENTRY_TYPES` 同步。
-- `core`：spawn 时在 `ensureSessionPersistedForExternalActivity` 之后写 launch spec（外键约束要求 session 行先存在）；无 `sessionStore` 时跳过（此时也没有冷恢复，不构成静默降级）。
-- `bootstrap`：`createRecord` 的 `runtimeConfig` 对 `taskType === "subagent_child"`：读 launch spec 并回填 `toolset` / `agentName` / `subagentContext` / 冻结白名单 / `toolDisallowlist` / `maxTurns`；**无条件**写死 `subagents: { enabled: false }`（fail-closed，spec 缺失也写）。缺 spec → 受限模式（只写 `enabled: false` + 标注身份未还原）。
+- `core`：spawn 时在 `ensureSessionPersistedForExternalActivity` 之后写 launch spec（外键约束要求 session 行先存在）；无 `sessionStore` 时跳过（此时也没有冷恢复，不构成静默降级）；落盘失败只 warn，不让 spawn 失败。
+- `bootstrap`：`createRecord` 的 `runtimeConfig` 对 `taskType === "subagent_child"`：读 launch spec 并回填 `toolset` / `agentName` / 冻结白名单 / `toolDisallowlist` / `maxTurns`；**无条件**写死 `subagents: { enabled: false }`（fail-closed，spec 缺失也写）。缺 spec → 受限模式（只写 `enabled: false` 并记一条 debug）。
 - 无需改动 `includeAgent` 的两个注册点：它们读的是 `runtime.subagentPort`，而端口只在 `subagents.enabled === false` 时收回，所以折叠在 runtimeConfig 一处即可。
 
-验收：launch spec 写入（FK 顺序）与读取；无 spec → 受限分支；冷恢复的子 record 满足 `subagentPort === undefined`、工具面不含 `Agent`、`subagents.enabled === false`；主会话（7 类 taskType）不受影响。
+**S1a 不做 persona 回填**（`subagentContext`）：症状 3 说的是「身份」，persona 的 owner 是 profile，要按 `profileName` / `profileSource` 重解析才能回填，而那段解析逻辑（`buildExploreAgentPrompt` 等）在 core。launch spec 已把这两个寻址键落库，回填留给 S1b（那时子会话由同一个构造入口物化，可以顺路解析 profile）。在输入面开放（S2）之前，冷恢复子会话本来也不可输入，persona 缺口不影响任何可达行为。
+
+验收：launch spec 写入（FK 顺序）与读取；无 spec → 受限分支；`subagents.enabled === false` 恒真且据此收回 `subagentPort`（套娃闸，单测钉住这一环）；主会话（7 类 taskType）不受影响。
 
 ### S1b · 子会话升格为正式 record（根因修复，依赖 S1a）
 
