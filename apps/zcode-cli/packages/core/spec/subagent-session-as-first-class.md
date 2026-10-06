@@ -27,6 +27,36 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 本方案采用同一形状。
 
+### 搬迁构造路径的两条硬约束（2026-10-07 实测，原稿未覆盖）
+
+落地 D1 前把「子会话交给会话构造路径」的接口事实逐条核实了一遍，发现两件决定实现形状的事。原稿把"端口搬到 bootstrap"写成一句话，实际不成立。
+
+**约束一：父作用域端口只能由 core 提供，bootstrap 重建不出来。**
+
+子运行时依赖里有一批是**父 runtime 的活对象**，不是 bootstrap 能从 `context` 重新构造的：
+
+| 依赖 | 为什么 bootstrap 造不出来 |
+| --- | --- |
+| `permissionService`（非 explore） | 携带本会话已授予的权限状态 |
+| `skillPort` | 是父 skillPort 的 `FilteredSkillPort` 包装（profile 白名单 + CUA 策略） |
+| `mcpPort` | **借用**父的启动快照（`createBorrowedSubagentMcpAccess`）；重建会开第二份 MCP 连接 |
+| `eventSink` | 包装父的 `notifyEventSinks`，子事件要镜像回父时间线 |
+| `modelFactory` | 由父派生，绑定**本次调用**的选型（含调用级 `Agent.model` 覆盖，只在内存里） |
+| `coordinatorResponsePort` | `enqueue = 父的 enqueueSubagentMessage` |
+| `initialSessionMessageChain` | 父的防环链快照，只在 spawn 时取一次 |
+| `agentTelemetryCausation` / `CausationMode` | 父的 span 归因（前台用真实父子 span，后台用 link） |
+| `memoryRoot` | 由父的 profile / workspace 解析出的持久记忆根 |
+
+所以 D1 的正确形状不是"core 交出构造权"，而是：**core 产出「子会话覆盖包」（runtimeConfig 覆盖 + 上面这批父作用域端口），bootstrap 的会话构造入口消费它并把 record 登记进 `context.sessions`。** 构造入口只有一处，覆盖包是该入口的一个入参。这仍然是"一条链路"，只是链路两端的职责重新划了。
+
+**约束二：正式会话构造入口每次都做同步磁盘解析，不能直接拿来给每次派发复用。**
+
+`createZCodeApp` 每次调用都会：`loadFileConfig`（用户/项目配置）、`discoverNodePluginsSync`（**同步**发现插件）、`loadZCodeAgentProfiles`（agent profile）、`resolveBundledSkillRoots`（内置技能包）。这些**没有进程级缓存，而且不该加**——现有语义明确写着"冷恢复会重建 App，天然拿到新 catalog；已有 Session 不热加载新 Plugin"，加缓存会改掉冷恢复看得见新插件这条行为。
+
+子代理是**模型在轮内派发的**，一轮三五个是常态。若每次派发都走一遍完整入口，等于每次派发付一次会话启动成本（含同步插件发现）。原稿没有考虑这一项。
+
+所以子会话必须走**同一个入口的受限模式**：入口内部按 `taskType === "subagent_child"` 收窄能力面（不建动态工作流 run service、automation、off-peak、node_repl 等子会话本就不该有的能力），并接受父侧已解析好的启动输入，不重复做上面那四项磁盘解析。这是「一个入口 + 内部收窄」，不是「两条构造路径」。
+
 ### 同期落地的能力（已并入本方案）
 
 2026-10-05 / 10-06 主工作区落了三批与本方案直接相交的改动，方案已按它们校正：
@@ -39,9 +69,10 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 ### D1 · 子会话由同一条会话构造路径创建（根因修复）
 
-- 子会话的 record 与运行时由 bootstrap 的既有构造路径创建（`createRecord` → `createWorkspaceZCodeApp`），与任何会话一样进入 `context.sessions`。
-- 父会话的 `Agent` 工具不再自己 `new AgentRuntime`，改为经 `SubagentPort` 派发；该端口的实现从 core 移到 bootstrap，与 `sessionMessagePort` / `subagentRosterPort` 同层注入（`create-app.ts` 已有这三个端口的注入位）。
-- 子会话由此**天然**获得：`sessionMailboxPort`、正确的工具面、写死的 `subagents.enabled: false`、可裁决的输入准入、可被 `SendMessage` 命中的 record。症状 1–3 一次性消失，不需要任何"接线"。
+- 子会话的 record 由 bootstrap 的既有构造入口创建（`createRecord` → `createWorkspaceZCodeApp`），与任何会话一样进入 `context.sessions`。
+- **core 产出「子会话覆盖包」**：`runtimeConfig` 的会话级覆盖（`toolset` / `subagentContext` / `agentName` / 冻结的 `toolAllowlist` / `toolDisallowlist` / `maxTurns`）＋ 一批**父作用域端口**（见上一节的表：`permissionService` 非 explore 分支、`skillPort`、`mcpPort`、`eventSink`、`modelFactory`、`coordinatorResponsePort`、`initialSessionMessageChain`、`agentTelemetryCausation` / `CausationMode`、`memoryRoot`）。父会话的 `Agent` 工具不再自己 `new AgentRuntime`。
+- **bootstrap 的构造入口消费覆盖包并进入子会话受限模式**：不建子会话本就不该有的能力（动态工作流 run service、automation、off-peak、node_repl broker），并接受父 record 已解析好的启动输入，避免每次派发重复做配置 / 插件 / profile / 内置技能包四项磁盘解析。端口不必从 core "搬"到 bootstrap——`sessionMailboxPort` / `sessionMessagePort` / `subagentRosterPort` 本来就在 bootstrap 侧。
+- 子会话由此**天然**获得：`sessionMailboxPort`、写死的 `subagents.enabled: false`、可裁决的输入准入、可被 `SendMessage` 命中的 record。症状 1–3 一次性消失，不需要任何"接线"。
 - **起始偏好复用既有形状**：bootstrap 已经为 fork 提供了"子会话沿用父会话起始偏好"的机制（`server-operations.ts` 的 `SessionStartupPreferencesSource = { kind: "inherit", parent }`，含 memory / modelContextBudgetStrategy / nativeSearchEnhancements / compaction / shell selection）。子会话走**同一份**，不另造继承逻辑。这一步不是可选的：压缩偏好已是用户可配置项（2026-10-06 落地的压缩开关化，四项控件），漏继承会让子会话沿用陈旧策略。
 - **治理纪律沿用仓库既有做法**：hook 事件名单已"下沉 `@zcode/shared` 单源 + 全量派生站点 + 奇偶校验测试"。本轮的会话角色策略照同一纪律办——单源表 + 类型级穷尽守卫 + 覆盖率/奇偶测试。策略表的价值是**不漂移**，不是减少分支；把散落分支收成一张同样复杂的表并不降低复杂度，这一点在决策里如实写明。
 - **删除清单**（不保留旧路径）：core 手写的子 runtime 依赖字面量、`ingestDetachedLiveSession`、`detachedChildParent` / `detachedChildrenByParent`（含 `collectMemoryDiagnostics` 的 `detachedLive` 指标）、`pruneDetachedChildPublishers` 及其低频 tick、`deriveChildClientPorts` + `subagent-interaction-broker` 的父改写（改由 D6 在 record 层承担）、`guard.subagentReadOnly`。
@@ -77,7 +108,7 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 由 D1 自动成立：子会话的运行时常量依赖由构造路径注入，`sessionMailboxPort` 与 drain 钩子（`UserPromptSubmit` / `PostToolUse` / `Stop`）随之生效。投递三态语义（`steered` / `woken` / `stored`）不变；`stored` 现在真的会被 drain。防环链照常（spawn 继承父链，用户从命令面输入不带链即清链）。
 
-本决策不产生独立的实施步骤，它的验收并入 S1。
+本决策不产生独立的实施步骤，它的验收并入 S1b。
 
 ### D5 · 生命周期：删除递归、中止沿树、其余不级联
 
@@ -191,23 +222,34 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ## 实施阶段（方案）
 
-### S1 · 子会话升格为正式 record（根因修复，前置）
+### S1a · launch spec 落库 + 冷恢复认领身份（无构造搬迁，可独立落地）
+
+这一半不依赖构造路径搬迁，且同时修掉症状 3（冷恢复丢身份）与它后面的套娃后门，是本轮的安全前置。
 
 改动面：
-- `bootstrap`：`SubagentPort` 的新实现（创建子 record、写 launch spec、跑轮、回结果）；`createRecord` 的 `runtimeConfig` 对 `taskType === "subagent_child"` 读 launch spec，写死 `subagents: { enabled: false }`、`toolset`、`agentName`、`subagentContext`、冻结的工具白名单；交互 broker 的父改写。
-- `core`：`Agent` 工具改为走端口；删除手写的子 runtime 依赖字面量与 `new AgentRuntime` 分支；删除 `deriveChildClientPorts`。
-- `contracts`：`SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC` 常量与数据结构、`SESSION_ENTRY_TYPES` 同步、`SubagentPort` 入参补齐（需要携带父侧解析好的冻结工具面）。
-- `bootstrap` 起始偏好：子会话走 `{ kind: "inherit", parent }`，与 fork 同一条路（D1）。
+- `contracts`：`SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC = "runtime/subagent_launch_spec"` 常量、entry 数据结构、`SESSION_ENTRY_TYPES` 同步。
+- `core`：spawn 时在 `ensureSessionPersistedForExternalActivity` 之后写 launch spec（外键约束要求 session 行先存在）；无 `sessionStore` 时跳过（此时也没有冷恢复，不构成静默降级）。
+- `bootstrap`：`createRecord` 的 `runtimeConfig` 对 `taskType === "subagent_child"`：读 launch spec 并回填 `toolset` / `agentName` / `subagentContext` / 冻结白名单 / `toolDisallowlist` / `maxTurns`；**无条件**写死 `subagents: { enabled: false }`（fail-closed，spec 缺失也写）。缺 spec → 受限模式（只写 `enabled: false` + 标注身份未还原）。
+- 无需改动 `includeAgent` 的两个注册点：它们读的是 `runtime.subagentPort`，而端口只在 `subagents.enabled === false` 时收回，所以折叠在 runtimeConfig 一处即可。
+
+验收：launch spec 写入（FK 顺序）与读取；无 spec → 受限分支；冷恢复的子 record 满足 `subagentPort === undefined`、工具面不含 `Agent`、`subagents.enabled === false`；主会话（7 类 taskType）不受影响。
+
+### S1b · 子会话升格为正式 record（根因修复，依赖 S1a）
+
+改动面：
+- `contracts`：子会话覆盖包的入参类型（要携带父侧解析好的冻结工具面与父作用域端口集合）。
+- `core`：`Agent` 工具改为经端口派发；删除手写的子 runtime 依赖字面量与那次 `new AgentRuntime`；删除 `deriveChildClientPorts`（父改写改由 D6 在 record 层承担）。
+- `bootstrap`：构造入口实现覆盖包消费（受限模式：收窄能力面 + 复用父已解析的启动输入）；交互 broker 的父改写；起始偏好走 `{ kind: "inherit", parent }`。
 - `core` 必须保留 `subagent/runner.ts` 里的 `SubagentStart` / `SubagentStop` hook 发射点（D5）。
 - 本阶段**保留只读门**（D3 在 S2 才拆），避免半开状态。
 
-**已知冲突面**：`core/src/subagent/runner.ts` 刚被 hook 改造大改过（`SubagentStart` / `SubagentStop` 发射点、`injectHookAdditionalContext`、payload 组装），而它正是 S1 要重写的文件；`core/src/runtime/methods/subagent.ts` 手写的依赖字面量里也已包含 hook 相关字段。重写时以"保留 hook 发射点 + 保留 payload 字段"为硬约束，不能顺手删掉。
+**已知冲突面**：`core/src/subagent/runner.ts` 刚被 hook 改造大改过（`SubagentStart` / `SubagentStop` 发射点、`injectHookAdditionalContext`、payload 组装），而它正是 S1b 要重写的文件；`core/src/runtime/methods/subagent.ts` 手写的依赖字面量里也已包含 hook 相关字段。重写时以"保留 hook 发射点 + 保留 payload 字段"为硬约束，不能顺手删掉。
 
 验收：
 - 子会话创建后出现在 `context.sessions` 里，且 `SendMessage(to: sess_subagent_*)` 走到正常的会话投递路径（不再有第二份 runtime）。
 - 子会话**不注册** `Agent` 工具（含刷新路径 `embedded-search-branch.ts`）。
 - 子会话有 `sessionMailboxPort`，mailbox drain 钩子已注册。
-- 无 launch spec 的存量子会话进入受限模式，单测覆盖该分支。
+- **派发成本不回归**：单次子代理派发相对改造前不出现"每次派发付一次完整会话启动"的量级差异（按第「约束二」节的收窄策略实现，并实测确认）。
 - 主会话（7 类 taskType）冷恢复与派发行为逐项不变。
 
 ### S2 · 输入面（角色策略 + 命令集）
@@ -237,7 +279,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ### S5 · 收口
 
-- 删除 S1 列出的全部旧路径残留（`ingestDetachedLiveSession`、`detachedChild*`、`pruneDetachedChildPublishers`、只读门、旧 deps 字面量）。
+- 删除 S1b 列出的全部旧路径残留（`ingestDetachedLiveSession`、`detachedChild*`、`pruneDetachedChildPublishers`、只读门、旧 deps 字面量）。
 - 同步 `subagent-session-messaging.md`（D2/D8、失败语义）。
 - 更新 `CONTEXT.md` 词汇（注意：词条不得以现在时描述目标态）。
 - **角色策略覆盖率检查**取代"逐项清点分叉"：以策略表为准做遍历断言。作为对照，当前 `subagent_child` 字面判据实测为 **19 处**（core 13 + bootstrap 4 处真分叉 + 2 处只读门），另有 `packages/services` 3 处按 `sessionKind`（这三处按 D7 不改）。
@@ -327,7 +369,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ## 遗留工作（分类）
 
-**本轮范围内、按阶段排期**：S1–S5（见上）。
+**本轮范围内、按阶段排期**：S1a、S1b、S2–S5（见上）。
 
 **本轮不做、需另立任务**：
 
