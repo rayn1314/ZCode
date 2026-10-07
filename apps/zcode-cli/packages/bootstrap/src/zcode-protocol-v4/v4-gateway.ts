@@ -249,6 +249,15 @@ export interface V4GatewayHost {
    * 会话不在册返回 null（gateway 跳过，保持空初值）；未实现（旧宿主/测试桩）同。
    */
   getSessionConfigSeed?(sessionId: string): SessionConfigSeed | null;
+  /**
+   * 受限模式静态事实：某会话是否是「launch spec 读不到的 subagent_child」。
+   * publisher 创建时读一次（与 `getSessionConfigSeed` 同一时机），据此让投影恒拒输入面。
+   * 它是静态事实、不随事件改写，故不像 config 种子那样在 hydration 收尾补种；
+   * 但 publisher 可能在 record 完全就位之前就被创建（见 `seedPublisherConfig` 注释的窗口），
+   * 所以实现方可以返回 false/抛错——gateway 按 false 处理。
+   * 未实现（旧宿主/测试桩）同 false。
+   */
+  getSessionSubagentLimitedMode?(sessionId: string): boolean;
   /** 只读会话创建期 App 开关，不读取实时设置或推断 Memory 工具使用。 */
   getSessionMemoryEnabled?(sessionId: string): boolean | undefined;
   /**
@@ -2878,12 +2887,29 @@ export class ConversationV4Gateway {
     if (!publisher) {
       publisher = new ConversationTopicPublisher(sessionId, this.createLogEpoch(sessionId), {
         now: this.now,
+        subagentLimitedMode: this.resolveSubagentLimitedMode(sessionId),
       });
       this.publishers.set(sessionId, publisher);
       // config 种子：创建即注入 runtime 真值（不产 delta / 不 bump revision）。
       this.seedPublisherConfig(sessionId, publisher);
     }
     return publisher;
+  }
+
+  /**
+   * 受限模式取值（防御式，与 `seedPublisherConfig` 同一姿态）：宿主能力缺席、返回假值
+   * 或抛错一律按 false。publisher 创建时机可能早于 record 完全就位，这里读到 false 是
+   * 已知窗口而非错误——受限模式是静态事实，不会在 record 就位后"变真"，因此不补种。
+   */
+  private resolveSubagentLimitedMode(sessionId: string): boolean {
+    const getLimitedMode = this.host.getSessionSubagentLimitedMode;
+    if (!getLimitedMode) return false;
+    try {
+      return getLimitedMode.call(this.host, sessionId) === true;
+    } catch (error) {
+      this.host.onError?.("v4.subagentLimitedMode", error);
+      return false;
+    }
   }
 
   /**

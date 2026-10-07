@@ -41,6 +41,10 @@ function deriveSessionSummary(
     if (lastAssistantPreview) break;
   }
   const hasBackgroundWork = snapshot.backgroundWorks.some((work) => work.status === "running");
+  // 左栏父条目角标：`subagents.running` 已把 running/waiting/blocked 都算作在跑
+  // （三者都是未收口的子代理，见 product-projection 的 materializeSubagentProjection）。
+  // 为 0 或缺席时整键不出：避免给所有会话挂一个恒定 0 造成无谓 delta。
+  const runningSubagentCount = snapshot.subagents?.running.length ?? 0;
   // 侧栏工作流运行行的数据：
   // 同一 snapshot 的 workflowRuns + backgroundWorks 派生，侧栏不必订阅 run 进度。
   const workflowActivity = deriveSessionWorkflowActivity({
@@ -93,6 +97,7 @@ function deriveSessionSummary(
           },
         }
       : {}),
+    ...(runningSubagentCount > 0 ? { runningSubagentCount } : {}),
     ...(snapshot.goal ? { goalStatus: snapshot.goal.status } : {}),
     lastActivityAt: extra.lastActivityAt,
     ...(lastAssistantPreview ? { lastAssistantPreview } : {}),
@@ -117,6 +122,7 @@ function summariesEqual(a: SessionSummary, b: SessionSummary): boolean {
     JSON.stringify(a.pendingInteraction ?? null) === JSON.stringify(b.pendingInteraction ?? null) &&
     a.pendingInteractionSummary?.permissionCount === b.pendingInteractionSummary?.permissionCount &&
     a.pendingInteractionSummary?.userInputCount === b.pendingInteractionSummary?.userInputCount &&
+    a.runningSubagentCount === b.runningSubagentCount &&
     a.goalStatus === b.goalStatus &&
     a.lastActivityAt === b.lastActivityAt &&
     a.lastAssistantPreview === b.lastAssistantPreview &&

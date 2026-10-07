@@ -1948,6 +1948,8 @@ export async function sendPrompt(context: ZCodeProtocolAgentServerContext, rawPa
   const sendVerdict = resolveInputCommandAdmission({
     sessionRole: record.taskType,
     command: "sendText",
+    // 受限模式子会话的输入面关闭（spec S4 前置 1）；legacy 入口与 V4 准入共用同一裁决。
+    ...(record.subagentLimitedMode ? { subagentLimitedMode: true } : {}),
   });
   if (!sendVerdict.admitted) {
     throw new ProtocolRequestError(-32010, "Session role rejects this command", {
@@ -3355,6 +3357,9 @@ async function createRecord(
           traceContext,
         })
       : undefined;
+  // 受限模式（spec S4 前置 1）：规格读不到 = 身份事实已丢失，工具面只能 fail-closed，
+  // 输入面同样关闭（模型不能再来一轮，用户也不能续聊）。判据复用上面那次读盘，不新增 IO。
+  const subagentLimitedMode = taskType === "subagent_child" && subagentLaunchSpec === undefined;
   const runtimeMcp = protocolMcpServersToRuntimeMcpConfig(params.mcpServers);
   // 会话级压缩覆盖是**稀疏**的：只有用户真正表达过的字段才会出现。
   // 全默认时返回 {}，下面对应的 runtimeConfig 键整段省略，让 CLI 文件级
@@ -3472,6 +3477,7 @@ async function createRecord(
     ...(parentSessionId ? { parentSessionId } : {}),
     persistence: "persistence" in params ? (params.persistence ?? "immediate") : "immediate",
     startupPreferences,
+    ...(subagentLimitedMode ? { subagentLimitedMode: true as const } : {}),
     taskType,
     traceContext,
     workspace,
@@ -3496,6 +3502,8 @@ function createSessionRecordShell(
     parentSessionId?: SessionId;
     persistence: ZCodeSessionPersistence;
     startupPreferences: SessionStartupPreferences;
+    /** 受限模式静态事实（见 record 字段注释）；只在为真时由调用点传入。 */
+    subagentLimitedMode?: true;
     taskType: SessionTaskType;
     traceContext: TraceContext;
     workspace: ZCodeWorkspaceRef;
@@ -3515,6 +3523,8 @@ function createSessionRecordShell(
     protocolEventSequences: new Map(),
     protocolToolInputTransmissions: new Map(),
     stateRevision: 0,
+    // 条件展开：普通会话不挂这个空键（语义等价，但不给投影/准入制造"存在即受限"的错觉）。
+    ...(input.subagentLimitedMode ? { subagentLimitedMode: true as const } : {}),
     taskType: input.taskType,
     traceContext: input.traceContext,
     updatedAt: now,

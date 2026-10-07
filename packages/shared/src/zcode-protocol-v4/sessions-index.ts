@@ -46,6 +46,10 @@ export const sessionSummarySchema = z.object({
   // 侧栏只需要 kind/count，不下发问题、命令或答案等敏感 payload。
   // optional 兼容旧 sessions-index frame / stored summary。
   pendingInteractionSummary: pendingInteractionSummarySchema.optional(),
+  // 左栏父条目计数角标：该会话名下"在跑"的子代理数。
+  // `running` / `waiting` / `blocked` 都算在跑——三者都是尚未收口的子代理。
+  // 为 0 或缺席时整键不出；optional 兼容旧 frame / 旧持久化摘要。
+  runningSubagentCount: z.number().int().nonnegative().optional(),
   goalStatus: goalStateSchema.shape.status.optional(),
   // 未读推导：客户端本地记 lastSeenActivityAt 比较（不用 seq，epoch 会重置）。
   lastActivityAt: timestampSchema,

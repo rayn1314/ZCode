@@ -22,7 +22,11 @@ export const HYDRATION_TRACE_ID = "hydrate-trace";
 export function createInitialConversationSnapshot(
   sessionId: string,
   logEpoch: string,
+  options?: { subagentLimitedMode?: boolean },
 ): ConversationSnapshot {
+  // 受限模式是会话静态事实，初始快照就要如实带上：否则受限子会话在 hydration 之前
+  // 会先广播一帧"可输入"的快照，客户端 composer 短暂可用。
+  const subagentLimitedMode = options?.subagentLimitedMode === true;
   return {
     protocolVersion: 1,
     sessionId,
@@ -47,6 +51,8 @@ export function createInitialConversationSnapshot(
       goalVerifying: false,
       queueLength: 0,
       autoDrain: true,
+      // 动作可用性不看输入面，但这是同一个 context 形状，如实带上即可。
+      subagentLimitedMode,
     }),
     inputRouting: computeInputRouting(
       {
@@ -56,6 +62,7 @@ export function createInitialConversationSnapshot(
         goalVerifying: false,
         queueLength: 0,
         autoDrain: true,
+        subagentLimitedMode,
       },
       "queue",
     ),
@@ -110,6 +117,12 @@ interface AvailabilityContext {
   goalVerifying: boolean;
   queueLength: number;
   autoDrain: boolean;
+  /**
+   * 受限模式：launch spec 读不到的 `subagent_child`，工具面身份未还原。
+   * 它是会话静态事实，与 phase / 队列无关——`computeInputRouting` 因此先判它，
+   * `computeAvailability`（动作可用性，不是输入面）不消费。
+   */
+  subagentLimitedMode: boolean;
 }
 
 // 裁决表与 packages/formal-proof/src/model.ts 的 evaluate 逐条对齐
@@ -158,6 +171,13 @@ export function computeInputRouting(
   context: AvailabilityContext,
   followupMode: "queue" | "guide",
 ): InputRouting {
+  // 首条判定：受限会话的输入面与 phase / 队列无关，必须先于 compacting 与 phase 分支。
+  // 放到后面的话，running 时会返回 enqueue/guide——那是一条必然被准入层
+  // （`resolveInputCommandAdmission` 的 guard.subagentLimitedMode）拒绝的通道，
+  // 客户端却会照着它把输入排进队列。
+  if (context.subagentLimitedMode) {
+    return { mode: "reject", reasonCode: "guard.subagentLimitedMode" };
+  }
   // formal-proof: compactingAcceptsFutureInput
   // —— compact 是维护步骤，输入是未来意图 → 入队，不打断 compact。
   if (context.compacting) {

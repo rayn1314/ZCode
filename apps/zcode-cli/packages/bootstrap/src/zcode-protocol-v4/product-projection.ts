@@ -495,9 +495,20 @@ export class ProductProjection {
   private droppedContentStreamEventCount = 0;
   // 读取期 legacy fallback 必须可观测；否则 normalizer 缺字段后仍会退化为“可见但不可寻址”。
   private normalizationDiagnostics: ConversationNormalizationDiagnostic[] = [];
+  /** 受限模式（launch spec 读不到的 subagent_child）：输入面恒拒，见 projection-state。 */
+  private readonly subagentLimitedMode: boolean;
 
-  constructor(sessionId: string, logEpoch: string) {
-    this.snapshot = createInitialConversationSnapshot(sessionId, logEpoch);
+  constructor(
+    sessionId: string,
+    logEpoch: string,
+    options: { subagentLimitedMode?: boolean } = {},
+  ) {
+    // 受限模式是会话静态事实：投影自己不重推（它不读 launch spec），由 publisher 从
+    // record 传进来一次，之后每次 deriveContext 都带上。
+    this.subagentLimitedMode = options.subagentLimitedMode === true;
+    this.snapshot = createInitialConversationSnapshot(sessionId, logEpoch, {
+      subagentLimitedMode: this.subagentLimitedMode,
+    });
   }
 
   getSnapshot(): ConversationSnapshot {
@@ -5100,6 +5111,9 @@ export class ProductProjection {
       goalVerifying: next.activeWorks.some((work) => work.kind === "goalVerifier"),
       queueLength: nextQueue.items.length,
       autoDrain: nextQueue.autoDrain,
+      // 与 deriveContext 同源：control 变化（含 running/completed 翻转）也必须带上静态事实，
+      // 否则一次 running 迁移就会把受限会话的 inputRouting 变回 enqueue。
+      subagentLimitedMode: this.subagentLimitedMode,
     };
     return {
       control: next,
@@ -5141,6 +5155,7 @@ export class ProductProjection {
       goalVerifying: this.snapshot.control.activeWorks.some((work) => work.kind === "goalVerifier"),
       queueLength: queue.items.length,
       autoDrain: queue.autoDrain,
+      subagentLimitedMode: this.subagentLimitedMode,
     };
   }
 

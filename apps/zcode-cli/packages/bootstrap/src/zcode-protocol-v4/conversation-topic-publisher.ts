@@ -145,6 +145,11 @@ interface ConversationTopicPublisherOptions {
   subscriberBufferMaxOps?: number;
   /** 每订阅者 logical deltas payload 的 UTF-8 byte 上限。 */
   subscriberBufferMaxBytes?: number;
+  /**
+   * 受限模式静态事实（launch spec 读不到的 subagent_child）。投影据此恒拒输入面，
+   * 所以 rehydrate 产出的候选 publisher 必须带上同一个值（否则重水化后受限模式消失）。
+   */
+  subagentLimitedMode?: boolean;
 }
 
 interface ConversationSubscriberBufferLimits {
@@ -229,6 +234,7 @@ export class ConversationTopicPublisher {
   private readonly retention: number;
   private readonly subscriberBufferMaxOps: number;
   private readonly subscriberBufferMaxBytes: number;
+  private readonly subagentLimitedMode: boolean;
   /** 有界日志：seq 升序；resume 只在 (floorSeq, currentSeq] 内合法。 */
   private readonly log: LogEntry[] = [];
   /** 保留窗下界：base.seq < floorSeq 的恢复请求已无法无损续传 → 只能 snapshot。 */
@@ -246,7 +252,10 @@ export class ConversationTopicPublisher {
     options: ConversationTopicPublisherOptions = {},
   ) {
     this.topic = `conversation/${sessionId}`;
-    this.projection = new ProductProjection(sessionId, logEpoch);
+    this.subagentLimitedMode = options.subagentLimitedMode === true;
+    this.projection = new ProductProjection(sessionId, logEpoch, {
+      subagentLimitedMode: this.subagentLimitedMode,
+    });
     this.now = options.now ?? Date.now;
     this.retention = options.retention ?? PROTOCOL_V4_LIMITS.eventRetentionPerSession;
     this.subscriberBufferMaxOps = nonNegativeHardBound(
@@ -616,6 +625,9 @@ export class ConversationTopicPublisher {
       retention: this.retention,
       subscriberBufferMaxOps: this.subscriberBufferMaxOps,
       subscriberBufferMaxBytes: this.subscriberBufferMaxBytes,
+      // 候选会把 projection 接管过去（下方 this.projection = candidate.projection），
+      // 漏传等于重水化后受限模式消失。
+      subagentLimitedMode: this.subagentLimitedMode,
     });
     const usedBatchHydration = candidate.tryBatchHydration(events);
     if (!usedBatchHydration) {
@@ -626,6 +638,7 @@ export class ConversationTopicPublisher {
         retention: this.retention,
         subscriberBufferMaxOps: this.subscriberBufferMaxOps,
         subscriberBufferMaxBytes: this.subscriberBufferMaxBytes,
+        subagentLimitedMode: this.subagentLimitedMode,
       });
       for (const event of events) {
         try {

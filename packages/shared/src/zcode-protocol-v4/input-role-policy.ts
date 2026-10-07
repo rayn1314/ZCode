@@ -23,7 +23,9 @@ export type InputCommandDenialReason =
   | "guard.subagentCannotDeriveSession"
   | "guard.subagentCannotEscalatePermission"
   | "guard.subagentCannotRunGoalLoop"
-  | "guard.selectionSideChatRestrictedCommand";
+  | "guard.selectionSideChatRestrictedCommand"
+  // 受限模式的子代理会话（launch spec 读不到，工具面身份未还原）不接受输入。
+  | "guard.subagentLimitedMode";
 
 export interface InputCommandRoleRule {
   /** 本命令在这些角色下被拒（缺席 = 放行）。 */
@@ -114,12 +116,24 @@ export const INPUT_COMMAND_ROLE_POLICY = {
 /**
  * 角色裁决。`sessionRole` 为 `undefined`（未知会话，例如 record 尚未激活）时放行——
  * 本函数裁决不了未知会话，由下游 `requireRecord` 拒绝。
+ *
+ * `subagentLimitedMode`（可选，默认 false）是会话的静态事实，不是第二个角色轴：
+ * 它为真时只关**输入面**——那 5 条对话输入类命令（sendText / sendGoalCommand /
+ * compact / editUserQuery / retryTurn，判据复用 `isConversationInputCommand`）一律拒绝。
+ * 会话管理类命令（deleteSession / renameSession / stop / cancelBackgroundWork /
+ * 队列操作）必须继续放行，否则用户连一个坏掉的受限子会话都清理不掉；受限会话的
+ * 队列必然是空的（输入从来进不来），放行队列操作等于没有风险。
  */
 export function resolveInputCommandAdmission(input: {
   sessionRole: SessionRole | undefined;
   command: CommandType;
+  subagentLimitedMode?: boolean;
 }): { admitted: true } | { admitted: false; reasonCode: InputCommandDenialReason } {
   const { sessionRole, command } = input;
+  // 只看对话输入类：受限的是输入面，不是会话管理（理由见上）。
+  if (input.subagentLimitedMode === true && isConversationInputCommand(command)) {
+    return { admitted: false, reasonCode: "guard.subagentLimitedMode" };
+  }
   if (sessionRole === undefined) return { admitted: true };
   const rule: InputCommandRoleRule = INPUT_COMMAND_ROLE_POLICY[command];
   const reasonCode = rule.deniedFor?.[sessionRole];

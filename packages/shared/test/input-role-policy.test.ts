@@ -113,3 +113,69 @@ test("conversationInput 恰为 5 条输入类命令", () => {
   const marked = ALL_COMMANDS.filter((command) => isConversationInputCommand(command));
   assert.deepEqual(marked.slice().sort(), CONVERSATION_INPUT_COMMANDS.slice().sort());
 });
+
+// 受限模式（spec S4 前置 1）：只关输入面，不关会话管理。
+test("subagentLimitedMode 拒绝全部 5 条对话输入类命令，理由码钉死", () => {
+  for (const command of CONVERSATION_INPUT_COMMANDS) {
+    assert.deepEqual(
+      resolveInputCommandAdmission({
+        sessionRole: "subagent_child",
+        command,
+        subagentLimitedMode: true,
+      }),
+      { admitted: false, reasonCode: "guard.subagentLimitedMode" },
+      `command=${command}`,
+    );
+  }
+});
+
+test("subagentLimitedMode 放行会话管理与队列操作", () => {
+  for (const command of [
+    "deleteSession",
+    "renameSession",
+    "stop",
+    "cancelBackgroundWork",
+    "sendQueuedNow",
+    "guideQueueItem",
+    "editQueueItem",
+    "reorderQueueItem",
+    "deleteQueueItem",
+    "setAutoDrain",
+  ] as const) {
+    assert.deepEqual(
+      resolveInputCommandAdmission({
+        sessionRole: "subagent_child",
+        command,
+        subagentLimitedMode: true,
+      }),
+      { admitted: true },
+      `command=${command}`,
+    );
+  }
+});
+
+test("subagentLimitedMode 缺省 / false 时逐条与未加该事实一致", () => {
+  for (const command of ALL_COMMANDS) {
+    const base = resolveInputCommandAdmission({ sessionRole: "subagent_child", command });
+    assert.deepEqual(
+      resolveInputCommandAdmission({
+        sessionRole: "subagent_child",
+        command,
+        subagentLimitedMode: false,
+      }),
+      base,
+      `command=${command}`,
+    );
+  }
+});
+
+test("subagentLimitedMode 优先于角色规则（受限 interactive 也被拒）", () => {
+  assert.deepEqual(
+    resolveInputCommandAdmission({
+      sessionRole: "interactive",
+      command: "sendText",
+      subagentLimitedMode: true,
+    }),
+    { admitted: false, reasonCode: "guard.subagentLimitedMode" },
+  );
+});

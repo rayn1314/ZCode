@@ -212,8 +212,8 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ## 失败语义
 
-- **launch spec 缺失 / profile 解析不到**：子会话进入**受限模式**——输入面关闭（等同现状只读）、不注册 `Agent` 工具、使用通用 persona，UI 标注"身份未还原"。绝不猜一个 profile 出来。
-- **父会话已被删除**：子会话不应存在（递归删除）；若因数据损坏出现孤儿，子会话可读、可单独常驻，但输入面按受限模式关闭，UI 说明原因。
+- **launch spec 缺失 / profile 解析不到**：子会话进入**受限模式**——输入面关闭、不注册 `Agent` 工具、使用通用 persona，UI 标注"身份未还原"。绝不猜一个 profile 出来。判据只有一个（**launch spec 读不到**），落地方式见 S4 前置 1：`inputRouting.mode = "reject"` + `reasonCode = "guard.subagentLimitedMode"` 是投影面，`admitCommandInput` 拒绝对话输入类命令是强制面。
+- **父会话已被删除**：子会话不应存在（递归删除）；若因数据损坏出现孤儿，子会话可读、可单独常驻。**若它同时读不到 launch spec**（与上一条同一判据），输入面按受限模式关闭并在 UI 说明原因；spec 仍可读的孤儿按普通子会话处理——不在正常产品路径上（S3 已递归删除 + 驻留 pin），本条不为它加第二判据。
 - **投递不可达**：落 mailbox 且**有 drain 保证**；mailbox 本身不可写时明确失败，不假装 `stored`。
 - **非法命令**：返回细分 reasonCode，不返回笼统的只读错误。
 - **闲时轮内的子会话输入**：明确拒绝并给出可执行提示，不静默丢弃。
@@ -532,7 +532,10 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 ### S4 · UI（施工规格见下节）
 
-改动面：`ui`（左栏层级列表、子会话面板、状态角标、授权提示）、`shared`（列表投影若需补字段）。
+改动面：
+- `bootstrap`（前置 1 的强制面：record 事实 + `AvailabilityContext` + `computeInputRouting` + 准入拒绝）、
+- `shared`（前置 2 的角标字段 `SessionSummary.runningSubagentCount` + 角色策略的受限模式理由码）、
+- `ui`（左栏层级列表、子会话面板形态化、状态角标、授权提示、原因文案）。
 
 ### S5 · 收口
 
@@ -543,21 +546,80 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 ## UI 施工规格（S4）
 
+### S4 前置：两处订正（施工前必读，两条都会挡住下面任何一条）
+
+#### 前置 1 · 受限模式缺协议信号（真缺口，本轮补）
+
+原稿的失败语义写了"launch spec 缺失 → 受限模式 → **输入面关闭（等同现状只读）** + UI 标注身份未还原"，但 S1b 只落实了 fail-closed 的 `subagents: { enabled: false }` 那一半：
+
+- `buildSubagentChildRuntimeConfigOverrides(undefined)` 只回 `{ subagents: { enabled: false } }`，**不回填任何身份事实**；此时子会话落回**默认工具面**（父在被派发时冻结的 explore 白名单整个丢失）。这是一处**能力放宽**，不只是"少了个提示"。
+- "输入面关闭"没有任何实现：`admitCommandInput` 的角色裁决只按 `taskType` 判（S2），受限子会话的 `taskType` 同样是 `subagent_child`，因此照样放行 `sendText`。
+- 于是 S4 要的两条 UI 要求（composer 禁用 + 顶部一行说明原因）**没有数据可依**。
+
+补法（单源＝既有的 `inputRouting`，不新增快照字段）：
+
+| 环节 | 改法 |
+| --- | --- |
+| record 事实 | `ZCodeProtocolSessionRecord` 增静态事实 `subagentLimitedMode?: true`；`createRecord` 在 `taskType === "subagent_child" && subagentLaunchSpec === undefined` 时置位（判定点就是已有的那次 `readSubagentLaunchSpec`，不新增读盘） |
+| 投影 | `AvailabilityContext` 增 `subagentLimitedMode: boolean`；`computeInputRouting` 的**首条**判定返回 `{ mode: "reject", reasonCode: "guard.subagentLimitedMode" }`——排在 `compacting` 与 phase 判定**之前**，因为受限会话的输入面与 phase/队列无关 |
+| 准入（强制面） | `resolveRoleCommandAdmission` 对受限子会话的**对话输入类**命令（`isConversationInputCommand`）拒绝，`reasonCode` 同上。UI 禁用是体验，准入拒绝才是边界 |
+| UI | composer 既有的 `mode === "reject"` 门已禁用发送与改写回车提交；本轮补"顶部一行说明原因"，按 `reasonCode` → i18n 映射渲染 |
+
+`inputRouting.mode = "reject"` 这条既有形状本就是为"输入被拒 + 给得出原因"设计的（schema 注释：`mode=reject` 必带 `reasonCode`），本轮把它从"无生产者"变成受限子会话的生产者。
+
+**实施落点（已落地，2026-10-07 复核后补记；三处比原表多出来的都是正确性所必需，不是扩边）**：
+
+| 落点 | 文件 | 备忘 |
+| --- | --- | --- |
+| record 事实 | `bootstrap/src/zcode-protocol/server-types.ts` + `server-operations.ts` | `createSessionRecordShell` 增可选入参并以条件展开写键（不写 `undefined` 键） |
+| 投影上下文 | `bootstrap/src/zcode-protocol-v4/projection-state.ts`（`AvailabilityContext` + `createInitialConversationSnapshot` 第三参）、`product-projection.ts`、`conversation-topic-publisher.ts` | ⚠ **两处 context 都要带该字段**：`deriveContext` **和 `controlPatch` 里的内联 context**。只补前者会让任何 control 变化（含轮起止）用假值 context 重算 `inputRouting`，受限会话一进 running 就退回 `enqueue`——这是实测撞到的 TS2345，不是防御性冗余 |
+| 取值通路 | `v4-gateway.ts` 的 host 能力 `getSessionSubagentLimitedMode` + `ensurePublisher`；`v4-bridge.ts` 的 `resolveRoleCommandAdmission` 与 host 绑定 | 取值与 `seedPublisherConfig` 同姿态（可选 + try/catch 后置默认）；`rehydrate` 的**两个候选 publisher** 都要带该字段，漏传则重水化后失效 |
+| 准入强制面（**第三处**，原表只写了 V4 准入） | `server-operations.ts` 的 legacy `sendPrompt` 路径 | `input-role-policy.ts` 文件头写明"三处强制点（V4 准入 / legacy `session/send` / 原生执行器）统一消费本表"；legacy 侧不注入该事实，受限子会话仍能经 `session/send` 续聊，边界就漏一条 |
+| 角标 | `shared/src/zcode-protocol-v4/sessions-index.ts`（`runningSubagentCount?`）+ `bootstrap/.../sessions-index-projection.ts`（派生 + `summariesEqual` 判等） | 为 0 或缺席时整键不出；`summariesEqual` 必须覆盖它，否则角标变化不产 delta |
+
+`AvailabilityContext` 不导出（模块内部类型），测试用 `Parameters<typeof computeInputRouting>[0]` 取型，不为测试扩大源文件导出面。
+
+**孤儿会话的边界（有意收窄，记录在案）**：受限模式的判据只有一个——**launch spec 读不到**。"父会话已删除"不另设第二判据：S3 之后父删除会递归删除子会话，且父被驻留子会话 pin 住，正常产品路径产不出"有父指针但父行不存在"的子会话；真出现这类数据损坏行，它的 launch spec 通常仍在，行为与普通子会话一致。为一个不可达路径加分支等于死代码，因此原文那句"孤儿会话按受限模式关闭输入面"改为**按同一判据**（spec 也读不到时才是受限模式）。
+
+#### 前置 2 · 左栏数据源订正（推翻原稿 D7 指定 `SubagentRosterPort` 的说法）
+
+原稿 D7 写"数据源改用 `SubagentRosterPort`，不用 `session/subagents`"。复核后（2026-10-07）这句话在两处不成立：
+
+- `SubagentRosterPort` 是 **CLI 侧端口**（`createWorkspaceZCodeApp` 注入给父 runtime，供 `ListAgents` 合并历史），**没有**跨到 renderer，UI 拿不到它。UI 侧现有入口是 `useSessionSubagents`（→ `zcodeAgentService.listSessionSubagents` → `session/subagents`）。
+- 该端口**按设计不能断言 `running`**（`subagent-roster.port.ts` 文件头："`running` 永远只能由本进程的 runtimeTaskRegistry 断言——历史里只有 spawn、没有终态时必须报 `lost`"）。而左栏区块要的就是 `running` 脉动点，roster 单靠自己给不出。
+
+实测可用且同源的权威数据（都不新增第二真相源）：
+
+| 用途 | 来源 | 依据 |
+| --- | --- | --- |
+| 子区块的 `running` 明细（标题 + 状态） | 父会话 conversation 权威投影 `snapshot.subagents` | `product-projection.ts` 的 `materializeSubagentProjection`：由 transcript 的 `subagent` 行 + `pendingInteractions.origin` + `backgroundWorks` 派生，`waiting` / `blocked` 都在这里判定 |
+| 子区块的 `ended` 明细（≤8 行）与"还有 N 个" | 父会话**投影**的 `endedTotal` + 既有分页查询 `session/subagents` 的 `ended` 页 | 与 `SubagentDirectorySidePane` 逐字相同的用法（`snapshot.subagents.running` + `useSessionSubagents`），目录面板已在生产使用这条组合 |
+| 父未选中时的**计数角标** | `SessionSummary.runningSubagentCount`（sessions-index 新增，服务端从同一 snapshot 派生） | 列表 delta 已有推送通道；父会话有在跑子代理时它必然是 live 投影，派生零额外 IO |
+
+查询只在**父条目被选中**时发一次（≤8 行 + 一次分页查询），不进任务索引、不常驻轮询——D7 的实质要求（轻查询、不进任务索引、不可用要有失败态）全部保留，改的只是"用哪个端口"。`useSessionSubagents` 的 `error` 承担失败态（原稿要求的"显式标记不可用"在 UI 上落成这一条，不再要求改 CLI 侧只读端口契约——那条契约的注释本身就是为 `ListAgents` 写的）。
+
 ### 左栏任务列表：层级态
 
 - **位置**：父会话条目**下方**的子区块，仅在父条目处于选中态时渲染。
-- **数据**：`SubagentRosterPort` 的父键查询（不塞任务索引）。
+- **数据**：父被选中时取自父会话投影的 `subagents.running`（`running` 明细）与 `session/subagents` 的 `ended` 首页（≤8 行）；"还有 N 个"用投影的 `endedTotal`。不塞任务索引（见前置 2）。
+- **取投影的通路（实测后的结论，左栏原本没有数据面）**：左栏子树**不在**任何 V4 conversation provider 内（`V4ConversationProvider` 只挂 `V4ChatPane`，`V4PaneConversationProvider` 只挂各 side pane；左栏是同一 layout 里的 `<aside>` 兄弟节点）。因此子区块**自带一个 `V4PaneConversationProvider`**（scope 取该父条目的 workspace/identity/remoteSessionId），再在其内 `useV4Conversation().layer.acquire(parentTaskId)` + `useConversationProjection`，读法与 `SubagentDirectorySidePane` 逐字相同。代价可忽略：`acquireWorkspaceConnection` 按 endpoint+workspaceKey 建连接并 refCount，主 pane 订阅的同一 workspace 会**复用**这条 transport/layer，不新增连接。远端 workspace 未连接时该 provider 返回 `null`，子区块自然不渲染（fail-closed，与 side pane 行为一致）。
 - **子条目控件形态**：
-  - 缩进一级（16px）；左侧 `BotIcon`（12px，颜色取 profile 的 `color`，缺省 `text-foreground-subtlest`）。
+  - 缩进一级；左侧 `BotIcon`（约 12–14px，颜色缺省 `text-foreground-subtle`）。
   - 标题：子会话 title，单行截断。
-  - 右侧状态指示：`running` 脉动圆点（`text-ui-accent` + `animate-pulse`）；`success` CheckIcon（`text-success`）；`failed` TriangleAlert（`text-destructive`）；`cancelled` / `lost` MinusIcon（`text-foreground-subtlest`）。**不新增 `killed` 取值**，不单靠颜色区分（配 `aria-label`）。
-  - 点击 → `openSubagentSessionSidePane(childSessionId)`（复用现有入口，不新增打开通道）。
+  - 右侧状态指示：`running` / `waiting` / `blocked` 用 `LoaderCircle`（转）或 `PauseCircle`；已结束按 `session/subagents` 的终态 `success` `CheckCircle2` / `failed` `CircleAlert` / `cancelled` `Ban` / `lost` `CircleDashed`。**沿用 `subagentDirectory.status.*` 的同一套图标与文案，不新造第二套状态语汇**；不新增 `killed` 取值，不单靠颜色区分（配 `aria-label`）。已结束项的状态与图标逐字复用 `SubagentDirectorySidePane` 里那个 `StatusIcon`（该函数应上提为共享件，不要复制一份）。
+  - 点击 → 经壳层既有的 `handleOpenSubagentSession`（`OpenScopedSubagentSideTabRequest` → `openSubagentSessionSidePane`）。左栏目前**没有**这条 prop/context，需要新增：照 `WorkflowRunOpenProvider`（`v4/workflowRunOpenContext.tsx`，挂在 `WorkspaceShellLayout` 里包住 `WorkspaceSidebar`）的先例加一个 context，避免把回调穿过 4 个 section。
+- **插入点（三个，不是一个）**：左栏的"一行"有**两种行组件**，必须都覆盖：
+  - Timeline / Pinned 走 `MemoTaskItem`（`TaskListItem.tsx` 的 `<li>`），列表是**普通 `.map`**（非虚拟化）→ 在 `ul` 内该行之后追加同级的子区块节点（`<li>` 或 `<div>`）。
+  - Archived 走**自己内联的 `<li>`**（`WorkspaceArchivedTasksFlatSection.tsx`）→ 同上追加。
+  - Grouped 走 `GroupedTaskItem`（`workspace-grouped-tasks/task-item.tsx` 的包装 `div`，顶层与组内**共用一个组件**）→ 插在包装 `div` 内、`<GroupedTaskRow/>` **之后**（在行自己的背景/内边距之外，不会被 `bg-selected` 卡片吞掉）；Grouped 有虚拟化，但两处虚拟列表都用 `rowVirtualizer.measureElement`，元素变高会被重新量回，不会与相邻行叠压。
+  - Grouped 的顶层与组内共用 `GroupedTaskItem`，所以 Grouped 只需改一处；加上 Timeline/Pinned 一处与 Archived 一处，共三个插入点。
+  - ⚠ 行级点击陷阱：`TaskListItem` 的 `<li>` 自身带 `onClick={handleSelect}` 与 `tabIndex`。子区块内的按钮必须 `event.stopPropagation()`（否则点子代理会连带再选一次父会话、并触发父行的 `onContextMenu` 绑定）。
 - **状态**：
   - 空：**不渲染区块**，不显示空态占位。
-  - 加载：区块位置渲染 2 行同高骨架（高度取现有列表行 token）。
-  - 失败（含 roster 不可用）：一行 `text-ui-xs text-foreground-subtlest` 文案 + 重试按钮。
+  - 加载：区块位置渲染 2 行同高占位（仓库**没有**通用 Skeleton 组件，`TaskListLoadingHint` 是"Spinner + 文案"的整列表提示，不适合块内——用与子条目同高的两行占位，`animate-pulse` + 现有圆角/缩进 token 即可）。
+  - 失败（含查询不可用）：一行 `text-ui-xs text-foreground-subtle` 文案 + 重试按钮（`useSessionSubagents` 的 `error` + `refresh()`；`refresh` 目前无人消费，本轮是它的第一个重试入口）。文案 id 用 `subagents.list.loadFailed` / `subagents.list.retry`，不新增 `common.retry` 复用。
   - 超过 8 个：区块底部一行"还有 N 个已结束的子代理"，点击打开现有子代理目录面板。
-- **父未选中**：不渲染子区块；若该父会话有 `running` 子代理，父条目右侧显示计数角标（`Badge variant="secondary"`，纯数字）。
+- **父未选中**：不渲染子区块；若该父会话有 `running` 子代理，父条目右侧显示计数角标（`Badge variant="secondary"`，纯数字），数据取 `SessionSummary.runningSubagentCount`（`running` 与 `waiting` / `blocked` 都算"在跑"——它们都是未收口的子代理）。该字段 CLI 侧已派生（S4 前置 1 一并落地），**UI 侧还差四处透传**才能到行组件：`v4/taskListRowActivity.ts`（活动 sidecar 加字段）→ `v4/mapSessionSummaryToTaskMeta.ts`（sessions-index 摘要映射）覆盖 Grouped/Workspace 列表；`packages/shared/src/zcode-protocol-v4/controller.ts` 的 window-host controller 活动 schema 加可选字段 → `packages/desktop/src/host/windowHostControllerService.ts` 透传，覆盖 `useGlobalTaskList`（Timeline/Pinned/Archived）。角标插在**右侧元信息簇内、时间之前**，避开左侧 16px 前导槽（error/unread/spinner/pin 都占那里）。
 - **动效**：展开/收起复用现有 collapsible；不做新动效。
 - **远端父会话**：子条目可见但只读（D10）。
 - **文案**（落在 `packages/ui/src/i18n/locales/{zh-CN,en-US}.ts`）：
@@ -568,6 +630,8 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 ### 侧栏子会话面板：从只读变可输入
 
 - **顶部条**：`BotIcon` + 标题 + 身份徽标 + 状态词。
+  - 状态词由**父会话投影**派生（面板本就要为下面的授权提示建父会话租约，不新增订阅）：从 `snapshot.subagents.running` 按 `childSessionId` 命中 → `running` 运行中 / `waiting` 等待确认 / `blocked` 受阻；未命中 → 已结束（`subagents.pane.status.ended`）；父投影尚未就绪 → **不渲染**（不闪一个错的词）。
+  - 落地方式：`SessionPane` 增可选 `paneTopStrip?: ReactNode`，在根布局对话区**之上**渲染；`observe` 形态或未传时为 `null`，既有行为不变。
 - **输入区**：复用正式会话 composer。差异：
   - 隐藏权限模式切换（D9 不可改）。
   - 保留模型选择（可切）。
@@ -575,15 +639,32 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - **保留队列面板**：子会话忙时同样会排队，队列项操作（引导 / 立即 / 编辑 / 重排 / 删除 / 自动放行）按 D3 放行，不另做简化版。
   - 保留上下文用量与 compact 入口。
   - 保留行内 `editUserQuery` / `retryTurn` 控件（D3 放行）。
-  - 受限模式（身份未还原）或孤儿会话：composer 禁用，顶部一行说明原因。
-- **形态选择**：`SessionPane` 现有的 `readOnly` 太粗（同时关掉 drop target、取消后台任务、edit/retry/fork），`selectionSideChat` 则已经实现了"保留 composer + 隐藏 edit/retry/fork/goal"这一形状——子会话要的是**第三种黑名单**（保留 edit/retry，去掉 fork/goal/权限模式）。实现上把黑名单参数化并给这一形态命名，不要新增一个整块的布尔开关。
+  - 受限模式（`snapshot.inputRouting.mode === "reject"`）：composer 保持挂载但禁用，顶部一行说明原因，文案由 `inputRouting.reasonCode` 映射（`guard.subagentLimitedMode` → `subagents.pane.limitedMode`；未知 code 走通用 `subagents.pane.inputRejected`）。**不新增快照字段**：原因走既有的 `inputRouting.reasonCode`。
+- **形态选择**：`SessionPane` 现有的 `readOnly` 太粗（同时关掉 composer、drop target、取消后台任务、edit/retry/fork），`selectionSideChat` 则已经实现了"保留 composer + 隐藏 edit/retry/fork/goal"这一形状——子会话要的是**第三种黑名单**（保留 composer 与 edit/retry，去掉 fork/goal/权限模式）。实现上把黑名单参数化并给这一形态命名，不要新增一个整块的布尔开关。四个形态与各自的能力面：
+
+  | 形态 | composer | drop target | edit / retry | fork | goal 命令 | 权限模式选择器 | 取消后台任务 | 划词动作 | 别名为框选副屏 opener | 文件撤销 | 工作流 run journal 查询 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `interactive`（默认） | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 是 | 有 | 有 |
+  | `observe`（远端只读 workspace / workflow actor） | 无 | 无 | 无 | 无 | 无 | 无 | 无 | 无 | 否 | 仅 `allowWorkspaceFileRewind` | 无 |
+  | `selectionSideChat`（框选副屏） | 有 | 有 | **无** | 无 | 无 | 有 | 有 | 无 | 否 | 有 | 有 |
+  | `subagentChild`（子代理子会话，**本轮新增**） | 有 | 有 | **有** | 无 | 无 | **无** | 有 | 无 | 否 | 有 | 有 |
+
+  实现落点（当前布尔式的等价改法，逐条对齐上表）：`readOnly` → `shape === "observe"`；`selectionSideChat` → `shape === "selectionSideChat"`；`forkActionsEnabled` 额外加 `shape !== "subagentChild"`；`suppressGoalCommands` / `statusPanelModel.goal` / `pauseGoal` / `resumeGoal` / `selectionActions` / assistantFeedback 的抑制条件从"`selectionSideChat`"改为"`shape !== "interactive"`"（`observe` 形态被 `readOnly` 已经挡住，语义不变）；权限模式选择器仅在 `subagentChild` 形态下不挂载。
+- **`subagentChild` 形态只给本地子会话（D10 的落点）**：面板形态按 workspace 是否远端分支——`isRemoteWorkspaceTarget({workspacePath, workspaceIdentity, remoteSessionId})`（`lib/workspaceServiceResolver.ts`，`useWorkspaceTaskLists.ts:294` 同源用法）为真则 `observe`，否则 `subagentChild`。远端不开口子：父↔子 mailbox 不跨机器共享，开输入面等于放出一个"能打字但接不通父会话"的面板。顶部条（状态词 + 授权提示）对远端**照常渲染**，`observe` 只是没有 composer。
+- **权限模式选择器为什么只能在 UI 侧藏**：composer 的模式选择器读的是 **workspace 级** `configOptions`（`v4-workspace-config.ts` 的 `toV4WorkspaceConfigState`，数据源是"该 workspace 第一个在册会话的 settings"）——它是 workspace 作用域的，同一个 workspace 的父会话与子会话共用一份，服务端按会话裁剪会把父会话的选择器一起关掉。因此这里由 UI 形态决定，强制面仍由 S2 的 `guard.subagentCannotEscalatePermission` 承担（纵深：藏起来 + 发出去也被拒并给出 reasonCode）。
+- **Plan 勾选项一并隐藏**：它与三种权限模式在同一个菜单里、走同一条 `switchCollaborationMode`，而该命令对子会话被 S2 拒绝；只藏一半会留下一个必定失败的控件。
 - **授权请求提示（新增，必需）**：当父会话上存在属于本子代理的待处理交互（`origin.kind === "subagent"` 且 childSessionId 匹配）时，面板顶部显示可点击提示，点击切到父会话标签页；无请求时隐藏。
-- **已终止子会话**：面板底部显示终态摘要；composer 仍可用（续聊=开新轮）。
+  - 读法与该条件的**唯一权威实现**逐字对齐（`product-projection.ts` 的 `materializeSubagentProjection`）：遍历父投影 `snapshot.pendingInteractions`，先 `if (!("origin" in interaction.payload)) continue;`（`workspaceHookReview` 的 payload 没有 `origin` 字段），再判 `origin?.kind === "subagent" && origin.childSessionId === 自身`。
+  - 点击切父会话复用壳层既有的 `handleSelectTaskInChat`（它负责 workspace 激活、`selectWorkbenchSession`、切回 chat 视图）；pane 侧只经新增的可选 prop `onOpenParentSession` 上报目标坐标（`parentSessionId` + tab 上已有的 workspace/identity/remoteSessionId），不自己拼协议或路径。
+  - 视觉：**等待确认色族** `bg-interaction-confirmation-surface` / `text-interaction-confirmation-foreground`（`DESIGN.md`：等待确认不得用 success 色族）。
+- **已终止子会话**：终态摘要落在**顶部条的状态词**（`subagents.pane.status.ended`），不再单独在面板底部加一条——composer 占据面板底部，另加底栏会与它争夺同一位置，而"这个子代理已结束"恰恰是打开面板时最该在顶部一眼看到的信息。composer 仍可用（续聊=开新轮）。
 - **空态**：复用现有会话空态。
 - **文案**：
   - `subagents.pane.identityBadge`：`子代理 · {agentType}` / `Subagent · {agentType}`
   - `subagents.pane.pendingInParent`：`有 {count} 个请求等待在父会话处理` / `{count} request(s) pending in the parent session`
   - `subagents.pane.limitedMode`：`此子代理的身份未能还原，暂不可输入` / `This subagent's identity could not be restored; input is disabled`
+  - `subagents.pane.inputRejected`：`此会话当前不接受输入` / `This session does not accept input right now`
+- **文案落地方式**：`{zh-CN,en-US}.ts` 是**扁平 dotted key 的 `Record<string, string>`**（不是嵌套对象），按既有 `subagentDirectory.*` 的写法加同级的 `subagents.*` 键即可。
 
 ### 视觉约束
 
@@ -600,8 +681,9 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 6. 关闭父会话标签页 → 子代理不受影响；删除父会话 → 子会话被递归删除。
 7. 中止父会话的运行轮 → 子代理进行中的轮被中止，不产生通知。
 8. 重启应用 → 子条目仍在；点开可继续聊，身份为原 `agentType` 的 profile。
-9. 在子会话尝试 fork / 切换权限模式 → 控件不存在或明确拒绝，并给出可读原因。
+9. 在子会话尝试 fork / 切换权限模式 → 控件不存在（fork 行内动作不渲染、模式选择器不挂载），发命令直发也被拒并给出 reasonCode。
 10. 子代理尝试派生子代理 → `Agent` 工具不可用，返回明确错误而非隐式挂起。
+11. 构造一个读不到 launch spec 的子会话（用改造前的存量子会话，或删掉它的 `runtime/subagent_launch_spec` 行）→ 冷恢复后 composer 禁用、顶部一行"此子代理的身份未能还原，暂不可输入"；发一条 `sendText` 直发也被拒（`guard.subagentLimitedMode`），不是只靠 UI 藏。
 
 ## 验证
 
@@ -613,6 +695,9 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 起始偏好继承：子会话的 compaction / memory / 预算策略与父一致；父偏好热更新后**新派生**的子会话不沿用旧值（既有回归面，见 `bootstrap/src/zcode-protocol/compaction-preferences.ts` 的快照刷新）。
   - hook 发射点保持：`SubagentStart` / `SubagentStop` 仍按原 payload 字段发射。
   - **策略表覆盖率**：照 `packages/shared/test/hook-event-copy-parity.test.ts` / `core/test/hook-copy-parity.test.ts` 的先例，断言"命令类型集合 ⊆ 策略表键集合"——新增命令时测试先红，而不是等准入处静默放行。
+  - **受限模式**（S4 前置 1）：`subagentLimitedMode` 为真时 `computeInputRouting` 返回 `{mode:"reject", reasonCode:"guard.subagentLimitedMode"}`（且优先于 `compacting` / phase 判定）；同一事实下 `resolveRoleCommandAdmission` 拒绝对话输入类命令、放行非输入类命令（`deleteSession` / `renameSession` / `stop` 仍可用——受限的是输入面，不是会话管理）。
+  - **`Store` 元数据路径不妄断**：冷会话（无活 record）的准入不因"读不到 launch spec"把普通会话判成受限——该判据只由活 record 携带。
+  - **角标派生**（S4 前置 2）：`deriveSessionSummary` 的 `runningSubagentCount` 等于 `snapshot.subagents.running.length`（含 `waiting` / `blocked`），且 `summariesEqual` 覆盖它——只变这一个字段也必须产 delta，不被 conflation 吃掉。
 - 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `core/test/session-mailbox-sender-kind.test.ts` 是同源先例）。
 - 端到端：上述 10 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
@@ -636,10 +721,12 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 - 子代理再派生（结构性禁止，不是待办）。
 - 存量无 launch spec 子会话的回填（已决策：不回填，重新派发即可）。
 - **`SubagentStop` 的可阻断声明与实现不一致**（D5）：共享事件表声明 `blockable: true`，但 `core/src/subagent/runner.ts` 的发射点不消费阻断决定。修法二选一（接线，或取消声明），与本改造无耦合，可独立处理。
+- **原生执行器的纵深防御面比准入面窄**：`core/src/executor.ts` 的执行期兜底只对 `selection_side_chat` 查角色策略表，受限 `subagent_child` 不在这条兜底里。当前由准入层挡住（S4 前置 1 已覆盖 V4 准入 + legacy `session/send` 两处），但将来若出现绕过 `admitCommandInput` 的原生 handler，这层就缺一块。改它要动 `executor.ts`，不属本轮触碰文件（举一反三记在这里，不顺手扩边）。
+- **`packages/formal-proof` 的 `computeAvailability` 黄金一致性**：`projection-state.ts` 注释提到与 `formal-proof/src/model.ts` 的 parity 测试，但本检出里找不到对应测试文件，因此"本轮未动 `computeAvailability` 裁决表"目前无自动化背书，只有人工确认。
 
 **已决策不做（保持现状）**：
 
-- 把 `subagent_child` 塞进任务索引——层级展示走 roster 独立投影。
+- 把 `subagent_child` 塞进任务索引——层级展示走父会话 conversation 投影 + `session/subagents`（见前置 2 的订正；子会话在 `services/src/zcode-agent/zcodeTaskIndexSyncer.ts` 里本就提前 return，不落 task row）。
 - 权限弹窗改落子会话——保持落父会话 + origin 标识，避免"无人订阅时弹窗丢失"。
 - persona 正文入存储——persona 的 owner 是 profile。
 - 新增 `killed` 终态——复用 `cancelled`，不为细微差别扩协议。

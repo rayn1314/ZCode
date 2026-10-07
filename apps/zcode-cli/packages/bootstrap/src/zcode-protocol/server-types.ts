@@ -105,6 +105,14 @@ export interface ZCodeProtocolSessionRecord {
   protocolToolInputTransmissions: Map<string, ZCodeProtocolToolInputTransmissionState>;
   stateRevision: number;
   taskType?: SessionTaskType;
+  /**
+   * 子代理子会话的受限模式静态事实：仅 `taskType === "subagent_child"` 且 launch spec
+   * 读不到时置位（工具面身份 / agentName / maxTurns 已随规格一起丢失，见 spec D2 / S1a）。
+   * 判据只有一个——launch spec 读不到；"父会话已删除"不另设第二判据：父删除会递归删除
+   * 子会话，正常产品路径产不出有父指针但父行不存在的子会话。
+   * 静态：创建/冷恢复时定一次，不随事件改写（准入与投影都按它关输入面）。
+   */
+  subagentLimitedMode?: true;
   traceContext: TraceContext;
   unsubscribe?: () => void;
   updatedAt: number;

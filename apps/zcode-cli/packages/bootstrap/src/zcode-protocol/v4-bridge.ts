@@ -411,10 +411,18 @@ export async function resolveRoleCommandAdmission(
   if (!envelope.sessionId) return { admitted: true };
   // 仅隐藏 composer 不能阻止旧 child 标签页续聊。类型准入必须早于 ledger/输入历史写入；
   // detached child 没有 record 时只查元数据（store 回落），不激活第二个 runtime。
+  const liveRecord = context.sessions.get(envelope.sessionId);
   const taskType =
-    context.sessions.get(envelope.sessionId)?.taskType ??
+    liveRecord?.taskType ??
     (await context.deps.sessionStore?.getSession(envelope.sessionId as SessionId))?.taskType;
-  return resolveInputCommandAdmission({ sessionRole: taskType, command: envelope.type });
+  // 受限模式只认**活 record**：store 回落路径不读 launch spec、不妄断受限——冷会话没有
+  // runtime，准入本就不适用（它连 record 都没有，命令会先被 requireRecord 拒掉），
+  // 而且那条路径上多读一次盘也没有收益。
+  return resolveInputCommandAdmission({
+    sessionRole: taskType,
+    command: envelope.type,
+    ...(liveRecord?.subagentLimitedMode ? { subagentLimitedMode: true } : {}),
+  });
 }
 
 function buildForkInitialInput(
@@ -1564,6 +1572,9 @@ export function createConversationV4Gateway(
             isTaskListSessionType(record.taskType) && record.workspace.workspaceKey === workspaceId,
         )
         .map((record) => record.app.sessionId),
+    // gateway 建 publisher / 收 hydration 尾时读一次：受限子会话的投影据此恒拒输入面。
+    getSessionSubagentLimitedMode: (sessionId) =>
+      context.sessions.get(sessionId)?.subagentLimitedMode === true,
     // draft 判定：deferred = 未发首条输入（prompt-turn 首发提升为 immediate）。
     // 旧 workspace prepare 预建的 deferred 会话不得以「新任务」漏进侧栏列表。
     isDraftSession: (sessionId) => context.sessions.get(sessionId)?.persistence === "deferred",
