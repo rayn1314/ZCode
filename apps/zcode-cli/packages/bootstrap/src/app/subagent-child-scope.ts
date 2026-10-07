@@ -51,7 +51,7 @@ export interface SubagentChildAppScope {
  *   借不到端口。它只能靠 record 上持久化的 `runtimeConfig.taskType === "subagent_child"`
  *   认出自己是子会话（S1a 落的那一份）。
  *
- * 为什么必须合成一个函数（2026-10-07 实测）：`create-app.ts` 的 hooks 收窄与
+ * 为什么必须合成一个函数（2026-10-08 实测）：`create-app.ts` 的 hooks 收窄与
  * `workspaceHookRuntimeSecurity` 收窄、`workspace-model-runtime.ts` 的 roster 收窄
  * 原先都只认覆盖包，于是**冷恢复出的子会话把每一条收窄都漏掉了**——最重的一条是
  * `mergeRuntimeHooks` 在插件带 hook 时会把 `enabled` 置 true，冷恢复的子会话因此跑起
