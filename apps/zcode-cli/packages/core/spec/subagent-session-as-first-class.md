@@ -620,12 +620,14 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 失败（含查询不可用）：一行 `text-ui-xs text-foreground-subtle` 文案 + 重试按钮（`useSessionSubagents` 的 `error` + `refresh()`；`refresh` 目前无人消费，本轮是它的第一个重试入口）。文案 id 用 `subagents.list.loadFailed` / `subagents.list.retry`，不新增 `common.retry` 复用。
   - 超过 8 个：区块底部一行"还有 N 个已结束的子代理"，点击打开现有子代理目录面板。
 - **父未选中**：不渲染子区块；若该父会话有 `running` 子代理，父条目右侧显示计数角标（`Badge variant="secondary"`，纯数字），数据取 `SessionSummary.runningSubagentCount`（`running` 与 `waiting` / `blocked` 都算"在跑"——它们都是未收口的子代理）。该字段 CLI 侧已派生（S4 前置 1 一并落地），**UI 侧还差四处透传**才能到行组件：`v4/taskListRowActivity.ts`（活动 sidecar 加字段）→ `v4/mapSessionSummaryToTaskMeta.ts`（sessions-index 摘要映射）覆盖 Grouped/Workspace 列表；`packages/shared/src/zcode-protocol-v4/controller.ts` 的 window-host controller 活动 schema 加可选字段 → `packages/desktop/src/host/windowHostControllerService.ts` 透传，覆盖 `useGlobalTaskList`（Timeline/Pinned/Archived）。角标插在**右侧元信息簇内、时间之前**，避开左侧 16px 前导槽（error/unread/spinner/pin 都占那里）。
-- **动效**：展开/收起复用现有 collapsible；不做新动效。
+- **动效**：不做展开/收起开关。区块只在**该父条目被选中**时出现，选中本身就是"我要看这条会话"的意图；再叠一个手动收起，等于把"看不看子代理"变成第二个要维护的状态。占位行用 `animate-pulse`，不做新动效。
 - **远端父会话**：子条目可见但只读（D10）。
 - **文案**（落在 `packages/ui/src/i18n/locales/{zh-CN,en-US}.ts`）：
   - `subagents.list.loadFailed`：`子代理列表加载失败` / `Failed to load subagents`
   - `subagents.list.retry`：`重试` / `Retry`
   - `subagents.list.moreEnded`：`还有 {count} 个已结束的子代理` / `{count} more finished subagents`
+  - `subagents.list.runningBadge`：`{count} 个子代理正在运行` / `{count} subagents running`（**角标的无障碍名**：徽标本身只画数字，屏幕阅读器读到一个孤立数字没有意义，所以需要 `aria-label`）
+  - 子条目的状态词复用既有的 `subagentDirectory.status.*`（`running` / `waiting` / `blocked` / `success` / `failed` / `cancelled` / `lost` 七态齐备），不另起一套文案。
 
 ### 侧栏子会话面板：从只读变可输入
 
