@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- pinned 列表现在同时承载本地查询、远端主动注入结果和任务操作分发，先集中保持交互一致。 */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ZCodeTaskMeta } from "@zcode/shared";
 import { toast } from "@/components/ui/toast.js";
@@ -23,6 +23,7 @@ import {
   getRemoteWorkspaceServicesForIdentity,
   useRemoteWorkspaceSessionStore,
 } from "@/store/remoteWorkspaceSessionStore.js";
+import { SubagentSubBlock } from "@/v4/SubagentSubBlock.js";
 
 function buildPinnedItemKey(workspacePath: string, taskId: string, workspaceIdentity?: string) {
   return `${buildTaskWorkspaceKey(workspacePath, workspaceIdentity)}:${taskId}`;
@@ -544,34 +545,46 @@ export function WorkspacePinnedTasksSection({
                 return null;
               }
               const handlers = getPinnedTaskItemHandlers(itemKey);
+              const itemRemoteSessionId = item.workspaceIdentity
+                ? remoteSessionIdByWorkspaceIdentity[item.workspaceIdentity]
+                : undefined;
+              // 同路径远端 workspace 可能包含相同 taskId，选中态必须按 workspaceIdentity 隔离。
+              const isItemActive =
+                buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
+                  activeWorkspaceKey && item.taskId === activeTaskId;
               return (
-                <MemoTaskItem
-                  key={itemKey}
-                  workspacePath={item.workspacePath}
-                  remoteSessionId={
-                    item.workspaceIdentity
-                      ? remoteSessionIdByWorkspaceIdentity[item.workspaceIdentity]
-                      : undefined
-                  }
-                  task={item}
-                  isPinned
-                  isActive={
-                    // 同路径远端 workspace 可能包含相同 taskId，选中态必须按 workspaceIdentity 隔离。
-                    buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
-                      activeWorkspaceKey && item.taskId === activeTaskId
-                  }
-                  onSelectTask={handlers.onSelectTask}
-                  onArchiveTaskInline={handlers.onArchiveTaskInline}
-                  onCancelArchiveConfirm={handleCancelArchiveConfirm}
-                  isArchiveConfirming={pendingArchiveItemKey === itemKey}
-                  onTogglePinTask={handlers.onTogglePinTask}
-                  onStartRenameTask={handlers.onStartRenameTask}
-                  onArchiveTask={handlers.onArchiveTask}
-                  onMarkTaskAsUnread={handlers.onMarkTaskAsUnread}
-                  onOpenTaskContextMenu={handlers.onOpenTaskContextMenu}
-                  onOpenFileTree={onOpenFileTree ? handlers.onOpenFileTree : undefined}
-                  intl={intl}
-                />
+                <Fragment key={itemKey}>
+                  <MemoTaskItem
+                    workspacePath={item.workspacePath}
+                    remoteSessionId={itemRemoteSessionId}
+                    task={item}
+                    isPinned
+                    isActive={isItemActive}
+                    onSelectTask={handlers.onSelectTask}
+                    onArchiveTaskInline={handlers.onArchiveTaskInline}
+                    onCancelArchiveConfirm={handleCancelArchiveConfirm}
+                    isArchiveConfirming={pendingArchiveItemKey === itemKey}
+                    onTogglePinTask={handlers.onTogglePinTask}
+                    onStartRenameTask={handlers.onStartRenameTask}
+                    onArchiveTask={handlers.onArchiveTask}
+                    onMarkTaskAsUnread={handlers.onMarkTaskAsUnread}
+                    onOpenTaskContextMenu={handlers.onOpenTaskContextMenu}
+                    onOpenFileTree={onOpenFileTree ? handlers.onOpenFileTree : undefined}
+                    intl={intl}
+                  />
+                  {/* 子区块与行同级：放进 MemoTaskItem 的 <li> 会落进行自己的 bg-selected
+                      高亮卡片里，spec 要求区块在行的高亮/内边距之外。 */}
+                  {isItemActive ? (
+                    <li>
+                      <SubagentSubBlock
+                        workspacePath={item.workspacePath}
+                        workspaceIdentity={item.workspaceIdentity}
+                        remoteSessionId={itemRemoteSessionId}
+                        parentSessionId={item.taskId}
+                      />
+                    </li>
+                  ) : null}
+                </Fragment>
               );
             })}
           </ul>

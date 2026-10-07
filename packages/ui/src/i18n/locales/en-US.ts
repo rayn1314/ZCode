@@ -998,6 +998,12 @@ const enUS: Record<string, string> = {
   "subagents.pane.status.waiting": "Waiting",
   "subagents.pane.status.blocked": "Blocked",
   "subagents.pane.status.ended": "Ended",
+  // Subagent sub-block under the selected parent row in the sidebar, plus the count badge
+  // shown on unselected parent rows.
+  "subagents.list.loadFailed": "Failed to load subagents",
+  "subagents.list.retry": "Retry",
+  "subagents.list.moreEnded": "{count} more finished subagents",
+  "subagents.list.runningBadge": "{count} subagents running",
   "chat.statusPanel.endedAgents": "Ended",
   "chat.statusPanel.endedWorkflows": "Ended workflows",
   "workflowDirectory.title": "Workflow runs",

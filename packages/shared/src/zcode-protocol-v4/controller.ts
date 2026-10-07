@@ -81,6 +81,10 @@ export const windowHostControllerTaskActivitySchema = z
     pendingInteractions: pendingInteractionSummarySchema.optional(),
     // 侧栏工作流运行行；无 run 时缺席。
     workflowActivity: sessionWorkflowActivitySchema.optional(),
+    // 父条目未选中时的子代理计数角标：该会话名下「在跑」的子代理数
+    // （`running` / `waiting` / `blocked` 都算）。0 或缺席时整键不出。
+    // optional 兼容旧 Host / 旧 renderer。
+    runningSubagentCount: z.number().int().nonnegative().optional(),
   })
   .strict();
 export type WindowHostControllerTaskActivity = z.infer<

@@ -915,6 +915,11 @@ const zhCN: Record<string, string> = {
   "subagents.pane.status.waiting": "等待确认",
   "subagents.pane.status.blocked": "受阻",
   "subagents.pane.status.ended": "已结束",
+  // 左栏父条目下方的子代理子区块，以及父条目未选中时的计数角标。
+  "subagents.list.loadFailed": "子代理列表加载失败",
+  "subagents.list.retry": "重试",
+  "subagents.list.moreEnded": "还有 {count} 个已结束的子代理",
+  "subagents.list.runningBadge": "{count} 个子代理正在运行",
   "chat.statusPanel.endedAgents": "已结束",
   // workflow run 目录（任务页脚行 → 这一页 → 详情页）。状态词复用
   // chat.toolCall.workflow.run.status.*，这里只有页面自己的结构文案。

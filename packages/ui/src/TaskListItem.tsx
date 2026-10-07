@@ -247,6 +247,23 @@ export const MemoTaskItem = memo(function TaskListItem({
     intl.formatMessage({
       id: task.forkedFromTaskId ? "taskList.forkedUntitled" : "taskList.untitled",
     });
+  // 父条目未选中时的子代理计数角标。数据走 activity sidecar（见 taskListRowActivity 的注释）：
+  // 这里不加 prop，memo 比较器已经把整个 activity 纳入判等，角标变化能正常触发行刷新。
+  const runningSubagentCount = taskActivity?.runningSubagentCount ?? 0;
+  const subagentCountBadgeNode =
+    runningSubagentCount > 0 ? (
+      <Badge
+        variant="secondary"
+        data-testid="v4-task-row-subagent-count"
+        className="shrink-0 tabular-nums"
+        aria-label={intl.formatMessage(
+          { id: "subagents.list.runningBadge" },
+          { count: String(runningSubagentCount) },
+        )}
+      >
+        {runningSubagentCount}
+      </Badge>
+    ) : null;
   const handleSelect = useCallback(() => {
     runUserAction({
       input: { featureId: "task.lifecycle", action: "open", trigger: "button" },
@@ -677,6 +694,7 @@ export const MemoTaskItem = memo(function TaskListItem({
                       className="size-3.5 shrink-0"
                     />
                   ) : null}
+                  {subagentCountBadgeNode}
                   <span className="mr-1">{taskTimeLabel}</span>
                 </span>
               ) : null}
@@ -768,6 +786,7 @@ export const MemoTaskItem = memo(function TaskListItem({
                     className="size-3.5 shrink-0"
                   />
                 ) : null}
+                {subagentCountBadgeNode}
                 {taskTimeLabel}
               </span>
             ) : null}

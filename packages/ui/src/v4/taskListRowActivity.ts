@@ -16,6 +16,13 @@ export interface TaskListRowActivity {
   pendingInteractions?: PendingInteractionSummary;
   /** 侧栏工作流运行行的数据；无 run 时缺席。 */
   workflowActivity?: SessionWorkflowActivity;
+  /**
+   * 父条目未选中时的子代理计数角标：该会话名下「在跑」的子代理数
+   * （`running` / `waiting` / `blocked` 都算，它们都是未收口的子代理）。0 或缺席时整键不出。
+   * 走 sidecar 而不是行组件 prop：`TaskListItem` 的 memo 比较器已经对整个 activity 判等，
+   * 加 prop 反而要同步改比较器，漏改就永不刷新。
+   */
+  runningSubagentCount?: number;
 }
 
 export type TaskListMetaWithActivity = ZCodeTaskMeta & {

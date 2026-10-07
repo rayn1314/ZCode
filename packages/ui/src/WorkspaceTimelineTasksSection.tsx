@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- timeline 同时承载本地 scoped 查询、远端主动缓存和任务操作分发，先集中保持链路清晰。 */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import type { ZCodeTaskMeta } from "@zcode/shared";
 import { toast } from "@/components/ui/toast.js";
@@ -23,6 +23,7 @@ import { useRemoteTimelineTaskStore } from "@/store/remoteTimelineTaskStore.js";
 import { useRemoteWorkspaceSessionStore } from "@/store/remoteWorkspaceSessionStore.js";
 import type { WorkspaceTabState } from "@/store/tabStore.js";
 import { applyTaskQueryCacheMutation } from "@/store/taskQueryCacheStore.js";
+import { SubagentSubBlock } from "@/v4/SubagentSubBlock.js";
 
 function buildTimelineItemKey(workspacePath: string, taskId: string, workspaceIdentity?: string) {
   return `${buildTaskWorkspaceKey(workspacePath, workspaceIdentity)}:${taskId}`;
@@ -695,30 +696,43 @@ export function WorkspaceTimelineTasksSection({
                         return null;
                       }
                       const handlers = getTimelineTaskItemHandlers(itemKey);
+                      // timeline 是跨 workspace 视图，active 判断必须使用 workspaceKey，避免同路径远端串高亮。
+                      const isItemActive =
+                        buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
+                          activeWorkspaceKey && item.taskId === activeTaskId;
                       return (
-                        <MemoTaskItem
-                          key={itemKey}
-                          workspacePath={item.workspacePath}
-                          remoteSessionId={workspaceServices.remoteSessionId}
-                          task={item}
-                          isPinned={false}
-                          variant={taskRowVariant}
-                          isActive={
-                            // timeline 是跨 workspace 视图，active 判断必须使用 workspaceKey，避免同路径远端串高亮。
-                            buildTaskWorkspaceKey(item.workspacePath, item.workspaceIdentity) ===
-                              activeWorkspaceKey && item.taskId === activeTaskId
-                          }
-                          onSelectTask={handlers.onSelectTask}
-                          onArchiveTaskInline={handlers.onArchiveTaskInline}
-                          onCancelArchiveConfirm={handleCancelArchiveConfirm}
-                          isArchiveConfirming={pendingArchiveItemKey === itemKey}
-                          onTogglePinTask={handlers.onTogglePinTask}
-                          onStartRenameTask={handlers.onStartRenameTask}
-                          onArchiveTask={handlers.onArchiveTask}
-                          onMarkTaskAsUnread={handlers.onMarkTaskAsUnread}
-                          onOpenTaskContextMenu={handlers.onOpenTaskContextMenu}
-                          intl={intl}
-                        />
+                        <Fragment key={itemKey}>
+                          <MemoTaskItem
+                            workspacePath={item.workspacePath}
+                            remoteSessionId={workspaceServices.remoteSessionId}
+                            task={item}
+                            isPinned={false}
+                            variant={taskRowVariant}
+                            isActive={isItemActive}
+                            onSelectTask={handlers.onSelectTask}
+                            onArchiveTaskInline={handlers.onArchiveTaskInline}
+                            onCancelArchiveConfirm={handleCancelArchiveConfirm}
+                            isArchiveConfirming={pendingArchiveItemKey === itemKey}
+                            onTogglePinTask={handlers.onTogglePinTask}
+                            onStartRenameTask={handlers.onStartRenameTask}
+                            onArchiveTask={handlers.onArchiveTask}
+                            onMarkTaskAsUnread={handlers.onMarkTaskAsUnread}
+                            onOpenTaskContextMenu={handlers.onOpenTaskContextMenu}
+                            intl={intl}
+                          />
+                          {/* 子区块与行同级：放进 MemoTaskItem 的 <li> 会落进行自己的
+                              bg-selected 高亮卡片里，spec 要求区块在行的高亮/内边距之外。 */}
+                          {isItemActive ? (
+                            <li>
+                              <SubagentSubBlock
+                                workspacePath={item.workspacePath}
+                                workspaceIdentity={item.workspaceIdentity}
+                                remoteSessionId={workspaceServices.remoteSessionId}
+                                parentSessionId={item.taskId}
+                              />
+                            </li>
+                          ) : null}
+                        </Fragment>
                       );
                     })}
                   </ul>

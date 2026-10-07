@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { ArchiveX, Cloud, CloudDownload, Folder, Smartphone, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/components/lib/utils.js";
@@ -19,6 +19,7 @@ import { removeTaskFromTaskCaches } from "@/lib/taskListMetaSync.js";
 import { TaskListRemoteSyncHint } from "@/TaskListRemoteSyncHint.js";
 import { TaskListLoadingHint } from "@/TaskListLoadingHint.js";
 import { buildWorkspaceServiceLookup } from "@/lib/workspaceServiceResolver.js";
+import { SubagentSubBlock } from "@/v4/SubagentSubBlock.js";
 import { DeleteAllArchivedTasksButton } from "@/DeleteAllArchivedTasksButton.js";
 
 export function WorkspaceArchivedTasksFlatSection({
@@ -145,7 +146,7 @@ export function WorkspaceArchivedTasksFlatSection({
           const taskKey = `${workspaceKey}:${task.taskId}`;
           const isDeleting = deletingTaskKeys.has(taskKey);
 
-          return (
+          const taskRow = (
             <li
               key={taskKey}
               data-mobile-active-task={isMobileActive ? "true" : undefined}
@@ -330,6 +331,22 @@ export function WorkspaceArchivedTasksFlatSection({
                 </ControlHintTooltip>
               </div>
             </li>
+          );
+          return (
+            <Fragment key={taskKey}>
+              {taskRow}
+              {/* 子区块与行同级：塞进上面那个 <li> 会落进行自己的 bg-selected 高亮卡片里。 */}
+              {isActive ? (
+                <li>
+                  <SubagentSubBlock
+                    workspacePath={task.workspacePath}
+                    workspaceIdentity={task.workspaceIdentity}
+                    remoteSessionId={workspaceServices.remoteSessionId}
+                    parentSessionId={task.taskId}
+                  />
+                </li>
+              ) : null}
+            </Fragment>
           );
         })}
       </ul>

@@ -120,6 +120,10 @@ function sessionOverlay(
         ? { pendingInteractions: summary.pendingInteractionSummary }
         : {}),
       ...(summary.workflowActivity ? { workflowActivity: summary.workflowActivity } : {}),
+      // 与 sessions-index lane 的 mapSessionSummaryToTaskMeta 同源同口径：为 0 或缺席时整键不出。
+      ...(summary.runningSubagentCount
+        ? { runningSubagentCount: summary.runningSubagentCount }
+        : {}),
     },
   };
 }

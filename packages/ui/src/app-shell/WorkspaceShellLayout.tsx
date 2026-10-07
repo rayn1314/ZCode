@@ -21,6 +21,11 @@ import {
   WorkflowRunOpenProvider,
   type WorkflowRunOpenTarget,
 } from "@/v4/workflowRunOpenContext.js";
+import {
+  SubagentOpenProvider,
+  type SubagentDirectoryOpenTarget,
+  type SubagentSessionOpenTarget,
+} from "@/v4/subagentOpenContext.js";
 import type { ConversationDropTargetController } from "@/v4/composer/conversationDropTarget.js";
 import type { WorkbenchSessionBinding } from "@/v4/workbenchGroupStore.js";
 import {
@@ -1022,6 +1027,34 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
     },
     [handleOpenSavedWorkflowRun, handleSelectTaskInChat, workspaceTabs],
   );
+  // 左栏子代理子区块 → 右侧子会话面板。
+  // 目标里带的是该行**自己**的 workspace 坐标，不用壳层当前 workspace 顶替：
+  // 左栏是跨 workspace 混排视图（grouped 混 workspaceTabs），父会话可能不在激活 workspace 里。
+  const handleOpenSidebarSubagentSession = useCallback(
+    (target: SubagentSessionOpenTarget) => {
+      handleOpenSubagentSession({
+        workspacePath: target.workspacePath,
+        ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
+        ...(target.remoteSessionId ? { remoteSessionId: target.remoteSessionId } : {}),
+        parentSessionId: target.parentSessionId,
+        childSessionId: target.childSessionId,
+        subagentType: target.subagentType,
+        title: target.title,
+      });
+    },
+    [handleOpenSubagentSession],
+  );
+  const handleOpenSidebarSubagentDirectory = useCallback(
+    (target: SubagentDirectoryOpenTarget) => {
+      handleOpenSubagentDirectory({
+        workspacePath: target.workspacePath,
+        ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
+        ...(target.remoteSessionId ? { remoteSessionId: target.remoteSessionId } : {}),
+        parentSessionId: target.parentSessionId,
+      });
+    },
+    [handleOpenSubagentDirectory],
+  );
   // 中枢的产物 chip：与「查看实例」逐字同构（同一条「先回到发起它的会话」的路径），
   // 只是终点是 `workflow-artifact` tab 而不是 run 详情页。
   const handleOpenSavedWorkflowArtifact = useCallback(
@@ -1576,51 +1609,58 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                 onOpenSession={handleOpenSessionInSplitPane}
               >
                 <WorkflowRunOpenProvider onOpenRun={handleOpenSidebarWorkflowRun}>
-                  <WorkspaceSidebar
-                    workspacePath={workspaceAbsPath}
-                    workspaceRemoteSessionId={workspaceRemoteSessionId}
-                    activePreviewPath={activePreviewPath}
-                    onSelectTask={handleSelectTaskInChat}
-                    onStartDraftInWorkspace={handleCreateProjectDraft}
-                    onOpenCodeViewer={handleOpenCodeViewer}
-                    onOpenBrowserUrl={handleOpenBrowserUrl}
-                    fileTreeOpenRequest={fileTreeOpenRequest}
-                    onCreateTask={handleCreateTaskInChat}
-                    onCreateConversationTask={onCreateConversationTask ?? handleCreateTaskInChat}
-                    onOpenFolderFromWorkspaceMenu={onOpenFolderFromWorkspaceMenu}
-                    onOpenRemoteWorkspace={onOpenRemoteWorkspace}
-                    theme={theme}
-                    onConnectRemote={onConnectRemote}
-                    onSelectRemoteProject={onSelectRemoteProject}
-                    onCancelRemoteProject={onCancelRemoteProject}
-                    onReconnectRemoteWorkspace={onReconnectRemoteWorkspace}
-                    reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
-                    remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}
-                    reconnectingRemoteWorkspaceLogsByWorkspaceKey={
-                      reconnectingRemoteWorkspaceLogsByWorkspaceKey
-                    }
-                    onLogout={onLogout}
-                    onLogin={onLogin}
-                    user={user}
-                    isDesktop={isDesktop}
-                    isMacDesktop={isMacDesktop}
-                    isWindowsDesktop={isWindowsDesktop}
-                    isSidebarVisible={isSidebarVisible}
-                    onToggleSidebar={handleToggleSidebar}
-                    toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
-                    canGoBack={canPrimaryNavigationBack}
-                    canGoForward={canTaskNavForward}
-                    onGoBack={primaryNavigationBack}
-                    onGoForward={handleTaskNavForward}
-                    goBackShortcutLabel={goBackShortcutLabel}
-                    goForwardShortcutLabel={goForwardShortcutLabel}
-                    onOpenCommandCenter={handleOpenCommandCenter}
-                    onOpenAutomations={handleOpenAutomations}
-                    automationsActive={workspaceMainView === "automations"}
-                    onOpenPluginStore={handleOpenPluginStore}
-                    pluginStoreActive={workspaceMainView === "plugin-store"}
-                    onFileTreeOpenChange={setIsSidebarFileTreeOpen}
-                  />
+                  {/* 左栏子代理子区块的打开入口。挂在 sidebar 外层而不是逐层穿 prop：
+                      子区块长在五种任务行里（默认 / 时间线 / 置顶 / 归档 / 分组）。 */}
+                  <SubagentOpenProvider
+                    onOpenSubagentSession={handleOpenSidebarSubagentSession}
+                    onOpenSubagentDirectory={handleOpenSidebarSubagentDirectory}
+                  >
+                    <WorkspaceSidebar
+                      workspacePath={workspaceAbsPath}
+                      workspaceRemoteSessionId={workspaceRemoteSessionId}
+                      activePreviewPath={activePreviewPath}
+                      onSelectTask={handleSelectTaskInChat}
+                      onStartDraftInWorkspace={handleCreateProjectDraft}
+                      onOpenCodeViewer={handleOpenCodeViewer}
+                      onOpenBrowserUrl={handleOpenBrowserUrl}
+                      fileTreeOpenRequest={fileTreeOpenRequest}
+                      onCreateTask={handleCreateTaskInChat}
+                      onCreateConversationTask={onCreateConversationTask ?? handleCreateTaskInChat}
+                      onOpenFolderFromWorkspaceMenu={onOpenFolderFromWorkspaceMenu}
+                      onOpenRemoteWorkspace={onOpenRemoteWorkspace}
+                      theme={theme}
+                      onConnectRemote={onConnectRemote}
+                      onSelectRemoteProject={onSelectRemoteProject}
+                      onCancelRemoteProject={onCancelRemoteProject}
+                      onReconnectRemoteWorkspace={onReconnectRemoteWorkspace}
+                      reconnectingRemoteWorkspaceKeys={reconnectingRemoteWorkspaceKeys}
+                      remoteWorkspaceErrorByWorkspaceKey={remoteWorkspaceErrorByWorkspaceKey}
+                      reconnectingRemoteWorkspaceLogsByWorkspaceKey={
+                        reconnectingRemoteWorkspaceLogsByWorkspaceKey
+                      }
+                      onLogout={onLogout}
+                      onLogin={onLogin}
+                      user={user}
+                      isDesktop={isDesktop}
+                      isMacDesktop={isMacDesktop}
+                      isWindowsDesktop={isWindowsDesktop}
+                      isSidebarVisible={isSidebarVisible}
+                      onToggleSidebar={handleToggleSidebar}
+                      toggleSidebarShortcutLabel={toggleSidebarShortcutLabel}
+                      canGoBack={canPrimaryNavigationBack}
+                      canGoForward={canTaskNavForward}
+                      onGoBack={primaryNavigationBack}
+                      onGoForward={handleTaskNavForward}
+                      goBackShortcutLabel={goBackShortcutLabel}
+                      goForwardShortcutLabel={goForwardShortcutLabel}
+                      onOpenCommandCenter={handleOpenCommandCenter}
+                      onOpenAutomations={handleOpenAutomations}
+                      automationsActive={workspaceMainView === "automations"}
+                      onOpenPluginStore={handleOpenPluginStore}
+                      pluginStoreActive={workspaceMainView === "plugin-store"}
+                      onFileTreeOpenChange={setIsSidebarFileTreeOpen}
+                    />
+                  </SubagentOpenProvider>
                 </WorkflowRunOpenProvider>
               </V4SplitPaneEntryProvider>
             </ScopedErrorBoundary>

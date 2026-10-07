@@ -1,14 +1,6 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import type { ZCodeSessionEndedSubagent } from "@zcode/shared";
 import type { RunningSubagentSummary } from "@zcode/shared/zcode-protocol-v4";
-import {
-  BanIcon,
-  CheckCircle2Icon,
-  CircleAlertIcon,
-  CircleDashedIcon,
-  LoaderCircleIcon,
-  PauseCircleIcon,
-} from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { useSessionSubagents } from "@/hooks/useSessionSubagents.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
@@ -19,6 +11,7 @@ import type {
 import { formatTaskRelativeTime } from "@/lib/taskListItemPresentation.js";
 import type { PaneWorkspaceScope } from "@/v4/paneLayoutStore.js";
 import type { SessionLease } from "@/v4/sessionDataLayer.js";
+import { SubagentStatusIcon } from "@/v4/SubagentStatusIcon.js";
 import { V4PaneConversationProvider, useV4Conversation } from "@/v4/V4ConversationContext.js";
 import { useConversationProjection } from "@/v4/useConversationProjection.js";
 
@@ -42,25 +35,6 @@ function buildSubagentDirectoryOpenRequest(
   };
 }
 
-function StatusIcon({ status }: { status: DirectoryItem["status"] }) {
-  const className = "size-4 shrink-0";
-  switch (status) {
-    case "running":
-      return <LoaderCircleIcon aria-hidden className={`${className} animate-spin`} />;
-    case "waiting":
-    case "blocked":
-      return <PauseCircleIcon aria-hidden className={className} />;
-    case "success":
-      return <CheckCircle2Icon aria-hidden className={className} />;
-    case "failed":
-      return <CircleAlertIcon aria-hidden className={className} />;
-    case "cancelled":
-      return <BanIcon aria-hidden className={className} />;
-    case "lost":
-      return <CircleDashedIcon aria-hidden className={className} />;
-  }
-}
-
 const DirectoryRow = memo(function DirectoryRow({
   item,
   onOpen,
@@ -77,7 +51,7 @@ const DirectoryRow = memo(function DirectoryRow({
       onClick={() => onOpen(item)}
     >
       <span className="mt-0.5 text-foreground-subtle">
-        <StatusIcon status={item.status} />
+        <SubagentStatusIcon status={item.status} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-center gap-2">

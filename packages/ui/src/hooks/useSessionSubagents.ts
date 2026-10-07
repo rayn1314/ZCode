@@ -62,12 +62,10 @@ export function useSessionSubagents(options: {
     (endedLimit: number, endedCursor?: string): Promise<ZCodeSessionSubagentsResult> => {
       if (!options.sessionId) return Promise.reject(new Error("session_id_missing"));
       if (typeof zcodeAgentService?.listSessionSubagents !== "function") {
-        return Promise.resolve({
-          revision: 0,
-          childSessionIds: [],
-          running: [],
-          ended: { total: 0, items: [] },
-        });
+        // 能力缺席必须显式失败：返回一个空页会把"查不了"渲染成"没有已结束的子代理"。
+        // 左栏子区块更明显——父会话投影里的 running / endedTotal 照常显示，用户看到的是
+        // "区块有脉动点却没有历史"，比直接给一条失败态 + 重试更难排查。
+        return Promise.reject(new Error("session_subagents_unavailable"));
       }
       return zcodeAgentService.listSessionSubagents({
         workspacePath: options.workspacePath,

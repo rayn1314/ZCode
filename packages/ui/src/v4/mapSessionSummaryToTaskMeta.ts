@@ -91,6 +91,10 @@ export function mapSessionSummaryToTaskMeta(
         ? { pendingInteractions: summary.pendingInteractionSummary }
         : {}),
       ...(summary.workflowActivity ? { workflowActivity: summary.workflowActivity } : {}),
+      // 0 或缺席时整键不出：角标只在真有在跑的子代理时出现。
+      ...(summary.runningSubagentCount
+        ? { runningSubagentCount: summary.runningSubagentCount }
+        : {}),
     },
   );
 }

@@ -100,6 +100,22 @@ function GroupedTaskRowComponent({
   const workspaceKey = buildTaskWorkspaceKey(task.workspacePath, task.workspaceIdentity);
   const taskActivity = getTaskListRowActivity(task);
   const taskAttention = getTaskListAttention(task);
+  // 父条目未选中时的子代理计数角标，与 TaskListItem 同一口径（sidecar 字段，不加 prop）。
+  const runningSubagentCount = taskActivity?.runningSubagentCount ?? 0;
+  const subagentCountBadgeNode =
+    runningSubagentCount > 0 ? (
+      <Badge
+        variant="secondary"
+        data-testid="v4-task-row-subagent-count"
+        className="shrink-0 tabular-nums"
+        aria-label={intl.formatMessage(
+          { id: "subagents.list.runningBadge" },
+          { count: String(runningSubagentCount) },
+        )}
+      >
+        {runningSubagentCount}
+      </Badge>
+    ) : null;
   // 交互胶囊是当前最高优先级的右侧状态；无论来自 sessions-index 摘要还是
   // activity attention，都不应再并排显示相对时间并挤压任务标题。
   const hasPendingInteraction = Boolean(task.pendingInteraction) || taskAttention !== null;
@@ -227,6 +243,7 @@ function GroupedTaskRowComponent({
                 className="size-3.5 shrink-0"
               />
             ) : null}
+            {subagentCountBadgeNode}
             {!hasPendingInteraction ? <span className="mr-1">{taskTimeLabel}</span> : null}
           </span>
         </span>
@@ -422,6 +439,7 @@ function GroupedTaskRowComponent({
                   className="size-3.5 shrink-0"
                 />
               ) : null}
+              {subagentCountBadgeNode}
               {!hasPendingInteraction ? <span className="mr-1">{taskTimeLabel}</span> : null}
             </span>
           ) : null}

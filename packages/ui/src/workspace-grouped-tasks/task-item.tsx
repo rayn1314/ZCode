@@ -5,6 +5,8 @@ import type { ZCodeTaskMeta } from "@zcode/shared";
 import { MessageCirclePlus } from "lucide-react";
 import { cn } from "@/components/lib/utils.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
+import { SubagentSubBlock } from "@/v4/SubagentSubBlock.js";
 import { GroupedTaskRow } from "@/workspace-grouped-tasks/task-row.js";
 import type { TaskGroupMenuItem } from "@/workspace-grouped-tasks/shared.js";
 
@@ -90,6 +92,12 @@ function GroupedTaskItemComponent({
   dragOverlay?: boolean;
   tooltipsDisabled?: boolean;
 }) {
+  // 顶层与组内共用本组件，所以子区块只需要在这里接一次。
+  // 选中态判定与 GroupedTaskRow 同一口径（workspaceKey + taskId），不新增 prop。
+  const isActive =
+    buildTaskWorkspaceKey(activeWorkspacePath, activeWorkspaceIdentity) ===
+      buildTaskWorkspaceKey(task.workspacePath, task.workspaceIdentity) &&
+    activeTaskId === task.taskId;
   return (
     <div className={cn("rounded-lg border border-transparent py-px")}>
       <GroupedTaskRow
@@ -114,6 +122,16 @@ function GroupedTaskItemComponent({
         dragOverlay={dragOverlay}
         tooltipsDisabled={tooltipsDisabled}
       />
+      {/* 子区块在 <GroupedTaskRow/> 之后：行自己的 bg-selected 卡片只覆盖行本身，
+          区块落在卡片与内边距之外（spec 要求）。拖拽 overlay 是纯展示，不挂子数据面。 */}
+      {isActive && !dragOverlay ? (
+        <SubagentSubBlock
+          workspacePath={task.workspacePath}
+          workspaceIdentity={task.workspaceIdentity}
+          remoteSessionId={remoteSessionId}
+          parentSessionId={task.taskId}
+        />
+      ) : null}
     </div>
   );
 }
