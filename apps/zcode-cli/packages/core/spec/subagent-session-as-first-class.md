@@ -539,10 +539,31 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 ### S5 · 收口
 
-- 删除 S1b 列出的全部旧路径残留（`ingestDetachedLiveSession`、`detachedChild*`、`pruneDetachedChildPublishers`、只读门、旧 deps 字面量）。
-- 同步 `subagent-session-messaging.md`（D2/D8、失败语义）。
-- 更新 `CONTEXT.md` 词汇（注意：词条不得以现在时描述目标态）。
-- **角色策略覆盖率检查**取代"逐项清点分叉"：以策略表为准做遍历断言。作为对照，当前 `subagent_child` 字面判据实测为 **19 处**（core 13 + bootstrap 4 处真分叉 + 2 处只读门），另有 `packages/services` 3 处按 `sessionKind`（这三处按 D7 不改）。
+**残留清单（2026-10-07 逐项复核；结论：无可删代码项，只需订正 spec 口径）**
+
+| 原定删除项 | 复核结论 |
+| --- | --- |
+| `ingestDetachedLiveSession`、`detachedChild*`、`pruneDetachedChildPublishers` | **不删**。S1b-4 已查清：它们服务的还有 script / dwf workflow actor（今天仍没有自己的 bootstrap record），且 `cleanupSessionRuntime` 的递归释放仍在用；删掉会把"父清理即释放"降级成"等 60s prune tick"。等 actor 也登记 record 后整体删除。 |
+| 只读门（原稿的 `guard.subagentReadOnly`） | **已删**：随 S2 的输入面一起拆，全仓 grep 零命中。 |
+| 手写的子 runtimeConfig 字面量、27 键 deps 字面量、那次 `new AgentRuntime(...)` | **已删**（S1b-3 交付，子 runtime 构造只剩一条路径）。 |
+| "逐项清点分叉" | **已由覆盖率断言取代**，见下。 |
+
+**角色策略覆盖率（订正原稿的「19 处」）**：那个 19（core 13 + bootstrap 4 处真分叉 + 2 处只读门）是改造**前**的实测，现在不成立——只读门已删、4 处准入分叉已收敛进单源表，三处强制点（legacy `sendPrompt`、V4 的 `v4-bridge.resolveRoleCommandAdmission`、原生执行器 `zcode-protocol-v4/commands/executor.ts`）都只调 `packages/shared/src/zcode-protocol-v4/input-role-policy.ts` 的 `resolveInputCommandAdmission`，没有第二套判定。
+
+覆盖率断言落在 `packages/shared/test/input-role-policy.test.ts`，是"策略表为准的遍历断言"而非逐项清点：策略表键集与 `commandPayloadSchemas` **完全相等**（新增命令不改表即红）、`subagent_child` / `selection_side_chat` 的完整拒绝集与 reasonCode 逐条钉死且其余命令逐条断言放行、其余 5 类角色对全部命令放行、`conversationInput` 恰为 5 条、受限模式的四条契约。类型级那一半是 `satisfies Record<CommandType, InputCommandRoleRule>`。
+
+剩余的 `"subagent_child"` 字面量（按 `grep -rn '"subagent_child"' <pkg>/src` 实测：core 14 处代码 + 2 处注释，bootstrap 10 处代码 + 3 处注释）已逐处复核归属，**没有输入准入分叉**，都属于身份/工具面/遥测/观察，保留：
+
+- 工具面：`tool-allowlist.ts`、`runtime-tools.ts` 的 agent / automation / offPeak / coordinator 面；
+- runtime 作用域投影：`runtimeScope`、`isSubagentChildRuntime`（工具上下文按它判身份）；
+- 标注类：`model-request-session-type.ts`、`turn-model-step-usage.ts`、`runtime-telemetry.ts` 把子会话标成 `subagent`；
+- 生命周期与树：`session-tree.ts` 的单点常量（S3 的唯一树边判据）、`subagent-session-query.ts` 与 `subagent-observation.ts` 的 children 查询、`server-operations.ts` 的 record 构造与受限模式置位。
+- `packages/services` 的 3 处按 `sessionKind` 判定（任务索引排除子会话）按 D7 不改：`zcodeTaskIndexSyncer.ts:1674` 早退、`zcodeTaskServiceAdapter.ts:1638`、`repairSubagentTaskIndex.ts:34`。
+
+**文档同步（2026-10-07 完成）**：
+
+- `subagent-session-messaging.md` 补三处：D2 增加「S1b / S2 之后的订正」（子会话升格为 record 后，投递三档判定与正式会话同形，`steered` / `woken` 对子会话才真正可达，此前一律静默降级成 `stored`）；D8 注明**本端口不是左栏层级的数据源**（左栏走父会话投影，见前置 2）；失败语义增加「投递给受限模式子会话」的完整语义（准入拒绝 → `stored`，且因三个 drain 挂钩都要求先跑起回合，这封信封在它被修复前不会被消费），并把"把 `detail` 透出给模型"作为一条带触发条件的工程项登记进它的遗留工作。
+- `CONTEXT.md` 的 Subagent Session 词条改成现在时描述**已落地**的事实（可输入 / 可续聊 / 可被单独唤醒、受限模式恒拒输入、删除递归 / 中止沿树 / 常驻不级联、不进任务索引、不得再派生子代理），删掉原来"改造目标…尚不可输入"的目标态措辞，并在 `_Avoid_` 里补上"把子会话与 fork / 选段侧聊混为一谈（树边只认 `parentSessionId` + `taskType === "subagent_child"`）"。
 
 ## UI 施工规格（S4）
 

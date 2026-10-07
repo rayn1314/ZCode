@@ -40,6 +40,8 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 不新增按 title/alias 解析会话的服务：`ListSessionsInput` 没有 title/parentID 谓词，title 可变且可重名；会话寻址一律用 `sess_*` 主键（与 `ReadSessionContext` 的既有约定一致）。
 
+**S1b / S2 之后的订正（2026-10-07 复核）**：子会话已升格为正式 record（`subagent_child` 有自己的 session entry 与 `context.sessions` 条目），所以 `sess_subagent_*` 目标在 D3 的档 1 / 档 2 判定上与正式会话**完全同形**——常驻 + 有活动回合 → `sendText(guide)` 得 `steered`，常驻 + 空闲 → `sendText(startNow)` 得 `woken`。改造前子会话没有 record，发给 `sess_subagent_*` 的信封必然撞上只读门，在 `session-message-port.ts` 里被捕获后静默降级成 mailbox `stored`（日志 `v4 delivery not accepted: …`），`steered` / `woken` 对子会话根本不可达；S2 打开输入面后三态才真正生效。这条是 S2 的验收项，准入单源与角色规则见 `subagent-session-as-first-class.md`。
+
 ### D3 · 投递 owner 是 bootstrap 的 `SessionMessagePort`
 
 新增 `contracts/src/interfaces/session-message.port.ts`，由 bootstrap 实现并注入每个 runtime（父与子都注入）。投递按可达性分三档，**单一 owner、单条写路径**：
@@ -93,6 +95,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **状态语义必须诚实**：entry 带终态 → 映射为终态（`success → completed` 等）；只有 spawn 没有终态 → 报 `lost`（进程重启后那个 runtime 已经不存在了），**不得报 `running`**——`running` 只能由本进程注册表断言。**同一事实两种来源必须同词**：后台被 TaskStop 时活体注册表报 `killed`（`runner.ts` 的 `BACKGROUND_AGENT_STOPPED_STATE.registryStatus`），事件只带 `stopped`，故 entry 路径把 `stopped` 也归一到 `killed`。
 - **合并语义**：注册表条目优先（实时状态与 `isBackgrounded` 更准），roster 补注册表缺的条目，按 `agentId` 去重；每行标注 `source: "live" | "history"`，模型据此知道哪些能用 `agent_*` 寻址、哪些只能用 `childSessionId`（`sess_subagent_*`）走跨会话路径。
 - 重启后 `agent_*` 寻址不可用是既有行为（内存注册表为空），不在本轮改成持久寻址；输出里的 `childSessionId` 就是给这种情况用的寻址键。
+- **本端口不是左栏层级的数据源**（2026-10-07 订正）：左栏的"父条目下有哪些子代理 + 运行中计数"走父会话 conversation 投影的 `subagents`（配 `session/subagents` 查询已结束项），不走 roster。理由见 `subagent-session-as-first-class.md` 的「前置 2 · 左栏数据源订正」；本端口只服务 `ListAgents` 的跨重启历史。
 
 ## 架构与投递拓扑
 
@@ -190,6 +193,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 - 冷会话最终未能拉起（`ensureResumed` 失败）：返回 `stored`，只写 mailbox，不阻塞发送方。
 - v4 投递被拒（会话不存在、revision 冲突）：降级为 mailbox `stored`，返回成功但标注实际落地方式。
+- **投递给「受限模式」子会话**（冷恢复时读不到 launch spec、工具面身份未还原，见 `subagent-session-as-first-class.md` 的 S4 前置 1）：`sendText` 被准入拒绝（`guard.subagentLimitedMode`），按上一条规则降级为 mailbox `stored`。这不是丢消息——信封在盘上、具体原因落在 `session.message.stored` 的 `reason`（`v4 delivery not accepted: …`）——但**回给模型的状态只有 `stored`**：`SendMessage` 的输出 schema 不带 `detail`，工具描述里的"target unreachable; kept in its mailbox for the next drain"是准确的说法。需要注意的是**消费时点**：该会话的正规输入面本身恒拒（连 `UserPromptSubmit` / `PostToolUse` / `Stop` 三个 drain 挂钩都不会触发，因为它们都要求先跑起一个回合），所以这封信封在它被修复之前不会被消费；只有 launch spec 恢复后再次冷恢复出的 record 才会在下一轮 drain 掉它。是否把 `detail` 透出给模型见「遗留工作」。
 - 目标 host 不在（路由缺失/超时 30s）：main 返回失败，发送方可回退 mailbox；不静默丢弃。
 - mailbox 目录不可写：返回失败并明确原因，不假装成功。
 - 目标会话在投递瞬间被卸载：以 revision/幂等门兜底，必要时重试一次；仍失败则落盘。
@@ -266,6 +270,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 5. **强制唤醒「从未被任何 host announce」的会话** —— 只有目标会话从未在本机启动过（刚装好、或远端 workspace 下的会话）才命中；命中时投递降级为 `stored`，消息不丢但不会实时到达。改动面最大（main 要按 workspace 解析承载 host 并拉起 CLI 进程，涉及进程生命周期），建议等线上反馈确认真的常遇到再做。
 6. **dwf actor 与会话消息统一** —— **建议不做**：actor 的通信语义是「裁决」（`submit_result`/`escalate`/ask 队列），与会话间「聊天」不是同一条业务路径，合并会把工作流引擎的裁决模型拖进消息层。当前已用 denylist 明确禁止 actor 使用 `SendMessage`。
+7. **把投递 `detail` 透出给模型** —— `SessionMessageDeliveryResult.detail` 目前只进日志，模型侧只看到 `steered` / `woken` / `stored` 三态（`send-message.ts` 的输出 schema 只取 `result.status`）。所以"目标不存在" / "revision 冲突" / "准入被拒（受限模式）" / "冷恢复失败" 在模型眼里长得一模一样。**建议现在不做**：三态本身是产品语义，`detail` 是实现原因，透出会让模型开始按字符串分支；真正值得改的触发条件是"发给受限子会话的消息一直不达"成为线上可观测的抱怨，那时更应该改的是**返回更具体的三态**（例如把"准入被拒"单列一态），而不是把日志文本搬进协议。
 
 已决策不做（保持现状）：
 
