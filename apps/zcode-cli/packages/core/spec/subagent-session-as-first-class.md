@@ -724,7 +724,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - **形态能力矩阵**（S4）：`packages/ui/test/sessionPaneCapabilities.test.ts` 逐格断言上表 13 个布尔列 × 4 个形态——`Record<BooleanCapability, boolean>` 的类型约束保证"矩阵漏一列"是编译错误而不是静默通过。配套约束：`SessionPane.tsx` 里每一处 `capabilities.*` 都必须对应表里某一列；`assistantFeedback` 原先借用的 `goalCommands` 列（真值相同）已在复核时拆成独立列，否则将来某形态只想改其中一项就会误伤另一项。
   - **输入拒绝文案映射**（S4）：`resolveInputRejectionMessageId` 把 `guard.subagentLimitedMode` 映射到受限模式专属文案，未知/缺失 code 落到通用文案。
 - 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `core/test/session-mailbox-sender-kind.test.ts` 是同源先例）。
-- 端到端：上述 10 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。
+- 端到端：上述 11 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。其中 6 / 7 / 9 / 10 / 11 的关键判据已有自动化背书（删除递归与中止级联、形态能力矩阵、工具面不含 `Agent`、受限模式的投影与准入），**1–5 与 8 依赖真实派发**，必须在跑起来的应用里手工走一遍才算验收（截至 2026-10-07 尚未执行，见「遗留工作」）。
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
   - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。
   - CLI 侧可用的类型门禁：`pnpm typecheck:cli`。
@@ -736,7 +736,9 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 ## 遗留工作（分类）
 
-**本轮范围内、按阶段排期**：S1a、S1b、S2–S5（见上）。
+**本轮范围内、按阶段排期**：S1a、S1b、S2–S5 —— **全部已落地**（各阶段事实与复核结论见上文各节）。
+
+**验收缺口（本轮未执行，须补）**：验收路径 1–5 与 8 依赖**真实派发**（派一个后台子代理、看它在左栏出现、给它发一句话、跑完看状态迁移、重启看身份还原），仓库没有 E2E 框架，只能用跑起来的应用手工走一遍。截至 2026-10-07 未执行，原因是交互验收需要应用连得上可用的模型凭据并真的跑一轮 agent，这一步没有被自动化替代。**在此之前不要说"验收通过"**：其余 6 条（6 / 7 / 9 / 10 / 11）的关键判据有单测背书，1–5 与 8 没有。
 
 **本轮不做、需另立任务**：
 

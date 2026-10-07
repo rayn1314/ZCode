@@ -39,3 +39,30 @@ export interface SubagentChildAppScope {
   bundle: SubagentChildLaunchBundle;
   borrowed: SubagentChildBorrowedPorts;
 }
+
+/**
+ * 构造 App 时收件箱端口的取法（spec `subagent-session-as-first-class.md` S3）。
+ *
+ * 规则有三条，顺序不能换：
+ * 1. **注入的端口优先**：进程里只允许一份 mailbox 实例（父 App 借出、由
+ *    `workspace-model-runtime.ts` 注入）。自建第二份会各持一套未读目录视图，
+ *    `consume` 去重与 drain 游标都会分叉。
+ * 2. **子会话在没注入时不自己造**：收件箱是"已准入投递"的落点，子会话的端口来源必须是父那一份。
+ * 3. 普通会话缺注入时按 env 建默认端口（既有行为）。
+ *
+ * 为什么单独成函数：这段曾经写成一个三元
+ * `childScope ? undefined : (injected ?? fallback)`，把**注入进来的那份也一起丢了**——
+ * 于是 S3 在 `workspace-model-runtime.ts` 里"对子会话照常注入"的改动对派发路径完全无效，
+ * 而冷恢复路径因为没有覆盖包反而一直有收件箱，两条构造路径的能力面刚好颠倒。
+ * 判据写成函数后，这条"注入优先"的规则可以被直接断言。
+ */
+export function resolveSessionMailboxPort<T>(input: {
+  injected: T | undefined;
+  isSubagentChildScope: boolean;
+  fallback: () => T;
+}): T | undefined {
+  if (input.injected) {
+    return input.injected;
+  }
+  return input.isSubagentChildScope ? undefined : input.fallback();
+}

@@ -50,6 +50,7 @@ import type {
   ZCodeAppOptions,
 } from "./types.js";
 import { createSessionMailboxPortFromEnv, resolveEffectiveLocale } from "./app-config-options.js";
+import { resolveSessionMailboxPort } from "./subagent-child-scope.js";
 import { projectIdFromDirectory } from "./paths.js";
 import {
   asInputHistoryStore,
@@ -387,11 +388,14 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     const imageProcessorPort = childScope
       ? childScope.borrowed.imageProcessorPort
       : (options.imageProcessorPort ?? createJimpImageProcessorAdapter());
-    // 差异清单 7：子会话今天没有 mailbox（drain 钩子随之不注册）；收件箱与角色策略一起做（S3），
-    // 先开等于放出一条未经裁决的输入通路，所以这里**不**回落到 createSessionMailboxPortFromEnv。
-    const sessionMailboxPort = childScope
-      ? undefined
-      : (options.sessionMailboxPort ?? createSessionMailboxPortFromEnv(options.env ?? process.env));
+    // 收件箱对子会话照常开（S3 的结论）：`stored` 落库的消息要有 drain 钩子取走，否则
+    // 跨进程/不可达投递的兜底路径等于一个黑洞。规则与踩过的坑见
+    // `resolveSessionMailboxPort` 的注释（这里只负责把 env 兜底传进去）。
+    const sessionMailboxPort = resolveSessionMailboxPort({
+      injected: options.sessionMailboxPort,
+      isSubagentChildScope: childScope !== undefined,
+      fallback: () => createSessionMailboxPortFromEnv(options.env ?? process.env),
+    });
     markStorageAdaptersInitialized({
       cliStorageRoot,
       // 子会话的 artifact store 来自父 App（差异清单 12），本 App 没有自建，与 MCP 端口同理
