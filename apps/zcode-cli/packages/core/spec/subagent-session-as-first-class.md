@@ -275,21 +275,21 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 | 装配事实 | `startupInputs` + execution / fs / http / image / pdf / artifactStore 实例 | 父 App（`ZCodeApp.subagentChildBorrow`） |
 | record 与 App 外壳 | sessionId / traceContext / eventStore（自有实例）/ sessionStore（借）/ record 字段集 / sessionFacade / inputFacade / pluginFacade / workflowFacade | bootstrap 构造入口 |
 
-**子会话受限模式的差异清单**（`options.subagentChildScope` 在场时的全部差异，此外一律同形）：
+**子会话受限模式的差异清单**（S1b 阶段原按"`options.subagentChildScope` 在场"编写；**S5 收口订正**：收窄的判据是 `isSubagentChildSession({ subagentChildScope, taskType })`，**两条构造路径都算子会话**——冷恢复没有覆盖包，只能靠 `taskType`。下面凡标"已改变/订正"的条目以此为准）：
 
 不构造（会生成第二份进程级资源或子会话本就不该有的能力）：
 
 1. `modelAdapter` + `ApiProviderModelRuntime`：不建第二份模型适配器与模型运行时；`modelFactory` 取覆盖包里的继承工厂。随之不建 `modelTelemetry`（子 span 走覆盖包的 `agentTelemetry`），故 `setModelIoFullRetentionEnabled`、两处 `shutdown()` 在子模式下必须可缺席。
-2. `workspaceHookRuntimeSecurity`：不建第二份 hook trust / admission（App 的 hook 方法本就有结构化回退；**今天子会话也没有 hook admission**，本阶段保持同形）。
+2. `workspaceHookRuntimeSecurity`：不建（App 的 hook 方法本就有结构化回退）。语义不是"少一份副本"而是**子会话不该持有 hook 信任权限**——它能单方面批准 hook。收窄判据必须覆盖冷恢复路径（见第 21 条的订正），否则冷恢复出的子会话会重新拿到信任权限，并顺带把 `workspaceHookSnapshot` 注入 runtime、单独撑开 hook runner 的门。
 3. `createMcpAdapter`：不建（会在子会话里再连一遍 MCP）；`mcpPort` 取覆盖包，`ownsMcpPort = false`。
 4. `createNodeSkillAdapter`：不建（父的 skill 根已解析）；`skillPort` 取覆盖包。
 5. `createNodeContextSourceAdapter`：不建；子会话的 Context 由覆盖包按父快照注入（`currentDate` / `subagentContext` / `envInfo`）。
 6. `createScriptWorkflowBridge`（连带 `workflowPort`）、`createDynamicWorkflowRunService`、`createDynamicWorkflowSnippetService`、`createModelCatalogPort`：都不建——这些端口在子会话 deps 里本就不在场（今天也不在），建了只是空转。**特别地，`deps.workflowPort` 必须保持缺席**。
-7. `createSessionMailboxPortFromEnv`：不建。**今天子会话没有 mailbox**（`sessionMailboxPort` 不在子 deps 里），本阶段保持同形；开放收件箱与角色策略一起做（S3），否则等于先开一条未经裁决的输入通路。
+7. `createSessionMailboxPortFromEnv`：**S1b 阶段**不建（当时子会话没有 mailbox，先开等于放出一条未经裁决的输入通路）。**S3 已改变**：收件箱与角色策略一起落地，子会话现在照常拿到 mailbox——但它必须拿**父那一份注入实例**，不自己按 env 建第二份（`resolveSessionMailboxPort` 的注释里有踩坑记录）。
 8. 浏览器控制：子会话不接（父调用不传 `browserControlPort`，`nodeReplBrowserBroker` 块自然跳过）。
 9. `inputHistoryStore`：不建（子会话没有用户输入历史；S2 开放输入面时再定）。
 10. `scheduleStartupLogRetentionCleanup`：不调度（进程级职责，父会话已调度）。
-11. 协议侧注入：`createWorkspaceZCodeApp` 对子会话**不注入** `sessionMailboxPort` / `subagentRosterPort`（第 7 条与「子会话不注册 Agent 工具」），`sessionMessagePort` 照常注入（今天子会话有它，子会话要能 `sess_*` 发信）。
+11. 协议侧注入：`sessionMessagePort` 照常注入（子会话要能 `sess_*` 发信）；`sessionMailboxPort` **S3 起也照常注入**（同第 7 条，见 S3 节）；`subagentRosterPort` **不注入**——但收窄现在落在 App 构造入口（`create-app.ts`），不在这里，因为它必须用覆盖两条构造路径的判据（见下面第 21 条与 S5）。
 
 借父 / 复用：
 
@@ -305,7 +305,8 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 18. `eventStore`：子会话**沿用父 record 的 store 实例**（`eventStore: parentRecord.eventStore`），不新建。该 store 按 sessionId 分区，子事件落在自己的分区里；bootstrap 的 `loadPersistedEvents(childSessionId)` 与 `resolveConversationBackingRecord` 一律走同一实例读取，与 `script-workflow-child-runtime.ts` 的既有约定一致（那条注释写明"私建内存 store 时子 transcript 永远读不到"）。这是**沿用既有约定**，不是新选择。
 19. 起始偏好走 `{ kind: "inherit", parent }`（D1 明确要求，且 fork 已在用同一份机制）：子会话因此继承父会话的 memory 开关、原生搜索增强、压缩偏好与 shell 选择。与改造前的差别是"子会话不再吃全局默认策略"，这是**有意**的（用户可配置的压缩策略漏继承会让子会话沿用陈旧策略）。
 20. 父 record 的 `onSessionEvent` 里那条"事件 sessionId ≠ 本 record sessionId"的分支（现走 `ingestDetachedLiveSession`）本阶段**保留不动**：它按 `(childSessionId, eventId)` 去重，子会话拿到 record 后事件会经两条路径到达网关，但投影只发布一次。改动与删除见 S1b-4。
-21. `runtimeConfig.hooks`：子会话**强制 `enabled: false`**。今天的子会话配置字面量没有 `hooks`，因此它没有 configured hook runner（子代理生命周期 hook 由**父** runtime 发射，不受影响）；而 hook runner 的构造条件（`config.hooks?.enabled || deps.workspaceHookSnapshot` + `deps.executionPort`）**不按 taskType 收窄**，子会话又会继承父解析出来的 `hooks` 配置并借到父的 executionPort，于是"子代理工具调用开始执行用户 hook"——这是本阶段最容易踩的静默行为变化，必须显式关掉。二是子会话不接 workspace hook admission（差异清单 2），让 runner 起来可能走到"有 hook 无准入"的路径。**子会话的工具级 hook 该不该跑，是产品问题，登记到 S5 与用户对齐。**
+21. `runtimeConfig.hooks`：子会话**强制 `enabled: false`**。子会话没有 configured hook runner（子代理生命周期 hook 由**父** runtime 发射，不受影响）；而 hook runner 的构造条件（`config.hooks?.enabled || deps.workspaceHookSnapshot` + `deps.executionPort`）**不按 taskType 收窄**，子会话又会继承解析出来的 `hooks` 配置并借到父的 executionPort，于是"子代理工具调用开始执行用户 hook"——这是本阶段最容易踩的静默行为变化，必须显式关掉。二是子会话不接 workspace hook admission（差异清单 2），让 runner 起来可能走到"有 hook 无准入"的路径。**子会话的工具级 hook 该不该跑，是产品问题，登记到 S5 与用户对齐。**
+    - **S5 收口时的订正（2026-10-07 实测）**：这一条原先只写在 `if (childScope)` 分支里，而子会话有**两条**构造路径——派发带覆盖包、冷恢复（S1a）走普通 `createRecord` **没有**覆盖包，只靠 `runtimeConfig.taskType === "subagent_child"` 认身份。于是照原写法，冷恢复出的子会话既从磁盘配置里捡回 `hooks`（`mergeRuntimeHooks` 在插件带 hook 时会把 `enabled` 置 **true**，所以"用户没开 hook"也可能是 true），又因为没走子分支而建出了 `workspaceHookRuntimeSecurity`（它的 `snapshot` 单独就能撑开 runner 的门）——**"子代理跑用户 hook"在冷恢复路径上照跑**，同种子会话两条路径行为不同，且没有任何测试会红。收口已按唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })` 覆盖两条路径：hooks 与 hook trust 两处收窄都改用它，`subagentRosterPort` 的收窄也从装配入口搬进 `create-app.ts` 用同一判据（判据本身有单测：`bootstrap/test/subagent-child-session-narrowing.test.ts`）。
 22. 已逐项审计、确认**不需要守卫**的继承项（因为既有门控已经挡住了）：内存提取（`resolveEnabledProjectMemoryRoot` 走 `isMainMemoryTaskType`，`subagent_child` 不在名单里）、标题生成（`shouldAttemptSessionTitleGeneration` 有 `parentSessionId` 与 `taskType !== "interactive"` 两道闸）、顶层 `userInstructions`（有 `subagentContext` 的 runtime 走 `SubagentContextBuilder`，只读 `subagentContext.userInstructions`，不会双份注入 AGENTS.md）、`isRemoteWorkspace`（唯一消费者是内存提取，已被 taskType 挡住）。另：子会话日志改用子会话自己的 logger（带子会话 traceId/sessionId），属诊断面改善。
 23. 实现期补记两处（实施时才发现，写进契约免得后人踩）：
     - **`titleGeneration` 在子会话最终缺席**（覆盖包不带它，子路径也没有 `params` 可读）。这是"子会话 runtimeConfig 面比正常会话少一个键"，靠上一条那两道闸兜住；S2 若开放子会话改模型/标题行为，要重新审视这一项。
@@ -565,6 +566,20 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 - `subagent-session-messaging.md` 补三处：D2 增加「S1b / S2 之后的订正」（子会话升格为 record 后，投递三档判定与正式会话同形，`steered` / `woken` 对子会话才真正可达，此前一律静默降级成 `stored`）；D8 注明**本端口不是左栏层级的数据源**（左栏走父会话投影，见前置 2）；失败语义增加「投递给受限模式子会话」的完整语义（准入拒绝 → `stored`，且因三个 drain 挂钩都要求先跑起回合，这封信封在它被修复前不会被消费），并把"把 `detail` 透出给模型"作为一条带触发条件的工程项登记进它的遗留工作。
 - `CONTEXT.md` 的 Subagent Session 词条改成现在时描述**已落地**的事实（可输入 / 可续聊 / 可被单独唤醒、受限模式恒拒输入、删除递归 / 中止沿树 / 常驻不级联、不进任务索引、不得再派生子代理），删掉原来"改造目标…尚不可输入"的目标态措辞，并在 `_Avoid_` 里补上"把子会话与 fork / 选段侧聊混为一谈（树边只认 `parentSessionId` + `taskType === "subagent_child"`）"。
 
+**收口时修掉的两处"两条路径不一致"（都属于静默行为变化，已修 + 已加回归断言）**：
+
+| 症状 | 根因 | 修法 |
+| --- | --- | --- |
+| 收件箱端口：派发路径的子会话**没有**收件箱，冷恢复的反而有（S3 的"对子会话照常注入"对派发路径完全无效） | `create-app.ts` 的三元 `childScope ? undefined : (injected ?? env)` 把**注入进来的那份也一起丢了** | 抽出 `resolveSessionMailboxPort`（注入优先；子会话无注入不自建），调用点改用它。回归：`bootstrap/test/subagent-child-mailbox-port.test.ts` |
+| hooks / hook trust：冷恢复的子会话**照跑**用户与插件的工具级 hook、并持有 hook 信任权限；派发的子会话两样都没有 | 差异清单 2 / 21 的收窄只认覆盖包，冷恢复路径没有覆盖包 | 抽出唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })`，hooks、`workspaceHookRuntimeSecurity`、`subagentRosterPort` 三处收窄统一改用它；`resolveSubagentChildHooksConfig` 把"关掉的方式"变成可断言契约。回归：`bootstrap/test/subagent-child-session-narrowing.test.ts` |
+
+**留给用户拍板的一条（产品问题，不是工程取舍）**：子代理（子会话）到底该不该跑用户配置的工具级 hook？
+
+- **现状（即"方案 A"）**：不跑。判据把两条路径对齐到"子会话不构造 configured hook runner"，与 `SubagentStart` / `SubagentStop` 仍由父 runtime 发射这件事无关（那两个事件照常发）。
+- **另一种做法（"方案 B"）**：跑。要点是同时把 workspace hook admission 也发给子会话（否则走到"有 hook 无准入"），并让子会话按自己的会话身份参与信任审核。
+- 代价对照：A 的代价是用户的 hook 护栏（例如 PreToolUse 拦截危险命令）**覆盖不到子代理的工具调用**；B 的代价是子代理每次工具调用都会触发用户 hook（副作用放大、hook 数量随子代理数倍增），且需要给子会话接上信任/准入链路。
+- 无论选哪个，**当前的两条路径必须同形**（这一条已经修掉，不再挂账）。
+
 ## UI 施工规格（S4）
 
 ### S4 前置：两处订正（施工前必读，两条都会挡住下面任何一条）
@@ -622,7 +637,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 ### 左栏任务列表：层级态
 
 - **位置**：父会话条目**下方**的子区块，仅在父条目处于选中态时渲染。
-- **数据**：父被选中时取自父会话投影的 `subagents.running`（`running` 明细）与 `session/subagents` 的 `ended` 首页（≤8 行）；"还有 N 个"用投影的 `endedTotal`。不塞任务索引（见前置 2）。
+- **数据**：父被选中时取自父会话投影的 `subagents.running`（`running` 明细）与 `session/subagents` 的 `ended` 首页（≤8 行）；"还有 N 个"用投影的 `endedTotal`。不塞任务索引（见前置 2）。两条实测口径写死在这里，避免后人当 bug 改：同一 `childSessionId` 短暂地同时出现在"运行中"与"已结束"分页里时**只保留运行中那行**（否则出现重复行与重复 React key）；"还有 N 个" = `endedTotal` − 已显示的已结束行数，其中 `endedTotal` 的投影口径是 `childSessionIds.length - running.length`，运行中的本来就不计在内（`packages/ui/src/v4/subagentSubBlockModel.ts` + 其单测）。
 - **取投影的通路（实测后的结论，左栏原本没有数据面）**：左栏子树**不在**任何 V4 conversation provider 内（`V4ConversationProvider` 只挂 `V4ChatPane`，`V4PaneConversationProvider` 只挂各 side pane；左栏是同一 layout 里的 `<aside>` 兄弟节点）。因此子区块**自带一个 `V4PaneConversationProvider`**（scope 取该父条目的 workspace/identity/remoteSessionId），再在其内 `useV4Conversation().layer.acquire(parentTaskId)` + `useConversationProjection`，读法与 `SubagentDirectorySidePane` 逐字相同。代价可忽略：`acquireWorkspaceConnection` 按 endpoint+workspaceKey 建连接并 refCount，主 pane 订阅的同一 workspace 会**复用**这条 transport/layer，不新增连接。远端 workspace 未连接时该 provider 返回 `null`，子区块自然不渲染（fail-closed，与 side pane 行为一致）。
 - **子条目控件形态**：
   - 缩进一级；左侧 `BotIcon`（约 12–14px，颜色缺省 `text-foreground-subtle`）。
@@ -640,7 +655,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 加载：区块位置渲染 2 行同高占位（仓库**没有**通用 Skeleton 组件，`TaskListLoadingHint` 是"Spinner + 文案"的整列表提示，不适合块内——用与子条目同高的两行占位，`animate-pulse` + 现有圆角/缩进 token 即可）。
   - 失败（含查询不可用）：一行 `text-ui-xs text-foreground-subtle` 文案 + 重试按钮（`useSessionSubagents` 的 `error` + `refresh()`；`refresh` 目前无人消费，本轮是它的第一个重试入口）。文案 id 用 `subagents.list.loadFailed` / `subagents.list.retry`，不新增 `common.retry` 复用。
   - 超过 8 个：区块底部一行"还有 N 个已结束的子代理"，点击打开现有子代理目录面板。
-- **父未选中**：不渲染子区块；若该父会话有 `running` 子代理，父条目右侧显示计数角标（`Badge variant="secondary"`，纯数字），数据取 `SessionSummary.runningSubagentCount`（`running` 与 `waiting` / `blocked` 都算"在跑"——它们都是未收口的子代理）。该字段 CLI 侧已派生（S4 前置 1 一并落地），**UI 侧还差四处透传**才能到行组件：`v4/taskListRowActivity.ts`（活动 sidecar 加字段）→ `v4/mapSessionSummaryToTaskMeta.ts`（sessions-index 摘要映射）覆盖 Grouped/Workspace 列表；`packages/shared/src/zcode-protocol-v4/controller.ts` 的 window-host controller 活动 schema 加可选字段 → `packages/desktop/src/host/windowHostControllerService.ts` 透传，覆盖 `useGlobalTaskList`（Timeline/Pinned/Archived）。角标插在**右侧元信息簇内、时间之前**，避开左侧 16px 前导槽（error/unread/spinner/pin 都占那里）。
+- **父未选中**：不渲染子区块；若该父会话有 `running` 子代理，父条目右侧显示计数角标（`Badge variant="secondary"`，纯数字），数据取 `SessionSummary.runningSubagentCount`（`running` 与 `waiting` / `blocked` 都算"在跑"——它们都是未收口的子代理）。该字段 CLI 侧已派生（S4 前置 1 一并落地），**UI 侧还差四处透传**才能到行组件：`v4/taskListRowActivity.ts`（活动 sidecar 加字段）→ `v4/mapSessionSummaryToTaskMeta.ts`（sessions-index 摘要映射）覆盖 Grouped/Workspace 列表；`packages/shared/src/zcode-protocol-v4/controller.ts` 的 window-host controller 活动 schema 加可选字段 → `packages/desktop/src/host/windowHostControllerService.ts` 透传，覆盖 `useGlobalTaskList`（Timeline/Pinned/Archived）。角标插在**右侧元信息簇内、时间之前**，避开左侧 16px 前导槽（error/unread/spinner/pin 都占那里）。因此它继承该簇的既有可见性（父行挂着「等待确认」胶囊时整簇让位、归档确认中隐藏）：计数是次要信号，不为它在同一排挤掉交互提示。这属于既有优先级的自然结果，不是新增规则。
 - **动效**：不做展开/收起开关。区块只在**该父条目被选中**时出现，选中本身就是"我要看这条会话"的意图；再叠一个手动收起，等于把"看不看子代理"变成第二个要维护的状态。占位行用 `animate-pulse`，不做新动效。
 - **远端父会话**：子条目可见但只读（D10）。
 - **文案**（落在 `packages/ui/src/i18n/locales/{zh-CN,en-US}.ts`）：
@@ -717,6 +732,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 删除递归与中止级联；`deactivateSession` **不**级联。
   - 起始偏好继承：子会话的 compaction / memory / 预算策略与父一致；父偏好热更新后**新派生**的子会话不沿用旧值（既有回归面，见 `bootstrap/src/zcode-protocol/compaction-preferences.ts` 的快照刷新）。
   - hook 发射点保持：`SubagentStart` / `SubagentStop` 仍按原 payload 字段发射。
+  - **子会话收窄的判据**（S5 补）：`isSubagentChildSession` 对两条构造路径都为真（覆盖包在场 / 只有 `taskType`），对其余 taskType 为假；`resolveSubagentChildHooksConfig` 恒出 `enabled: false` 且保留事件定义与限额（`bootstrap/test/subagent-child-session-narrowing.test.ts`）。收件箱端口侧：注入的端口优先、子会话无注入不自建（`bootstrap/test/subagent-child-mailbox-port.test.ts`）。这两组断言守的是"同一种会话两条构造路径行为必须同形"，是本轮修掉的两处静默不一致的回归。
   - **策略表覆盖率**：照 `packages/shared/test/hook-event-copy-parity.test.ts` / `core/test/hook-copy-parity.test.ts` 的先例，断言"命令类型集合 ⊆ 策略表键集合"——新增命令时测试先红，而不是等准入处静默放行。
   - **受限模式**（S4 前置 1）：`subagentLimitedMode` 为真时 `computeInputRouting` 返回 `{mode:"reject", reasonCode:"guard.subagentLimitedMode"}`（且优先于 `compacting` / phase 判定）；同一事实下 `resolveRoleCommandAdmission` 拒绝对话输入类命令、放行非输入类命令（`deleteSession` / `renameSession` / `stop` 仍可用——受限的是输入面，不是会话管理）。
   - **`Store` 元数据路径不妄断**：冷会话（无活 record）的准入不因"读不到 launch spec"把普通会话判成受限——该判据只由活 record 携带。
@@ -738,7 +754,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **本轮范围内、按阶段排期**：S1a、S1b、S2–S5 —— **全部已落地**（各阶段事实与复核结论见上文各节）。
 
-**验收缺口（本轮未执行，须补）**：验收路径 1–5 与 8 依赖**真实派发**（派一个后台子代理、看它在左栏出现、给它发一句话、跑完看状态迁移、重启看身份还原），仓库没有 E2E 框架，只能用跑起来的应用手工走一遍。截至 2026-10-07 未执行，原因是交互验收需要应用连得上可用的模型凭据并真的跑一轮 agent，这一步没有被自动化替代。**在此之前不要说"验收通过"**：其余 6 条（6 / 7 / 9 / 10 / 11）的关键判据有单测背书，1–5 与 8 没有。
+**验收缺口（本轮未执行，须补）**：**端到端环节**依赖真实派发（派一个后台子代理、看它在左栏出现、给它发一句话、跑完看状态迁移、重启看身份还原），仓库没有 E2E 框架，只能用跑起来的应用手工走一遍。截至 2026-10-07 未执行：交互验收需要应用连得上可用的模型凭据并真的跑一轮 agent，这一步没有被自动化替代。**在此之前不要说"验收通过"**——能靠单测背书的部分（删除递归与中止级联、形态能力矩阵、工具面不含 `Agent`、受限模式的投影与准入、左栏区块行模型、两条构造路径的收窄判据）已经覆盖，"真实派发 + 重启"这两类环节没有任何自动化。
 
 **本轮不做、需另立任务**：
 

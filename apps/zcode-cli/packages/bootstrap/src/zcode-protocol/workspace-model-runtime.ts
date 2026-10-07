@@ -75,12 +75,11 @@ export async function createWorkspaceZCodeApp(
     options.providerRuntimeHeadersPort ?? createProviderRuntimeHeadersPort(context, workspace);
   // `sessionMailboxPort` 对子会话照常注入：收件箱是「已准入投递」的落点，输入面已由角色策略
   // （S2）在准入层裁决，此处不再需要按角色关闭；缺席则 drain 钩子不注册，`stored` 落库的
-  // 消息永远没人取走。`subagentRosterPort` 仍然对子会话关闭，不是权限问题而是它恒空：
-  // `ListAgents` 的注册门就是 roster 端口是否存在（core/src/tool/handlers/list-agents.ts 的
-  // 「注册门已保证父会话才装上本工具」），而子会话结构上不能派生子代理，roster 对它永远是空表
-  // ——注入等于给一个假能力，并推翻该注册门的既有断言。
-  // `sessionMessagePort` 照常注入：子会话要能用 `sess_*` 给会话发信。
-  const isSubagentChild = options.subagentChildScope !== undefined;
+  // 消息永远没人取走。`sessionMessagePort` 同理：子会话要能用 `sess_*` 给会话发信。
+  //
+  // `subagentRosterPort` 这里**不再判断**子会话：本入口只负责注入进程级端口，"哪个会话不该
+  // 有哪份端口"统一由 App 构造入口（`create-app.ts`）按唯一判据收窄。原先在这里按覆盖包判断
+  // 会漏掉冷恢复路径（没有覆盖包），见 `isSubagentChildSession` 的注释。
   return context.deps.createZCodeApp({
     ...options,
     platform: context.deps.platform,
@@ -90,7 +89,7 @@ export async function createWorkspaceZCodeApp(
     ...(context.sessionMailboxPort ? { sessionMailboxPort: context.sessionMailboxPort } : {}),
     ...(context.sessionMessagePort ? { sessionMessagePort: context.sessionMessagePort } : {}),
     // 历史子代理只读端口（spec D8）：同一装配入口注入，因此是进程级同一实例。
-    ...(!isSubagentChild && context.subagentRosterPort
+    ...(context.subagentRosterPort
       ? { subagentRosterPort: context.subagentRosterPort }
       : {}),
     runtimeConfig: {

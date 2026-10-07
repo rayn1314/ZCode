@@ -1,6 +1,7 @@
 import type {
   ExecutionPort,
   FileSystemPort,
+  HooksRuntimeConfig,
   HttpClientPort,
   ImageProcessorPort,
   PdfDocumentPort,
@@ -38,6 +39,53 @@ export interface SubagentChildBorrowedPorts {
 export interface SubagentChildAppScope {
   bundle: SubagentChildLaunchBundle;
   borrowed: SubagentChildBorrowedPorts;
+}
+
+/**
+ * **「这个 App 是不是子会话」的唯一判据**。所有"子会话收窄"（hooks、hook trust、
+ * subagentRosterPort …）都必须用它，不要各自写 `subagentChildScope !== undefined`。
+ *
+ * 子会话有两条构造路径，覆盖包只在其中一条上出现：
+ * - 派发：`createSubagentChildRecord` 带 `subagentChildScope`（父 App 借出装配端口）；
+ * - 冷恢复：走普通的 `createRecord`，**没有**覆盖包——父 App 可能根本不在这个进程里，
+ *   借不到端口。它只能靠 record 上持久化的 `runtimeConfig.taskType === "subagent_child"`
+ *   认出自己是子会话（S1a 落的那一份）。
+ *
+ * 为什么必须合成一个函数（2026-10-07 实测）：`create-app.ts` 的 hooks 收窄与
+ * `workspaceHookRuntimeSecurity` 收窄、`workspace-model-runtime.ts` 的 roster 收窄
+ * 原先都只认覆盖包，于是**冷恢复出的子会话把每一条收窄都漏掉了**——最重的一条是
+ * `mergeRuntimeHooks` 在插件带 hook 时会把 `enabled` 置 true，冷恢复的子会话因此跑起
+ * 用户/插件的工具级 hook，而同种子会话的派发路径不跑。同一种会话两条路径行为不同，
+ * 属于静默行为变化，所以判据收成这一处。
+ */
+export function isSubagentChildSession(input: {
+  subagentChildScope?: SubagentChildAppScope;
+  taskType?: string;
+}): boolean {
+  return input.subagentChildScope !== undefined || input.taskType === "subagent_child";
+}
+
+/**
+ * 子会话的 hooks 配置（spec `subagent-session-as-first-class.md` 差异清单 21）。
+ *
+ * **保留 `events` 等定义、只把 `enabled` 压成 false**：事件表是词汇，子代理生命周期
+ * （`SubagentStart` / `SubagentStop`）由**父** runtime 发射，子会话的 runtime 只需要还认识这些
+ * 事件名；被关掉的是"配置化 hook runner"这一件事——它一旦起来，子代理的每次工具调用都会去
+ * 执行用户/插件写的 hook。
+ *
+ * 判据为什么不能是 `config.hooks.enabled`：`mergeRuntimeHooks`（`runtime-config.ts`）在插件
+ * 带 hook 时会把 `enabled` 置 true，所以"用户没显式开 hook"并不等于"配置里 enabled 是 false"。
+ * 返回与入参无关的固定形状，是为了让这条规则可被直接断言（`create-app.ts` 没有测试夹具）。
+ */
+export function resolveSubagentChildHooksConfig(
+  hooks: HooksRuntimeConfig | undefined,
+): HooksRuntimeConfig {
+  return {
+    events: hooks?.events ?? {},
+    maxOutputBytes: hooks?.maxOutputBytes ?? 32_768,
+    timeoutMs: hooks?.timeoutMs ?? 60_000,
+    enabled: false,
+  };
 }
 
 /**

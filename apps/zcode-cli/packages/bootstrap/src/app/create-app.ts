@@ -50,7 +50,11 @@ import type {
   ZCodeAppOptions,
 } from "./types.js";
 import { createSessionMailboxPortFromEnv, resolveEffectiveLocale } from "./app-config-options.js";
-import { resolveSessionMailboxPort } from "./subagent-child-scope.js";
+import {
+  isSubagentChildSession,
+  resolveSessionMailboxPort,
+  resolveSubagentChildHooksConfig,
+} from "./subagent-child-scope.js";
 import { projectIdFromDirectory } from "./paths.js";
 import {
   asInputHistoryStore,
@@ -253,6 +257,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         workingDirectory,
         workspaceIdentity: options.runtimeConfig?.memory?.workspaceIdentity,
       });
+    // 子会话收窄的**唯一判据**（两条构造路径都要认）：派发路径带覆盖包，冷恢复路径没有
+    // 覆盖包，只有 record 上持久化的 `taskType`。见 `isSubagentChildSession` 的注释。
+    const subagentChildSession = isSubagentChildSession({
+      subagentChildScope: childScope,
+      taskType: runtimeConfig.taskType,
+    });
     if (childScope) {
       // 差异清单 19：必须在 `resolveAppRuntimeConfig` **之后**覆盖 mcp —— 它会把
       // `mcp.servers` 无条件改写成**本进程**解析出的 autoConnectMcpServers（父会话的启动快照 +
@@ -262,19 +272,17 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       runtimeConfig.mcp = childScope.bundle.runtimeConfig.mcp;
       configuredMcpServers = childScope.bundle.runtimeConfig.mcp?.servers ?? {};
       untrustedProjectMcpServers = new Set<string>();
-      // 差异清单 21：子会话强制关掉 hook runner。子会话的配置今天没有 `hooks` 键（也就没有
-      // configured hook runner——子代理的 SubagentStart/SubagentStop 由**父** runtime 发射，
-      // 不受影响），但 runner 的构造门（`config.hooks?.enabled || deps.workspaceHookSnapshot`
-      // 且 `deps.executionPort` 在场）**不按 taskType 收窄**，而子会话又会继承父解析出的 hooks
-      // 并借到父的 executionPort：不关就会出现「子代理的工具调用开始执行用户 hook」这种静默
-      // 行为变化，且子会话不接 workspace hook admission（差异清单 2），可能走到「有 hook 无准入」。
-      // 子会话工具级 hook 到底该不该跑，留到 S5 与用户对齐。
-      runtimeConfig.hooks = {
-        events: runtimeConfig.hooks?.events ?? {},
-        maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
-        timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
-        enabled: false,
-      };
+    }
+    // 差异清单 21：子会话一律关掉配置化的 hook runner（子代理的 `SubagentStart` /
+    // `SubagentStop` 由**父** runtime 发射，不受影响）。
+    //
+    // 为什么不能只写在 `childScope` 分支里（原来就在那儿，2026-10-07 订正）：配置化的
+    // runner 会开，靠的是两个来源之一——`config.hooks.enabled`（磁盘配置；`mergeRuntimeHooks`
+    // 在插件带 hook 时还会把它置 true）或 `deps.workspaceHookSnapshot`。冷恢复的子会话没有
+    // 覆盖包，这两条它都躲得过，于是"子代理的工具调用执行用户/插件 hook"只在派发路径被挡住、
+    // 在冷恢复路径照跑。判据改用 `subagentChildSession` 后两条路径同形。
+    if (subagentChildSession) {
+      runtimeConfig.hooks = resolveSubagentChildHooksConfig(runtimeConfig.hooks);
     }
     const browserControlPort = options.browserControlPort;
     if (
@@ -311,9 +319,11 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     const pluginReferenceCatalog = buildPluginReferenceCatalog(pluginOutcome.plugins);
     runtimeConfig.pluginReferenceCatalog = pluginReferenceCatalog;
     let runtime: AgentRuntime | undefined;
-    // 差异清单 2：子会话不建第二份 hook trust / admission —— 今天子会话也没有 hook admission，
-    // 本阶段保持同形；App 的 hook 方法本就有结构化回退（下面原样保留）。
-    const workspaceHookRuntimeSecurity = childScope
+    // 差异清单 2：子会话不建第二份 hook trust / admission —— 子会话不该持有 hook 信任权限
+    // （它能单方面批准 hook），且它没有 hook admission 可用。App 的 hook 方法本就有结构化
+    // 回退（下面原样保留）。判据含冷恢复路径：只认覆盖包会让冷恢复出的子会话重新拿到
+    // trust 权限，并顺带把 `workspaceHookSnapshot` 注入 runtime、单独撑开 hook runner 的门。
+    const workspaceHookRuntimeSecurity = subagentChildSession
       ? undefined
       : createWorkspaceHookRuntimeSecurity({
           appVersion,
@@ -813,7 +823,11 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       sessionMessagePort: options.sessionMessagePort,
       // 历史子代理只读端口（spec D8）：与 sessionMessagePort 同源（进程级一份），
       // 供 ListAgents 从父会话持久化事件补齐重启后的历史。
-      subagentRosterPort: options.subagentRosterPort,
+      // 子会话不该拿到它（D8 的结构性防套娃）：`ListAgents` 的注册门就是这份端口是否存在
+      // （core `tool/handlers/index.ts` 的 `includeAgent`），而子会话结构上不能派生子代理，
+      // roster 对它恒空——注入等于给一个假能力。收窄放在这里而不是装配入口，是为了走
+      // `subagentChildSession` 这唯一判据（含冷恢复路径）。
+      subagentRosterPort: subagentChildSession ? undefined : options.subagentRosterPort,
       logger,
       executionPort,
       workspaceHookAdmission: workspaceHookRuntimeSecurity?.admission,
