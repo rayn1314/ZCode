@@ -12,17 +12,18 @@ import {
   type SessionPaneShape,
 } from "../src/v4/sessionPaneCapabilities.js";
 
-/** 布尔能力列（顺序与 spec 表格的 12 列一致）。 */
+/** 布尔能力列（顺序与 spec 表格的 13 列一致）。 */
 type BooleanCapability = Exclude<keyof SessionPaneCapabilities, "shape" | "workspaceFileRewind">;
 
 const MATRIX: Record<SessionPaneShape, Record<BooleanCapability, boolean>> = {
-  // 有 有 有 有 有 有 有 有 有 有（文件撤销） 有
+  // 有 有 有 有 有 有 有 有 有 有 有（文件撤销） 有
   interactive: {
     readOnly: false,
     composer: true,
     dropTarget: true,
     editRetry: true,
     fork: true,
+    assistantFeedback: true,
     goalCommands: true,
     goalPanel: true,
     permissionModeSelector: true,
@@ -38,6 +39,7 @@ const MATRIX: Record<SessionPaneShape, Record<BooleanCapability, boolean>> = {
     dropTarget: false,
     editRetry: false,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     goalPanel: true,
     permissionModeSelector: false,
@@ -53,6 +55,7 @@ const MATRIX: Record<SessionPaneShape, Record<BooleanCapability, boolean>> = {
     dropTarget: true,
     editRetry: false,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     goalPanel: false,
     permissionModeSelector: true,
@@ -68,6 +71,7 @@ const MATRIX: Record<SessionPaneShape, Record<BooleanCapability, boolean>> = {
     dropTarget: true,
     editRetry: true,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     goalPanel: false,
     permissionModeSelector: false,

@@ -642,14 +642,14 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 受限模式（`snapshot.inputRouting.mode === "reject"`）：composer 保持挂载但禁用，顶部一行说明原因，文案由 `inputRouting.reasonCode` 映射（`guard.subagentLimitedMode` → `subagents.pane.limitedMode`；未知 code 走通用 `subagents.pane.inputRejected`）。**不新增快照字段**：原因走既有的 `inputRouting.reasonCode`。
 - **形态选择**：`SessionPane` 现有的 `readOnly` 太粗（同时关掉 composer、drop target、取消后台任务、edit/retry/fork），`selectionSideChat` 则已经实现了"保留 composer + 隐藏 edit/retry/fork/goal"这一形状——子会话要的是**第三种黑名单**（保留 composer 与 edit/retry，去掉 fork/goal/权限模式）。实现上把黑名单参数化并给这一形态命名，不要新增一个整块的布尔开关。四个形态与各自的能力面：
 
-  | 形态 | composer | drop target | edit / retry | fork | goal 命令 | 权限模式选择器 | 取消后台任务 | 划词动作 | 别名为框选副屏 opener | 文件撤销 | 工作流 run journal 查询 |
-  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-  | `interactive`（默认） | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 是 | 有 | 有 |
-  | `observe`（远端只读 workspace / workflow actor） | 无 | 无 | 无 | 无 | 无 | 无 | 无 | 无 | 否 | 仅 `allowWorkspaceFileRewind` | 无 |
-  | `selectionSideChat`（框选副屏） | 有 | 有 | **无** | 无 | 无 | 有 | 有 | 无 | 否 | 有 | 有 |
-  | `subagentChild`（子代理子会话，**本轮新增**） | 有 | 有 | **有** | 无 | 无 | **无** | 有 | 无 | 否 | 有 | 有 |
+  | 形态 | composer | drop target | edit / retry | fork | 助手反馈 | goal 展示 | goal 命令 | 权限模式选择器 | 取消后台任务 | 划词动作 | 别名为框选副屏 opener | 文件撤销 | 工作流 run journal 查询 |
+  | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+  | `interactive`（默认） | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 有 | 是 | 有 | 有 |
+  | `observe`（远端只读 workspace / workflow actor） | 无 | 无 | 无 | 无 | 无 | **有** | 无 | 无 | 无 | 无 | 否 | 仅 `allowWorkspaceFileRewind` | 无 |
+  | `selectionSideChat`（框选副屏） | 有 | 有 | **无** | 无 | 无 | 无 | 无 | 有 | 有 | 无 | 否 | 有 | 有 |
+  | `subagentChild`（子代理子会话，**本轮新增**） | 有 | 有 | **有** | 无 | 无 | 无 | 无 | **无** | 有 | 无 | 否 | 有 | 有 |
 
-  实现落点（当前布尔式的等价改法，逐条对齐上表）：`readOnly` → `shape === "observe"`；`selectionSideChat` → `shape === "selectionSideChat"`；`forkActionsEnabled` 额外加 `shape !== "subagentChild"`；`suppressGoalCommands` / `statusPanelModel.goal` / `pauseGoal` / `resumeGoal` / `selectionActions` / assistantFeedback 的抑制条件从"`selectionSideChat`"改为"`shape !== "interactive"`"（`observe` 形态被 `readOnly` 已经挡住，语义不变）；权限模式选择器仅在 `subagentChild` 形态下不挂载。
+  实现落点（键名与上表逐列对应，落在 `packages/ui/src/v4/sessionPaneCapabilities.ts`）：`readOnly` → `shape === "observe"`；`forkActionsEnabled` → `fork && seed`；`suppressGoalCommands` → `!goalCommands`（即 `shape !== "interactive"`）；goal 的**展示**两处（`statusPanelModel.goal` 与状态面板的 `goal` 入参）→ `goalPanel`，**与 goal 命令分开**——只读视图本来就看得到 goal 进度、只是没有控制入口，把展示一起关掉是信息量退化而不是"统一语义"（S4 复核时发现并订正：原方案这一段写作"六项抑制条件统一为 `shape !== "interactive"`，`observe` 被 `readOnly` 已经挡住、语义不变"，但 `observe` 的 goal 区块此前是渲染的，按原写法会静默关掉它）；`pauseGoal` / `resumeGoal` → `goalCommands`；`assistantFeedback` 单独成列（真值向量与 `goalCommands` / `selectionActions` 目前一致，但同值不是同一业务，不合并）；权限模式选择器仅在 `subagentChild` 形态下不挂载。
 - **`subagentChild` 形态只给本地子会话（D10 的落点）**：面板形态按 workspace 是否远端分支——`isRemoteWorkspaceTarget({workspacePath, workspaceIdentity, remoteSessionId})`（`lib/workspaceServiceResolver.ts`，`useWorkspaceTaskLists.ts:294` 同源用法）为真则 `observe`，否则 `subagentChild`。远端不开口子：父↔子 mailbox 不跨机器共享，开输入面等于放出一个"能打字但接不通父会话"的面板。顶部条（状态词 + 授权提示）对远端**照常渲染**，`observe` 只是没有 composer。
 - **权限模式选择器为什么只能在 UI 侧藏**：composer 的模式选择器读的是 **workspace 级** `configOptions`（`v4-workspace-config.ts` 的 `toV4WorkspaceConfigState`，数据源是"该 workspace 第一个在册会话的 settings"）——它是 workspace 作用域的，同一个 workspace 的父会话与子会话共用一份，服务端按会话裁剪会把父会话的选择器一起关掉。因此这里由 UI 形态决定，强制面仍由 S2 的 `guard.subagentCannotEscalatePermission` 承担（纵深：藏起来 + 发出去也被拒并给出 reasonCode）。
 - **Plan 勾选项一并隐藏**：它与三种权限模式在同一个菜单里、走同一条 `switchCollaborationMode`，而该命令对子会话被 S2 拒绝；只藏一半会留下一个必定失败的控件。
@@ -698,6 +698,8 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - **受限模式**（S4 前置 1）：`subagentLimitedMode` 为真时 `computeInputRouting` 返回 `{mode:"reject", reasonCode:"guard.subagentLimitedMode"}`（且优先于 `compacting` / phase 判定）；同一事实下 `resolveRoleCommandAdmission` 拒绝对话输入类命令、放行非输入类命令（`deleteSession` / `renameSession` / `stop` 仍可用——受限的是输入面，不是会话管理）。
   - **`Store` 元数据路径不妄断**：冷会话（无活 record）的准入不因"读不到 launch spec"把普通会话判成受限——该判据只由活 record 携带。
   - **角标派生**（S4 前置 2）：`deriveSessionSummary` 的 `runningSubagentCount` 等于 `snapshot.subagents.running.length`（含 `waiting` / `blocked`），且 `summariesEqual` 覆盖它——只变这一个字段也必须产 delta，不被 conflation 吃掉。
+  - **形态能力矩阵**（S4）：`packages/ui/test/sessionPaneCapabilities.test.ts` 逐格断言上表 13 个布尔列 × 4 个形态——`Record<BooleanCapability, boolean>` 的类型约束保证"矩阵漏一列"是编译错误而不是静默通过。配套约束：`SessionPane.tsx` 里每一处 `capabilities.*` 都必须对应表里某一列；`assistantFeedback` 原先借用的 `goalCommands` 列（真值相同）已在复核时拆成独立列，否则将来某形态只想改其中一项就会误伤另一项。
+  - **输入拒绝文案映射**（S4）：`resolveInputRejectionMessageId` 把 `guard.subagentLimitedMode` 映射到受限模式专属文案，未知/缺失 code 落到通用文案。
 - 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `core/test/session-mailbox-sender-kind.test.ts` 是同源先例）。
 - 端到端：上述 10 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：

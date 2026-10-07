@@ -4801,9 +4801,8 @@ export function SessionPane({
               onFork={forkActionsEnabled ? handleFork : undefined}
               onRetry={retryActionsEnabled ? handleRetry : undefined}
               onFeedbackChange={
-                // assistantFeedback 与 goal 同属「只有 interactive 形态提供」的抑制组：它的真值表
-                // 与 goalCommands 完全一致（interactive 有、其余三种形态无），spec 明确这样归组。
-                capabilities.goalCommands && sessionId ? handleAssistantFeedback : undefined
+                // 真值向量与 goalCommands 一致（只有 interactive 有），但列各自独立：同值不是同一业务。
+                capabilities.assistantFeedback && sessionId ? handleAssistantFeedback : undefined
               }
               onEdit={editActionsEnabled ? handleEdit : undefined}
               canLoadOlder={timelineSnapshot ? hasOlderRows(timelineSnapshot) : false}

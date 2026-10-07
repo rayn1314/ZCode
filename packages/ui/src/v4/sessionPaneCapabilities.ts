@@ -29,6 +29,11 @@ export interface SessionPaneCapabilities {
   editRetry: boolean;
   /** 行内 fork（把一轮分叉成新会话）。 */
   fork: boolean;
+  /**
+   * 助手消息的 👍/👎 反馈。真值向量与 `goalCommands` / `selectionActions` 目前一致（只有
+   * `interactive` 有），但那是**同值不是同一业务**：三者各自独立演化，不要合成一列。
+   */
+  assistantFeedback: boolean;
   /** goal 命令：pause / resume 与 goal 斜杠命令。 */
   goalCommands: boolean;
   /**
@@ -51,7 +56,7 @@ export interface SessionPaneCapabilities {
   runJournalQuery: boolean;
 }
 
-// spec 的 4×12 矩阵。逐格改动都要同步 packages/ui/test/sessionPaneCapabilities.test.ts。
+// spec 的 4×13 矩阵。逐格改动都要同步 packages/ui/test/sessionPaneCapabilities.test.ts。
 const CAPABILITIES: Record<SessionPaneShape, SessionPaneCapabilities> = {
   interactive: {
     shape: "interactive",
@@ -60,6 +65,7 @@ const CAPABILITIES: Record<SessionPaneShape, SessionPaneCapabilities> = {
     dropTarget: true,
     editRetry: true,
     fork: true,
+    assistantFeedback: true,
     goalCommands: true,
     goalPanel: true,
     permissionModeSelector: true,
@@ -76,6 +82,7 @@ const CAPABILITIES: Record<SessionPaneShape, SessionPaneCapabilities> = {
     dropTarget: false,
     editRetry: false,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     // 展示保留：这是 observe 形态改造前的既有行为（只有 pause/resume 被 readOnly 挡住）。
     goalPanel: true,
@@ -93,6 +100,7 @@ const CAPABILITIES: Record<SessionPaneShape, SessionPaneCapabilities> = {
     dropTarget: true,
     editRetry: false,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     goalPanel: false,
     permissionModeSelector: true,
@@ -109,6 +117,7 @@ const CAPABILITIES: Record<SessionPaneShape, SessionPaneCapabilities> = {
     dropTarget: true,
     editRetry: true,
     fork: false,
+    assistantFeedback: false,
     goalCommands: false,
     goalPanel: false,
     permissionModeSelector: false,
