@@ -63,18 +63,18 @@ export function isAppSlashCommandSuggestion(suggestion: PromptInputSuggestionIte
 }
 
 /**
- * `/side` 门禁：草稿态没有父 session 可挂 child，辅助对话自身不允许再开辅助对话，
- * 只读与手机 viewport 与固定入口保持一致地隐藏。
+ * `/side` 门禁：草稿态没有父 session 可挂 child，不能开辅助对话的形态（只读 / 辅助对话自身 /
+ * 子代理子会话）与手机 viewport 与固定入口保持一致地隐藏。
+ *
+ * 第 2 个入参读 pane 形态能力 `selectionSideChatOpener`，不再各自拼 `readOnly` / `selectionSideChat`
+ * ——那两个布尔是同一件事的两种代理，新增形态时必然漏改一个。
  */
 export function shouldOfferSideSlashCommand(options: {
   isDraft: boolean;
-  selectionSideChat: boolean;
-  readOnly: boolean;
+  selectionSideChatOpener: boolean;
   isMobileViewport: boolean;
 }): boolean {
-  return (
-    !options.isDraft && !options.selectionSideChat && !options.readOnly && !options.isMobileViewport
-  );
+  return !options.isDraft && options.selectionSideChatOpener && !options.isMobileViewport;
 }
 
 export function normalizeSlashCommandValue(name: string): string {

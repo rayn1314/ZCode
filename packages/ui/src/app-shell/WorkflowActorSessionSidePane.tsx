@@ -94,7 +94,7 @@ const WorkflowActorSessionContent = memo(function WorkflowActorSessionContent({
     <SessionPane
       paneId={tab.id}
       sessionId={gate.sessionId}
-      readOnly
+      shape="observe"
       allowWorkspaceFileRewind
       focused={focused}
       telemetryVisible={focused}

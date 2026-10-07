@@ -547,7 +547,7 @@ export function WorkbenchLeafPane({
         ) : null}
         <SessionPane
           paneId={paneId}
-          readOnly={readOnly}
+          shape={readOnly ? "observe" : "interactive"}
           sessionId={sessionId}
           openTrigger={isPrimary ? "sidebar" : "split"}
           activeSelectionSideChatSessionId={resolvePaneActiveSelectionSideChatSessionId(

@@ -128,7 +128,7 @@ export function V4ChatPane({
     <V4ConversationProvider workspacePath={workspacePath} workspaceIdentity={workspaceIdentity}>
       <SessionPane
         paneId="workspace-main"
-        readOnly={readOnly}
+        shape={readOnly ? "observe" : "interactive"}
         sessionId={sessionId}
         openTrigger={openTrigger}
         workspacePath={workspacePath}

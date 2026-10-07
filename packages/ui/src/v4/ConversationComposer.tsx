@@ -98,6 +98,7 @@ import type { LexicalChatInputHandle } from "@/LexicalChatInput.js";
 import { ChatPromptEditor } from "@/prompt-editor/ChatPromptEditor.js";
 import { usePromptEditorDragState } from "@/prompt-editor/usePromptEditorDragState.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { resolveInputRejectionMessageId } from "@/v4/inputRejectionMessage.js";
 import { advanceComposerDraftRevision } from "@/v4/composer/composerDraftRevision.js";
 import type { AppSlashCommand } from "@/slashCommandHelpers.js";
 import { useOptionalServices } from "@/hooks/useServices.js";
@@ -484,6 +485,12 @@ interface ConversationComposerProps {
   onComposerRestoreApplied?: (requestId: number) => void;
   /** 副屏会话不提供 goal 能力；协议层仍会拒绝直接调用。 */
   suppressGoalCommands?: boolean;
+  /**
+   * 不挂载权限模式选择器。子代理子会话没这条能力（S2 会拒 `switchCollaborationMode`），
+   * 而选择器读的是 **workspace 级** configOptions——服务端按会话裁剪会把父会话的选择器一起
+   * 关掉，所以只能在 UI 侧按形态整块不渲染。Plan 勾选项与该命令同菜单同链路，一并消失。
+   */
+  suppressModeSwitch?: boolean;
   /** App 层本地斜杠命令（如 `/side`），由 SessionPane 按门禁组装后透传。 */
   appSlashCommands?: readonly AppSlashCommand[];
   /** 把 composer 的 drop 路由暴露给整个对话 pane / 桌面草稿标题栏。 */
@@ -548,6 +555,7 @@ function ConversationComposerImpl({
   composerRestoreRequest = null,
   onComposerRestoreApplied,
   suppressGoalCommands = false,
+  suppressModeSwitch = false,
   appSlashCommands,
   onDropTargetControllerChange,
 }: ConversationComposerProps) {
@@ -1111,6 +1119,10 @@ function ConversationComposerImpl({
   }, [workspacePath]);
 
   const mode = snapshot?.inputRouting.mode ?? "startNow";
+  // reject 路由下 composer 保持挂载、只禁用提交（隔离草稿与编辑器内部状态）；用户看得见输入框
+  // 就必须看得见「为什么不能输入」。reasonCode 认不出来时落通用文案，不显示成「暂无原因」。
+  const inputRejectionMessageId =
+    mode === "reject" ? resolveInputRejectionMessageId(snapshot?.inputRouting.reasonCode) : null;
   const modifiedEnterSubmits = shouldEnableModifiedEnterSubmit({
     inputRoutingMode: mode,
   });
@@ -2278,16 +2290,20 @@ function ConversationComposerImpl({
   const leadingActionsNode = useMemo(
     () => (
       <>
-        <V4ComposerModeSwitch
-          workspacePath={workspacePath}
-          workspaceIdentity={workspaceIdentity}
-          provider={provider}
-          draftConfig={draftConfig}
-          disabled={disabled}
-          activeConfigPicker={activeConfigPicker}
-          onConfigPickerOpenChange={handleConfigPickerOpenChange}
-          onSwitchMode={onSwitchMode}
-        />
+        {/* 三档权限单选、Plan 勾选项与 Ctrl+Shift+M 循环都在这个组件里，且都走
+            `switchCollaborationMode`；不支持的形态必须整块不挂载，只藏一半会留下必定失败的控件。 */}
+        {suppressModeSwitch ? null : (
+          <V4ComposerModeSwitch
+            workspacePath={workspacePath}
+            workspaceIdentity={workspaceIdentity}
+            provider={provider}
+            draftConfig={draftConfig}
+            disabled={disabled}
+            activeConfigPicker={activeConfigPicker}
+            onConfigPickerOpenChange={handleConfigPickerOpenChange}
+            onSwitchMode={onSwitchMode}
+          />
+        )}
         {/* 附件画廊重构曾整段覆盖 leadingActions，误删 CUA 常驻入口。
             入口自身继续负责平台、远程与设置可见性，不在 composer 重复判定。 */}
         <V4ComposerCuaEntry
@@ -2317,6 +2333,7 @@ function ConversationComposerImpl({
       remoteSessionId,
       runningSubagentCount,
       snapshot?.backgroundWorks,
+      suppressModeSwitch,
       workspaceIdentity,
       workspacePath,
     ],
@@ -2374,6 +2391,17 @@ function ConversationComposerImpl({
         {contextHeader ? (
           // 旧 ChatViewComposer contextHeaderContent 同款包装（workspace 菜单 + Git 分支）。
           <div className="p-1.5 flex min-w-0 flex-wrap items-center gap-0">{contextHeader}</div>
+        ) : null}
+        {/* 受限模式（reject）下输入框禁用了，就必须在原位说明原因——不是靠 placeholder 或
+            禁用的按钮让用户猜。中性一行，不借用 warning/danger 色族（那不是错误态）。 */}
+        {inputRejectionMessageId ? (
+          <div
+            role="status"
+            data-testid="v4-composer-input-rejected-notice"
+            className="mb-2 w-full px-1 text-ui-sm text-foreground-subtle"
+          >
+            {intl.formatMessage({ id: inputRejectionMessageId })}
+          </div>
         ) : null}
         {conversationSelectionLimitReason ? (
           <div

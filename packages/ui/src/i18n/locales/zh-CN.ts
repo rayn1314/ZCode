@@ -907,6 +907,14 @@ const zhCN: Record<string, string> = {
   "subagentDirectory.status.failed": "失败",
   "subagentDirectory.status.cancelled": "已取消",
   "subagentDirectory.status.lost": "已丢失",
+  "subagents.pane.identityBadge": "子代理 · {agentType}",
+  "subagents.pane.pendingInParent": "有 {count} 个请求等待在父会话处理",
+  "subagents.pane.limitedMode": "此子代理的身份未能还原，暂不可输入",
+  "subagents.pane.inputRejected": "此会话当前不接受输入",
+  "subagents.pane.status.running": "运行中",
+  "subagents.pane.status.waiting": "等待确认",
+  "subagents.pane.status.blocked": "受阻",
+  "subagents.pane.status.ended": "已结束",
   "chat.statusPanel.endedAgents": "已结束",
   // workflow run 目录（任务页脚行 → 这一页 → 详情页）。状态词复用
   // chat.toolCall.workflow.run.status.*，这里只有页面自己的结构文案。

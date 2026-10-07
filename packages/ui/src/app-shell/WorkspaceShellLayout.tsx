@@ -924,6 +924,24 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
     },
     [handleSelectTask, intl, shellWorkbenchBinding, showChatMainView, tabStoreApi, workspaceTabs],
   );
+  // 副屏面板（子会话面板顶部提示）切到父会话：坐标已由面板按 tab 构造好，壳层只做导航翻译。
+  // `handleSelectTaskInChat` 对 identity / remoteSessionId 缺省是条件展开，传 undefined 安全。
+  const handleOpenSessionFromSidePane = useCallback(
+    (target: {
+      sessionId: string;
+      workspacePath: string;
+      workspaceIdentity?: string;
+      remoteSessionId?: string;
+    }) => {
+      handleSelectTaskInChat(
+        target.workspacePath,
+        target.sessionId,
+        target.workspaceIdentity,
+        target.remoteSessionId,
+      );
+    },
+    [handleSelectTaskInChat],
+  );
   // 中枢直接启动 accepted 后切到新会话（run 卡已在顶部）：复用运行历史那条导航，
   // target 恒带工作流所属项目坐标（不变式 7），remoteSessionId 决定连接 endpoint。
   const handleNavigateToLaunchedRun = useCallback(
@@ -1471,6 +1489,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       onOpenFileLink={handleOpenMarkdownFileLink}
       onOpenBackgroundBash={handleOpenBackgroundBash}
       onOpenSubagentSession={handleOpenSubagentSession}
+      onOpenParentSession={handleOpenSessionFromSidePane}
       onOpenWorkflowActorSession={handleOpenWorkflowActorSession}
       onOpenWorkflowWorkspace={handleOpenWorkflowWorkspace}
       onOpenWorkflowArtifact={handleOpenWorkflowArtifact}

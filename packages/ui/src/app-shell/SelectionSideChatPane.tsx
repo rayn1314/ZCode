@@ -38,7 +38,7 @@ export const SelectionSideChatPane = memo(function SelectionSideChatPane({
         paneId={tab.id}
         sessionId={tab.childSessionId}
         openTrigger="selection"
-        selectionSideChat
+        shape="selectionSideChat"
         focused={focused}
         telemetryVisible={focused}
         workspacePath={tab.workspacePath}

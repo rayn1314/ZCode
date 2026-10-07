@@ -40,7 +40,10 @@ import {
 import { ResizableHandle, ResizablePanel } from "@/components/ui/resizable.js";
 import { Tabs, TabsContent, TabsList } from "@/components/ui/tabs.js";
 import { SidePaneTabOverview } from "@/app-shell/SidePaneTabOverview.js";
-import { SubagentSessionSidePane } from "@/app-shell/SubagentSessionSidePane.js";
+import {
+  SubagentSessionSidePane,
+  type OpenParentSessionTarget,
+} from "@/app-shell/SubagentSessionSidePane.js";
 import { SubagentDirectorySidePane } from "@/app-shell/SubagentDirectorySidePane.js";
 import { SelectionSideChatPane } from "@/app-shell/SelectionSideChatPane.js";
 import { BackgroundBashOutputSidePane } from "@/app-shell/BackgroundBashOutputSidePane.js";
@@ -321,6 +324,7 @@ export function AnimatedSidePanePanel({
   onOpenCodeViewer,
   onOpenFileLink,
   onOpenSubagentSession,
+  onOpenParentSession,
   onOpenWorkflowActorSession,
   onOpenWorkflowWorkspace,
   onOpenWorkflowArtifact,
@@ -387,6 +391,8 @@ export function AnimatedSidePanePanel({
   onOpenFileLink?: (target: MessageFileLinkTarget) => void;
   onOpenBackgroundBash?: (request: OpenBackgroundBashSideTabRequest) => void;
   onOpenSubagentSession: (request: OpenScopedSubagentSideTabRequest) => void;
+  /** 子会话面板顶部提示 → 切到该子代理的**父会话**标签页。 */
+  onOpenParentSession?: (target: OpenParentSessionTarget) => void;
   /** run 详情页里点 ask 节点 → 打开那个 actor 实例的 transcript tab。 */
   onOpenWorkflowActorSession?: (request: OpenScopedWorkflowActorSessionSideTabRequest) => void;
   /** run 详情页里点脚本行 → 打开该 run 的脚本 transcript tab，落到那一站。 */
@@ -1108,6 +1114,7 @@ export function AnimatedSidePanePanel({
                           <SubagentSessionSidePane
                             tab={tab}
                             focused={isVisible && tab.id === visibleActiveTabId}
+                            onOpenParentSession={onOpenParentSession}
                             onOpenBrowserUrl={onOpenBrowserUrl}
                             onOpenCodeViewer={onOpenCodeViewer}
                             onOpenFileLink={onOpenFileLink}
