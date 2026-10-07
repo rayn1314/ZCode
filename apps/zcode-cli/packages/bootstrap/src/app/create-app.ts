@@ -4,7 +4,6 @@ import {
   createNodeToolArtifactStore,
 } from "@zcode/adapters/storage";
 import { createNodeLoggerFactory } from "@zcode/adapters/logging";
-import { createConfig, resolvePath } from "@zcode/adapters/config";
 import {
   createNodeExecutionAdapter,
   resolveEffectiveBashShellSelection,
@@ -33,7 +32,7 @@ import {
   type ExecutionShellSelection,
   type MessageId,
 } from "@zcode/contracts";
-import { isRemoteWorkspaceIdentity, resolveZCodeRuntimeEnv } from "@zcode/shared";
+import { isRemoteWorkspaceIdentity } from "@zcode/shared";
 import {
   ZCODE_ATTACHMENT_FAULT_CODES,
   ZCodeAttachmentFaultError,
@@ -49,12 +48,10 @@ import type {
   ZCodeAppOptions,
 } from "./types.js";
 import {
-  createConfigCliOverrides,
   createSessionMailboxPortFromEnv,
   resolveEffectiveLocale,
-  resolveEffectiveConfigResult,
 } from "./app-config-options.js";
-import { getCliStorageRoot, getModelIoDir, projectIdFromDirectory } from "./paths.js";
+import { projectIdFromDirectory } from "./paths.js";
 import {
   asInputHistoryStore,
   asLocalSettingStore,
@@ -65,10 +62,9 @@ import {
 import { createWorkflowFacade } from "./workflow-facade.js";
 import { createInputFacade } from "./input-facade.js";
 import { createPluginFacadeForApp } from "./plugin-facade.js";
-import { resolvePluginRuntimeFeatures } from "./plugin-runtime-features.js";
 import { createSessionFacade } from "./session-facade.js";
+import { resolveStartupInputs } from "./startup-inputs.js";
 import { resolveAppRuntimeConfig, runtimeConfigLogContext } from "./runtime-config.js";
-import { resolveBundledSkillRoots } from "./bundled-skills.js";
 import { collectDynamicWorkflowDisabledSkillPaths } from "./dynamic-workflow-gate.js";
 import { createWorkspaceHookRuntimeSecurity } from "./workspace-hook-trust.js";
 import { createScriptWorkflowBridge } from "./script-workflow-methods.js";
@@ -90,11 +86,9 @@ import {
   injectNodeReplBrowserBroker,
   type NodeReplBrowserBroker,
 } from "./node-repl-browser-broker.js";
-import { resolveBuiltInNodeReplMcpServers } from "./built-in-node-repl.js";
 import { resolveZCodeCustomCommandPrompt } from "../custom-command-prompt.js";
 import { resolveZCodeBuiltinPromptCommand } from "../builtin-prompt-command.js";
 import { collectDisabledPaths } from "../skill-command-overrides.js";
-import { loadPluginAgentProfiles, loadZCodeAgentProfiles } from "../subagents.js";
 import { createRuntimeAiSdkModelExecutionConfig } from "../model-config.js";
 import { ApiProviderModelRuntime } from "./provider-registry-model-runtime.js";
 import {
@@ -104,7 +98,6 @@ import {
   markMcpAdapterInitialized,
   markRuntimeConstructed,
   markStorageAdaptersInitialized,
-  resolveStartupPlugins,
   startAppStartup,
 } from "./startup-marks.js";
 
@@ -150,18 +143,6 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
   const sessionId = options.sessionId ?? createSessionId();
   const traceContext = options.traceContext ?? createRootTraceContext({ sessionId });
   const workingDirectory = resolve(options.runtimeConfig?.workingDirectory ?? process.cwd());
-  const configResult = resolveEffectiveConfigResult(
-    createConfig({
-      env: options.env,
-      projectConfigPath: options.projectConfigPath,
-      workingDirectory,
-      workspaceIdentity: options.runtimeConfig?.memory?.workspaceIdentity,
-      skipUserConfig: options.skipUserConfig,
-      userConfigPath: options.userConfigPath,
-      cliOverrides: createConfigCliOverrides(options),
-    }),
-    options,
-  );
   const loggerFactory = options.loggerFactory ?? createNodeLoggerFactory({ env: options.env });
   const logger = loggerFactory.createLogger("zcode").child({
     ...traceContextToLogContext(traceContext),
@@ -181,6 +162,24 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     resume: options.resume === true,
     startupTimer,
   });
+  // 启动输入（配置 / 插件 / agent profile / 内置技能包）默认按当前磁盘现状解析一次；
+  // 子代理子会话由构造入口传入父已解析的这一份，不重复做四项磁盘解析。
+  // 见 `startup-inputs.ts` 文件头与 spec `subagent-session-as-first-class.md` 的 S1b「约束二」。
+  const startupInputs =
+    options.startupInputs ??
+    (await resolveStartupInputs({ logger, options, startupTimer, workingDirectory }));
+  const {
+    bundledSkillRoots,
+    builtInMcpServers,
+    cliStorageRoot,
+    configResult,
+    modelIoDir,
+    pluginOutcome,
+    pluginRuntimeFeatures,
+    storageRoot,
+    subagentProfiles,
+    zcodeSubagentProfileOutcome,
+  } = startupInputs;
   markConfigurationLoaded({
     configResult,
     startupTimer,
@@ -197,42 +196,6 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
   let ownedNodeReplBrowserBroker: NodeReplBrowserBroker | undefined;
   let providerModelRuntime: ApiProviderModelRuntime | undefined;
   try {
-    const storageRoot = resolvePath(configResult.config.storage.dir);
-    const cliStorageRoot = getCliStorageRoot(storageRoot);
-    const modelIoDir = getModelIoDir(
-      cliStorageRoot,
-      resolveZCodeRuntimeEnv(options.env ?? process.env) === "development",
-    );
-    const zcodeSubagentProfileOutcome = await loadZCodeAgentProfiles({
-      logger,
-      storageRoot,
-      workingDirectory,
-    });
-    const zcodeSubagentProfiles = zcodeSubagentProfileOutcome.profiles;
-    const pluginOutcome = resolveStartupPlugins({
-      cliStorageRoot,
-      configResult,
-      env: options.env,
-      logger,
-      options,
-      startupTimer,
-      workingDirectory,
-    });
-    // 随 CLI 内置的技能包（dynamic-workflows 等）：不属于任何插件，用户无法停用或卸载。
-    const bundledSkillRoots = await resolveBundledSkillRoots({ cliStorageRoot, logger });
-    const pluginSubagentProfiles = loadPluginAgentProfiles({
-      logger,
-      plugins: pluginOutcome.plugins,
-      reservedProfileNames: zcodeSubagentProfiles.map((profile) => profile.name),
-      modelSelectionOverrides: zcodeSubagentProfileOutcome.pluginAgentModelSelectionOverrides,
-    }).profiles;
-    const pluginRuntimeFeatures = resolvePluginRuntimeFeatures(pluginOutcome);
-    const builtInMcpServers = resolveBuiltInNodeReplMcpServers({
-      pluginOutcome,
-      workingDirectory,
-    });
-    // 用户目录已在 loader 前完成原地迁移；不能给项目/插件旧身份加内存兼容旁路。
-    const subagentProfiles = [...zcodeSubagentProfiles, ...pluginSubagentProfiles];
     const ownsSessionStore = options.sessionStore === undefined;
     const sessionStore =
       options.sessionStore ?? (await openStartupSessionStore(configResult, startupTimer));

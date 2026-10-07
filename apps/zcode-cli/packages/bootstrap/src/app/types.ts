@@ -31,6 +31,7 @@ import type { ZCodeModelOption } from "@zcode/shared";
 import type { EffectiveModelSelectionResult } from "@zcode/shared/model-selection";
 export type { ZCodeModelOption } from "@zcode/shared";
 import type { ModelProviderSourceTitle } from "../model-config.js";
+import type { ZCodeAppStartupInputs } from "./startup-inputs.js";
 import type { ZCodeInstalledPluginData } from "../plugins.js";
 import type {
   AutomationPort,
@@ -130,6 +131,14 @@ export interface ZCodeAppOptions {
   version?: string;
   traceContext?: TraceContext;
   runtimeConfig?: ZCodeAppRuntimeConfigInput;
+  /**
+   * 父已解析的启动输入（配置 / 插件 / agent profile / 内置技能包）。
+   *
+   * 只有**子代理子会话**会传它：那次 App 创建复用父会话同一份磁盘解析结果，不重复做四项
+   * 解析（含同步插件发现）。正常会话不传，`createZCodeApp` 自己按当前磁盘现状解析一次。
+   * 语义与边界见 `startup-inputs.ts` 文件头。
+   */
+  startupInputs?: ZCodeAppStartupInputs;
   /**
    * stdio 协议模式的 agent 进程由 Electron host 拉起，模型服务需要看到 electron 来源。
    * 普通 CLI 不传，继续使用 cli 默认值。
