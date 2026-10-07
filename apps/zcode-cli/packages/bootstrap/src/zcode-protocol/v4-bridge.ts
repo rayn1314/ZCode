@@ -19,6 +19,8 @@ import { createExternalTurnFaultError } from "@zcode/core";
 import {
   V4_NOTIFICATIONS,
   conversationInputIntentSchema,
+  isConversationInputCommand,
+  resolveInputCommandAdmission,
   type AttachmentRef,
   type CommandEnvelope,
   type ConversationInputIntent,
@@ -397,14 +399,21 @@ function resolveInputCommandForAdmission(
   };
 }
 
-function isConversationInputAdmissionCommand(type: CommandEnvelope["type"]): boolean {
-  return (
-    type === "sendText" ||
-    type === "sendGoalCommand" ||
-    type === "compact" ||
-    type === "editUserQuery" ||
-    type === "retryTurn"
-  );
+/**
+ * 会话角色 × 命令的准入裁决缝（spec S2）：对**每个**命令被调用，判定统一交给
+ * `@zcode/shared` 的 `resolveInputCommandAdmission`。单独导出以便单测用桩 context 驱动。
+ */
+export async function resolveRoleCommandAdmission(
+  context: ZCodeProtocolAgentServerContext,
+  envelope: CommandEnvelope,
+): Promise<{ admitted: true } | { admitted: false; reasonCode: string }> {
+  if (!envelope.sessionId) return { admitted: true };
+  // 仅隐藏 composer 不能阻止旧 child 标签页续聊。类型准入必须早于 ledger/输入历史写入；
+  // detached child 没有 record 时只查元数据（store 回落），不激活第二个 runtime。
+  const taskType =
+    context.sessions.get(envelope.sessionId)?.taskType ??
+    (await context.deps.sessionStore?.getSession(envelope.sessionId as SessionId))?.taskType;
+  return resolveInputCommandAdmission({ sessionRole: taskType, command: envelope.type });
 }
 
 function buildForkInitialInput(
@@ -1577,26 +1586,16 @@ export function createConversationV4Gateway(
         ? nativeExecutor.execute(envelope, admission)
         : Promise.reject(new V4CommandNotImplementedError(envelope.type)),
     admitCommandInput: async (envelope, admission) => {
-      // 仅隐藏 composer 不能阻止旧 child 标签页续聊。类型准入必须早于
-      // ledger/输入历史写入；detached child 没有 record 时只查元数据，不激活第二个 runtime。
-      if (
-        envelope.sessionId &&
-        (isConversationInputAdmissionCommand(envelope.type) ||
-          envelope.type === "resumeGoal" ||
-          envelope.type === "sendQueuedNow" ||
-          envelope.type === "forkAssistant" ||
-          envelope.type === "createSelectionSideSession")
-      ) {
-        const taskType =
-          context.sessions.get(envelope.sessionId)?.taskType ??
-          (await context.deps.sessionStore?.getSession(envelope.sessionId as SessionId))?.taskType;
-        if (taskType === "subagent_child") {
-          throw Object.assign(new Error("Subagent sessions are read-only"), {
-            reasonCode: "guard.subagentReadOnly",
-          });
-        }
+      // 角色策略对**每个**命令先裁决（覆盖准入期全部命令，不止对话输入类）；
+      // 拒绝以细分 reasonCode 上行，由 gateway 提取。
+      const verdict = await resolveRoleCommandAdmission(context, envelope);
+      if (!verdict.admitted) {
+        throw Object.assign(
+          new Error(`Command ${envelope.type} rejected by session role (${verdict.reasonCode})`),
+          { reasonCode: verdict.reasonCode },
+        );
       }
-      if (!isConversationInputAdmissionCommand(envelope.type)) return null;
+      if (!isConversationInputCommand(envelope.type)) return null;
       if (!envelope.sessionId) return null;
       return (await coreHost.admitInputCommand?.(envelope, envelope.sessionId, admission)) ?? null;
     },

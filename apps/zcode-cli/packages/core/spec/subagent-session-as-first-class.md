@@ -91,7 +91,7 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 ### D3 · 输入面：子会话就是一条普通会话的输入
 
-- 删除 `guard.subagentReadOnly`，改为**会话角色策略**裁决命令集，拒绝时返回细分 reasonCode（例如"子代理会话不支持分叉"），不再用笼统的只读错误。
+- 删除 `guard.subagentReadOnly`，改为**会话角色策略**裁决命令集，拒绝时返回细分 reasonCode（`guard.subagentCannotDeriveSession` / `guard.subagentCannotEscalatePermission` / `guard.subagentCannotRunGoalLoop`，即"子代理会话不支持分叉 / 不支持改权限模式 / 不支持目标循环"），不再用笼统的只读错误。单源表与三个强制点见 S2。
 - **默认放行**——一切"在本会话内产生或管理输入"的命令：`sendText`（含三档投递）、`compact`、`editUserQuery`、`retryTurn`、`stop`、`switchModelConfig`、`setFollowupMode`、队列操作（`sendQueuedNow` / `guideQueueItem` / `editQueueItem` / `reorderQueueItem` / `deleteQueueItem` / `setAutoDrain`）、`renameSession`、`deleteSession`、`cancelBackgroundWork`。
   - **对原稿的两处修订**：原稿把 `sendQueuedNow` 归入"队列接管语义"并拒绝，是错的——它只是"把已排队的那条立即发出"，与普通会话无异；落在子会话**自己**队列上的操作应当放行。2026-10-05 新增的 `guideQueueItem`（队列项提升为引导）同理。
   - **`sendText` 的 `requestedDelivery: startNow | queue | guide` 三档与主会话一致**：对正在跑的子会话，"引导"就是在 tool batch 边界注入——正是 `subagentPort.sendMessage` 原本要做的同一件事。统一之后不再需要单独的子代理转向通道。
@@ -102,7 +102,7 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 - **不由本策略管**：工作区 hook 信任类命令（`respondWorkspaceHookReview` / `toggleWorkspaceHookReviewItem` / `revokeWorkspaceHookTrust` / `requestWorkspaceHookReview`）是**用户级信任决策**，不是会话能力面；保持现状准入，不塞进角色策略表——否则等于把用户级权限伪装成会话属性。
 - **强制点统一在 `admitCommandInput`**：该函数本就对每个命令被调用，但目前只裁决 6 类、对 5 类返回 intent，`switchCollaborationMode` / `switchModelConfig` / queue 系列 / `stop` / `renameSession` 目前**完全没有**子会话判据——策略必须覆盖**全部**命令类型，不能只覆盖对话输入类。
 - legacy `session/send` 与 V4 准入同时生效，不出现第二条绕过路径。
-- **闲时轮**：闲时轮内子会话输入与 `SendMessage` 同规则禁用并给出可执行提示（闲时轮借用前台模型，子会话输入会绕过预算语义）。
+- **闲时轮**：**复查后删除该实施项**——"闲时轮内子会话输入"是不可达状态（子会话的轮从不带 `offPeakTaskId`，也不注册闲时工具面），真正存在的同规则在工具层：闲时轮内 `SendMessage` 被 `assertNotOffPeakTurn` 拒绝并给出可执行提示。证据与验收见 S2 的「订正一」。
 
 ### D4 · 收件箱
 
@@ -370,15 +370,90 @@ record 物化与登记：
 
 ### S2 · 输入面（角色策略 + 命令集）
 
-改动面：`contracts`（角色策略与细分 reasonCode）、`bootstrap`（`admitCommandInput`、legacy `session/send`、`switchCollaborationMode` 拒绝 / `switchModelConfig` 放行）、`core`（闲时轮拒绝路径）。
+改动面（2026-10-07 对着源码订正）：**`@zcode/shared`（角色策略单源表 + 细分 reasonCode，新增模块）**、`bootstrap`（三处强制点改为消费该表）、**`core` 无需改动**（闲时轮一条见下"订正一"）。
 
-验收：
+#### 策略表：单源、总覆盖、类型级穷尽
+
+新增 `packages/shared/src/zcode-protocol-v4/input-role-policy.ts`，并从同目录 `index.ts` 导出。选这个位置而不是 CLI 的 `contracts`，理由是三条硬约束同时成立才叫"单源"：
+
+1. 表的键之一是 `CommandType`，它就声明在 `packages/shared/src/zcode-protocol-v4/command.ts:268`。表离开 `CommandType` 的定义处，"新增命令必须显式裁决"就只能靠跨包再派生一次。
+2. 另一个键是会话角色，根 `shared` 已有 `zcodeSessionKindSchema`（`zcode-protocol-legacy-types.ts:83`，7 类，与 CLI `contracts` 的 `SESSION_TASK_TYPES` 同集合）。
+3. **UI 也要读它**（S4 的子会话 composer 要据此禁用/隐藏动作），而根 `packages/ui` 不可能反向依赖 `apps/zcode-cli/packages/contracts`。
+
+形状——**以命令为主键的总表**，每键必须显式裁决（`satisfies` 保证漏键即编译失败，这就是"类型级穷尽守卫"）：
+
+```ts
+export type InputCommandDenialReason =
+  | "guard.subagentCannotDeriveSession"      // 从子会话派生新会话
+  | "guard.subagentCannotEscalatePermission" // 子会话内权限模式不可改
+  | "guard.subagentCannotRunGoalLoop"        // 子会话不承载会话级自主目标循环
+  | "guard.selectionSideChatRestrictedCommand"; // 既有码，原样保留
+
+export interface InputCommandRoleRule {
+  /** 本命令在这些角色下被拒（缺席 = 放行）。 */
+  deniedFor?: Partial<Record<SessionRole, InputCommandDenialReason>>;
+  /** 该命令是否属于"输入类"（进 ledger / 三档投递）；与准入判定是两件正交的事。 */
+  conversationInput?: true;
+}
+
+export const INPUT_COMMAND_ROLE_POLICY = { /* 35 键，逐条写 */ } satisfies Record<CommandType, InputCommandRoleRule>;
+
+export function resolveInputCommandAdmission(input: {
+  sessionRole: SessionRole;
+  command: CommandType;
+}): { admitted: true } | { admitted: false; reasonCode: InputCommandDenialReason };
+```
+
+- **默认放行**：除 `deniedFor` 列出的组合外一律准入。`deniedFor` 只有两列有值——`subagent_child` 与 `selection_side_chat`；其余 5 类角色无任何拒绝项（与改造前逐项一致）。
+- `SessionRole` 直接复用 `zcodeSessionKindSchema` 的 7 类；**不做**"运行中/不运行"两套（用户已定的方向：父子共用一套机制）。
+- `conversationInput` 标记取代今天的 `isConversationInputAdmissionCommand` 集合（`v4-bridge.ts:398`）——那个集合是硬编码的 5 条，与准入判定混在一起；拆开后，"哪些命令进 ledger"仍只此一处声明。
+
+`subagent_child` 的完整裁决（35 条逐条定案，其余放行）：
+
+| 命令 | 裁决 | 理由码 |
+| --- | --- | --- |
+| `createSession` / `createSelectionSideSession` / `forkAssistant` / `startSavedWorkflow` / `resumeWorkflowRun` / `amendWorkflowRunSettings` | 拒 | `guard.subagentCannotDeriveSession` |
+| `switchCollaborationMode` | 拒 | `guard.subagentCannotEscalatePermission` |
+| `sendGoalCommand` / `resumeGoal` / `pauseGoal` | 拒 | `guard.subagentCannotRunGoalLoop` |
+| 其余 25 条（含 `sendText` / `compact` / `stop` / `switchModelConfig` / `renameSession` / `deleteSession` / 全部队列操作 / `sendQueuedNow` / `guideQueueItem` / `applyFileRewind` / `editUserQuery` / `retryTurn` / `setAssistantFeedback` / `discardSharedContext` / `resolveInteraction` / `snoozeInteractionAutoResolution` / `setAutoDrain` / `cancelBackgroundWork` / 4 条 workspace hook 信任类） | 放行 | — |
+
+对原稿的两处修订照旧成立：`sendQueuedNow` 与 `guideQueueItem` **放行**（它们只是操作子会话**自己**的队列）。workspace hook 信任类命令**不进策略表**为"拒绝项"、保持放行——那是用户级信任决策，不是会话能力面。
+
+#### 三处强制点统一消费同一函数
+
+| 位置 | 现状 | 改法 |
+| --- | --- | --- |
+| `v4-bridge.ts` 的 `admitCommandInput` | 自建 9 条名单 + 抛 `guard.subagentReadOnly` | 改为对**全部** 35 条命令先查策略表（在 `isConversationInputAdmissionCommand` 提前返回**之前**），拒绝则抛带 `reasonCode` 的错误 |
+| `server-operations.ts` 的 `sendPrompt`（legacy `session/send`） | 抛 `guard.subagentReadOnly` | 改为查策略表，命令固定为 `sendText` |
+| `commands/executor.ts` 的 `selection_side_chat` 门 | 自建 7 条名单 + `V4SelectionSideChatRestrictedCommandError` | 改为查策略表；**保留**这一处作为纵深（它覆盖原生 handler 的执行期，而 `admitCommandInput` 覆盖准入期），但判定只剩一个来源 |
+
+删掉的：`guard.subagentReadOnly` 两个字符串站点（`v4-bridge.ts:1595`、`server-operations.ts:1946`）与 `SELECTION_SIDE_CHAT_RESTRICTED_COMMANDS` 自建集合（`executor.ts:10`）。
+
+#### 订正一 · "闲时轮拒绝子会话输入"不成立（复查后删除该实施项）
+
+原稿写"闲时轮借用前台模型，子会话输入会绕过预算语义"。对着源码复查后**该状态不可达**，因此不写实现代码（写了就是死代码）：
+
+- `offPeakTurn` 只从 host turn options 注入（`prompt-turn.ts:93,100-103`），而闲时派发恒是**主会话**的 turn 且带显式 `offPeakTaskId`；子会话的轮从不带它（`send-message.ts:216` 的 `runtimeScope === "subagent"` 投影可证）。
+- 子会话**不注册**闲时工具面：`runtime-tools.ts:74` `includeOffPeak: Boolean(deps.offPeakPort) && runtime.config.taskType !== "subagent_child"`，所以 `assertNotOffPeakTurn`（`core/src/tool/handlers/off-peak.ts:39`）在子会话里无可拦截的调用点。
+- 已有的"同规则"确实存在，但它在**工具层**：闲时轮内 `SendMessage` 被 `assertNotOffPeakTurn` 拒绝并给出可执行提示"`Spawn a new foreground Agent with the full context instead of resuming a completed one.`"（`core/src/tool/handlers/send-message.ts:39,75`）。这条**不需要新代码**，只列入验收（断言提示文本与拒绝语义仍在）。
+
+#### 订正二 · 打开输入面**同时**修掉一个静默降级
+
+`SendMessage` 发往 `sess_subagent_*` 时是构造 `sendText` 信封走 V4 面（`session-message-wiring.ts:51-76`）。今天那个信封必然撞上只读门，于是被捕获后**静默降级成投递信箱**并返回 `status: "stored"`（`session-message-port.ts:121-125` 的 `v4 delivery not accepted: …`）。S2 打开输入面后该信封被正常准入，三态语义（`steered` / `woken` / `stored`）因此真正生效——**这是 S2 的验收项，不是 S3 的**（S3 只是把收件箱与 roster 一起接上）。
+
+#### 前置与依赖（已由 S1b 满足）
+
+准入路径对 record 的要求——`context.sessions.get(sessionId)` 有活 record、`record.persistence === "immediate"`（跳过 deferred 分支）、子会话有持久 session 行（`session_input` 有外键）、`saveSessionInput` 存在——S1b 之后全部成立。`guide` 依赖 `activeTurn.steerable`，子会话轮走 `beginActiveTurn(..., "regular", true, …)`（`turn.ts:275`），天然可引导。
+
+验收（S2）：
 - 子会话可 `sendText` 开新轮并跑完；三档投递（`startNow` / `queue` / `guide`）对子会话都生效，`guide` 能注入正在跑的子会话轮。
 - `compact` / `editUserQuery` / `retryTurn` / `switchModelConfig` / `stop` / 队列操作可用。
-- `forkAssistant` / `createSelectionSideSession` / `createSession` / `startSavedWorkflow` / `resumeWorkflowRun` / `amendWorkflowRunSettings` / `sendGoalCommand` / `resumeGoal` / `pauseGoal` / `switchCollaborationMode` 返回细分 reasonCode。
-- `sendQueuedNow` / `guideQueueItem` **放行**（修订原稿的拒绝判断）。
-- 表驱动矩阵：遍历**全部**命令类型 × 子会话，断言 admitted 或具体 reasonCode（命令类型以 `packages/shared/src/zcode-protocol-v4/command.ts` 的 `commandPayloadSchemas` 为准，当前 35 条）。
-- 主会话全部输入命令行为不变（回归）。
+- 上表 10 条拒绝项各返回**对应**的细分 reasonCode（不是笼统只读错误）。
+- `sendQueuedNow` / `guideQueueItem` 放行。
+- **表驱动矩阵测试**：遍历 `commandPayloadSchemas` 的**全部** 35 键 × {`subagent_child`, `selection_side_chat`, `interactive`}，断言 `admitted === true` 或 `reasonCode` 等于表里的值；并断言表的键集合与 `Object.keys(commandPayloadSchemas)` **完全相等**（漏键即失败，这是穷尽守卫的运行时那一半）。
+- **回归**：7 类角色里除 `subagent_child` 外，全部命令的准入判定与改造前逐项一致（`selection_side_chat` 的既存 7 条拒绝项与 reasonCode 值不变）。
+- 闲时轮：断言 `SendMessage` 在闲时轮的拒绝语义与提示文本不变（订正一）。
+- `SendMessage` 到 `sess_subagent_*` 返回 `steered` / `woken`（而非 `stored` 降级），且不再出现 `v4 delivery not accepted` 日志（订正二）。
 
 ### S3 · 生命周期（递归删除 + 沿树中止）
 

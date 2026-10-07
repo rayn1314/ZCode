@@ -99,6 +99,8 @@ import {
   type ZCodeStateUpdatedNotification,
   type ZCodeWorkspaceRef,
 } from "@zcode/shared";
+// legacy session/send 与 V4 准入共用同一张角色策略表（S2），不出现第二条绕过路径。
+import { resolveInputCommandAdmission } from "@zcode/shared/zcode-protocol-v4";
 import {
   buildSessionSnapshot,
   buildWorkspaceRef,
@@ -1940,10 +1942,15 @@ export async function subscribeSession(
 export async function sendPrompt(context: ZCodeProtocolAgentServerContext, rawParams: unknown) {
   const params = parseParams(zcodeSessionSendParamsSchema, rawParams);
   const record = requireSession(context, params.sessionId);
-  // legacy 输入入口同样必须保持子代理只读，不能绕过 V4 用户输入准入。
-  if (record.taskType === "subagent_child") {
-    throw new ProtocolRequestError(-32010, "Subagent sessions are read-only", {
-      reasonCode: "guard.subagentReadOnly",
+  // legacy 输入入口与 V4 准入共用角色策略（命令固定 sendText），不出现第二条绕过路径；
+  // 拒绝以细分 reasonCode 上行，不再用笼统的只读错误。
+  const sendVerdict = resolveInputCommandAdmission({
+    sessionRole: record.taskType,
+    command: "sendText",
+  });
+  if (!sendVerdict.admitted) {
+    throw new ProtocolRequestError(-32010, "Session role rejects this command", {
+      reasonCode: sendVerdict.reasonCode,
     });
   }
   assertExpectedRevision(record, params.expectedRevision);

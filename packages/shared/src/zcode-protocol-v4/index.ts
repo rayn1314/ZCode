@@ -41,6 +41,8 @@ export * from "./sessions-index.js";
 export * from "./sessions-index-workflow-activity.js";
 export * from "./workspace-config.js";
 export * from "./command.js";
+// 会话角色 × 命令的输入准入单源表（S2）；三处强制点与 UI 共用。
+export * from "./input-role-policy.js";
 export * from "./workflow-run-settings-command.js";
 export * from "./shared-context-ref.js";
 export * from "./shared-context-import.js";
