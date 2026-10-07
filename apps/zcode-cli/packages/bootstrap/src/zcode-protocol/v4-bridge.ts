@@ -104,6 +104,7 @@ import type {
   ZCodeProtocolSessionRecord,
 } from "./server-types.js";
 import { createProtocolLogger } from "./server-types.js";
+import { closeSessionTree, stopSubagentDescendantTurns } from "./session-tree.js";
 
 function normalizeStoredTitleSource(
   source: string | undefined,
@@ -1090,24 +1091,18 @@ export function createConversationV4Gateway(
       await afterStateMutation(context, record as ZCodeProtocolSessionRecord, reason);
       await autoDrainV4QueueIfReady(record as ZCodeProtocolSessionRecord);
     },
-    // deleteSession 的执行面：内联旧 closeSession op 的 4 步（不 import 旧 op——
-    // 语义与 server-operations.ts closeSession 对齐，随会话注册表归 v4 后收编）。
+    // deleteSession 的执行面：整棵子树关停收敛到 session-tree.ts 的唯一实现。
+    // （改造前这里是内联 4 步、旧 closeSession op 是 5 步，两份走了不同的收尾语义——
+    // 内联版漏了内存 event store 释放。递归与「子先于父」的理由见该模块文件头。）
     closeSession: async (sessionId) => {
-      const record = context.sessions.get(sessionId);
-      if (!record) {
-        // handler 已校验存在性；此处只兜并发竞态（重复删除幂等成功）。
-        return;
-      }
-      record.unsubscribe?.();
-      await record.app.close?.();
-      // v4 通道：会话关闭同时清 publisher / 订阅调度；重开会话走 snapshot 冷启动。
-      // disposeSession 必须在注册表删除之前调用——
-      // gateway 靠 getSessionWorkspaceId（读 context.sessions）定位 workspace 才能把
-      // session.removed 推给 sessions-index 订阅者；先 delete 再 dispose 时 workspaceId
-      // 恒为 null，删除会话后侧栏列表项永不消失（e2e conversation-session-v4-sidebar 抓出）。
-      context.v4Gateway?.disposeSession(sessionId);
-      context.sessions.delete(sessionId);
+      // handler 已校验存在性；此处只兜并发竞态（重复删除幂等成功）。
+      if (!context.sessions.has(sessionId)) return;
+      await closeSessionTree(context, sessionId);
     },
+    // stop 的级联面：handler 只持有 host、没有 context，树遍历因此在 binder 内联接上。
+    // 只停后代——根的停止由 handler 自己走精确匹配与 goal-pause barrier（见 types.ts 注释）。
+    stopSubagentDescendantTurns: (sessionId, reason) =>
+      stopSubagentDescendantTurns(context, sessionId, reason),
     // createSession 的执行面：record 建立/事件接线/catalog 同步/失败自清理全在旧
     // createSession op 内（半初始化 record 的回收顺序修过 bug，不重复实现）。
     // 语义决策（draft persistence / firstInput 走原生 prompt turn）在原生 handler。

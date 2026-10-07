@@ -6,6 +6,7 @@ import type {
   SessionResidentPoolHost,
 } from "./session-resident-pool.js";
 import type { ZCodeProtocolAgentServerContext } from "./server-types.js";
+import { listSubagentChildSessionIds } from "./session-tree.js";
 
 interface SessionResidencyFinalizationOwner {
   residencyFinalizationCount?: number;
@@ -80,6 +81,12 @@ export function createSessionResidentPoolHost(
         hasPendingInteractions: context.v4Interactions.hasPendingForSession(sessionId),
         hasQueuedCommands: context.v4Gateway?.hasResidencyBlockingCommands(sessionId) ?? false,
         hasLegacySubscriber: record.legacyStreamSubscribed === true,
+        // 被驻留子会话 pin：子 runtime 借父 App 的进程内适配器（modelFactory / mcpPort /
+        // executionPort / fileSystemPort / httpClientPort / …），而父 App 的 close() 会
+        // dispose 它们（session-facade.ts 的 closeSessionResources）。因此父 App 必须比它的子
+        // record 活得久——有驻留子会话的会话不可被 idle 回收。只挡父；子会话自己的资格不变，
+        // 回收仍单会话、不级联，父由子逐个被回收后自然解锁。
+        hasResidentChildren: listSubagentChildSessionIds(context, sessionId).length > 0,
         // active/queue 与 registry background task 不能覆盖 title、MCP、memory
         // 等 detached work；统一查询由 runtime 维护，协议 finalization 只补协议所有权。
         hasResidencyBlockingWork:

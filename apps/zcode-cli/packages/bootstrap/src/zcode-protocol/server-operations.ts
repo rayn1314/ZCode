@@ -141,6 +141,7 @@ import {
 } from "./subagent-session-query.js";
 import { runSessionModelConfigMutation } from "../zcode-protocol-v4/model-config-mutation.js";
 import { runWithSessionResidencyFinalization } from "./session-residency.js";
+import { closeSessionTree } from "./session-tree.js";
 
 const PLAN_MODE_GOAL_CONTINUATION_SKIPPED_MESSAGE = "Plan mode 下已记录 goal，但不会自动继续。";
 const SLOW_SNAPSHOT_LOG_THRESHOLD_MS = 1000;
@@ -2750,15 +2751,9 @@ export async function closeSession(context: ZCodeProtocolAgentServerContext, raw
     // immediate；条件关闭必须在 Agent record 上原子判断，不能依赖 renderer 的旧快照。
     return { closed: false };
   }
-  record.unsubscribe?.();
-  await record.app.close?.();
-  // v4 通道：会话关闭同时清 publisher / 订阅调度；重开会话走 snapshot 冷启动。
-  // dispose 必须先于注册表删除——gateway 靠 getSessionWorkspaceId
-  // （读 context.sessions）定位 workspace 才能推 session.removed 给 sessions-index 订阅者。
-  context.v4Gateway?.disposeSession(params.sessionId);
-  context.sessions.delete(params.sessionId);
-  // 内存 event store 随 record 释放。
-  await record.eventStore.deleteSession(params.sessionId as SessionId);
+  // 整棵子树关停（子先于父，借用不变式见 session-tree.ts）：删除即级联，
+  // 子会话借的是父 App 的进程内适配器，父先关会把还在收尾的子会话资源撤走。
+  await closeSessionTree(context, params.sessionId);
   return { closed: true };
 }
 

@@ -262,9 +262,7 @@ async function sendText(
       attachmentRefs: payload.attachments,
       sharedContextRefs: payload.context_refs,
       // 防环链（spec D7）：live 通路把 payload 的链放进 intent，core admission 读取并记录。
-      ...(payload.sessionMessageChain
-        ? { sessionMessageChain: payload.sessionMessageChain }
-        : {}),
+      ...(payload.sessionMessageChain ? { sessionMessageChain: payload.sessionMessageChain } : {}),
     });
     started = await startPromptTurn(host, record, {
       content: payload.text,
@@ -357,6 +355,9 @@ async function stop(
     if (pausedGoal) {
       await host.afterLegacyStateMutation?.(record, "session_stop_goal_paused");
     }
+    // 停止父会话必须沿树级联：子会话的轮在**子 runtime** 自己的 foreground execution 里，
+    // 停父的 controller 覆盖不到它们。后代不做 goal-pause barrier（子会话结构上无 goal）。
+    host.stopSubagentDescendantTurns?.(record.app.sessionId, "parent session stopped");
     return undefined;
   }
 
@@ -371,6 +372,8 @@ async function stop(
   if (pausedGoal) {
     await host.afterLegacyStateMutation?.(record, "session_stop_goal_paused");
   }
+  // 同上：这条兜底出口也必须级联，否则「停父不停子」的行为会随客户端类型而变。
+  host.stopSubagentDescendantTurns?.(record.app.sessionId, "parent session stopped");
   return undefined;
 }
 

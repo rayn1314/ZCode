@@ -206,8 +206,11 @@ test("装配事实从父借：启动输入 / event store / 起始偏好，且子
   assert.equal(options.browserControlPort, undefined);
   // 结构性防套娃：子 App 的选项里永远没有派发端口。
   assert.equal(options.subagentChildHost, undefined);
-  // 子会话不注入进程级收件箱（S3 与角色策略一起开）。
+  // 子会话也拿进程级收件箱（S3 已开）；本夹具的 context 没有提供 mailbox 端口，
+  // 因此这里断言的是「缺端口时不注入」，不再断言「按角色关闭」。
   assert.equal(options.sessionMailboxPort, undefined);
+  // roster 仍按角色关闭：子会话 roster 恒空，注入等于假能力（见 workspace-model-runtime.ts）。
+  assert.equal(options.subagentRosterPort, undefined);
 
   const runtimeConfig = options.runtimeConfig as Record<string, unknown>;
   // 覆盖包的身份事实原样保留。

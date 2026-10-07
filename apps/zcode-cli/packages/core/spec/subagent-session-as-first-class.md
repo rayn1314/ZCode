@@ -116,9 +116,13 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 - **中止沿树级联**：中止（stop）父会话的运行轮时，中止其子/孙会话正在跑的轮。级联中止写终态，**不向父投通知**（父正在被中止）。
 - **不级联的三种情形**（触发源不同，不得互相套用）：
   - 关闭标签页：仅失去订阅者，不影响子会话。
-  - 常驻池空闲回收（`deactivateSession`，纯内存优化）：**不级联**。现有实现对"有 record 的 child"是跳过的，这个语义必须保持——级联若挂在两条路径共用的清理函数上，父会话被空闲回收就会杀掉正在跑的后台子代理。
+  - 常驻池空闲回收（`deactivateSession`，纯内存优化）：**不级联**——级联若挂在两条路径共用的清理函数上，父会话被空闲回收就会杀掉正在跑的后台子代理。
   - 父会话变 idle：不级联（它只是没有进行中的轮）。
-- **可单开**：子会话可被单独常驻、单独订阅、单独开轮，不要求父会话也在运行。
+- **借用不变式（S3 复核后的订正）**：子会话 runtime **借父 App 的进程内适配器实例**（`modelFactory` 来自父的 `ApiProviderModelRuntime`、`mcpPort` / `executionPort` / `fileSystemPort` / `httpClientPort` / `pdfDocumentPort` / `artifactStore` / `skillPort` / `permissionService` / `agentTelemetry` 同样借自父 App，见差异清单 1/3 与 S1b-2）。父 App 的 `close()` 会 `providerModelRuntime.dispose()` 且（父 `ownsMcpPort` / `ownsExecutionPort` 为真时）`mcpPort.close()` / `executionPort.close()`（`session-facade.ts:300-304`）。**因此父 App 必须比它的子 record 活得久**：
+  - **删除/关闭路径**：先关子（递归），再关父。反过来会把还在收尾的子会话的资源撤走。
+  - **常驻回收路径**：**有驻留子 record 的会话不可被 idle 回收**（新增 resident fact `hasResidentChildren`）。原稿写"现有实现对有 record 的 child 是跳过的"——S1b 之后该描述已不成立：子会话就是普通 record，常驻池对它一视同仁。缺口是真实可达的两条：(a) 用户直接给子会话发输入、子会话自己开轮时，父会话既无前台轮也无后台任务，原本可被回收；(b) 已结束但仍驻留的子会话被再次唤醒时，父早已被回收。两种情形下子会话都会用上已 `close()` 的 MCP / 执行端口与已 `dispose()` 的模型工厂。
+  - 回收**仍然只动一个会话**（不递归、不级联）；被 pin 的父会话由子会话逐个被回收后自然解锁。代价：极端情况下驻留数可能超过 `highWaterCount`（正确性优先于内存上限，记录在案）。
+- **可单开**：子会话可被单独常驻、单独订阅、单独开轮，不要求父会话也在运行（父通常仍在跑）——上一条的 pin 保证它借的资源还在。
 - 子会话**自身**的常驻回收仍受"有活动轮"保护（现有 resident facts 语义不变）。
 - **终态不新增枚举**：级联中止复用 `cancelled`（协议投影现有取值 `success | failed | cancelled | lost`），不为"父中止"与"用户中止"的细微差别扩 schema。
 - **与 hook 面的关系**（2026-10-05/06 落地的 hook 改造）：
@@ -455,14 +459,76 @@ export function resolveInputCommandAdmission(input: {
 - 闲时轮：断言 `SendMessage` 在闲时轮的拒绝语义与提示文本不变（订正一）。
 - `SendMessage` 到 `sess_subagent_*` 返回 `steered` / `woken`（而非 `stored` 降级），且不再出现 `v4 delivery not accepted` 日志（订正二）。
 
-### S3 · 生命周期（递归删除 + 沿树中止）
+### S3 · 生命周期（递归删除 + 沿树中止 + 借用不变式）
 
-改动面：`bootstrap`（删除递归、中止级联、resident/reclaim 路径区分；不得挂在 `disposeSession` 与 `deactivateSession` 共用的清理函数上）、`core`（中止时写终态）。
+改动面：`bootstrap`（新增会话树遍历/关停模块、删除递归、中止级联、resident fact 新增与回收门、为子会话开收件箱）。**无需改动 `core`**（订正：原稿写的"core 中止时写终态"不成立——中止走的是 Core 既有的取消收口，见下）。
 
-验收：
-- 删除父会话 → 子会话被递归删除；中止父会话的运行轮 → 子/孙进行中的轮中止。
-- 关闭父标签页、父会话空闲回收、父变 idle → 子会话均不受影响。
-- 子会话可被单独唤醒、单独常驻；自身空闲可被回收后再单独唤醒；有活动轮时不被 idle 回收。
+#### 树的边（唯一判据）
+
+`parentSessionId === X && taskType === "subagent_child"`。**只按 `parentSessionId` 会误伤 fork 与选段侧聊**——它们同样带 `parentID`（`core/src/runtime/methods/session-fork.ts` 多处写 `parentSessionId`），但不是子代理。深度被 D8 结构性限成 1 层（子会话没有 `Agent` 工具），遍历仍写成递归，不依赖该假设。
+
+遍历源 = `context.sessions`（**驻留记录**）。非驻留的子会话没有 runtime，无需也无可关停；持久化行按现有 delete 语义保留。
+
+#### 新增模块 `bootstrap/src/zcode-protocol/session-tree.ts`
+
+导出五个件，删除与中止共用同一份树遍历：
+
+```ts
+// 直接子会话（驻留记录中按 (parentSessionId, taskType) 命中）
+export function listSubagentChildSessionIds(context, parentSessionId: string): string[];
+// 全部后代，先子后孙（预序）
+export function listSubagentDescendantSessionIds(context, rootSessionId: string): string[];
+// 单会话关停（delete/close 语义）：unsubscribe → app.close → gateway.disposeSession
+//   → context.sessions.delete → eventStore.deleteSession。**顺序不可换**：
+//   disposeSession 必须早于注册表删除（gateway 靠 context.sessions 定位 workspace 才能推 session.removed）。
+export async function closeSessionRecord(context, sessionId: string): Promise<void>;
+// 整棵子树关停：先递归子/孙，再关自己（借用不变式要求父后于子）。
+export async function closeSessionTree(context, rootSessionId: string): Promise<void>;
+// 沿树中止后代会话进行中的轮（不投通知；**根由调用方自己停**，因为根要走
+// expectedForegroundExecutionId 精确匹配与 goal-pause barrier）：
+//   runtime.stopActiveForegroundExecution({ reason }) + record.activeAbortController?.abort(reason)
+export function stopSubagentDescendantTurns(context, rootSessionId: string, reason: string): void;
+```
+
+#### 三处接线
+
+| 位置 | 现状 | 改法 |
+| --- | --- | --- |
+| v4 `deleteSession` handler（`commands/handlers/session-mgmt.ts`）→ `host.closeSession`（`v4-bridge.ts` 内联**4 步**） | 只关自己；**不释放内存 event store** | 改为 `await closeSessionTree(context, sessionId)`——递归 + 补齐 `eventStore.deleteSession` |
+| legacy `session/close` op（`server-operations.ts:2752` 的 `closeSession`，**5 步**） | 只关自己 | 改为 `await closeSessionTree(context, params.sessionId)`（保留其 `shouldCloseSessionForExpectedPersistence` 前置判断） |
+| v4 `stop` handler（`commands/handlers/session-flow.ts` 的 `stop`） | 只停自己 | 停止根之后追加 `host.stopSubagentDescendantTurns(record.app.sessionId, "parent session stopped")`（新增 host 能力，binder 内联实现调 `stopSubagentDescendantTurns`；handler 只持有 host，没有 context） |
+
+**顺带修掉的既存不一致**：`closeSession` 存在两份实现且步骤数不同（v4 内联 4 步漏了 `eventStore.deleteSession`，legacy 5 步有）。上表把它收敛成 `closeSessionRecord` 一处，v4 与 legacy 只剩调用点。
+
+#### 中止级联为什么不需要新代码也不投通知
+
+- 子会话的派发轮经 `childRuntime.executeTurn(...)`（`core/src/runtime/methods/subagent.ts:441`），而 `executeTurn` 走 `enqueueCancellableRuntimeCommand` → `runRuntimeCommand` → `beginForegroundExecution`（`runtime-command-queue.ts:196,396-421`）：**子会话的轮就是子 runtime 的 `activeForegroundExecution`**。因此 `stopActiveForegroundExecution({ reason })` 能精确中止它（前台 `wait:true` 与后台派发都成立）。
+- 中止 → `foregroundExecution.controller.abort` → 该轮以 `CoreErrorType.TurnCancelled` 收口，`turn.ts:809` 映射成 `status: "cancelled"`。终态由 Core 既有路径写，bootstrap 不额外写。
+- **不投通知**：父正在被中止，不给它排 task-notification。
+- 子会话的 `activeAbortController` 是 bootstrap 层句柄（v4 `sendText` 开轮时置位）；派发轮由 Core 持有 controller，所以两件事都要做——`stopActiveForegroundExecution` 覆盖派发轮与 v4 输入轮，`activeAbortController?.abort` 覆盖 bootstrap 层取消窗口。**child 不跑 goal-pause barrier**：子会话结构上无法有 goal（S2 的 `guard.subagentCannotRunGoalLoop` 拒绝目标命令），调用它只是空转。
+
+#### 常驻回收：父被子 pin（借用不变式的另一半）
+
+- `session-resident-pool.ts` 的 `SessionResidencyFacts` 增加 `hasResidentChildren: boolean`；`isEligible` 增加 `!facts.hasResidentChildren`。
+- `session-residency.ts` 的 `readResidencyFacts` 供应它：扫 `context.sessions` 找 `(parentSessionId === sessionId && taskType === "subagent_child")` 的驻留记录（O(驻留数)，上界是 `highWaterCount`）。
+- 这一条**只挡父会话被回收**，不改子会话自己的资格；回收仍单会话、不递归。
+- 已被 `hasRunningBackgroundTasks()` / `hasActiveOrQueuedTurnWork()` 覆盖的两种情形不受影响（后台子代理运行中父本就被 pin）；补的是"子会话驻留但父无任何在前工作"的两条可达缺口（见 D5 借用不变式）。
+- 代价（记录在案）：极端情况下驻留数可超过 `highWaterCount`——正确性优先于内存上限。
+
+#### 为子会话开收件箱（保留 roster 关闭，订正 S1b 注释）
+
+- `workspace-model-runtime.ts` 去掉 `sessionMailboxPort` 上的 `!isSubagentChild` 门：子会话要有收件箱，`stored` 落库的消息才有人 drain（D4；S1b 时先不开是因为"未裁决的输入通路"，S2 已把角色策略接上）。
+- **`subagentRosterPort` 保持关闭**（订正 S1b 注释里"两项一起开"的说法）：`ListAgents` 的注册门就是 roster 是否存在（`list-agents.ts:61` 的注释"注册门已保证父会话才装上本工具"），而子会话结构上不能派生子代理，roster 对它是**恒空**——开了等于给一个假能力，并推翻该注册门的既有断言。因此只对齐 mailbox，不捎带 roster。
+- `sessionMessagePort` 已注入（S1b），不动。
+
+验收（S3）：
+- 删除父会话 → 驻留的子/孙 record 从 `context.sessions` 消失，且**子先于父**关停；每个节点的内存 event store 都被释放；重复删除幂等（不抛错）。
+- 删除只命中 `(parentSessionId, taskType="subagent_child")`：同 workspace 的 fork / 选段侧聊**不被删**（树遍历单测直接断言）。
+- 中止父会话的运行轮 → 子/孙进行中的轮以 `cancelled` 收口；子会话 record **仍在** `context.sessions`（中止不关会话）。
+- 父被 idle 回收：**有驻留子会话时不被回收**（pool 直接跳过，且不级联子会话）；子会话全部回收后父重新可回收。
+- 关闭父标签页、父变 idle → 子会话不受影响。
+- 子会话被单独唤醒（v4 `sendText`）后能跑完一整轮——它借的 `mcpPort` / `executionPort` / `modelFactory` 仍活着（借用不变式的回归面）。
+- 子会话自身空闲可被回收，回收后再被单独唤醒仍可跑完。
 
 ### S4 · UI（施工规格见下节）
 

@@ -26,6 +26,12 @@ export interface SessionResidencyFacts {
   hasQueuedCommands: boolean;
   hasSubscribers: boolean;
   hasLegacySubscriber: boolean;
+  /**
+   * 本会话是否有驻留的子代理 record（借用不变式的另一半）：子 runtime 借父 App 的进程内
+   * 适配器，父 App 被回收会 dispose 掉它们，所以有驻留子会话的父不可被 idle 回收。
+   * 只挡父被回收，不改子会话自己的资格；回收仍单会话、不级联。
+   */
+  hasResidentChildren: boolean;
   lastActivityAt: number;
 }
 
@@ -231,6 +237,7 @@ export class SessionResidentPool {
       !facts.hasQueuedCommands &&
       !facts.hasSubscribers &&
       !facts.hasLegacySubscriber &&
+      !facts.hasResidentChildren &&
       (this.operationLeaseCounts.get(sessionId) ?? 0) === 0 &&
       !this.inFlightDeactivations.has(sessionId)
     );

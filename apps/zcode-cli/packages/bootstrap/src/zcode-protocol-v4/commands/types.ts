@@ -218,11 +218,19 @@ export interface V4CommandCoreHost {
    */
   afterLegacyStateMutation?(record: V4SessionRecordView, reason: string): Promise<void>;
   /**
-   * 会话关闭（deleteSession 的执行面：退订事件 → app.close → 注册表摘除 → gateway 清通道）。
-   * 过渡形态：会话注册表现归旧协议宿主，binder 内联实现（顺序对齐旧 closeSession op，
-   * 见 zcode-protocol/server-operations.ts）；v4 自持会话注册表后收编为原生实现。
+   * 会话关闭（deleteSession 的执行面：整棵子代理子树关停 + 自身关闭，见
+   * zcode-protocol/session-tree.ts）。过渡形态：会话注册表仍归旧协议宿主，binder 实现调
+   * 该共享模块；v4 自持会话注册表后收编为原生实现。
    */
   closeSession?(sessionId: string): Promise<void>;
+  /**
+   * 沿树中止该会话**后代**（子/孙）正在跑的轮，不投通知。
+   *
+   * 根不在这里停：handler 自己停根，因为根要走 `expectedForegroundExecutionId` 精确匹配
+   * （execution id 不匹配只能 noop，否则会误杀用户没看到的新执行）与 goal-pause barrier。
+   * 后代结构上不能有 goal，因此不需要那道 barrier。
+   */
+  stopSubagentDescendantTurns?(sessionId: string, reason: string): void;
   /**
    * 会话记录创建（createSession 的执行面：record 建立/事件接线/模型 catalog 同步/
    * 失败清理，全部与旧协议宿主纠缠）。binder 实现调旧 createSession op；
