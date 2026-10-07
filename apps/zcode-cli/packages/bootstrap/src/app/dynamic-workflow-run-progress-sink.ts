@@ -29,7 +29,8 @@ interface DynamicWorkflowRunProgressSinkDeps {
  *   CreateWorkflow handler 提交时带 `parentSessionId = context.sessionId`
  *
  * 而**只有** app 顶层 runtime 能拿到 `dynamicWorkflowRunPort`：subagent 子 runtime 的依赖对象
- * （`core/src/runtime/methods/subagent.ts` 的 `new AgentRuntime(...)`）与 workflow actor runtime
+ * （由构造入口的受限模式创建，见 `create-app.ts` 与 core spec `subagent-session-as-first-class.md`
+ * S1b 差异清单 6）与 workflow actor runtime
  * （`script-workflow-child-runtime.ts`）都**不含**该端口（已逐字核对），所以子会话根本走不到
  * submit——它们的 CreateWorkflow 落回「端口缺席 → 占位诊断」那条路。
  *

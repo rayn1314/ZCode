@@ -1,6 +1,8 @@
 import type { RuntimeInputPresentation } from "@zcode/contracts";
 /* eslint-disable max-lines -- Runtime 类型集中承载 core/runtime 对外结构，拆分需要单独迁移。 */
 import { PermissionService, ToolScheduler } from "./deps.js";
+// 仅类型引用（`subagent/child-session-host.ts` 反向也只用 `import type`），不产生运行时依赖边。
+import type { SubagentChildSessionHost } from "../subagent/child-session-host.js";
 import type {
   JsonSchema,
   AgentExecutionTelemetryPort,
@@ -384,6 +386,14 @@ export interface AgentRuntimeDeps {
   skillPort?: SkillPort;
   mcpPort?: McpPort;
   subagentPort?: SubagentPort;
+  /**
+   * 子代理子会话的构造移交端口（spec `subagent-session-as-first-class.md` D1 / S1b）。
+   *
+   * 在场时，Agent 工具派发子会话改为经它创建（构造入口的受限模式，子会话因此成为一条正式
+   * record）；缺席时 `subagentPort` 也不存在（两者由同一个 `subagents.enabled` 门控），
+   * 因此不存在「有 Agent 工具但没有移交端口」的半开状态。
+   */
+  subagentChildHost?: SubagentChildSessionHost;
   /**
    * 历史子代理只读端口（spec D8）。由 bootstrap 按进程注入，`ListAgents` 用它补齐
    * 重启后为空的进程内注册表；缺席即老装配没有这项能力，只报注册表。

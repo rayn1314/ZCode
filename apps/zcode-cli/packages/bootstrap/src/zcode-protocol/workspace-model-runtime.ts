@@ -73,16 +73,25 @@ export async function createWorkspaceZCodeApp(
 ): Promise<ZCodeApp> {
   const providerRuntimeHeadersPort =
     options.providerRuntimeHeadersPort ?? createProviderRuntimeHeadersPort(context, workspace);
+  // 子会话今天没有收件箱，也没有 roster 面（差异清单 7 / 11）：`sessionMailboxPort` 缺席即
+  // drain 钩子不注册，`subagentRosterPort` 只服务父亲层级列表与 ListAgents 历史补齐。这两项
+  // 与角色策略一起开（S3）；先注入等于放出一条未经裁决的输入通路。
+  // `sessionMessagePort` 照常注入：子会话要能用 `sess_*` 给会话发信。
+  const isSubagentChild = options.subagentChildScope !== undefined;
   return context.deps.createZCodeApp({
     ...options,
     platform: context.deps.platform,
     providerRuntimeHeadersPort,
     // 跨会话消息能力：进程级 mailbox 收件箱与投递端口在此注入（与 sessionMailboxPort 同处）。
     // 这是所有 workspace app 的唯一装配入口，父/子 runtime 因此共享同一份端口实例。
-    ...(context.sessionMailboxPort ? { sessionMailboxPort: context.sessionMailboxPort } : {}),
+    ...(!isSubagentChild && context.sessionMailboxPort
+      ? { sessionMailboxPort: context.sessionMailboxPort }
+      : {}),
     ...(context.sessionMessagePort ? { sessionMessagePort: context.sessionMessagePort } : {}),
     // 历史子代理只读端口（spec D8）：同一装配入口注入，因此是进程级同一实例。
-    ...(context.subagentRosterPort ? { subagentRosterPort: context.subagentRosterPort } : {}),
+    ...(!isSubagentChild && context.subagentRosterPort
+      ? { subagentRosterPort: context.subagentRosterPort }
+      : {}),
     runtimeConfig: {
       ...options.runtimeConfig,
       // createZCodeApp 会把 workingDirectory 规范化为执行 cwd。把协议入口的

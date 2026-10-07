@@ -9,7 +9,17 @@ import { inputIntentMetadata } from "../zcode-protocol-v4/commands/input-intent.
 import { createModelExecutionContext } from "./model-execution.js";
 import { compactionPreferencesToPolicyOverride } from "../compaction-policy.js";
 import type { SendInputOptions } from "../app/types.js";
-import { repairPersistedRemoteSessionPaths, type TurnAttachment } from "@zcode/core";
+import type { ZCodeApp } from "../app/types.js";
+import type {
+  SubagentChildAppScope,
+  SubagentChildBorrowedPorts,
+} from "../app/subagent-child-scope.js";
+import {
+  repairPersistedRemoteSessionPaths,
+  type SubagentChildLaunchBundle,
+  type SubagentChildSessionHost,
+  type TurnAttachment,
+} from "@zcode/core";
 import {
   CoreErrorType,
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
@@ -30,11 +40,13 @@ import {
   type QueryId,
   type SessionEvent,
   SessionEventType,
+  type SessionEventStorePort,
   type SessionId,
   type SessionInfo,
   type SessionTaskType,
   type CollaborationMode,
   type TargetCompletionVerificationPayload,
+  type TraceContext,
   type TraceId,
   type TurnBackgroundAttribution,
   type TurnId,
@@ -85,6 +97,7 @@ import {
   type ZCodeSessionResumeParams,
   type ZCodeSessionPersistence,
   type ZCodeStateUpdatedNotification,
+  type ZCodeWorkspaceRef,
 } from "@zcode/shared";
 import {
   buildSessionSnapshot,
@@ -3443,34 +3456,183 @@ async function createRecord(
     traceContext,
     version: context.deps.version,
     modelIoFullRetentionEnabled: context.appRuntimePreferences.modelIoFullRetentionEnabled,
+    // 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走**同一条构造入口**创建子会话。
+    // 子会话自己**不**注入（D8 结构性防套娃）：它拿不到 host，套娃在结构上就不可能，
+    // 而不是靠某条路径记得写 `subagents.enabled: false`。惰性读 `ownSessionRecord`：
+    // record 要等 App 构造成功之后才存在。
+    ...(taskType === "subagent_child"
+      ? {}
+      : { subagentChildHost: createSubagentChildHost(context, () => ownSessionRecord) }),
   });
-  const now = Date.now();
-  const record: ZCodeProtocolSessionRecord = {
+  const record = createSessionRecordShell(context, {
     app,
-    createdAt: now,
     eventStore,
-    memoryEnabled: startupPreferences.memoryEnabled,
-    modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
-    nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
-    compaction: startupPreferences.compaction,
     ...(parentSessionId ? { parentSessionId } : {}),
     persistence: "persistence" in params ? (params.persistence ?? "immediate") : "immediate",
+    startupPreferences,
+    taskType,
+    traceContext,
+    workspace,
+  });
+  // 绑定归属会话，供 automation-port 读取本会话实时 model/mode/thought。
+  ownSessionRecord = record;
+  return record;
+}
+
+/**
+ * 会话 record 的装配尾段。
+ *
+ * 两条构造路径——正式会话 `createRecord` 与子代理子会话 `createSubagentChildRecord`——必须产出
+ * **同一形状**的 record（spec S1b：「两条路径产出的 record 形状一致，差异只在端口从哪来」），
+ * 所以这一段只写一份。`createdAt` / `updatedAt` 由这里写入，恢复路径随后按 store 的真实时间回填。
+ */
+function createSessionRecordShell(
+  context: ZCodeProtocolAgentServerContext,
+  input: {
+    app: ZCodeApp;
+    eventStore: SessionEventStorePort;
+    parentSessionId?: SessionId;
+    persistence: ZCodeSessionPersistence;
+    startupPreferences: SessionStartupPreferences;
+    taskType: SessionTaskType;
+    traceContext: TraceContext;
+    workspace: ZCodeWorkspaceRef;
+  },
+): ZCodeProtocolSessionRecord {
+  const now = Date.now();
+  const record: ZCodeProtocolSessionRecord = {
+    app: input.app,
+    createdAt: now,
+    eventStore: input.eventStore,
+    memoryEnabled: input.startupPreferences.memoryEnabled,
+    modelContextBudgetStrategy: input.startupPreferences.modelContextBudgetStrategy,
+    nativeSearchEnhancementsEnabled: input.startupPreferences.nativeSearchEnhancementsEnabled,
+    compaction: input.startupPreferences.compaction,
+    ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+    persistence: input.persistence,
     protocolEventSequences: new Map(),
     protocolToolInputTransmissions: new Map(),
     stateRevision: 0,
-    taskType,
-    traceContext,
+    taskType: input.taskType,
+    traceContext: input.traceContext,
     updatedAt: now,
-    workspace,
+    workspace: input.workspace,
   };
-  const unsubscribeSessionEvents = app.runtime.subscribeEvents({
+  const unsubscribeSessionEvents = input.app.runtime.subscribeEvents({
     onSessionEvent: (event) => onSessionEvent(context, record, event),
   });
   record.unsubscribe = () => {
     unsubscribeSessionEvents();
   };
-  // 绑定归属会话，供 automation-port 读取本会话实时 model/mode/thought。
-  ownSessionRecord = record;
+  return record;
+}
+
+/**
+ * 子会话构造移交端口（spec D1 / S1b-2）：core 的 Agent 工具经它走**同一条会话构造入口**。
+ *
+ * `getParentRecord` 惰性读取：host 要在 `createWorkspaceZCodeApp` 的 options 里就位，而 record
+ * 要等 App 构造成功、事件订阅挂好之后才存在，注入时还拿不到值。
+ *
+ * 导出是为了让这条移交缝有直接契约测试（`test/subagent-child-session.test.ts`）；它同时也是
+ * spec S1b 的验收面（父 record 缺席 / 借不到装配事实都必须显式失败）。
+ */
+export function createSubagentChildHost(
+  context: ZCodeProtocolAgentServerContext,
+  getParentRecord: () => ZCodeProtocolSessionRecord | undefined,
+): SubagentChildSessionHost {
+  return {
+    async createChildSession(bundle) {
+      const parentRecord = getParentRecord();
+      if (!parentRecord) {
+        // 父 record 是「借哪份装配事实、继承哪份起始偏好、事件按谁的 sink 路由」的唯一来源。
+        // 缺席时静默降级成「跑一个没有 record 的子会话」正是本轮要根治的形态：
+        // 派发失败并冒泡给 Agent 工具（spec 失败语义）。
+        throw new Error(
+          `Subagent dispatch requires a live parent session record: ${String(bundle.parentSessionId)}`,
+        );
+      }
+      const record = await createSubagentChildRecord(context, parentRecord, bundle);
+      // 顺序有两条硬理由：**App 构造成功之后才登记**（否则失败会留下半登记状态）；
+      // **先登记再 resume**，resume 期间回放出来的事件才能按 childSessionId 正确扇出。
+      context.sessions.set(bundle.childSessionId, record);
+      if (bundle.resume) {
+        await record.app.resume();
+      }
+      return record.app.runtime;
+    },
+  };
+}
+
+/**
+ * 为一次子代理派发物化子会话 record（spec S1b-2）。
+ *
+ * 与 `createRecord` 同源但**不共用 params 面**：子会话的身份事实来自 core 的覆盖包（派发那一刻
+ * 的父语境快照），不走 launch spec 回填分支（那是冷恢复路径，见 `createRecord` 与 S1a）；
+ * 装配事实（启动输入 + 进程内适配器实例）借父 App，端口不在这里重建。
+ */
+async function createSubagentChildRecord(
+  context: ZCodeProtocolAgentServerContext,
+  parentRecord: ZCodeProtocolSessionRecord,
+  bundle: SubagentChildLaunchBundle,
+): Promise<ZCodeProtocolSessionRecord> {
+  const borrowed: SubagentChildBorrowedPorts | undefined = parentRecord.app.subagentChildBorrow;
+  if (!borrowed) {
+    // 借不到就抛：静默降级成「子会话自建端口」会开出第二份执行适配器 / artifact store，
+    // 并脱离父会话的 onToolExecResource 追踪。
+    throw new Error(
+      `Parent session cannot lend subagent assembly ports: ${String(bundle.parentSessionId)}`,
+    );
+  }
+  // 起始偏好走 `{ kind: "inherit", parent }`（差异清单 17/19，与 fork 同一份机制）：子会话沿用
+  // 父会话创建时的 memory / 压缩 / 原生搜索 / shell 选择，不吃全局默认策略。
+  const startupPreferences = await resolveSessionStartupPreferences(
+    context,
+    bundle.childSessionId,
+    { kind: "inherit", parent: parentRecord },
+  );
+  const compactionOverride = compactionPreferencesToPolicyOverride(startupPreferences.compaction);
+  const traceContext = createProtocolRootTraceContext(bundle.childSessionId);
+  const childScope: SubagentChildAppScope = { borrowed, bundle };
+  const app = await createWorkspaceZCodeApp(context, parentRecord.workspace, {
+    // 覆盖包在场即让构造入口进入子会话受限模式（差异清单全在那一边）。
+    subagentChildScope: childScope,
+    startupInputs: borrowed.startupInputs,
+    env: context.deps.env,
+    // 差异清单 18：沿用**父 record 的 event store 实例**（它按 sessionId 分区，子事件落在自己的
+    // 分区里）。私建内存 store 时子 transcript 永远读不到，与 `script-workflow-child-runtime.ts`
+    // 的既有约定一致。
+    eventStore: parentRecord.eventStore,
+    resume: bundle.resume,
+    runtimeConfig: {
+      // 身份类字段（toolset / agentName / 冻结工具面 / maxTurns / subagents.enabled:false /
+      // mode / planEnabled / modelSelection / persona …）以覆盖包为基：那是派发那一刻的
+      // 父语境快照，重推不出来。
+      ...bundle.runtimeConfig,
+      // 以下四行与 `createRecord` 里同名几行是同一份逻辑（能从 startupPreferences 拿到的就用它）。
+      nativeSearchEnhancementsEnabled: startupPreferences.nativeSearchEnhancementsEnabled,
+      modelContextBudgetStrategy: startupPreferences.modelContextBudgetStrategy,
+      ...(startupPreferences.memoryEnabled ? {} : { memory: { enabled: false } }),
+      ...(Object.keys(compactionOverride).length > 0 ? { compact: compactionOverride } : {}),
+    },
+    sessionId: bundle.childSessionId,
+    sessionStore: context.deps.sessionStore,
+    traceContext,
+    version: context.deps.version,
+    modelIoFullRetentionEnabled: context.appRuntimePreferences.modelIoFullRetentionEnabled,
+    resolveInitialBashShellSelection: startupPreferences.resolveInitialBashShellSelection,
+    // 刻意**不**传这几类：阻塞交互改用覆盖包里父改写后的 broker（落回父会话，D6）；automation /
+    // off-peak / 浏览器控制 / workspace hook trust 都是子会话本就不该有的能力面（差异清单 2/8）。
+  });
+  const record = createSessionRecordShell(context, {
+    app,
+    eventStore: parentRecord.eventStore,
+    parentSessionId: bundle.parentSessionId,
+    persistence: "immediate",
+    startupPreferences,
+    taskType: "subagent_child",
+    traceContext,
+    workspace: parentRecord.workspace,
+  });
   return record;
 }
 

@@ -288,6 +288,12 @@ function createWorkflowChildRuntime(
       mode: "yolo",
       modelSelection: deps.runtime.getSessionModelSelection(),
       parentSessionId: deps.sessionId,
+      // 子代理派发已改为「必须经会话构造入口」（core spec `subagent-session-as-first-class.md` S1b），
+      // 而本 runtime 不走构造入口、在 `context.sessions` 里也没有 record：留着 Agent 工具只会让
+      // 派发撞上「缺少构造移交端口」的硬失败，且即便补上端口，孙会话的 parentSessionId 也会指向
+      // 一条查不到的会话。actor 本就不该嵌套编排（`workflow-actor-tools.ts` 已因此减掉
+      // CreateWorkflow / AmendWorkflow），因此与 `script-workflow-child-runtime.ts` 同为显式关闭。
+      subagents: { enabled: false },
       taskType: "workflow_child",
       workingDirectory: deps.workingDirectory,
     },

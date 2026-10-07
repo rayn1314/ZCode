@@ -23,7 +23,6 @@ import type {
   SkillPort,
   SubagentPort,
 } from "../deps.js";
-import { AgentRuntime } from "../agent-runtime.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { cloneModelSelection } from "../model-selection.js";
 import { resolveSubagentSelection } from "../helpers/subagent-selection.js";
@@ -242,14 +241,33 @@ export function createDefaultSubagentPort(
         await request.onSessionReady?.();
         sessionReadyNotified = true;
       };
-      this.logger?.debug("Starting subagent child runtime", {
+      const childSessionHost = deps.subagentChildHost;
+      if (!childSessionHost) {
+        // Agent 工具与移交端口由同一个 `subagents.enabled` 门控，走到这里却没有端口，
+        // 说明装配漏了。宁可派发失败，也不能退化成「跑一个没有 record 的子会话」——
+        // 那正是本轮要根治的形态。
+        throw createCoreError(
+          CoreErrorType.ConfigurationError,
+          "Subagent dispatch requires the child session construction host.",
+          { recoverable: false },
+        );
+      }
+      this.logger?.debug("Starting subagent child session", {
         parentSessionId: this.sessionId,
         childSessionId: request.sessionId,
         agentType: request.agentType,
       });
-      const childRuntime = new AgentRuntime(
-        request.sessionId,
-        {
+      // 子会话由**会话构造入口**以受限模式创建并登记进 context.sessions：这里只交出
+      // 「父语境快照 + 只能由父 runtime 造出来的端口」，构造、登记、恢复都发生在那一侧唯一一次。
+      // 端口与配置的逐项归属见 spec `subagent-session-as-first-class.md` 的 S1b。
+      const childRuntime = await childSessionHost.createChildSession({
+        parentSessionId: this.sessionId,
+        childSessionId: request.sessionId,
+        agentType: request.agentType,
+        description: request.description,
+        background: request.background,
+        resume: request.resumeFromStore === true,
+        runtimeConfig: {
           // 旧 plan 枚举不包含基础权限；拆分后继承完整状态，避免被构造器回退成 build。
           mode: childMode === "plan" ? this.config.mode : childMode,
           planEnabled: childMode === "plan",
@@ -298,62 +316,20 @@ export function createDefaultSubagentPort(
           },
           mcp: childMcpAccess.config,
         },
-        {
+        deps: {
           agentTelemetry: this.agentTelemetry.port,
           agentTelemetryCausation: this.agentTelemetry.captureCausation(),
           // 前台 child 的生命周期被父 Agent Tool await，使用真实父子 Span；后台 child
           // 可能晚于父 Tool/Turn 结束，只能作为独立 Trace 用 Link 保留因果关系。
           agentTelemetryCausationMode: request.background ? "linked_root" : "child",
-          eventStore: this.eventStore,
-          sessionStore: deps.sessionStore,
-          // 子代理也获得跨会话投递端口，因此可用 SendMessage 发 `sess_*`（树外/任意会话）；
-          // subagents.enabled:false 仍关闭 Agent/Task，子代理不能套娃。
-          sessionMessagePort: deps.sessionMessagePort,
-          // 防环链继承（spec D7）：spawn 时快照父会话当前链，否则「父会话收信 → 派子代理回信」
-          // 会在子会话里从 hop=1 重新开链，绕过计数。只在创建时给一次。
-          initialSessionMessageChain: this.sessionMessageChainReader.current(),
-          // 子 runtime 继承父的模型请求准入端口：subagent 的请求 provider 同样看得见，
-          // 它们该与父一样喂治理器信号（父是 observer 则子也是 observer）。
-          modelRequestAdmission: this.modelRequestAdmission,
-          modelFactory: childModelFactory,
-          resolveEffectiveModelSelection: deps.resolveEffectiveModelSelection,
-          // 子 runtime 自己仍使用 request.sessionId 做事件持久化和 trace 归档；对外阻塞交互
-          // （permission / AskUserQuestion / provider runtime headers）一律路由回父 session——
-          // 桌面 UI 只认识父 task 的 sessionId。派生收敛在 deriveChildClientPorts 一处，
-          // dwf actor 与 legacy workflow child 走同一条。
-          ...childClientPorts,
-          coordinatorResponsePort: createCoordinatorResponsePort({
-            agentId: request.agentId,
-            agentType: request.agentType,
-            childSessionId: request.sessionId,
-            parentToolCallId,
-            enqueue: (input) => this.enqueueSubagentMessage(input),
-          }),
-          // Explore 使用独立只读权限配置；general-purpose 和自定义 agent 继承父权限服务。
-          permissionService: builtInExplore
-            ? new PermissionService(defaultPermissionConfig)
-            : this.permissionService,
-          toolScheduler: deps.toolScheduler ?? defaultScheduler,
-          executionPort: deps.executionPort,
-          fileSystemPort: deps.fileSystemPort,
-          // Explore 子运行时会暴露 WebFetch，但之前没有继承主 runtime 的
-          // HTTP client port，导致工具在真正发请求前抛出配置错误，而不是网络请求失败。
-          httpClientPort: deps.httpClientPort,
-          imageProcessorPort: deps.imageProcessorPort,
-          pdfDocumentPort: deps.pdfDocumentPort,
-          memoryRoot: persistentMemory?.rootDir,
-          mcpPort: childMcpAccess.port,
-          skillPort: childSkillPort,
-          artifactStore: deps.artifactStore,
-          appVersion: this.appVersion,
+          // 子 runtime 的事件已经按 childSessionId 落库，但旧链路只把
+          // 少量工具事件镜像给 parent sink，导致 UI 订阅 child topic 后只能拿到打开时
+          // 的 hydration，后续流式内容不会更新。raw child event 只通知父 runtime 的
+          // 外部 sinks，不再次 append，因此不会重复持久化；bootstrap 再按 event.sessionId
+          // 把它路由到 child publisher（现在是一条正式 record）。
           eventSink: {
             onSessionEvent: async (event) => {
               request.reportActivity?.();
-              // child runtime 的事件已经按 childSessionId 落库，但旧链路只把
-              // 少量工具事件镜像给 parent sink，导致 UI 订阅 child topic 后只能拿到打开时
-              // 的 hydration，后续流式内容不会更新。raw child event 只通知父 runtime 的
-              // 外部 sinks，不再次 append，因此不会重复持久化；bootstrap 再按 event.sessionId
-              // 把它路由到 child publisher。
               await this.notifyEventSinks(event, {
                 ...request.traceContext,
                 sessionId: request.sessionId,
@@ -379,17 +355,43 @@ export function createDefaultSubagentPort(
               });
             },
           },
-          logger: this.logger,
+          // Explore 使用独立只读权限配置；general-purpose 和自定义 agent 继承父权限服务。
+          permissionService: builtInExplore
+            ? new PermissionService(defaultPermissionConfig)
+            : this.permissionService,
+          // 对外阻塞交互（permission / AskUserQuestion / provider runtime headers）一律路由回
+          // 父 session——桌面 UI 只认识父 task 的 sessionId。派生收敛在 deriveChildClientPorts
+          // 一处，且只能由父 runtime 做（parentSessionId 由父自己填），dwf actor 与 legacy
+          // workflow child 走同一条。
+          permissionBroker: childClientPorts.permissionBroker,
+          providerRuntimeHeadersPort: childClientPorts.providerRuntimeHeadersPort,
+          coordinatorResponsePort: createCoordinatorResponsePort({
+            agentId: request.agentId,
+            agentType: request.agentType,
+            childSessionId: request.sessionId,
+            parentToolCallId,
+            enqueue: (input) => this.enqueueSubagentMessage(input),
+          }),
+          // 父 skillPort 的 profile 过滤包装：重建会绕过白名单与 CUA 策略。
+          skillPort: childSkillPort,
+          // 借用父启动快照的 MCP 访问：重建会开第二份 MCP 连接。
+          mcpPort: childMcpAccess.port,
+          modelFactory: childModelFactory,
+          // 防环链继承（spec D7）：spawn 时快照父会话当前链，否则「父会话收信 → 派子代理回信」
+          // 会在子会话里从 hop=1 重新开链，绕过计数。只在创建时给一次。
+          initialSessionMessageChain: this.sessionMessageChainReader.current(),
+          // 子 runtime 继承父的模型请求准入端口：subagent 的请求 provider 同样看得见，
+          // 它们该与父一样喂治理器信号（父是 observer 则子也是 observer）。
+          modelRequestAdmission: this.modelRequestAdmission,
+          memoryRoot: persistentMemory?.rootDir,
+          resolveEffectiveModelSelection: deps.resolveEffectiveModelSelection,
+          toolScheduler: deps.toolScheduler ?? defaultScheduler,
           traceContext: request.traceContext,
         },
-      );
+      });
 
       const resumesExistingChild = request.resumeFromStore === true;
-      if (resumesExistingChild) {
-        await childRuntime.resumeFromStore({
-          traceContext: request.traceContext,
-        });
-      } else {
+      if (!resumesExistingChild) {
         // 父会话过去先发布 SubagentSpawned，child 的首轮 executeTurn 才落库。
         // 并发派生时目录查询会在两者之间读到少一个 child。这里把持久化提升为发布前闸门。
         await childRuntime.ensureSessionPersistedForExternalActivity(request.prompt, {

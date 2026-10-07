@@ -15,10 +15,12 @@ import { createPopplerPdfDocumentAdapter } from "@zcode/adapters/pdf";
 import { createNodeContextSourceAdapter } from "@zcode/adapters/context";
 import { createNodeSkillAdapter } from "@zcode/adapters/skills";
 import { createMcpAdapter } from "@zcode/adapters/mcp";
+import type { AiSdkModelAdapter } from "@zcode/adapters/model";
 import {
   AgentRuntime,
   PermissionService,
   buildPluginReferenceCatalog,
+  type AgentRuntimeDeps,
   type AmendWorkflowRunSettingsInput,
   type ResumeSessionResult,
 } from "@zcode/core";
@@ -47,10 +49,7 @@ import type {
   ZCodeApp,
   ZCodeAppOptions,
 } from "./types.js";
-import {
-  createSessionMailboxPortFromEnv,
-  resolveEffectiveLocale,
-} from "./app-config-options.js";
+import { createSessionMailboxPortFromEnv, resolveEffectiveLocale } from "./app-config-options.js";
 import { projectIdFromDirectory } from "./paths.js";
 import {
   asInputHistoryStore,
@@ -134,12 +133,32 @@ function decodePromptAttachmentDataUrl(
   return { bytes, mediaType };
 }
 
+/**
+ * 取一份「装配期必须存在」的端口。
+ *
+ * 覆盖包里的父作用域端口在类型上是「可能为 undefined」——`SubagentChildCoreDeps` 用
+ * `AgentRuntimeDeps["k"]` 保留了可选性，为的是强制 core 显式回答「这一项子会话有没有」。
+ * 但个别装配点要求必填值（`workflowFacade` 的 `agentTelemetry` / `permissionService`），
+ * 而 core 交出的这两项都是它自己已兜底的非空实例（`RuntimeTelemetryFacade.port` 与
+ * `AgentRuntime` 构造器里的 `permissionService`）。真缺席说明装配漏项：显式失败，
+ * 不静默换一个语义不同的自建实例——那会丢掉父的 span 归因与已授予权限状态。
+ */
+function requireAssemblyPort<T>(value: T | undefined, name: string): T {
+  if (value === undefined) {
+    throw new Error(`ZCode app assembly is missing the ${name} port`);
+  }
+  return value;
+}
+
 export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp> {
   if (!options?.providerRegistry) {
     throw new Error("createZCodeApp requires a Provider Registry");
   }
   const startupStartedAt = startupNow();
   const appVersion = options.version ?? "0.0.0";
+  // 覆盖包在场即进入「子会话受限模式」（spec S1b 的差异清单）。子会话与正常会话共用这一个
+  // 构造入口，只在下面逐项收窄能力面：不建第二份进程级资源、复用父已解析的启动输入。
+  const childScope = options.subagentChildScope;
   const sessionId = options.sessionId ?? createSessionId();
   const traceContext = options.traceContext ?? createRootTraceContext({ sessionId });
   const workingDirectory = resolve(options.runtimeConfig?.workingDirectory ?? process.cwd());
@@ -188,10 +207,21 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     ...traceContextToLogContext(traceContext),
     module: "adapters.model",
   });
-  const modelTelemetry = createModelTelemetry({
-    owner: options.telemetryOwner,
-    sessionId,
-  });
+  // 差异清单 1：子会话不建第二份模型遥测（子 span 走覆盖包里父 runtime 的遥测端口），
+  // 因此它在子模式下缺席；下面所有使用点（statusSink / 两处 shutdown）都按可缺席处理。
+  const modelTelemetry = childScope
+    ? undefined
+    : createModelTelemetry({
+        owner: options.telemetryOwner,
+        sessionId,
+      });
+  // 需要**必填** `agentTelemetry` 的装配点（三条 workflow 装配线与主 runtime）统一用它：
+  // 子会话取覆盖包里父 runtime 的端口（差异清单 1），正常会话取自建实例（无 owner 时
+  // createModelTelemetry 也返回 noop 端口，恒存在）。
+  const agentTelemetryPort = requireAssemblyPort(
+    childScope ? childScope.bundle.deps.agentTelemetry : modelTelemetry?.agentExecution,
+    "agent telemetry",
+  );
   let nodeReplBrowserBroker: NodeReplBrowserBroker | undefined;
   let ownedNodeReplBrowserBroker: NodeReplBrowserBroker | undefined;
   let providerModelRuntime: ApiProviderModelRuntime | undefined;
@@ -222,6 +252,29 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         workingDirectory,
         workspaceIdentity: options.runtimeConfig?.memory?.workspaceIdentity,
       });
+    if (childScope) {
+      // 差异清单 19：必须在 `resolveAppRuntimeConfig` **之后**覆盖 mcp —— 它会把
+      // `mcp.servers` 无条件改写成**本进程**解析出的 autoConnectMcpServers（父会话的启动快照 +
+      // 内建/插件 server），而子会话借的是覆盖包里冻结的那一份；写在之前会被整个冲掉。
+      // `configuredMcpServers` / `untrustedProjectMcpServers` 同理用覆盖包那份：子会话的
+      // `listMcpServers` 不该显示自己根本连不上的父 MCP 服务器。
+      runtimeConfig.mcp = childScope.bundle.runtimeConfig.mcp;
+      configuredMcpServers = childScope.bundle.runtimeConfig.mcp?.servers ?? {};
+      untrustedProjectMcpServers = new Set<string>();
+      // 差异清单 21：子会话强制关掉 hook runner。子会话的配置今天没有 `hooks` 键（也就没有
+      // configured hook runner——子代理的 SubagentStart/SubagentStop 由**父** runtime 发射，
+      // 不受影响），但 runner 的构造门（`config.hooks?.enabled || deps.workspaceHookSnapshot`
+      // 且 `deps.executionPort` 在场）**不按 taskType 收窄**，而子会话又会继承父解析出的 hooks
+      // 并借到父的 executionPort：不关就会出现「子代理的工具调用开始执行用户 hook」这种静默
+      // 行为变化，且子会话不接 workspace hook admission（差异清单 2），可能走到「有 hook 无准入」。
+      // 子会话工具级 hook 到底该不该跑，留到 S5 与用户对齐。
+      runtimeConfig.hooks = {
+        events: runtimeConfig.hooks?.events ?? {},
+        maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
+        timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
+        enabled: false,
+      };
+    }
     const browserControlPort = options.browserControlPort;
     if (
       browserControlPort &&
@@ -257,122 +310,154 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     const pluginReferenceCatalog = buildPluginReferenceCatalog(pluginOutcome.plugins);
     runtimeConfig.pluginReferenceCatalog = pluginReferenceCatalog;
     let runtime: AgentRuntime | undefined;
-    const workspaceHookRuntimeSecurity = createWorkspaceHookRuntimeSecurity({
-      appVersion,
-      logger,
-      projectConfigPath: options.projectConfigPath,
-      policy: options.workspaceHookPolicy,
-      policyProvider: options.workspaceHookPolicyProvider,
-      reviewHost: options.workspaceHookReviewHost,
-      workspaceHookTrustEnabled: options.workspaceHookTrustEnabled,
-      runtimeRoot: configResult.sources.project.workspaceHookRuntimeRoot ?? {
-        // Fallback 只在 config-factory 未导出时生效（理论上不会发生）。
-        // 此处原本无条件按单层 runtimeConfig.hooks 重建 runtimeRoot，与
-        // config-factory 遍历 default/user/project/env/cli 全部层的推导不一致，
-        // 导致 review 快照与 toggle 重建的 bundleDigest 不同，
-        // 「审核中 toggle」被误报为 workspace_hooks_snapshot_mismatch。
-        enabled: runtimeConfig.hooks?.enabled === true,
-        timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
-        maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
-      },
-      sessionId,
-      snapshot: configResult.sources.project.workspaceHookSnapshot,
-      userConfigPath: configResult.sources.user.path,
-      workingDirectory,
-      ...(options.workspaceHookReviewHost
-        ? {
-            emitReviewEvent: async (event) => {
-              if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
-              await runtime.appendEvent(
-                createSessionEvent(event.type, sessionId, event.payload, {
-                  traceId: traceContext.traceId,
-                }),
-                traceContext,
-              );
-            },
-            emitAdmissionEvent: async (event) => {
-              if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
-              await runtime.appendEvent(
-                createSessionEvent(event.type, sessionId, event.payload, {
-                  traceId: traceContext.traceId,
-                }),
-                traceContext,
-              );
-            },
-          }
-        : {}),
-    });
-    const permissionService = new PermissionService({
-      allowedTools: new Set(configResult.config.permission.allowedTools),
-      autoApproveHighRisk: configResult.config.permission.autoApproveHighRisk,
-      disallowedTools: new Set(configResult.config.permission.disallowedTools),
-      allowMediumRiskInAutoMode: configResult.config.permission.allowMediumRiskInAuto,
-    });
-    const inputHistoryStore = options.inputHistoryStore ?? asInputHistoryStore(sessionStore);
-    const artifactStore =
-      options.artifactStore ??
-      createNodeToolArtifactStore({
-        imageCacheRootDir: join(storageRoot, "cli", "image-cache"),
-        pdfCacheRootDir: join(storageRoot, "cli", "pdf-cache"),
-        rootDir: join(storageRoot, "cli", "artifacts"),
-        videoCacheRootDir: join(storageRoot, "cli", "video-cache"),
-      });
-    const imageProcessorPort = options.imageProcessorPort ?? createJimpImageProcessorAdapter();
-    const sessionMailboxPort =
-      options.sessionMailboxPort ?? createSessionMailboxPortFromEnv(options.env ?? process.env);
+    // 差异清单 2：子会话不建第二份 hook trust / admission —— 今天子会话也没有 hook admission，
+    // 本阶段保持同形；App 的 hook 方法本就有结构化回退（下面原样保留）。
+    const workspaceHookRuntimeSecurity = childScope
+      ? undefined
+      : createWorkspaceHookRuntimeSecurity({
+          appVersion,
+          logger,
+          projectConfigPath: options.projectConfigPath,
+          policy: options.workspaceHookPolicy,
+          policyProvider: options.workspaceHookPolicyProvider,
+          reviewHost: options.workspaceHookReviewHost,
+          workspaceHookTrustEnabled: options.workspaceHookTrustEnabled,
+          runtimeRoot: configResult.sources.project.workspaceHookRuntimeRoot ?? {
+            // Fallback 只在 config-factory 未导出时生效（理论上不会发生）。
+            // 此处原本无条件按单层 runtimeConfig.hooks 重建 runtimeRoot，与
+            // config-factory 遍历 default/user/project/env/cli 全部层的推导不一致，
+            // 导致 review 快照与 toggle 重建的 bundleDigest 不同，
+            // 「审核中 toggle」被误报为 workspace_hooks_snapshot_mismatch。
+            enabled: runtimeConfig.hooks?.enabled === true,
+            timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
+            maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
+          },
+          sessionId,
+          snapshot: configResult.sources.project.workspaceHookSnapshot,
+          userConfigPath: configResult.sources.user.path,
+          workingDirectory,
+          ...(options.workspaceHookReviewHost
+            ? {
+                emitReviewEvent: async (event) => {
+                  if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
+                  await runtime.appendEvent(
+                    createSessionEvent(event.type, sessionId, event.payload, {
+                      traceId: traceContext.traceId,
+                    }),
+                    traceContext,
+                  );
+                },
+                emitAdmissionEvent: async (event) => {
+                  if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
+                  await runtime.appendEvent(
+                    createSessionEvent(event.type, sessionId, event.payload, {
+                      traceId: traceContext.traceId,
+                    }),
+                    traceContext,
+                  );
+                },
+              }
+            : {}),
+        });
+    // 差异清单 15：子会话的权限服务取覆盖包——explore 是独立只读配置，其余继承**父实例**
+    // （父实例携带本会话已授予的权限状态，重建会丢掉它）。workflowFacade 需要它，是必填参数。
+    const permissionService = childScope
+      ? requireAssemblyPort(childScope.bundle.deps.permissionService, "permission service")
+      : new PermissionService({
+          allowedTools: new Set(configResult.config.permission.allowedTools),
+          autoApproveHighRisk: configResult.config.permission.autoApproveHighRisk,
+          disallowedTools: new Set(configResult.config.permission.disallowedTools),
+          allowMediumRiskInAutoMode: configResult.config.permission.allowMediumRiskInAuto,
+        });
+    // 差异清单 9：子会话没有用户输入历史（今天也没有），S2 开放输入面时再定。
+    const inputHistoryStore = childScope
+      ? undefined
+      : (options.inputHistoryStore ?? asInputHistoryStore(sessionStore));
+    // 差异清单 12：这几个都是进程内适配器实例，子会话一律借父的那一份（不 `??` 回落自建）：
+    // 自建会多出第二份执行适配器 / artifact store，并脱离父会话的 onToolExecResource 追踪。
+    const artifactStore = childScope
+      ? childScope.borrowed.artifactStore
+      : (options.artifactStore ??
+        createNodeToolArtifactStore({
+          imageCacheRootDir: join(storageRoot, "cli", "image-cache"),
+          pdfCacheRootDir: join(storageRoot, "cli", "pdf-cache"),
+          rootDir: join(storageRoot, "cli", "artifacts"),
+          videoCacheRootDir: join(storageRoot, "cli", "video-cache"),
+        }));
+    const imageProcessorPort = childScope
+      ? childScope.borrowed.imageProcessorPort
+      : (options.imageProcessorPort ?? createJimpImageProcessorAdapter());
+    // 差异清单 7：子会话今天没有 mailbox（drain 钩子随之不注册）；收件箱与角色策略一起做（S3），
+    // 先开等于放出一条未经裁决的输入通路，所以这里**不**回落到 createSessionMailboxPortFromEnv。
+    const sessionMailboxPort = childScope
+      ? undefined
+      : (options.sessionMailboxPort ?? createSessionMailboxPortFromEnv(options.env ?? process.env));
     markStorageAdaptersInitialized({
       cliStorageRoot,
-      hasInjectedArtifactStore: options.artifactStore !== undefined,
+      // 子会话的 artifact store 来自父 App（差异清单 12），本 App 没有自建，与 MCP 端口同理
+      // 按「是否来自外部」判，否则启动遥测会把借来的 store 报成自建。
+      hasInjectedArtifactStore: childScope ? true : options.artifactStore !== undefined,
       hasInjectedSessionStore: options.sessionStore !== undefined,
       startupTimer,
       storageRoot,
     });
-    const mcpPort =
-      options.mcpPort ??
-      (runtimeConfig.mcp?.enabled === false
-        ? undefined
-        : (options.mcpPortFactory?.({ workingDirectory }) ??
-          createMcpAdapter({
-            clientVersion: appVersion,
-            env: options.env,
-            logger,
-            network: {
-              httpProxy: configResult.config.network.httpProxy,
-              noProxy: configResult.config.network.noProxy,
-              caCertFile: configResult.config.network.caCertFile,
-            },
-            workingDirectory,
-          })));
-    const ownsMcpPort = options.mcpPort === undefined && mcpPort !== undefined;
-    const executionPort =
-      options.executionPort ??
-      createNodeExecutionAdapter({
-        onToolExecResource: options.onToolExecResource,
-        network: {
-          httpProxy: configResult.config.network.httpProxy,
+    // 差异清单 3：子会话不建 MCP 适配器（会在子会话里再连一遍 MCP），端口借用覆盖包里
+    // 父启动快照那一份；ownsMcpPort 随之恒为 false。
+    const mcpPort = childScope
+      ? childScope.bundle.deps.mcpPort
+      : (options.mcpPort ??
+        (runtimeConfig.mcp?.enabled === false
+          ? undefined
+          : (options.mcpPortFactory?.({ workingDirectory }) ??
+            createMcpAdapter({
+              clientVersion: appVersion,
+              env: options.env,
+              logger,
+              network: {
+                httpProxy: configResult.config.network.httpProxy,
+                noProxy: configResult.config.network.noProxy,
+                caCertFile: configResult.config.network.caCertFile,
+              },
+              workingDirectory,
+            }))));
+    const ownsMcpPort = childScope ? false : options.mcpPort === undefined && mcpPort !== undefined;
+    const executionPort = childScope
+      ? childScope.borrowed.executionPort
+      : (options.executionPort ??
+        createNodeExecutionAdapter({
+          onToolExecResource: options.onToolExecResource,
+          network: {
+            httpProxy: configResult.config.network.httpProxy,
+            noProxy: configResult.config.network.noProxy,
+            caCertFile: configResult.config.network.caCertFile,
+          },
+          outputRootDir: join(storageRoot, "cli", "exec"),
+          processEnv: options.env ?? process.env,
+        }));
+    const ownsExecutionPort = childScope ? false : options.executionPort === undefined;
+    const pdfDocumentPort = childScope
+      ? childScope.borrowed.pdfDocumentPort
+      : (options.pdfDocumentPort ?? createPopplerPdfDocumentAdapter({ executionPort }));
+    // browser-use 控制端口：仅当宿主（desktop）注入时可用，无本地 fallback（纯 CLI 无浏览器底座）。
+    const fileSystemPort = childScope
+      ? childScope.borrowed.fileSystemPort
+      : (options.fileSystemPort ?? createNodeFileSystemAdapter());
+    const httpClientPort = childScope
+      ? childScope.borrowed.httpClientPort
+      : (options.httpClientPort ??
+        createNodeWebFetchHttpClientAdapter({
+          env: options.env ?? process.env,
+          timeoutMs: configResult.config.network.timeout,
+          proxyUrl: configResult.config.network.httpProxy,
           noProxy: configResult.config.network.noProxy,
           caCertFile: configResult.config.network.caCertFile,
-        },
-        outputRootDir: join(storageRoot, "cli", "exec"),
-        processEnv: options.env ?? process.env,
-      });
-    const ownsExecutionPort = options.executionPort === undefined;
-    const pdfDocumentPort =
-      options.pdfDocumentPort ?? createPopplerPdfDocumentAdapter({ executionPort });
-    // browser-use 控制端口：仅当宿主（desktop）注入时可用，无本地 fallback（纯 CLI 无浏览器底座）。
-    const fileSystemPort = options.fileSystemPort ?? createNodeFileSystemAdapter();
-    const httpClientPort =
-      options.httpClientPort ??
-      createNodeWebFetchHttpClientAdapter({
-        env: options.env ?? process.env,
-        timeoutMs: configResult.config.network.timeout,
-        proxyUrl: configResult.config.network.httpProxy,
-        noProxy: configResult.config.network.noProxy,
-        caCertFile: configResult.config.network.caCertFile,
-      });
+        }));
     markMcpAdapterInitialized({
       configuredMcpServers,
-      hasInjectedMcpPort: options.mcpPort !== undefined,
+      // 子会话的 MCP 端口来自覆盖包，「是否注入」按它判（本 App 没建适配器）。
+      hasInjectedMcpPort: childScope
+        ? childScope.bundle.deps.mcpPort !== undefined
+        : options.mcpPort !== undefined,
       mcpEnabled: runtimeConfig.mcp?.enabled !== false,
       startupTimer,
       trustedMcpServerCount: Object.keys(runtimeConfig.mcp?.servers ?? {}).length,
@@ -480,20 +565,6 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       network: configResult.config.network,
       sourceTitle: options.sourceTitle,
     });
-    const modelAdapter =
-      options.modelAdapter ??
-      createModelAdapter({
-        env: options.env,
-        logger: modelLogger,
-        modelIoDir,
-        modelIoFullRetentionEnabled: options.modelIoFullRetentionEnabled,
-        executionConfig: modelExecutionConfig,
-        statusSink: modelTelemetry.statusSink,
-        streamIdleTimeoutMs: configResult.config.modelStream.idleTimeoutMs,
-      });
-    if (options.modelAdapter && modelTelemetry.statusSink) {
-      modelAdapter.addStatusSink(modelTelemetry.statusSink);
-    }
     // 进程级并发治理器：run service 拿它的窄端口给
     // driver（每个 actor runtime 一个请求级准入端口）；主 runtime 挂它的 observer（下面 deps）——
     // 不排队、不看冷却，但计入在飞并喂信号。进程级单例——配额本就在账号上，不按会话分。
@@ -507,45 +578,73 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.requestsPerMinute ??
         undefined,
     });
-    modelAdapter.setModelIoFullRetentionEnabled(options.modelIoFullRetentionEnabled ?? false);
-    providerModelRuntime = new ApiProviderModelRuntime({
-      registry: options.providerRegistry,
-      modelAdapter,
-    });
-    providerModelRuntime.start();
-    // model factory 提前到三条 workflow child 装配线之前构造：script workflow bridge、dwf actor
-    // runtime 与 expert workflow facade 都**共享**父会话这一份 factory——Registry 视图更新后
-    // 新建的 Model 才看得到，child 不各自冻结一份。
-    const modelFactory = providerModelRuntime.modelFactory;
-    const scriptWorkflowFacade = createScriptWorkflowBridge({
-      agentTelemetry: modelTelemetry.agentExecution,
-      appOptions: options,
-      appVersion,
-      artifactStore,
-      configResult,
-      fileSystemPort,
-      httpClientPort,
-      imageProcessorPort,
-      pdfDocumentPort,
-      logger,
-      mcpPort,
-      modelFactory,
-      permissionService,
-      prepareUserExecutionBoundary,
-      getRuntime,
-      runtimeConfig,
-      sessionId,
-      sessionStore,
-      storageRoot,
-      traceContext,
-      workingDirectory,
-    });
+    // 差异清单 1：子会话不建第二份模型适配器与 ApiProviderModelRuntime（各自都是进程级资源的
+    // 第二份）；模型工厂取覆盖包里父派生的继承工厂（绑定本次派发选型，含调用级覆盖）。
+    let modelAdapter: AiSdkModelAdapter | undefined;
+    let modelFactory: AgentRuntimeDeps["modelFactory"];
+    if (childScope) {
+      modelFactory = childScope.bundle.deps.modelFactory;
+    } else {
+      modelAdapter =
+        options.modelAdapter ??
+        createModelAdapter({
+          env: options.env,
+          logger: modelLogger,
+          modelIoDir,
+          modelIoFullRetentionEnabled: options.modelIoFullRetentionEnabled,
+          executionConfig: modelExecutionConfig,
+          statusSink: modelTelemetry?.statusSink,
+          streamIdleTimeoutMs: configResult.config.modelStream.idleTimeoutMs,
+        });
+      if (options.modelAdapter && modelTelemetry?.statusSink) {
+        modelAdapter.addStatusSink(modelTelemetry.statusSink);
+      }
+      modelAdapter.setModelIoFullRetentionEnabled(options.modelIoFullRetentionEnabled ?? false);
+      providerModelRuntime = new ApiProviderModelRuntime({
+        registry: options.providerRegistry,
+        modelAdapter,
+      });
+      providerModelRuntime.start();
+      // model factory 提前到三条 workflow child 装配线之前构造：script workflow bridge、dwf actor
+      // runtime 与 expert workflow facade 都**共享**父会话这一份 factory——Registry 视图更新后
+      // 新建的 Model 才看得到，child 不各自冻结一份。
+      modelFactory = providerModelRuntime.modelFactory;
+    }
+    const scriptWorkflowFacade = childScope
+      ? undefined
+      : createScriptWorkflowBridge({
+          agentTelemetry: agentTelemetryPort,
+          appOptions: options,
+          appVersion,
+          artifactStore,
+          configResult,
+          fileSystemPort,
+          httpClientPort,
+          imageProcessorPort,
+          pdfDocumentPort,
+          logger,
+          mcpPort,
+          modelFactory,
+          permissionService,
+          prepareUserExecutionBoundary,
+          getRuntime,
+          runtimeConfig,
+          sessionId,
+          sessionStore,
+          storageRoot,
+          traceContext,
+          workingDirectory,
+        });
 
     // workflow run service：CreateWorkflow 的确认窗 Allow 之后真启动引擎的那一侧。
     // journal 窄化失败（store 不带 dwf_* 表）时**不构造**服务——端口保持 undefined，
     // CreateWorkflow 因此回到占位诊断路径。这是一个记了日志的可见降级，而不是一条
     // 会静默丢掉持久化的运行路径（详见 dynamic-workflow-run-service.ts 的文件头）。
-    const dynamicWorkflowJournal = resolveDynamicWorkflowJournalStore(sessionStore, logger);
+    // 差异清单 6：子会话不建动态工作流引擎（journal 窄化 + run service 都不做），
+    // `deps.workflowPort` / run 端口在子会话里必须保持缺席——今天也不在场，建了只是空转。
+    const dynamicWorkflowJournal = childScope
+      ? undefined
+      : resolveDynamicWorkflowJournalStore(sessionStore, logger);
     const dynamicWorkflowRunPort =
       dynamicWorkflowJournal === undefined
         ? undefined
@@ -589,7 +688,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                   ).configOverrides,
                 },
                 deps: {
-                  agentTelemetry: modelTelemetry.agentExecution,
+                  agentTelemetry: agentTelemetryPort,
                   appOptions: options,
                   appVersion,
                   artifactStore,
@@ -677,18 +776,24 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // dwf snippet service：EvalWorkflowSnippet 的执行面。刻意**不**依赖 dwf journal——
     // snippet 完全瞬态（内存 journal），不该被 run service 的 durability 前提连坐；
     // 所以即使 run 端口因 journal 缺席而不构造，实验通道仍然可用。
-    const dynamicWorkflowSnippetPort = createDynamicWorkflowSnippetService({
-      executionPort,
-      fileSystemPort,
-      logger,
-    });
+    // 差异清单 6：子会话连它也不建（子会话的 deps 里本就没有这个端口）。
+    const dynamicWorkflowSnippetPort = childScope
+      ? undefined
+      : createDynamicWorkflowSnippetService({
+          executionPort,
+          fileSystemPort,
+          logger,
+        });
     // 模型目录：工具层把用户说的模型名解析成 workflow run 的子代理选型（model-catalog-port.ts）。
-    const modelCatalogPort = createModelCatalogPort({
-      registry: options.providerRegistry,
-      currentSelection: () => getRuntime().getSessionModelSelection(),
-    });
+    // 差异清单 6：子会话不建（它只服务 workflow 子代理选型，子会话没有这个面）。
+    const modelCatalogPort = childScope
+      ? undefined
+      : createModelCatalogPort({
+          registry: options.providerRegistry,
+          currentSelection: () => getRuntime().getSessionModelSelection(),
+        });
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
-      agentTelemetry: modelTelemetry.agentExecution,
+      agentTelemetry: agentTelemetryPort,
       // 主代理的模型请求过治理器的 observer：立即放行，但让治理器看见它的 429 / 成功。
       // 并发上 observer 无条件放行（主代理的 turn 永不被 workflow 流量阻塞），**限速上不放行**：
       // 每分钟配额是 provider 侧的账，主代理和 workflow 共用同一份，不限它就会从这里撞墙。
@@ -715,10 +820,16 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       imageProcessorPort,
       pdfDocumentPort,
       artifactStore,
-      contextSourcePort:
-        options.contextSourcePort ?? createNodeContextSourceAdapter({ env: options.env }),
-      skillPort:
-        configResult.config.features.skill && configResult.config.skills.enabled
+      // 差异清单 5：子会话不建 context source 适配器——它的 Context（currentDate / envInfo /
+      // 子代理 persona）由覆盖包按父快照注入，重建只会得到第二份。
+      contextSourcePort: childScope
+        ? undefined
+        : (options.contextSourcePort ?? createNodeContextSourceAdapter({ env: options.env })),
+      // 差异清单 4：子会话不建 skill 适配器（父的 skill 根已解析过），端口取覆盖包里的
+      // 父 FilteredSkillPort 包装——重建会绕过 profile 白名单与 CUA 策略。
+      skillPort: childScope
+        ? childScope.bundle.deps.skillPort
+        : configResult.config.features.skill && configResult.config.skills.enabled
           ? (options.skillPort ??
             createNodeSkillAdapter({
               extraRoots: configResult.config.skills.roots,
@@ -743,14 +854,27 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         isRemoteWorkspaceIdentity(runtimeConfig.memory?.workspaceIdentity ?? ""),
       permissionBroker: options.permissionBroker,
       permissionService,
-      workflowPort: scriptWorkflowFacade.workflowPort,
+      // 差异清单 6：子会话的 `workflowPort` 必须**缺席**（scriptWorkflowFacade 整体不构造），
+      // 所以用条件展开而不是把 undefined 赋给它。
+      ...(scriptWorkflowFacade === undefined
+        ? {}
+        : { workflowPort: scriptWorkflowFacade.workflowPort }),
       dynamicWorkflowRunPort,
       dynamicWorkflowSnippetPort,
       modelCatalogPort,
       automationPort: options.automationPort,
       offPeakPort: options.offPeakPort,
+      // 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走同一条构造入口创建子会话。
+      // 子会话的 App 不拿到它（D8 结构性防套娃），配置侧另写死 `subagents.enabled: false`。
+      subagentChildHost: options.subagentChildHost,
       appVersion,
       traceContext,
+      // 覆盖包里的父作用域端口**最后**展开：键名与 AgentRuntimeDeps 同名，压过上面同名字面量
+      // （permissionBroker / providerRuntimeHeadersPort / skillPort / mcpPort / modelFactory /
+      // eventSink / agentTelemetry / coordinatorResponsePort / initialSessionMessageChain /
+      // modelRequestAdmission / memoryRoot / toolScheduler / resolveEffectiveModelSelection /
+      // traceContext / agentTelemetryCausation* 等）。
+      ...(childScope ? childScope.bundle.deps : {}),
     });
     markRuntimeConstructed({
       hasInjectedModelAdapter: options.modelAdapter !== undefined,
@@ -762,7 +886,10 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       startupTimer,
       workingDirectory,
     });
-    scheduleStartupLogRetentionCleanup(loggerFactory, logger);
+    // 差异清单 10：启动期日志保留清理是进程级职责，父会话已经调度过，子会话不再调度一次。
+    if (!childScope) {
+      scheduleStartupLogRetentionCleanup(loggerFactory, logger);
+    }
     const inputFacade = createInputFacade({
       artifactStore,
       customCommandPromptResolver: async (text, resolverOptions) => {
@@ -797,7 +924,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       traceContext,
     });
     const workflowFacade = createWorkflowFacade({
-      agentTelemetry: modelTelemetry.agentExecution,
+      agentTelemetry: agentTelemetryPort,
       appOptions: options,
       appVersion,
       artifactStore,
@@ -898,6 +1025,21 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       sessionId,
       traceId: traceContext.traceId,
       runtime,
+      // 本 App 借给子会话的装配事实（spec D1 / S1b-2）：父 App 只借出，不自建第二份。
+      // 子会话**不借出**（D8）：它拿不到 subagentChildHost，也就没有子会话，规格第 18 条。
+      ...(childScope
+        ? {}
+        : {
+            subagentChildBorrow: {
+              artifactStore,
+              executionPort,
+              fileSystemPort,
+              httpClientPort,
+              imageProcessorPort,
+              pdfDocumentPort,
+              startupInputs,
+            },
+          }),
       respondWorkspaceHookReview: (input) =>
         workspaceHookRuntimeSecurity?.respond(
           {
@@ -971,8 +1113,14 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       // session 的 coordinator 并重发 admission 状态（详见 types.ts 注释）。
       reloadWorkspaceHookTrust: () =>
         workspaceHookRuntimeSecurity?.reloadTrust() ?? Promise.resolve(),
-      setModelIoFullRetentionEnabled: (enabled) =>
-        modelAdapter.setModelIoFullRetentionEnabled(enabled),
+      // 差异清单 1：子会话没有本地模型适配器，这个开关随之**缺席**（可选成员，条件展开省略，
+      // 不赋 undefined 值）。
+      ...(childScope
+        ? {}
+        : {
+            setModelIoFullRetentionEnabled: (enabled: boolean) =>
+              modelAdapter?.setModelIoFullRetentionEnabled(enabled),
+          }),
       // 压缩策略热更新：runtime 每次 turn-loop 迭代重读 config.compact，因此改完即生效。
       setCompactionPolicy: (policy) => getRuntime().updateCompactionPolicy(policy),
       readToolResultArtifact: (uri) =>
@@ -1090,7 +1238,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           try {
             providerModelRuntime?.dispose();
           } finally {
-            await modelTelemetry.shutdown();
+            await modelTelemetry?.shutdown();
           }
         }
       },
@@ -1257,7 +1405,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     };
   } catch (error) {
     providerModelRuntime?.dispose();
-    void modelTelemetry.shutdown().catch(() => undefined);
+    void modelTelemetry?.shutdown().catch(() => undefined);
     void ownedNodeReplBrowserBroker?.close();
     startupTimer.fail("ZCode app startup failed", error, {
       context: { sessionId, workingDirectory },

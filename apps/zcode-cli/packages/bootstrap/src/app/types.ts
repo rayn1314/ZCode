@@ -21,6 +21,7 @@ import type {
   WorkspaceGenerateTextInput,
   WorkspaceHookReviewTarget,
   WorkspaceHookPolicyProvider,
+  SubagentChildSessionHost,
 } from "@zcode/core";
 import type { GuidePendingInputResult } from "@zcode/core";
 import type {
@@ -32,6 +33,7 @@ import type { EffectiveModelSelectionResult } from "@zcode/shared/model-selectio
 export type { ZCodeModelOption } from "@zcode/shared";
 import type { ModelProviderSourceTitle } from "../model-config.js";
 import type { ZCodeAppStartupInputs } from "./startup-inputs.js";
+import type { SubagentChildAppScope, SubagentChildBorrowedPorts } from "./subagent-child-scope.js";
 import type { ZCodeInstalledPluginData } from "../plugins.js";
 import type {
   AutomationPort,
@@ -139,6 +141,21 @@ export interface ZCodeAppOptions {
    * 语义与边界见 `startup-inputs.ts` 文件头。
    */
   startupInputs?: ZCodeAppStartupInputs;
+  /**
+   * 子代理子会话的构造移交端口（spec `subagent-session-as-first-class.md` D1 / S1b）。
+   *
+   * 父会话装配时注入它，core 的 Agent 工具据此**经构造入口**创建子会话；子会话自己的 App
+   * 不注入（D8 禁止套娃，配置侧也已写死 `subagents.enabled: false`）。
+   */
+  subagentChildHost?: SubagentChildSessionHost;
+  /**
+   * 子会话 App 的构造入参：core 的覆盖包 ＋ 父借出的装配事实。
+   *
+   * **在场即进入子会话受限模式**：不建第二份模型适配器 / MCP / skill / context source /
+   * 动态工作流引擎与浏览器 broker，改从覆盖包取父作用域端口、从借出事实取父的适配器实例。
+   * 逐项差异见 spec 的 S1b 差异清单；正常会话不传。
+   */
+  subagentChildScope?: SubagentChildAppScope;
   /**
    * stdio 协议模式的 agent 进程由 Electron host 拉起，模型服务需要看到 electron 来源。
    * 普通 CLI 不传，继续使用 cli 默认值。
@@ -315,6 +332,13 @@ export interface ZCodeApp {
   readonly sessionId: SessionId;
   readonly traceId: string;
   readonly runtime: AgentRuntime;
+  /**
+   * 本会话借给子会话的装配事实（spec D1 / S1b）。构造入口据此为子会话进入受限模式。
+   *
+   * 只有能派发子代理的会话提供；子会话的 App **不提供**（D8 禁止套娃）。缺席即该 App 不支持
+   * 派生子会话——子代理派发因此会明确失败，不会退化成「跑一个没有 record 的子会话」。
+   */
+  readonly subagentChildBorrow?: SubagentChildBorrowedPorts;
   respondWorkspaceHookReview(
     input: RespondWorkspaceHookReviewInput,
   ): Promise<WorkspaceHookReviewCommandResult>;
