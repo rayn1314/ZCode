@@ -1,6 +1,7 @@
 import type { MessageId, MessagePart, MessageWithParts, ToolPart } from "@zcode/contracts";
 import {
   parseReadFileStateMetadata,
+  type PersistedReadFileStateMetadata,
   type PersistedReadFileStateTool,
 } from "../tool/read-file-state-metadata.js";
 import { createReadFileStateKey, normalizeReadFileStateMtimeMs } from "../tool/read-file-state.js";
@@ -91,9 +92,7 @@ function restoreReadToolState(
   const toolInput = asRecord(part.state.input);
   if (!toolInput) return false;
   if (!isHistoricalFullReadWindow(toolInput as HistoricalReadWindow)) {
-    // 真正的 range Read 只在同一 runtime 内作为最新水位，跨 resume 不恢复。
-    result.skippedRangeReadCount++;
-    return false;
+    return restoreRangeReadState(input.readFileState, part, result);
   }
 
   const metadata = parseReadFileStateMetadata(part.state.metadata);
@@ -102,16 +101,24 @@ function restoreReadToolState(
   if (!isHistoricalFullReadWindow(metadata)) {
     return false;
   }
-  setFullReadState(input.readFileState, metadata.path, metadata.content, {
-    // resume 不再从 provider-visible cat-n 文本恢复 Read 状态；只有带
-    // mtimeMs/revisionId/sizeBytes 的结构化 metadata 才能支撑后续 stale guard。
-    isPartialView: metadata.isPartialView,
-    mtimeMs: normalizeReadFileStateMtimeMs(metadata.mtimeMs),
-    readAt: new Date(metadata.readAtMs),
-    revisionId: metadata.revisionId,
-    sizeBytes: metadata.sizeBytes,
-    sourceTool: metadata.tool,
-  });
+  setReadFileStateEntry(input.readFileState, metadata);
+  return true;
+}
+
+function restoreRangeReadState(
+  readFileState: ReadFileStateMap,
+  part: CompletedToolPart,
+  result: ReadFileStateHydrationResult,
+): boolean {
+  const metadata = parseReadFileStateMetadata(part.state.metadata);
+  if (!metadata || metadata.tool !== "Read" || isHistoricalFullReadWindow(metadata)) {
+    // 无 freshness metadata 或窗口不一致的 range Read 无法支撑 stale 校验，跨 resume 不恢复。
+    result.skippedRangeReadCount++;
+    return false;
+  }
+  // 带 freshness metadata 的 range Read 恢复为 range 条目：stale 校验基于完整文件的
+  // mtime/size（与窗口无关），恢复后 Edit 仍受 stale guard 保护，不再误报"没读过"。
+  setReadFileStateEntry(readFileState, metadata);
   return true;
 }
 
@@ -126,41 +133,27 @@ function restoreMetadataToolState(
 
   // Write/Edit 的历史 tool part 不能在 resume 时读取当前磁盘来“补全”状态；
   // 外部手动保存会被误认证为 agent 已读。这里只恢复成功时持久化的完整快照。
-  setFullReadState(readFileState, metadata.path, metadata.content, {
-    isPartialView: metadata.isPartialView,
-    mtimeMs: normalizeReadFileStateMtimeMs(metadata.mtimeMs),
-    readAt: new Date(metadata.readAtMs),
-    revisionId: metadata.revisionId,
-    sizeBytes: metadata.sizeBytes,
-    sourceTool: metadata.tool,
-  });
+  setReadFileStateEntry(readFileState, metadata);
   return true;
 }
 
-function setFullReadState(
+// full Read 与 range Read 共用同一条恢复路径：key 由 metadata 的 offset/limit 决定，
+// full（均 undefined）自然落回 (1, undefined)，与 runtime 内 Read 的记账 key 一致。
+function setReadFileStateEntry(
   readFileState: ReadFileStateMap,
-  filePath: string,
-  content: string,
-  metadata: {
-    isPartialView?: boolean;
-    mtimeMs?: number;
-    readAt: Date;
-    revisionId?: string;
-    sizeBytes?: number;
-    sourceTool?: PersistedReadFileStateTool;
-  },
+  metadata: PersistedReadFileStateMetadata,
 ): void {
-  readFileState.set(createReadFileStateKey(filePath, 1, undefined), {
-    path: filePath,
-    content,
-    offset: undefined,
-    limit: undefined,
-    isPartialView: metadata.isPartialView ?? false,
-    readAt: metadata.readAt,
-    sourceTool: metadata.sourceTool,
+  readFileState.set(createReadFileStateKey(metadata.path, metadata.offset ?? 1, metadata.limit), {
+    path: metadata.path,
+    content: metadata.content,
+    offset: metadata.offset,
+    limit: metadata.limit,
+    isPartialView: metadata.isPartialView,
+    readAt: new Date(metadata.readAtMs),
+    sourceTool: metadata.tool,
     revisionId: metadata.revisionId,
-    mtimeMs: metadata.mtimeMs,
-    sizeBytes: metadata.sizeBytes ?? Buffer.byteLength(content, "utf8"),
+    mtimeMs: normalizeReadFileStateMtimeMs(metadata.mtimeMs),
+    sizeBytes: metadata.sizeBytes,
   });
 }
 

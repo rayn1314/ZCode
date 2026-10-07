@@ -55,6 +55,7 @@ const EDIT_PROVIDER_DESCRIPTION = [
   "- You must Read the file in this conversation before editing, or the call will fail.",
   "- `old_string` must match the file exactly, including indentation, and be unique — the edit fails otherwise. Strip the Read line prefix (line number + tab) before matching.",
   "- `replace_all: true` replaces every occurrence instead.",
+  "- Batch multiple Edit calls to the same file in one message: they execute in order and each edit sees the previous edit's result. Do not loop Read → Edit line by line, and do not Read the file back between edits.",
 ].join("\n");
 const NON_UNIQUE_OLD_STRING_MESSAGE =
   "old_string is not unique in the file. Provide more surrounding context or set replace_all to true.";
@@ -426,9 +427,12 @@ function getEditableReadStateFailure(
   if (!readFileState) return undefined;
 
   const lastRead = findEditableReadFileState(readFileState, filePath);
-  if (!lastRead || lastRead.isPartialView) {
+  if (!lastRead) {
     return editFailure(EditErrorCode.FILE_NOT_READ, EDIT_NOT_READ_MESSAGE);
   }
+  // partial view（token cap 截断的 Read）放行：old_string 唯一性检查与写入 expectedRevision
+  // 乐观锁兜底匹配安全，stale 检查在下方继续生效。此前把它一并拒绝且报"没读过"，
+  // 模型重读仍被截断、无法自纠，只会制造逐行 Read→Edit 循环。
 
   if (!hasReadStateChanged(lastRead, currentRead)) return undefined;
   if (isStrictFullRead(lastRead) && lastRead.content === currentRead.content) return undefined;
