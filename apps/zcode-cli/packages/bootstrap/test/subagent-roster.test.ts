@@ -197,3 +197,30 @@ test("store 读取失败向上抛，不假装没有历史", async () => {
     /session store read failed/,
   );
 });
+
+/**
+ * 回归：真实 `SqliteSessionStore.sessionEntries` 是**原型方法**（实现体读 `this.db`）。
+ * 调用侧解构后裸调用会丢 `this`，`ListAgents` 读历史子代理就会崩；而上面的闭包式假 store
+ * 不读 `this`，看不见这个缺陷。这里用原型方法 + 实例字段把接收者绑定钉死。
+ */
+test("原型方法式 store 不得丢接收者：ListAgents 读历史子代理必须成功", async () => {
+  class PrototypeStore {
+    readonly #entries: readonly SessionEntryInfo[];
+
+    constructor(entries: readonly SessionEntryInfo[]) {
+      this.#entries = entries;
+    }
+
+    async sessionEntries(): Promise<SessionEntryInfo[]> {
+      return [...this.#entries];
+    }
+  }
+
+  const store = new PrototypeStore([
+    lifecycleEntry({ agentId: "agent_1", status: "completed", endedAt: STOP_AT }),
+  ]) as unknown as SessionStorePort;
+
+  const entries = await rosterFor(store).listByParentSession(PARENT);
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.agentId, "agent_1");
+});

@@ -127,9 +127,11 @@ async function readExistingLifecycleEntry(
   payload: unknown,
 ): Promise<SessionEntryInfo | undefined> {
   const agentId = nonEmptyString(asRecord(payload).agentId);
-  const sessionEntries = runtime.sessionStore?.sessionEntries;
-  if (!agentId || !sessionEntries) return undefined;
-  const entries = await sessionEntries({ sessionID, type: SESSION_ENTRY_SUBAGENT_LIFECYCLE });
+  // 保留接收者再调用：真实 `SqliteSessionStore.sessionEntries` 是原型方法，
+  // 解构后裸调用会丢 `this`，实现体 `this.db` 直接 TypeError。
+  const store = runtime.sessionStore;
+  if (!agentId || !store?.sessionEntries) return undefined;
+  const entries = await store.sessionEntries({ sessionID, type: SESSION_ENTRY_SUBAGENT_LIFECYCLE });
   const entryId = subagentLifecycleEntryId(agentId);
   return entries.find((entry) => entry.id === entryId);
 }

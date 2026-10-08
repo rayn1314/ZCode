@@ -131,3 +131,30 @@ test("读取抛错不吞：冷恢复必须明确失败，而不是悄悄退化�
     /database is locked/,
   );
 });
+
+/**
+ * 回归：真实 `SqliteSessionStore.sessionEntries` 是**原型方法**，实现体读 `this.db`。
+ * 调用侧一旦把方法解构出来裸调用就丢 `this`，冷恢复直接 TypeError。
+ * 上面的闭包式假 store 不读 `this`，对这个缺陷完全隐形——本用例用原型方法 + 实例字段
+ * 把接收者绑定钉死，避免同一处再退化。
+ */
+test("原型方法式 store 不得丢接收者：冷恢复读规格必须成功", async () => {
+  class PrototypeStore {
+    readonly #entries: readonly SessionEntryInfo[];
+
+    constructor(entries: readonly SessionEntryInfo[]) {
+      this.#entries = entries;
+    }
+
+    async sessionEntries(): Promise<SessionEntryInfo[]> {
+      return [...this.#entries];
+    }
+  }
+
+  const spec = await readSubagentLaunchSpec({
+    sessionStore: new PrototypeStore([specEntry(VALID_SPEC)]) as unknown as SessionStorePort,
+    sessionId: CHILD,
+  });
+
+  assert.deepEqual(spec, VALID_SPEC);
+});

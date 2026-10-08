@@ -268,3 +268,58 @@ test("事件汇：stop 无旧行不写；读取失败只 warn 不上抛（列表
   assert.equal(warns.length, 1);
   assert.equal(warns[0]?.event, "subagent_lifecycle.persist_failed");
 });
+
+/**
+ * 回归：真实 `SqliteSessionStore.sessionEntries` 是**原型方法**（实现体读 `this.db`）。
+ * 调用侧解构后裸调用会丢 `this`，stop 就读不到 spawn 行，于是 created/startedAt 丢失、
+ * 状态诚实性破掉；上面的闭包式假 store 不读 `this`，看不见这个缺陷。
+ * 这里用原型方法 + 实例字段把接收者绑定钉死。
+ */
+test("原型方法式 store 不得丢接收者：stop 必须读回 spawn 行并保留 created/startedAt", async () => {
+  class PrototypeStore {
+    readonly #rows = new Map<string, SessionEntryInfo>();
+
+    async sessionEntries(): Promise<SessionEntryInfo[]> {
+      return [...this.#rows.values()];
+    }
+
+    async saveSessionEntry(entry: SessionEntryInfo): Promise<void> {
+      this.#rows.set(entry.id, entry);
+    }
+
+    get size(): number {
+      return this.#rows.size;
+    }
+
+    row(agentId: string): SessionEntryInfo | undefined {
+      return this.#rows.get(subagentLifecycleEntryId(agentId));
+    }
+  }
+
+  const store = new PrototypeStore();
+  const asPort = store as unknown as SessionStorePort;
+  const trace = { traceId: "trace_1" } as never;
+
+  await persistSubagentLifecycleEntry(
+    runtimeWith(asPort),
+    event(SessionEventType.SubagentSpawned, SPAWN_AT, spawnPayload()),
+    trace,
+  );
+  await persistSubagentLifecycleEntry(
+    runtimeWith(asPort),
+    event(SessionEventType.SubagentStopped, STOP_AT, {
+      agentId: "agent_1",
+      agentType: "coder",
+      childSessionId: "sess_subagent_agent_1",
+      status: "completed",
+    }),
+    trace,
+  );
+
+  assert.equal(store.size, 1);
+  const row = store.row("agent_1");
+  assert.ok(row);
+  assert.equal((row.data as { startedAt?: number }).startedAt, SPAWN_AT);
+  assert.equal((row.data as { endedAt?: number }).endedAt, STOP_AT);
+  assert.deepEqual(row.time, { created: SPAWN_AT, updated: STOP_AT });
+});

@@ -40,9 +40,10 @@ export function createSubagentRosterPort(deps: SubagentRosterDeps): SubagentRost
       // 提前响应取消：读存储是有 I/O 的一步，abort 后不该继续投影。
       options?.signal?.throwIfAborted();
 
+      // 保留接收者再调用：真实 `SqliteSessionStore.sessionEntries` 是原型方法，
+      // 解构后裸调用会丢 `this`，实现体 `this.db` 直接 TypeError。
       const store = deps.resolveSessionStore(parentSessionId);
-      const sessionEntries = store?.sessionEntries;
-      if (!sessionEntries) {
+      if (!store?.sessionEntries) {
         // 父会话不在本进程 / 宿主无持久化 = 没有可读的历史来源。这既不是故障也不是
         // 「没有历史子代理」，只是本端口看不到；调用方不该据此把历史说成空的。留一行 debug
         // 便于分辨「没有历史」与「解析不到存储」这两种都会返回空的路径。
@@ -54,7 +55,7 @@ export function createSubagentRosterPort(deps: SubagentRosterDeps): SubagentRost
         return [];
       }
 
-      const entries = await sessionEntries({
+      const entries = await store.sessionEntries({
         sessionID: parentSessionId,
         type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
       });

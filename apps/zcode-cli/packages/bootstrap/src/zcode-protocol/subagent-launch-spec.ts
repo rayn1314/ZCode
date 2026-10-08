@@ -76,13 +76,16 @@ export async function readSubagentLaunchSpec(input: {
   logger?: Logger;
   traceContext?: TraceContext;
 }): Promise<SubagentLaunchSpecEntryData | undefined> {
-  const sessionEntries = input.sessionStore?.sessionEntries;
-  if (!sessionEntries) {
+  // 必须保留接收者再调用：`sessionEntries` 在真实 `SqliteSessionStore` 上是原型方法，
+  // 先解构再裸调用会丢 `this`，实现体里的 `this.db` 直接 TypeError。测试里的闭包 store
+  // 看不到这个差异，因此这里不能靠测试兜住。
+  const store = input.sessionStore;
+  if (!store?.sessionEntries) {
     logMissing(input, "no_session_store");
     return undefined;
   }
 
-  const entries = await sessionEntries({
+  const entries = await store.sessionEntries({
     sessionID: input.sessionId,
     type: SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC,
   });
