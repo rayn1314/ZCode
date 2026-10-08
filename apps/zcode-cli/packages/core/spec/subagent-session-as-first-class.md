@@ -183,6 +183,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - **交互归属不变**：阻塞交互的 sessionId 恒为父会话，子会话只带 `origin` 标识。
 - **不进入任务索引**：`subagent_child` 永远不出现在任务列表与任务索引里。
 - **只读不再是会话级语义**：命令级的拒绝必须给细分 reasonCode。
+- **存储端口方法必须保留接收者调用**：`SessionStorePort.sessionEntries` 在真实 `SqliteSessionStore` 上是**原型方法**（实现体读 `this.db`），因此 `const f = store.sessionEntries; await f(...)` 这类"先解构再裸调用"会丢 `this` 并抛 `TypeError: Cannot read properties of undefined (reading 'db')`。只允许写成 `store.sessionEntries(...)` 或 `store.sessionEntries?.(...)`。这条不变式的代价不对称：违反它时冷恢复的**第一步**（读 launch spec）就失败，`session/resume` 整个请求以 `-32603` 失败——子代理不是退化成受限模式，而是**彻底无法还原身份、也无法继续对话**（2026-10-09 修复，三个违反点分别在 launch spec 读取、roster/`ListAgents`、lifecycle entry 去重）。
 
 ### 所有者和事件顺序
 
@@ -741,8 +742,28 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - **角标派生**（S4 前置 2）：`deriveSessionSummary` 的 `runningSubagentCount` 等于 `snapshot.subagents.running.length`（含 `waiting` / `blocked`），且 `summariesEqual` 覆盖它——只变这一个字段也必须产 delta，不被 conflation 吃掉。
   - **形态能力矩阵**（S4）：`packages/ui/test/sessionPaneCapabilities.test.ts` 逐格断言上表 13 个布尔列 × 4 个形态——`Record<BooleanCapability, boolean>` 的类型约束保证"矩阵漏一列"是编译错误而不是静默通过。配套约束：`SessionPane.tsx` 里每一处 `capabilities.*` 都必须对应表里某一列；`assistantFeedback` 原先借用的 `goalCommands` 列（真值相同）已在复核时拆成独立列，否则将来某形态只想改其中一项就会误伤另一项。
   - **输入拒绝文案映射**（S4）：`resolveInputRejectionMessageId` 把 `guard.subagentLimitedMode` 映射到受限模式专属文案，未知/缺失 code 落到通用文案。
+  - **端口调用的接收者绑定**（2026-10-09 补）：既有测试替身把 `sessionEntries` 写成**闭包对象方法**，方法体只读外层 `rows`、不读 `this`，因此对上面那条不变式的违反**完全隐形**——三处裸调用长期存在而这三份单测一直全绿，真机冷恢复却 100% 崩溃。回归测试必须用**原型方法 + 私有字段**的形式钉住接收者绑定（`class PrototypeStore { readonly #rows = new Map(); async sessionEntries() { return [...this.#rows.values()]; } }`，裸调用会在读 `this.#rows` 时直接 `TypeError`）。已补三处：`bootstrap/test/subagent-launch-spec.test.ts`、`bootstrap/test/subagent-roster.test.ts`、`core/test/subagent-lifecycle-persistence.test.ts`。**判据是"无修复必红"**：把三处恢复成解构裸调用后重跑，恰好这 3 个新用例失败（27 pass / 3 fail），还原后 30/30 通过——弱化到"只断言不抛"的写法会重新变成隐形。
 - 集成：子会话 `sendText` 开新轮；跨会话投递在空闲/运行中两态都能消费（现有 `core/test/session-mailbox-sender-kind.test.ts` 是同源先例）。
-- 端到端：上述 11 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动浏览器手工执行。其中 6 / 7 / 9 / 10 / 11 的关键判据已有自动化背书（删除递归与中止级联、形态能力矩阵、工具面不含 `Agent`、受限模式的投影与准入），**1–5 与 8 依赖真实派发**，必须在跑起来的应用里手工走一遍才算验收（截至 2026-10-07 尚未执行，见「遗留工作」）。
+- 端到端（**2026-10-09 已执行，见下节**）：上述 11 条验收路径。仓库**没有 E2E 框架与脚本**（`playwright-core` 在依赖里但没有 e2e 入口），交互验收只能由 agent 驱动真实运行的应用手工执行。
+
+### 真实派发端到端（2026-10-09 实测）
+
+方法：**隔离数据根 + 真实 provider + 协议面驱动**。三者缺一不可，各自绕开一个坑：
+
+1. **隔离数据根**（`E:/Temp/zcode-e2e-root`）：整组环境变量一起覆盖（`ZCODE_DATA_ROOT`、`ZCODE_PERSONAL_PROVIDER_CONFIG_FILE`、`ZCODE_MAILBOX_ROOT`，并 `unset ZCODE_BUILTIN_PROVIDER_CONFIG_FILE`）。**只覆盖 `ZCODE_DATA_ROOT` 不够**——`prepareCliProviderRuntimeEnv` 对"显式 provider 配置文件"是提前返回的，继承来的 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 会压过数据根覆盖，于是测试会打到用户真实账号（实测打到了 `api.stepfun.com` 并吃 429）。这样既不动用户真实数据根，也不动正在跑的应用。
+2. **真实 provider**：`u2-flash`（OpenAI 兼容 `chat/completions`），已验证支持 tool calls（流式与非流式）。
+3. **协议面驱动**：**必须走 app-server 的 ZCode Protocol（stdio NDJSON）**。`-p` 直连与 `--surface desktop` **都不装配 `subagentChildHost`**（只有 `bootstrap/src/zcode-protocol/server-operations.ts` 在 `taskType !== "subagent_child"` 时注入），因此从这两条路派发子代理会拿到 "Subagent dispatch requires the child session construction host."。驱动的两个必须点：服务端反向请求（`method` + `id`）要先于普通通知分支处理（否则 `session/requestRuntimePreferences` 被吞、15s 超时整轮失败）；助手正文在 `turn.completed.payload.response` 而不在 `part.upserted`。
+
+实测结论（三条验收，各自附证据来源）：
+
+- **A · 派发落库**：父会话派发 `general-purpose` 子代理 → `session` 表出现 `parent_id=父` / `task_type=subagent_child` 的子行（title 取自 prompt），子会话 `session_entry` 有 `runtime/subagent_launch_spec`（`toolset: "main"`、冻结白名单、`maxTurns`、`background`），且 **spec 里没有 hooks 字段**（决策 B 的判据：用户 hooks 不随派发收窄）。
+- **B · 子会话照跑用户 hooks**：隔离根的 `cli/config.json`（`SessionStart` / `PreToolUse` / `PostToolUse` / `SubagentStart` / `SubagentStop`）全部以 `process` 类型挂上观测探针，子会话执行 `Glob`/`Bash` 时探针收到 `SessionStart`、`PreToolUse/Bash`、`PostToolUse/Bash` —— 即**子会话与主会话同形**（差异清单 2 / 21 的拍板有了端到端直接证据，而不再只是单测推论）。
+- **C · 冷恢复（本轮修复的验收面）**：对已落库的子会话发 `session/resume`。**修复前**：`-32603`，`TypeError: Cannot read properties of undefined (reading 'db')`，栈是 `readSubagentLaunchSpec → sessionEntries`（即 `session/resume` 打不开子会话）。**修复后**：resume 成功，返回该子会话既有消息、identity 还原为 `agent: "zcode-general-purpose"`、model 为原 provider/model，且子会话自述工具面**不含 `Agent` / `Task`**（嵌套闸在冷恢复后仍成立）。
+
+驱动脚本与隔离根都在仓库外（`E:/Temp/...`）临时搭建，未入库；它们是"怎么验"的证据，不是交付物。
+
+**仍未执行**：**桌面 GUI 侧**（左栏子条目的层级态、侧栏子面板从只读变可输入、重启应用后子条目仍在）。上面的 A/B/C 都是协议面/存储面证据，没有覆盖 renderer 的渲染与交互，也没有跑过 `pnpm dev:desktop`。
+
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
   - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。
   - CLI 侧可用的类型门禁：`pnpm typecheck:cli`。
@@ -756,7 +777,9 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **本轮范围内、按阶段排期**：S1a、S1b、S2–S5 —— **全部已落地**（各阶段事实与复核结论见上文各节）。
 
-**验收缺口（本轮未执行，须补）**：**端到端环节**依赖真实派发（派一个后台子代理、看它在左栏出现、给它发一句话、跑完看状态迁移、重启看身份还原）。仓库没有 E2E 框架（`playwright-core` 在依赖里但没有 e2e 入口），只能用跑起来的应用手工走一遍；而本机数据根现在**跑不起一轮真实 agent**：隔离数据根 `~/.zcode-rayn/v2` 下 `credentials.json` 只有一条 bot 凭据、`provider_config.json` 只含 `providerOrder` / 规则而没有任何模型 provider（实测 2026-10-08，只读了键名与结构，未读取凭据值），因此无法自动完成"派发 → 观察 → 重启"这一段。**在此之前不要说"验收通过"**——能靠单测背书的部分（删除递归与中止级联、形态能力矩阵、工具面不含 `Agent`、受限模式的投影与准入、左栏区块行模型、两条构造路径的收窄判据、收件箱端口取法）已经覆盖，"真实派发 + 重启"这两类环节没有任何自动化。
+**验收缺口（本轮未执行，须补）**：只剩**桌面 GUI 侧**——左栏父条目下的子条目层级态、侧栏子面板从只读变可输入、重启应用后子条目仍在且能继续聊（验收路径 1–5 的渲染/交互部分与第 8 条的重启部分）。协议面与存储面的等价证据已由上文「真实派发端到端（2026-10-09 实测）」的 A/B/C 三条覆盖：派发落库与身份冻结、子会话照跑用户 hooks、冷恢复还原身份且嵌套闸仍成立；`-32603` 崩溃那条已被修复并加了回归测试。**判据是"还没跑过 `pnpm dev:desktop`"**：C 走的虽是桌面 Host 用的同一套协议方法，但没有经过 renderer。
+
+（勘误：本段此前记录"本机数据根跑不起一轮真实 agent"——那是**本机 `~/.zcode-rayn` 的实测现象**，不是本轮改造的缺陷，也不构成验收阻塞：用隔离数据根 + 独立 provider 配置即可跑通真实派发，做法见上文。不要把当时的环境限制读成本产品的功能缺口。）
 
 **本轮不做、需另立任务**：
 
