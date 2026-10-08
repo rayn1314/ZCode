@@ -277,10 +277,10 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 **子会话受限模式的差异清单**（S1b 阶段原按"`options.subagentChildScope` 在场"编写；**S5 收口订正**：收窄的判据是 `isSubagentChildSession({ subagentChildScope, taskType })`，**两条构造路径都算子会话**——冷恢复没有覆盖包，只能靠 `taskType`。下面凡标"已改变/订正"的条目以此为准）：
 
-不构造（会生成第二份进程级资源或子会话本就不该有的能力）：
+不构造（会生成第二份进程级资源或子会话本就不该有的能力）；**第 2 条已按 S5 拍板移出本组（改为照常建）**，保留编号只为让"差异清单 2"这个引用仍然可追：
 
 1. `modelAdapter` + `ApiProviderModelRuntime`：不建第二份模型适配器与模型运行时；`modelFactory` 取覆盖包里的继承工厂。随之不建 `modelTelemetry`（子 span 走覆盖包的 `agentTelemetry`），故 `setModelIoFullRetentionEnabled`、两处 `shutdown()` 在子模式下必须可缺席。
-2. `workspaceHookRuntimeSecurity`：不建（App 的 hook 方法本就有结构化回退）。语义不是"少一份副本"而是**子会话不该持有 hook 信任权限**——它能单方面批准 hook。收窄判据必须覆盖冷恢复路径（见第 21 条的订正），否则冷恢复出的子会话会重新拿到信任权限，并顺带把 `workspaceHookSnapshot` 注入 runtime、单独撑开 hook runner 的门。
+2. `workspaceHookRuntimeSecurity`（hook trust / admission）：**S5 收口拍板改为「与主会话同形」——子会话照常建**（原文写的是"不建"）。原文把它当"子会话不该持有的能力"，但 hook 信任是**工作区级 / 用户级**的决策，不是会话能力面：S2 角色策略表（`packages/shared/src/zcode-protocol-v4/input-role-policy.ts`）本就把 4 条 hook 信任命令对 `subagent_child` 放行（"缺席即放行"），原文的"不建"反而让这 4 条命令在子会话里静默降级成 `workspace_hooks_require_trust_capable_host`，与已批准的策略表自相矛盾。每个会话各持一份 coordinator、只读同一份 trust 文件，不产生第二份权威。判定与理由见第 21 条与 S5。
 3. `createMcpAdapter`：不建（会在子会话里再连一遍 MCP）；`mcpPort` 取覆盖包，`ownsMcpPort = false`。
 4. `createNodeSkillAdapter`：不建（父的 skill 根已解析）；`skillPort` 取覆盖包。
 5. `createNodeContextSourceAdapter`：不建；子会话的 Context 由覆盖包按父快照注入（`currentDate` / `subagentContext` / `envInfo`）。
@@ -305,8 +305,8 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 18. `eventStore`：子会话**沿用父 record 的 store 实例**（`eventStore: parentRecord.eventStore`），不新建。该 store 按 sessionId 分区，子事件落在自己的分区里；bootstrap 的 `loadPersistedEvents(childSessionId)` 与 `resolveConversationBackingRecord` 一律走同一实例读取，与 `script-workflow-child-runtime.ts` 的既有约定一致（那条注释写明"私建内存 store 时子 transcript 永远读不到"）。这是**沿用既有约定**，不是新选择。
 19. 起始偏好走 `{ kind: "inherit", parent }`（D1 明确要求，且 fork 已在用同一份机制）：子会话因此继承父会话的 memory 开关、原生搜索增强、压缩偏好与 shell 选择。与改造前的差别是"子会话不再吃全局默认策略"，这是**有意**的（用户可配置的压缩策略漏继承会让子会话沿用陈旧策略）。
 20. 父 record 的 `onSessionEvent` 里那条"事件 sessionId ≠ 本 record sessionId"的分支（现走 `ingestDetachedLiveSession`）本阶段**保留不动**：它按 `(childSessionId, eventId)` 去重，子会话拿到 record 后事件会经两条路径到达网关，但投影只发布一次。改动与删除见 S1b-4。
-21. `runtimeConfig.hooks`：子会话**强制 `enabled: false`**。子会话没有 configured hook runner（子代理生命周期 hook 由**父** runtime 发射，不受影响）；而 hook runner 的构造条件（`config.hooks?.enabled || deps.workspaceHookSnapshot` + `deps.executionPort`）**不按 taskType 收窄**，子会话又会继承解析出来的 `hooks` 配置并借到父的 executionPort，于是"子代理工具调用开始执行用户 hook"——这是本阶段最容易踩的静默行为变化，必须显式关掉。二是子会话不接 workspace hook admission（差异清单 2），让 runner 起来可能走到"有 hook 无准入"的路径。**子会话的工具级 hook 该不该跑，是产品问题，登记到 S5 与用户对齐。**
-    - **S5 收口时的订正（2026-10-08 实测）**：这一条原先只写在 `if (childScope)` 分支里，而子会话有**两条**构造路径——派发带覆盖包、冷恢复（S1a）走普通 `createRecord` **没有**覆盖包，只靠 `runtimeConfig.taskType === "subagent_child"` 认身份。于是照原写法，冷恢复出的子会话既从磁盘配置里捡回 `hooks`（`mergeRuntimeHooks` 在插件带 hook 时会把 `enabled` 置 **true**，所以"用户没开 hook"也可能是 true），又因为没走子分支而建出了 `workspaceHookRuntimeSecurity`（它的 `snapshot` 单独就能撑开 runner 的门）——**"子代理跑用户 hook"在冷恢复路径上照跑**，同种子会话两条路径行为不同，且没有任何测试会红。收口已按唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })` 覆盖两条路径：hooks 与 hook trust 两处收窄都改用它，`subagentRosterPort` 的收窄也从装配入口搬进 `create-app.ts` 用同一判据（判据本身有单测：`bootstrap/test/subagent-child-session-narrowing.test.ts`）。
+21. `runtimeConfig.hooks`：**S5 收口拍板改为「与主会话同形」，不再对子会话收窄**——子会话照常跑用户/插件的工具级 hook。原写法是"子会话强制 `enabled: false`"，理由是"hook runner 的构造条件（`config.hooks?.enabled || deps.workspaceHookSnapshot` + `deps.executionPort`）不按 taskType 收窄，子会话会继承 `hooks` 配置并借到父的 executionPort，于是子代理工具调用开始执行用户 hook"。**这个理由把方向搞反了**：hook 是用户对自己 Agent 施加的**规则**，不是子会话可行使的**能力**——收窄它等于给子代理开一条绕过用户护栏（如 `PreToolUse` 拦危险命令）的口子，护栏能被"委派给子代理"绕过就不成护栏；而且子会话本就已在跑内建 mailbox drain hook（只要有收件箱端口，"子会话完全不跑 hook"从来不成立）。判定：子代理的工具级 hook **该跑**。`SubagentStart` / `SubagentStop` 仍由**父** runtime 发射，与这一条无关（那两个事件照常发，不会重复触发）。
+    - **S5 收口时的实测与订正（2026-10-08）**：这一条原先只写在 `if (childScope)` 分支里。子会话有**两条**构造路径——派发带覆盖包、冷恢复（S1a）走普通 `createRecord` **没有**覆盖包，只靠 `runtimeConfig.taskType === "subagent_child"` 认身份。于是当时冷恢复出的子会话把收窄全漏掉了（同一种会话两条路径行为不同，且没有任何测试会红）。收口先按唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })` 把两条路径对齐——随后**拍板翻转方向**：既然 hook 是用户护栏而非子会话能力，正确做法是**取消** hooks 与 hook trust 两处收窄，让两条路径都与主会话同形。现在只剩 `subagentRosterPort` 一处收窄（子会话没有子代理可列举，`includeAgent` 门也挡着），仍以本判据为准；`resolveSubagentChildHooksConfig` 已随之删除。回归：`bootstrap/test/subagent-child-session-predicate.test.ts`。
 22. 已逐项审计、确认**不需要守卫**的继承项（因为既有门控已经挡住了）：内存提取（`resolveEnabledProjectMemoryRoot` 走 `isMainMemoryTaskType`，`subagent_child` 不在名单里）、标题生成（`shouldAttemptSessionTitleGeneration` 有 `parentSessionId` 与 `taskType !== "interactive"` 两道闸）、顶层 `userInstructions`（有 `subagentContext` 的 runtime 走 `SubagentContextBuilder`，只读 `subagentContext.userInstructions`，不会双份注入 AGENTS.md）、`isRemoteWorkspace`（唯一消费者是内存提取，已被 taskType 挡住）。另：子会话日志改用子会话自己的 logger（带子会话 traceId/sessionId），属诊断面改善。
 23. 实现期补记两处（实施时才发现，写进契约免得后人踩）：
     - **`titleGeneration` 在子会话最终缺席**（覆盖包不带它，子路径也没有 `params` 可读）。这是"子会话 runtimeConfig 面比正常会话少一个键"，靠上一条那两道闸兜住；S2 若开放子会话改模型/标题行为，要重新审视这一项。
@@ -571,14 +571,16 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 | 症状 | 根因 | 修法 |
 | --- | --- | --- |
 | 收件箱端口：派发路径的子会话**没有**收件箱，冷恢复的反而有（S3 的"对子会话照常注入"对派发路径完全无效） | `create-app.ts` 的三元 `childScope ? undefined : (injected ?? env)` 把**注入进来的那份也一起丢了** | 抽出 `resolveSessionMailboxPort`（注入优先；子会话无注入不自建），调用点改用它。回归：`bootstrap/test/subagent-child-mailbox-port.test.ts` |
-| hooks / hook trust：冷恢复的子会话**照跑**用户与插件的工具级 hook、并持有 hook 信任权限；派发的子会话两样都没有 | 差异清单 2 / 21 的收窄只认覆盖包，冷恢复路径没有覆盖包 | 抽出唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })`，hooks、`workspaceHookRuntimeSecurity`、`subagentRosterPort` 三处收窄统一改用它；`resolveSubagentChildHooksConfig` 把"关掉的方式"变成可断言契约。回归：`bootstrap/test/subagent-child-session-narrowing.test.ts` |
+| hooks / hook trust：冷恢复的子会话**照跑**用户与插件的工具级 hook、并持有 hook 信任权限；派发的子会话两样都没有 | 差异清单 2 / 21 的收窄只认覆盖包，冷恢复路径没有覆盖包 | 先抽出唯一判据 `isSubagentChildSession({ subagentChildScope, taskType })` 把两条路径对齐；再**拍板取消**这两处收窄（hook 是用户护栏、不是子会话能力，见第 21 条），两条路径都改为与主会话同形。`subagentRosterPort` 的收窄保留并改用同一判据。回归：`bootstrap/test/subagent-child-session-predicate.test.ts` |
 
-**留给用户拍板的一条（产品问题，不是工程取舍）**：子代理（子会话）到底该不该跑用户配置的工具级 hook？
+**已拍板（2026-10-08）：子代理（子会话）跑用户配置的工具级 hook，与主会话同形。**
 
-- **现状（即"方案 A"）**：不跑。判据把两条路径对齐到"子会话不构造 configured hook runner"，与 `SubagentStart` / `SubagentStop` 仍由父 runtime 发射这件事无关（那两个事件照常发）。
-- **另一种做法（"方案 B"）**：跑。要点是同时把 workspace hook admission 也发给子会话（否则走到"有 hook 无准入"），并让子会话按自己的会话身份参与信任审核。
-- 代价对照：A 的代价是用户的 hook 护栏（例如 PreToolUse 拦截危险命令）**覆盖不到子代理的工具调用**；B 的代价是子代理每次工具调用都会触发用户 hook（副作用放大、hook 数量随子代理数倍增），且需要给子会话接上信任/准入链路。
-- 无论选哪个，**当前的两条路径必须同形**（这一条已经修掉，不再挂账）。
+- 判定：hook 是用户对自己 Agent 施加的**规则**，不是子会话可行使的**能力**。能力面该收窄（不派生子代理、不跑 automation / off-peak、受限模式拒输入……），但把规则豁免掉是反方向的——等于让用户写在 `PreToolUse` 里的护栏（拦危险命令等）被"委派给子代理"绕过。护栏能被绕过就不成护栏。
+- 第二条决定性证据：**原有的"子会话不建 hook trust / admission"与已批准的策略表自相矛盾**。S2 角色策略表 `packages/shared/src/zcode-protocol-v4/input-role-policy.ts` 对 4 条 hook 信任命令在 `subagent_child` 上**放行**（`respondWorkspaceHookReview: {}` 等，"缺席即放行"），理由是"那是用户级信任决策，不是会话能力面"；而"不建 `workspaceHookRuntimeSecurity`"却让这 4 条命令在子会话里静默降级成 `workspace_hooks_require_trust_capable_host`。
+- 落地：**取消**差异清单第 2、21 条的两处 hooks / hook trust 收窄。子会话按自己的会话身份跑同一套 hook、接同一份信任准入（信任是工作区级 / 用户级事实，各会话各持 coordinator、只读同一份 trust 文件，不产生第二份权威）。`SubagentStart` / `SubagentStop` 仍由父 runtime 发射，不受影响、不重复触发。
+- 代价（如实记录）：子代理的每次工具调用都会触发用户 hook（子进程开销随子代理数放大），且每个子会话多一份 trust coordinator 与一份 admission。这是护栏真正生效应付的代价，且与主会话行为一致，不再有"哪种会话才拦"的分裂。
+- 与 D1 的对齐：Claude Code 的 hook 在子代理内同样运行，本方案与其一致；"hook 脚本可平移"的兼容目标不受影响。
+- 回退口径：若将来要改回收窄，**两条构造路径必须一起改**（用 `isSubagentChildSession` 判据），不能再出现"一条路径生效、另一条静默漏掉"。
 
 ## UI 施工规格（S4）
 
@@ -732,7 +734,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 删除递归与中止级联；`deactivateSession` **不**级联。
   - 起始偏好继承：子会话的 compaction / memory / 预算策略与父一致；父偏好热更新后**新派生**的子会话不沿用旧值（既有回归面，见 `bootstrap/src/zcode-protocol/compaction-preferences.ts` 的快照刷新）。
   - hook 发射点保持：`SubagentStart` / `SubagentStop` 仍按原 payload 字段发射。
-  - **子会话收窄的判据**（S5 补）：`isSubagentChildSession` 对两条构造路径都为真（覆盖包在场 / 只有 `taskType`），对其余 taskType 为假；`resolveSubagentChildHooksConfig` 恒出 `enabled: false` 且保留事件定义与限额（`bootstrap/test/subagent-child-session-narrowing.test.ts`）。收件箱端口侧：注入的端口优先、子会话无注入不自建（`bootstrap/test/subagent-child-mailbox-port.test.ts`）。这两组断言守的是"同一种会话两条构造路径行为必须同形"，是本轮修掉的两处静默不一致的回归。
+  - **子会话收窄的判据**（S5 补）：`isSubagentChildSession` 对两条构造路径都为真（覆盖包在场 / 只有 `taskType`），对其余 taskType 为假（`bootstrap/test/subagent-child-session-predicate.test.ts`）。hooks 与 hook trust **已不是收窄项**（拍板与主会话同形，见差异清单 2 / 21），故无对应断言；现存唯一收窄是 `subagentRosterPort`。收件箱端口侧：注入的端口优先、子会话无注入不自建（`bootstrap/test/subagent-child-mailbox-port.test.ts`）。这两组断言守的是"同一种会话两条构造路径行为必须同形"。
   - **策略表覆盖率**：照 `packages/shared/test/hook-event-copy-parity.test.ts` / `core/test/hook-copy-parity.test.ts` 的先例，断言"命令类型集合 ⊆ 策略表键集合"——新增命令时测试先红，而不是等准入处静默放行。
   - **受限模式**（S4 前置 1）：`subagentLimitedMode` 为真时 `computeInputRouting` 返回 `{mode:"reject", reasonCode:"guard.subagentLimitedMode"}`（且优先于 `compacting` / phase 判定）；同一事实下 `resolveRoleCommandAdmission` 拒绝对话输入类命令、放行非输入类命令（`deleteSession` / `renameSession` / `stop` 仍可用——受限的是输入面，不是会话管理）。
   - **`Store` 元数据路径不妄断**：冷会话（无活 record）的准入不因"读不到 launch spec"把普通会话判成受限——该判据只由活 record 携带。

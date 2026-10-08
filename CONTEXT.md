@@ -29,8 +29,8 @@ _Avoid_: 把一次会话当成一个任务
 _Avoid_: 与 Task 混用
 
 **Subagent Session（子代理会话）**:
-子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系、同一条会话构造路径），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。它是可输入、可续聊、可被单独唤醒的**附属**会话：输入与正式会话走同一条准入（`packages/shared/src/zcode-protocol-v4/input-role-policy.ts`），只有**受限模式**（冷恢复时读不到 launch spec、工具面身份未还原）的会话恒拒对话输入类命令；删除父会话时递归删除，中止父会话运行轮时沿树级联，关闭标签页与空闲回收不级联；它**不进入任务索引**，永不作为左栏顶层行出现，也不得再派生子代理。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
-_Avoid_: 把子代理当一次性执行体，或当与父会话平级的独立会话；把目标态当作现状；把"子会话"与 fork / 选段侧聊混为一谈（树边只认 `parentSessionId` + `taskType === "subagent_child"`）
+子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系、同一条会话构造路径），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。它是可输入、可续聊、可被单独唤醒的**附属**会话：输入与正式会话走同一条准入（`packages/shared/src/zcode-protocol-v4/input-role-policy.ts`），只有**受限模式**（冷恢复时读不到 launch spec、工具面身份未还原）的会话恒拒对话输入类命令；**用户配置的工具级 hook 与 hook 信任照常生效，与正式会话同形**（hook 是用户对 Agent 施加的规则，不是会话能力，故不随会话角色收窄）；删除父会话时递归删除，中止父会话运行轮时沿树级联，关闭标签页与空闲回收不级联；它**不进入任务索引**，永不作为左栏顶层行出现，也不得再派生子代理。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
+_Avoid_: 把子代理当一次性执行体，或当与父会话平级的独立会话；把目标态当作现状；把"子会话"与 fork / 选段侧聊混为一谈（树边只认 `parentSessionId` + `taskType === "subagent_child"`）；把用户级规则（hook / 信任）当成子会话能力面去收窄
 
 **Session Role Policy（会话角色策略）**:
 以 `taskType` 为主键、输出该会话能力面（可用命令集、工具面修正、嵌套闸、交互归属、列表归属、usage 归属）的策略表，集中一处便于审查；运行期条件（身份是否已还原、目标是否可达、是否闲时轮）作为叠加项，不塞回业务代码。它的价值是"不漂移"，不是"减少分支"——把散落的分支收成一张同样复杂的表并不降低复杂度。

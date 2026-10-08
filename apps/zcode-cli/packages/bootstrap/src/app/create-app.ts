@@ -50,11 +50,7 @@ import type {
   ZCodeAppOptions,
 } from "./types.js";
 import { createSessionMailboxPortFromEnv, resolveEffectiveLocale } from "./app-config-options.js";
-import {
-  isSubagentChildSession,
-  resolveSessionMailboxPort,
-  resolveSubagentChildHooksConfig,
-} from "./subagent-child-scope.js";
+import { isSubagentChildSession, resolveSessionMailboxPort } from "./subagent-child-scope.js";
 import { projectIdFromDirectory } from "./paths.js";
 import {
   asInputHistoryStore,
@@ -273,17 +269,10 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       configuredMcpServers = childScope.bundle.runtimeConfig.mcp?.servers ?? {};
       untrustedProjectMcpServers = new Set<string>();
     }
-    // 差异清单 21：子会话一律关掉配置化的 hook runner（子代理的 `SubagentStart` /
-    // `SubagentStop` 由**父** runtime 发射，不受影响）。
-    //
-    // 为什么不能只写在 `childScope` 分支里（原来就在那儿，2026-10-07 订正）：配置化的
-    // runner 会开，靠的是两个来源之一——`config.hooks.enabled`（磁盘配置；`mergeRuntimeHooks`
-    // 在插件带 hook 时还会把它置 true）或 `deps.workspaceHookSnapshot`。冷恢复的子会话没有
-    // 覆盖包，这两条它都躲得过，于是"子代理的工具调用执行用户/插件 hook"只在派发路径被挡住、
-    // 在冷恢复路径照跑。判据改用 `subagentChildSession` 后两条路径同形。
-    if (subagentChildSession) {
-      runtimeConfig.hooks = resolveSubagentChildHooksConfig(runtimeConfig.hooks);
-    }
+    // 差异清单 21（2026-10-08 拍板）：子会话**照跑**用户/插件的工具级 hook，与主会话同形，
+    // 这里不做任何 hooks 收窄。收窄 hooks 不是"限制子会话能力"，而是把子代理的工具调用从用户
+    // 护栏（如 PreToolUse 拦危险命令）里豁免出去——护栏能被委派绕过就不成护栏；且 S2 角色策略表
+    // 本就把 4 条 hook 信任命令对 `subagent_child` 放行。**不要把这处收窄加回来。**
     const browserControlPort = options.browserControlPort;
     if (
       browserControlPort &&
@@ -319,57 +308,55 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     const pluginReferenceCatalog = buildPluginReferenceCatalog(pluginOutcome.plugins);
     runtimeConfig.pluginReferenceCatalog = pluginReferenceCatalog;
     let runtime: AgentRuntime | undefined;
-    // 差异清单 2：子会话不建第二份 hook trust / admission —— 子会话不该持有 hook 信任权限
-    // （它能单方面批准 hook），且它没有 hook admission 可用。App 的 hook 方法本就有结构化
-    // 回退（下面原样保留）。判据含冷恢复路径：只认覆盖包会让冷恢复出的子会话重新拿到
-    // trust 权限，并顺带把 `workspaceHookSnapshot` 注入 runtime、单独撑开 hook runner 的门。
-    const workspaceHookRuntimeSecurity = subagentChildSession
-      ? undefined
-      : createWorkspaceHookRuntimeSecurity({
-          appVersion,
-          logger,
-          projectConfigPath: options.projectConfigPath,
-          policy: options.workspaceHookPolicy,
-          policyProvider: options.workspaceHookPolicyProvider,
-          reviewHost: options.workspaceHookReviewHost,
-          workspaceHookTrustEnabled: options.workspaceHookTrustEnabled,
-          runtimeRoot: configResult.sources.project.workspaceHookRuntimeRoot ?? {
-            // Fallback 只在 config-factory 未导出时生效（理论上不会发生）。
-            // 此处原本无条件按单层 runtimeConfig.hooks 重建 runtimeRoot，与
-            // config-factory 遍历 default/user/project/env/cli 全部层的推导不一致，
-            // 导致 review 快照与 toggle 重建的 bundleDigest 不同，
-            // 「审核中 toggle」被误报为 workspace_hooks_snapshot_mismatch。
-            enabled: runtimeConfig.hooks?.enabled === true,
-            timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
-            maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
-          },
-          sessionId,
-          snapshot: configResult.sources.project.workspaceHookSnapshot,
-          userConfigPath: configResult.sources.user.path,
-          workingDirectory,
-          ...(options.workspaceHookReviewHost
-            ? {
-                emitReviewEvent: async (event) => {
-                  if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
-                  await runtime.appendEvent(
-                    createSessionEvent(event.type, sessionId, event.payload, {
-                      traceId: traceContext.traceId,
-                    }),
-                    traceContext,
-                  );
-                },
-                emitAdmissionEvent: async (event) => {
-                  if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
-                  await runtime.appendEvent(
-                    createSessionEvent(event.type, sessionId, event.payload, {
-                      traceId: traceContext.traceId,
-                    }),
-                    traceContext,
-                  );
-                },
-              }
-            : {}),
-        });
+    // 差异清单 2（2026-10-08 拍板）：子会话与主会话一样建 hook trust / admission。原先只给主
+    // 会话建、子会话走结构化回退，是把"用户级信任决策"误当成"会话能力"收窄了——S2 角色策略表
+    // （`input-role-policy.ts`）对 4 条 hook 信任命令本就在 `subagent_child` 上放行。信任是
+    // 工作区级/用户级的事实，每个会话各持一份 coordinator 只读同一份 trust 文件，不产生第二份权威。
+    const workspaceHookRuntimeSecurity = createWorkspaceHookRuntimeSecurity({
+      appVersion,
+      logger,
+      projectConfigPath: options.projectConfigPath,
+      policy: options.workspaceHookPolicy,
+      policyProvider: options.workspaceHookPolicyProvider,
+      reviewHost: options.workspaceHookReviewHost,
+      workspaceHookTrustEnabled: options.workspaceHookTrustEnabled,
+      runtimeRoot: configResult.sources.project.workspaceHookRuntimeRoot ?? {
+        // Fallback 只在 config-factory 未导出时生效（理论上不会发生）。
+        // 此处原本无条件按单层 runtimeConfig.hooks 重建 runtimeRoot，与
+        // config-factory 遍历 default/user/project/env/cli 全部层的推导不一致，
+        // 导致 review 快照与 toggle 重建的 bundleDigest 不同，
+        // 「审核中 toggle」被误报为 workspace_hooks_snapshot_mismatch。
+        enabled: runtimeConfig.hooks?.enabled === true,
+        timeoutMs: runtimeConfig.hooks?.timeoutMs ?? 60_000,
+        maxOutputBytes: runtimeConfig.hooks?.maxOutputBytes ?? 32_768,
+      },
+      sessionId,
+      snapshot: configResult.sources.project.workspaceHookSnapshot,
+      userConfigPath: configResult.sources.user.path,
+      workingDirectory,
+      ...(options.workspaceHookReviewHost
+        ? {
+            emitReviewEvent: async (event) => {
+              if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
+              await runtime.appendEvent(
+                createSessionEvent(event.type, sessionId, event.payload, {
+                  traceId: traceContext.traceId,
+                }),
+                traceContext,
+              );
+            },
+            emitAdmissionEvent: async (event) => {
+              if (!runtime) throw new Error("ZCode runtime is not initialized yet.");
+              await runtime.appendEvent(
+                createSessionEvent(event.type, sessionId, event.payload, {
+                  traceId: traceContext.traceId,
+                }),
+                traceContext,
+              );
+            },
+          }
+        : {}),
+    });
     // 差异清单 15：子会话的权限服务取覆盖包——explore 是独立只读配置，其余继承**父实例**
     // （父实例携带本会话已授予的权限状态，重建会丢掉它）。workflowFacade 需要它，是必填参数。
     const permissionService = childScope
