@@ -762,7 +762,19 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 驱动脚本与隔离根都在仓库外（`E:/Temp/...`）临时搭建，未入库；它们是"怎么验"的证据，不是交付物。
 
-**仍未执行**：**桌面 GUI 侧**（左栏子条目的层级态、侧栏子面板从只读变可输入、重启应用后子条目仍在）。上面的 A/B/C 都是协议面/存储面证据，没有覆盖 renderer 的渲染与交互，也没有跑过 `pnpm dev:desktop`。
+### 桌面 GUI 端到端（2026-10-09 实测，renderer 侧）
+
+隔离做法（**绝不碰用户正在跑的 ZCode**）：dev 态应用名是 `ZCode Dev`，userData 与打包版不同名，因此单实例锁天然不冲突；再用四个环境变量把 dev 实例整体隔离到一次性目录——`ZCODE_DATA_ROOT`、`ZCODE_DESKTOP_USER_DATA_DIR`、`ZCODE_DESKTOP_HOME_DIR`、`ZCODE_DESKTOP_APPLICATION_NAME`。dev 态还自带 `--remote-debugging-port=9229`（`app.isPackaged === false` 时固定开启），据此用 CDP 驱动界面。
+
+**踩到并记下的一处环境坑**：全新隔离 profile 一进去是欢迎页（连接账号 / 填 API Key），进不了工作区。原因不是没 provider——日志里 `hasUsableProvider: true`、`providerCount: 1`，Luosheng 已可用；是守卫的另一半条件 `!providerFamilyDomain` 成立（`ui/src/root/useProviderAvailabilityLoginEntryGuard.ts`：`shouldOpenLoginEntry = !providerFamilyDomain || (!user && !hasUsableProvider)`），而全新 profile 的 `providerFamilyDomain` 为空、迁移推断出 `null`。**E2E 的解法是把这个 onboarding 标记补进隔离 profile 的 `setting.json`**（`providerFamilyDomain: "zai"`，即 API Key 登录路径同样会写的那个字段），不是绕过什么安全边界。注意该文件在 **home 派生的根**（`{ZCODE_DESKTOP_HOME_DIR}/.zcode/v2/setting.json`），与 agent 子进程用的 `ZCODE_DATA_ROOT` 不是同一棵——renderer 读的是前者。
+
+实测覆盖（截图 + a11y 快照 + 应用日志三处互证）：
+
+1. **派发 → 左栏层级态**：composer 发派发指令（该任务模型即隔离根配置的 `Luosheng MaaS/u2-flash`）→ 左栏父条目下方出现缩进子条目，进行中显示「运行中」，完成后变「已完成」。
+2. **点开子条目 → 侧栏子面板**：面板标题栏显示子会话标题 + **`子代理 · general-purpose` 身份徽标** + 状态词「已结束」。
+3. **子会话可输入**：子面板有独立 composer，发一句话后子会话开新轮并正常回复；同时**父会话轮次与面板都不受影响**（父会话的「已工作 21 秒」保持不变）。
+4. **重启应用 → 冷恢复**：强制结束 dev 进程后重新启动，左栏父子条目仍在；点开子条目——**历史两轮完整回显、身份徽标仍是 `general-purpose`、composer 可用**；再发一条消息，子会话开出第三轮并回复「收到了」。应用日志里 `TypeError: ... reading 'db'` 出现次数为 0（这条正是「真实派发端到端」C 里修复前必崩的那条路径，现在由 renderer 走一遍也不崩）。
+5. 顺带观测到一条与子代理无关的既存现象（**未修，仅登记**）：重启后主会话标签页标题回落到「新建任务」，而左栏与面板里都是真实标题。本轮是强杀进程（非优雅退出）后重启，无法排除是强杀导致的恢复态差异；不在本轮触碰文件内，另立任务更合适。
 
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
   - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。
@@ -777,7 +789,13 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **本轮范围内、按阶段排期**：S1a、S1b、S2–S5 —— **全部已落地**（各阶段事实与复核结论见上文各节）。
 
-**验收缺口（本轮未执行，须补）**：只剩**桌面 GUI 侧**——左栏父条目下的子条目层级态、侧栏子面板从只读变可输入、重启应用后子条目仍在且能继续聊（验收路径 1–5 的渲染/交互部分与第 8 条的重启部分）。协议面与存储面的等价证据已由上文「真实派发端到端（2026-10-09 实测）」的 A/B/C 三条覆盖：派发落库与身份冻结、子会话照跑用户 hooks、冷恢复还原身份且嵌套闸仍成立；`-32603` 崩溃那条已被修复并加了回归测试。**判据是"还没跑过 `pnpm dev:desktop`"**：C 走的虽是桌面 Host 用的同一套协议方法，但没有经过 renderer。
+**验收缺口（本轮未执行，须补）**：上述 11 条验收路径里**依赖真实派发的部分已全部执行**（协议面 A/B/C + 桌面 GUI 1–4、8，见「真实派发端到端」两节）。**尚未覆盖**的是这几条，它们要么需要构造异常态、要么需要第二个设备/进程：
+
+- 第 5 条（子代理工具调用触发授权 → 弹窗落父会话 + 子面板顶部"有 N 个请求等待在父会话处理"跳转）：本轮子代理用的 `Bash`/文件类工具都在 `yolo` 模式下免授权，没有构造出阻塞交互。
+- 第 6 条后半（删除父会话 → 子会话被递归删除）：只在单测层面覆盖（`session-tree`），没有在 GUI 里实际删一次。
+- 第 7 条（中止父会话运行轮 → 子代理进行中的轮被中止）：GUI 未跑；单测覆盖了级联本身。
+- 第 9 / 11 条（fork 与模式切换控件在子会话里不渲染 / 受限模式子会话 composer 禁用且直发被拒）：第 11 条需要**人为删掉某子会话的 launch spec 行**才能构造，属破坏性构造；第 9 条可从现有子面板直接看，但本轮没有逐项核对 fork 行内动作与模式选择器。
+- 第 10 条（子代理派生子代理被明确拒绝）：本轮拿到的是**间接**证据——launch spec 的冻结白名单里没有 `Agent`/`Task`，冷恢复后子会话自述工具面也不含它们；没有真的让子代理去点一次派发。
 
 （勘误：本段此前记录"本机数据根跑不起一轮真实 agent"——那是**本机 `~/.zcode-rayn` 的实测现象**，不是本轮改造的缺陷，也不构成验收阻塞：用隔离数据根 + 独立 provider 配置即可跑通真实派发，做法见上文。不要把当时的环境限制读成本产品的功能缺口。）
 
