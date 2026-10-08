@@ -43,6 +43,7 @@ export type ContextSource =
   | "subagent_agent_prompt" // 子 agent 专属身份/任务 prompt
   | "subagent_notes" // 子 agent 通用操作提醒
   | "subagent_environment" // 子 agent 环境和模型上下文
+  | "selection_side_chat_identity" // 辅助对话（副屏）专属身份：仅回答新问题、不续父任务
   | "dynamic_behavior" // 动态行为边界
   | "session_guidance" // 当前可用内置能力指导
   | "output_style" // 输出风格

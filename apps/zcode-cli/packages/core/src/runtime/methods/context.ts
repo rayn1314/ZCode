@@ -5,6 +5,7 @@ import {
   createContextBuilder,
   createSubagentContextBuilder,
 } from "../deps.js";
+import { addSelectionSideChatIdentityIfNeeded } from "../../context/sections/selection-side-chat.js";
 import type {
   Model,
   ModelToolCall,
@@ -141,7 +142,11 @@ export function createContextBuilderFromSnapshot(
     guidanceToolNames: this.getTools(options.model).map((tool) => tool.name),
   };
 
-  return createContextBuilder(contextConfig).setToolRegistry(this.registry);
+  const builder = createContextBuilder(contextConfig).setToolRegistry(this.registry);
+  // 辅助对话是普通 fork 会话，默认与主 Agent 共享同一份身份提示词；这里按 taskType 补一段
+  // system 层的「辅助对话身份」，避免它把继承的父历史当成自己的活跃任务继续做。
+  addSelectionSideChatIdentityIfNeeded(builder, this.config.taskType);
+  return builder;
 }
 
 export async function loadProjectMemoryRoot(
