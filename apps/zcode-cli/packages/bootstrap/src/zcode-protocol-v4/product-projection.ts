@@ -515,6 +515,15 @@ export class ProductProjection {
     return this.snapshot;
   }
 
+  /**
+   * hydration 重放期间 snapshot 在 accumulator 上**原地**推进（同一引用内容会变，见
+   * beginHydrationReplay）；publisher 的字节测量 memo 以 snapshot 引用为判据，此时引用
+   * 不再代表内容，命中即测少——供 memo 判据在该状态强制绕开。
+   */
+  isHydrationReplayActive(): boolean {
+    return this.hydrationAccumulator !== null;
+  }
+
   /** assistant 守恒：被拒收的正文流事件数（>0 = 投影可能缺段，需重 hydration）。 */
   getDroppedContentStreamEventCount(): number {
     return this.droppedContentStreamEventCount;

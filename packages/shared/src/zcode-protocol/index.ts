@@ -1479,6 +1479,14 @@ export const zcodeSessionEventsResultSchema = z
 export const zcodeSessionMessagesResultSchema = z
   .object({
     messages: z.array(zcodeMessageWithPartsSchema),
+    // P2-6：服务端按默认/硬顶 limit 截断后，调用方需要知道候选集总量与是否被截断。
+    // 与 limit（服务端钳制，见 bootstrap server-operations 注释）配套；字段 optional：
+    // 新客户端可兼容尚未返回它们的旧服务端。旧客户端 + 新服务端只出现在跨版本混部
+    //（首方部署的 client/server 同版本出厂），不为它放宽 strict。
+    /** 本次查询候选集（应用 afterMessageId 之后、limit 截断之前）的总条数。 */
+    total: z.number().int().nonnegative().optional(),
+    /** true = 候选集超过 limit，更早的消息未随本次响应返回。 */
+    hasMore: z.boolean().optional(),
   })
   .strict();
 export const zcodeStateUpdatedNotificationSchema = z

@@ -105,6 +105,7 @@ import {
   buildSessionSnapshot,
   buildWorkspaceRef,
   formatProtocolModelSelection,
+  mapMessageWithParts,
   mapSessionEventForProtocol,
   mapSessionInfo,
   resolveSessionContextUsage,
@@ -1888,6 +1889,29 @@ export async function readSessionContextUsage(
   });
 }
 
+/**
+ * `session/messages` 的服务端默认条数与硬顶（P2-6 全量读防护）。
+ *
+ * 背景：该操作先 `readActiveSessionMessages` 取全量（存储层 `sessionStore.messages`
+ * 仍是两表 SELECT *，见 spec 遗留），再按调用方 limit 切片——原实现 limit 缺省即整库
+ * 返回、传多大给多大，客户端可一次拉爆服务端与自身内存。
+ *
+ * 取值依据（已 grep 全仓调用方）：
+ * - 默认 2000：现网唯一调用方 `zcodeAgentService.readSessionMessages` 把 `limit`
+ *   原样透传（不传 = undefined），而 UI / web / desktop 没有任何 `readSessionMessages`
+ *   调用点（UI 的消息窗走 readSession 的 messageLimit，实测只传 1）。缺省语义从
+ *   「全量」改为有界 2000，量级与既有 `PROTOCOL_V4_LIMITS.eventRetentionPerSession: 2000`
+ *   的历史窗同档，覆盖长会话整段回看。
+ * - 硬顶 10000：没有现网调用方依赖超大 limit（无全量导出路径），但 session/messages
+ *   是公开协议面，外部客户端可传任意正整数；10000 给未来的导出/迁移类用途留余量，
+ *   同时保证单响应有界。
+ *
+ * 超限返回**最近的 N 条**（对话场景最新消息更需要），响应带 total/hasMore；
+ * 客户端行为不改（少返回总比 OOM 好），更早的历史用 afterMessageId 翻页取。
+ */
+export const SESSION_MESSAGES_DEFAULT_LIMIT = 2000;
+export const SESSION_MESSAGES_MAX_LIMIT = 10_000;
+
 export async function readMessages(context: ZCodeProtocolAgentServerContext, rawParams: unknown) {
   const params = parseParams(zcodeSessionMessagesParamsSchema, rawParams);
   const record = requireSession(context, params.sessionId);
@@ -1895,9 +1919,24 @@ export async function readMessages(context: ZCodeProtocolAgentServerContext, raw
   const afterMessageIndex = params.afterMessageId
     ? allMessages.findIndex((message) => String(message.info.id) === params.afterMessageId)
     : -1;
-  const messages = afterMessageIndex >= 0 ? allMessages.slice(afterMessageIndex + 1) : allMessages;
+  const candidates =
+    afterMessageIndex >= 0 ? allMessages.slice(afterMessageIndex + 1) : allMessages;
+  // schema 只保证 limit 是正整数，上界由这里钳制（默认值同样生效，见常量注释）。
+  const limit = Math.min(
+    params.limit ?? SESSION_MESSAGES_DEFAULT_LIMIT,
+    SESSION_MESSAGES_MAX_LIMIT,
+  );
+  const messages = candidates.slice(-limit);
   return {
-    messages: params.limit ? messages.slice(-params.limit) : messages,
+    // 出协议必须是 wire 形状（info.messageId/sessionId），与 strict 的
+    // zcodeSessionMessagesResultSchema 对齐；此前直接回传存储形状（info.id/sessionID），
+    // 声明 schema 的客户端解析必失败——该端点现网零调用方，属潜伏缺陷，本轮随响应契约
+    // 一并修正。afterMessageId 的匹配在映射前按 info.id 完成（wire messageId 同值）。
+    messages: messages.map(mapMessageWithParts),
+    /** 本次查询候选集（应用 afterMessageId 之后、limit 截断之前）的总条数。 */
+    total: candidates.length,
+    /** true = 候选集超过 limit，更早的消息未随本次响应返回。 */
+    hasMore: candidates.length > messages.length,
   };
 }
 

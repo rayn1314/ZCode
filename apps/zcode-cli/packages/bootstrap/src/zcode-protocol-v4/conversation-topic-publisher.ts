@@ -63,10 +63,12 @@ const TERMINAL_PLAN_STATUSES: ReadonlySet<ToolCallRow["status"]> = new Set([
 ]);
 
 /**
- * cold replay 会高频测量临时 delta；TextEncoder 会为每次测量再分配完整 Uint8Array。
- * CLI 已固定运行在 Node，这里对同一 JSON 文本直接计算精确 UTF-8 字节数，不做近似估算。
+ * 高频字节测量口径：cold replay 的临时 delta、准入候选的 queue item 都要逐条测，
+ * TextEncoder 会为每次测量再分配完整 Uint8Array。CLI 已固定运行在 Node，这里对同一
+ * JSON 文本直接计算精确 UTF-8 字节数（与 utf8JsonByteLength 逐字节等价，只是不落
+ * Uint8Array），不做近似估算。
  */
-function coldHydrationJsonByteLength(value: unknown): number {
+function jsonUtf8ByteLength(value: unknown): number {
   const json = JSON.stringify(value);
   return json === undefined ? 0 : Buffer.byteLength(json, "utf8");
 }
@@ -227,6 +229,61 @@ function appendConversationSubscriberBuffer(
   return { kind: "buffered", deltas, encodedBytes };
 }
 
+/**
+ * 输入准入候选的 QueueItem 构造。生产唯一调用方是
+ * `ConversationTopicPublisher.measureInputAdmissionProjectionBytes`；导出是为了让测试
+ * 能用同一份 item 做「整份重算」对拍（测量口径必须与真实入队的行一致，item 构造本身
+ * 不是被测假设，故与测试共享）。不适用的命令返回 null。
+ */
+export function buildInputAdmissionQueueItem(
+  envelope: CommandEnvelope,
+  admission: { admissionSeq: number; admittedAt: number; queueItemId: string },
+  snapshot: ConversationSnapshot,
+): QueueItem | null {
+  const raw = envelope.payload as {
+    text?: string;
+    displayText?: string;
+    attachments?: QueueItem["attachments"];
+    firstInput?: { text: string; attachments?: QueueItem["attachments"] };
+  };
+  const input = envelope.type === "createSession" ? raw.firstInput : raw;
+  if (
+    !input ||
+    (envelope.type !== "createSession" &&
+      envelope.type !== "sendText" &&
+      envelope.type !== "sendGoalCommand" &&
+      envelope.type !== "compact")
+  ) {
+    return null;
+  }
+  return {
+    sourceCommandId: envelope.commandId,
+    queueItemId: admission.queueItemId,
+    clientId: envelope.clientId || "cli",
+    kind:
+      envelope.type === "compact"
+        ? "compact"
+        : envelope.type === "sendGoalCommand"
+          ? "sendGoalCommand"
+          : "sendText",
+    text:
+      envelope.type === "compact"
+        ? "/compact"
+        : envelope.type === "sendGoalCommand"
+          ? raw.displayText?.trim() || `/goal ${(input.text ?? "").trim()}`
+          : (input.text ?? ""),
+    attachments: input.attachments ?? [],
+    delivery: { requested: "queue", admitted: "queue" },
+    order: {
+      admissionSeq: admission.admissionSeq,
+      queuePosition: snapshot.queue.items.length,
+    },
+    steer: { state: "notRequested" },
+    dispatch: { state: "queued" },
+    admittedAt: admission.admittedAt,
+  };
+}
+
 export class ConversationTopicPublisher {
   readonly topic: string;
   private projection: ProductProjection;
@@ -245,6 +302,14 @@ export class ConversationTopicPublisher {
   private nextLogicalFrameSerial = 1;
   /** 当前 snapshot logical frame 的保守上界；流式追加只累计增量，逼近上限才精确序列化。 */
   private wireSnapshotBytesUpperBound: number;
+  /**
+   * 输入准入字节测量的 memo（P2-6）：判据 = 投影 snapshot 对象引用。投影只做不可变
+   * 替换（applyEvent/seed* 都 `{...}` 重建），引用不变 ⇒ 内容不变 ⇒ wire snapshot
+   * 字节数不变。hydration 的原地推进只发生在未发布的候选 publisher 上，准入永远读不到
+   * 那种状态，仍由 `isHydrationReplayActive` 拦一道；变更入口（ingest/seed/rehydrate）
+   * 另行显式失效作双保险。禁止按时间失效——测量值必须始终等于真实发送值。
+   */
+  private wireSnapshotMeasureMemo: { snapshot: ConversationSnapshot; bytes: number } | null = null;
 
   constructor(
     private readonly sessionId: string,
@@ -268,7 +333,7 @@ export class ConversationTopicPublisher {
       PROTOCOL_V4_LIMITS.subscriberBufferMaxBytes,
       "subscriberBufferMaxBytes",
     );
-    this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
   }
 
   getSnapshot(): ConversationSnapshot {
@@ -277,7 +342,7 @@ export class ConversationTopicPublisher {
 
   /** 测试/闸门共用的 logical TopicFrame 字节口径（不是裸 snapshot 大小）。 */
   getWireSnapshotLogicalBytes(): number {
-    return this.measureWireSnapshotBytes(this.getWireSnapshot());
+    return this.measureCurrentWireSnapshotBytes();
   }
 
   resolveStableForkCandidate(rowId: number): StableForkCandidateResolution {
@@ -286,28 +351,32 @@ export class ConversationTopicPublisher {
 
   /** config 种子注入：直改投影初值，不产 delta / 不进事件日志。语义见 ProductProjection.seedConfig。 */
   seedConfig(seed: SessionConfigSeed): void {
+    this.invalidateWireSnapshotMeasureMemo();
     this.projection.seedConfig(seed);
-    this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
   }
 
   /** 分享导入提示是静态只读元数据，不进入 delta/revision；可在 hydration 后幂等补种。 */
   seedSharedContextImport(
     source: ConversationSnapshot["sharedContextImport"] | null | undefined,
   ): void {
+    this.invalidateWireSnapshotMeasureMemo();
     this.projection.seedSharedContextImport(source);
-    this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
   }
 
   /** usage 种子注入：冷恢复用持久化 token 水位覆盖 transcript 合成的 0 占位。 */
   seedUsage(seed: SessionUsageSeed): void {
+    this.invalidateWireSnapshotMeasureMemo();
     this.projection.seedUsage(seed);
-    this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
   }
 
   /** cold hydration 的 store-verified subagent manifest，不产 delta。 */
   seedSubagents(seed: SessionSubagentsSeed): void {
+    this.invalidateWireSnapshotMeasureMemo();
     this.projection.seedSubagents(seed);
-    this.wireSnapshotBytesUpperBound = this.measureWireSnapshotBytes(this.getWireSnapshot());
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
   }
 
   /**
@@ -374,59 +443,50 @@ export class ConversationTopicPublisher {
    * 输入 admission 的候选 projection：用完整 QueueItem 表达同一份 intent，覆盖文本与附件引用。
    * QueueItem 元数据不小于立即启动后的 user row，因此通过此闸门的输入不会在后续首次
    * snapshot 才变成不可传输。此方法只读，不写 admission / event log。
+   *
+   * 字节口径 = 「基线 wire snapshot」+「追加一个 queue item 的精确增量」（见方法内注释），
+   * 基线走 snapshot 引用 memo：同一投影版本的多条准入命令不再各自全量 stringify
+   * （P2-6）。返回值仍必须与整份重算逐字节一致——它给 16MiB 逻辑帧上限判生死，
+   * 测少一个字节就会放行发不出去的输入。
    */
   measureInputAdmissionProjectionBytes(
     envelope: CommandEnvelope,
     admission: { admissionSeq: number; admittedAt: number; queueItemId: string },
   ): number | null {
-    const raw = envelope.payload as {
-      text?: string;
-      displayText?: string;
-      attachments?: QueueItem["attachments"];
-      firstInput?: { text: string; attachments?: QueueItem["attachments"] };
-    };
-    const input = envelope.type === "createSession" ? raw.firstInput : raw;
-    if (
-      !input ||
-      (envelope.type !== "createSession" &&
-        envelope.type !== "sendText" &&
-        envelope.type !== "sendGoalCommand" &&
-        envelope.type !== "compact")
-    ) {
-      return null;
-    }
     const snapshot = this.projection.getSnapshot();
-    const queueItem: QueueItem = {
-      sourceCommandId: envelope.commandId,
-      queueItemId: admission.queueItemId,
-      clientId: envelope.clientId || "cli",
-      kind:
-        envelope.type === "compact"
-          ? "compact"
-          : envelope.type === "sendGoalCommand"
-            ? "sendGoalCommand"
-            : "sendText",
-      text:
-        envelope.type === "compact"
-          ? "/compact"
-          : envelope.type === "sendGoalCommand"
-            ? raw.displayText?.trim() || `/goal ${(input.text ?? "").trim()}`
-            : (input.text ?? ""),
-      attachments: input.attachments ?? [],
-      delivery: { requested: "queue", admitted: "queue" },
-      order: {
-        admissionSeq: admission.admissionSeq,
-        queuePosition: snapshot.queue.items.length,
-      },
-      steer: { state: "notRequested" },
-      dispatch: { state: "queued" },
-      admittedAt: admission.admittedAt,
-    };
-    const candidate: ConversationSnapshot = {
-      ...snapshot,
-      queue: { ...snapshot.queue, items: [...snapshot.queue.items, queueItem] },
-    };
-    return this.measureWireSnapshotBytes(this.getWireSnapshot(candidate));
+    const queueItem = buildInputAdmissionQueueItem(envelope, admission, snapshot);
+    if (queueItem === null) return null;
+    // 候选快照只比基线多一个 queue item：candidate = {...snapshot, queue: {...snapshot.queue,
+    // items: [...items, queueItem]}}，键序与其余字段逐字节不变，rows 与 frame 头也完全一致
+    // ——wire JSON 唯一的差异就是 items 数组尾部多出 `[,]<queueItem>`（JSON 转义与上下文
+    // 无关）。因此整份字节数 = 基线 +（原数组非空时的 1 个逗号）+ queueItem 自身字节数，
+    // 是精确值而非估算。
+    const baseBytes = this.measureCurrentWireSnapshotBytes(snapshot);
+    return baseBytes + (snapshot.queue.items.length > 0 ? 1 : 0) + jsonUtf8ByteLength(queueItem);
+  }
+
+  /**
+   * 变更入口统一失效准入字节 memo：判据本是 snapshot 引用（投影不可变替换），这里显式
+   * 置空是双保险——即便未来投影内部出现原地变更，也不会读到旧字节而测少。
+   */
+  private invalidateWireSnapshotMeasureMemo(): void {
+    this.wireSnapshotMeasureMemo = null;
+  }
+
+  /**
+   * wire snapshot 字节测量（按 snapshot 引用 memo）。只有「引用相同且投影不在 hydration
+   * 原地推进中」才允许命中：hydration 期间同一 snapshot 对象在 accumulator 上原地变化，
+   * 引用不再代表内容，命中即测少。
+   */
+  private measureCurrentWireSnapshotBytes(
+    snapshot: ConversationSnapshot = this.projection.getSnapshot(),
+  ): number {
+    const hydrating = this.projection.isHydrationReplayActive();
+    const memo = this.wireSnapshotMeasureMemo;
+    if (!hydrating && memo !== null && memo.snapshot === snapshot) return memo.bytes;
+    const bytes = this.measureWireSnapshotBytes(this.getWireSnapshot(snapshot));
+    if (!hydrating) this.wireSnapshotMeasureMemo = { snapshot, bytes };
+    return bytes;
   }
 
   private measureWireSnapshotBytes(snapshot: ConversationSnapshot): number {
@@ -548,6 +608,8 @@ export class ConversationTopicPublisher {
 
   /** 应用权威事件：投影推进 + 日志记账 + 扇出到各订阅者 flush buffer。 */
   ingest(event: SessionEvent): void {
+    // 变更入口先失效准入字节 memo（双保险，语义见 invalidateWireSnapshotMeasureMemo）。
+    this.invalidateWireSnapshotMeasureMemo();
     const projectionLimit =
       event.type === SessionEventType.TurnComplete || event.type === SessionEventType.TurnError
         ? PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes
@@ -576,6 +638,10 @@ export class ConversationTopicPublisher {
           return true;
         }
         candidateBytes = this.measureWireSnapshotBytes(this.getWireSnapshot(snapshot));
+        // 精确分支测的就是这份候选快照：accept 通过后它即被 adopt 为当前 snapshot，
+        // 直接回填准入字节 memo，让紧随其后的输入准入零成本命中。超限被拒时该引用
+        // 不会成为当前值，memo 按引用判据自然失效，不留脏数据。
+        this.wireSnapshotMeasureMemo = { snapshot, bytes: candidateBytes };
         nextUpperBound = candidateBytes;
         return candidateBytes <= projectionLimit;
       });
@@ -652,6 +718,9 @@ export class ConversationTopicPublisher {
     }
 
     this.projection = candidate.projection;
+    // projection 整体换代：旧 snapshot 引用的准入字节 memo 一律作废（引用判据本已判异，
+    // 显式失效与其它变更入口保持同一写法）。
+    this.invalidateWireSnapshotMeasureMemo();
     if (usedBatchHydration) {
       // 批量重放会把派生 actions 延迟到最终 materialization；若允许客户端
       // 用逐事件旧快照的中间 base 续这份日志，batch 从未持有的旧 canEdit/canRetry 无法被
@@ -716,7 +785,7 @@ export class ConversationTopicPublisher {
         });
         if (wireDeltas.length > 0) {
           encodedGrowthSinceMeasurement +=
-            coldHydrationJsonByteLength({ kind: "deltas", deltas: wireDeltas }) +
+            jsonUtf8ByteLength({ kind: "deltas", deltas: wireDeltas }) +
             HYDRATION_EVENT_WIRE_OVERHEAD_BYTES;
         }
       }
@@ -738,6 +807,8 @@ export class ConversationTopicPublisher {
       if (mustMeasureSnapshot || upperBound > projectionLimit) {
         // 保守 delta 累计值一旦超限就直接回退 strict 的话，重复 upsert
         // 即使未增大 snapshot 也会误回退；固定 32-event 重测还会反复序列化 checkpoint。
+        // 这里刻意不走准入字节 memo：hydration 期间 snapshot 在 accumulator 上原地推进，
+        // 同一引用内容持续变化，memo 判据（引用=内容）不成立。
         measuredBytes = this.measureWireSnapshotBytes(this.getWireSnapshot());
         measuredSequenceNumberBytes = currentSequenceNumberBytes;
         encodedGrowthSinceMeasurement = 0;
