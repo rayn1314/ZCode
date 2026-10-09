@@ -59,10 +59,15 @@ function isFree(price: ModelPrice): boolean {
   return price.input === 0 && price.output === 0 && price.cacheRead === 0;
 }
 
-/** 同 id 多渠道取价：官方目录优先；否则取非零条目里一致价（众数），全零按免费档。 */
+/**
+ * 同 id 多渠道取价：官方目录优先；否则取非零条目里一致价（众数），全零按免费档。
+ * 最高票并列（平票）时无一致价，返回 null 让调用方跳过该模型——回退内置基准或
+ * 记未定价，绝不按目录插入顺序随机取一家（曾随机取中 cacheRead=输入价的劣质条目，
+ * 叠加费用双计费把估算抬到真实值的 34~68 倍）。
+ */
 function pickPrice(
   entries: Array<{ provider: string; cost: NonNullable<ModelsDevModel["cost"]> }>,
-): ModelPrice {
+): ModelPrice | null {
   for (const official of OFFICIAL_PROVIDER_ORDER) {
     const hit = entries.find((entry) => entry.provider === official);
     if (hit) {
@@ -89,7 +94,17 @@ function pickPrice(
       best = candidate;
     }
   }
-  return best?.price ?? { input: 0, output: 0, cacheRead: 0 };
+  if (!best) {
+    // 全零/免费条目：按免费档
+    return { input: 0, output: 0, cacheRead: 0 };
+  }
+  let tied = 0;
+  for (const candidate of counts.values()) {
+    if (candidate.count === best.count) {
+      tied += 1;
+    }
+  }
+  return tied > 1 ? null : best.price;
 }
 
 function todayLocalDate(now: Date): string {
@@ -137,7 +152,10 @@ export async function syncLedgerPriceBaseline(options: {
     }
     const prices: Record<string, ModelPrice> = {};
     for (const [modelId, entries] of entriesByModel) {
-      prices[modelId] = pickPrice(entries);
+      const price = pickPrice(entries);
+      if (price) {
+        prices[modelId] = price;
+      }
     }
     const date = todayLocalDate(options.now?.() ?? new Date());
     const payload = {
@@ -146,7 +164,7 @@ export async function syncLedgerPriceBaseline(options: {
         date,
         currency: "USD",
         unit: "每百万 token",
-        note: "同步层只覆盖内置基准；同名多渠道时厂商自营目录优先，其余取非零一致价。用户覆盖文件 usage-prices.json 的同名模型仍优先。仅用于估算，实际以账单为准。",
+        note: "同步层只覆盖内置基准；同名多渠道时厂商自营目录优先，其余取非零一致价（平票不写入）。用户覆盖文件 usage-prices.json 的同名模型仍优先。仅用于估算，实际以账单为准。",
       },
       ...prices,
     };

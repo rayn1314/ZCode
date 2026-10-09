@@ -4,7 +4,7 @@
 // 口径与 ledgerReader.ts 的本机聚合逐行对齐，改动任一侧必须同步另一侧并跑对拍。
 // 注意：脚本内不能新增变量赋值式的 sh 调用之外的东西——本文件只是 Python 源码模板。
 
-export const LEDGER_DUMP_SCRIPT_VERSION = 1;
+export const LEDGER_DUMP_SCRIPT_VERSION = 2;
 
 /** String.raw 保证 Python 源码里的 \n、\' 等转义按字面输出。 */
 export const LEDGER_DUMP_SCRIPT_PY = String.raw`#!/usr/bin/env python3
@@ -62,9 +62,9 @@ def calc_cost(prices, model_id, input_tokens, output_tokens, cache_read):
     p = prices.get(str(model_id).lower())
     if not p:
         return None
-    # 缓存读是输入的子集，按缓存价单独计，不能再按输入价计一遍
+    # input_tokens 本就含 cacheRead，命中部分先从输入扣掉再乘输入价（与 ledgerPrices.ts calcLedgerCost 同口径，防双重计费）
     return (
-        input_tokens / 1e6 * float(p.get("input", 0))
+        max(0, input_tokens - cache_read) / 1e6 * float(p.get("input", 0))
         + output_tokens / 1e6 * float(p.get("output", 0))
         + cache_read / 1e6 * float(p.get("cacheRead", 0))
     )

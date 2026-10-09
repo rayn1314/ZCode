@@ -35,6 +35,9 @@ const BASELINE_LEDGER_PRICES: Record<string, unknown> = {
   "qwen3.8-flash": { input: 0.15, output: 0.47, cacheRead: 0.016 },
   "deepseek-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
   "deepseek-v4.1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
+  // 连字符别名：中转站（xin 等）上报的模型命名，models.dev 上该键只有劣质报价
+  // （cacheRead=输入价），内置同价保证价格表回退到本层时仍是官方口径。
+  "deepseek-v4-1-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
   "deepseek-v4-flash": { input: 0.15, output: 0.6, cacheRead: 0.003 },
   "deepseek-v4-flash-free": { input: 0, output: 0, cacheRead: 0 },
   "deepseek-v4-pro": { input: 0.66, output: 1.98, cacheRead: 0.022 },
@@ -92,7 +95,9 @@ function parsePriceJson(raw: string): {
 
 /**
  * 按单价表算一次调用的费用；模型没定价返回 null（不计入、也不静默按 0 算）。
- * 缓存读是输入的子集，按缓存价单独计，不能再按输入价计一遍。
+ * input_tokens 本就含 cacheRead（AI SDK 归一化为 total，spec 口径 cacheRead ⊂ input），
+ * 命中部分必须先从输入扣掉再乘输入价——否则命中 token 按未命中价计一遍、再按缓存价
+ * 计一遍，双重计费（2026-10-09 修复：98% 命中率下预估费用虚高数十倍，$104 曾显示 $7,069）。
  */
 export function calcLedgerCost(
   table: LedgerPriceTable | null,
@@ -108,8 +113,9 @@ export function calcLedgerCost(
   if (!price) {
     return null;
   }
+  const missInputTokens = Math.max(0, inputTokens - cacheReadTokens);
   return (
-    (inputTokens / 1e6) * price.input +
+    (missInputTokens / 1e6) * price.input +
     (outputTokens / 1e6) * price.output +
     (cacheReadTokens / 1e6) * price.cacheRead
   );

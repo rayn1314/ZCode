@@ -43,7 +43,7 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 ## 口径资产（与工具版本一致，两侧同轴）
 
 1. **token 包含关系**：cacheRead ⊂ input、reasoning ⊂ output；任何 token 合计只用 `input + output`。
-2. **费用**：逐模型计价再汇总 `input/1e6*pIn + output/1e6*pOut + cacheRead/1e6*pCache`；今天/本月/每日/模型/Agent/会话各视图都按 (维度, 模型) 分组取出后折叠，费用才能按维度归并。未定价模型显式记入 `unpricedCalls/unpricedModelIds`，不静默归零。
+2. **费用**：逐模型计价再汇总 `(input − cacheRead)/1e6*pIn + output/1e6*pOut + cacheRead/1e6*pCache`——`input_tokens` 本就含 cacheRead（AI SDK 归一化口径），必须先从输入扣掉命中部分再乘输入价；否则命中部分按未命中价计一遍、再按缓存价计一遍，高命中率（98%）场景费用虚高数十倍（2026-10-09 修复：xin × deepseek-v4-1-flash 曾从 ~$104 显示成 $7,069）。今天/本月/每日/模型/Agent/会话各视图都按 (维度, 模型) 分组取出后折叠，费用才能按维度归并。未定价模型显式记入 `unpricedCalls/unpricedModelIds`，不静默归零。
 3. **合并**（ledgerMerge.ts）：计数求和；均值（耗时/TTFT）按调用数加权；sessions/recent 重排后各截 **500 条**——这是 UI 翻页的数据池上限（单源 recent SQL 500、单源 sessions 200），明细表分页展示（每页 20/50/100/200 可调、偏好记忆），不再一屏平铺硬滚；**费用只累加非 null**——某源没有价格表时混入 0 会让总数凭空少一截。
 4. **时间分桶**：全部参数化整数算术 `(COALESCE(started_at,0)+tzOffsetMs)/86400000`，不用 strftime/date 修饰符；WSL 侧 Python 用同一偏移（host 下发 `tzOffsetMinutes`），跨环境同一条时间轴。
 5. **范围**：today=本地今日 0 点起；7d/30d 含今日；all 上界取 now（`started_at <= NULL` 恒假，不能留 null）；custom 起止可交换，止日为次日 0 点 -1。
@@ -74,6 +74,6 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 ## 迁移边界
 
 - 单价表分三层，后层覆盖前层：内置基准（`ledgerPrices.ts` 内 `_meta.date` 标注基准日）< 同步基准 `<数据根>/v2/usage-prices-baseline.json` < 用户覆盖 `<数据根>/v2/usage-prices.json`（按小写模型名覆盖，损坏忽略）。
-- **价格基准手动同步**（`ledgerPriceSync.ts`）：界面页脚「同步」按钮触发 `syncLedgerPrices`，拉 models.dev 公开目录（api.json）写入同步层；只写中间层，绝不改用户覆盖文件。同名模型被 30+ 渠道各报一次价，取价口径与内置基准一致：**厂商自营目录优先**（deepseek/zai/alibaba/moonshotai/openai/stepfun/xiaomi 等白名单），无官方价时取非零条目的众数（来源一致价），全零按免费档；基准日期取本机日期。网络/解析失败或模型数低于阈值时报错并保留旧文件。不做定时自动同步——估算口径何时变化由用户知情触发。
+- **价格基准手动同步**（`ledgerPriceSync.ts`）：界面页脚「同步」按钮触发 `syncLedgerPrices`，拉 models.dev 公开目录（api.json）写入同步层；只写中间层，绝不改用户覆盖文件。同名模型被 30+ 渠道各报一次价，取价口径与内置基准一致：**厂商自营目录优先**（deepseek/zai/alibaba/moonshotai/openai/stepfun/xiaomi 等白名单），无官方价时取非零条目的众数（来源一致价），**最高票并列（平票）视为无一致价、不写入该模型**（回退内置基准或记未定价，绝不按目录插入顺序随机取一家——曾随机取中 cacheRead=输入价的劣质条目，叠加双计费把估算抬到真实值的 34~68 倍），全零按免费档；基准日期取本机日期。网络/解析失败或模型数低于阈值时报错并保留旧文件。不做定时自动同步——估算口径何时变化由用户知情触发。
 - CLI 写入侧 30 天保留策略不动：账本如实展示库内现有数据。
 - 筛选偏好（范围/供应商/模型/来源/刷新间隔/图表指标）存 localStorage `zcode.ledger.prefs.v1`，逐字段校验、损坏忽略；来源全选存 null（跟随未来新增数据根）。
