@@ -2,8 +2,12 @@
 // Environment Info Section Builder
 // ============================================================
 
-import type { ContextSection, EnvInfo } from "../types.js";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
+import { resolveZCodeDataRoot } from "@zcode/contracts";
 import type { Model } from "@zcode/contracts";
+import type { ContextSection, EnvInfo } from "../types.js";
 import { estimateTokens } from "../utils.js";
 
 const ENVIRONMENT_HEADING = "# Environment";
@@ -12,6 +16,7 @@ const IS_GIT_REPOSITORY_LABEL = "Is a git repository";
 const PLATFORM_LABEL = "Platform";
 const SHELL_LABEL = "Shell";
 const OS_VERSION_LABEL = "OS Version";
+const USER_DATA_ROOT_LABEL = "User data root";
 // const NODE_VERSION_LABEL = "Node version";
 // const OPERATING_SYSTEM_LABEL = "Operating system";
 const GIT_LABEL = "Git";
@@ -73,6 +78,7 @@ function buildEnvInfoContent(info: EnvInfo, model?: Model): string {
     `- ${PLATFORM_LABEL}: ${info.platform}`,
     `- ${SHELL_LABEL}: ${info.shell}`,
     `- ${OS_VERSION_LABEL}: ${info.osVersion}`,
+    ...buildUserDataRootLines(resolveZCodeDataRoot()),
     // 旧环境快照可能携带历史模型字段；渲染只读取本步骤实际执行的 Model。
     ...(model
       ? [`- You are powered by the model named ${model.providerId}/${model.modelId}.`]
@@ -80,6 +86,29 @@ function buildEnvInfoContent(info: EnvInfo, model?: Model): string {
   ];
 
   return lines.join("\n");
+}
+
+/**
+ * 身份数据根非常规时（产品身份后缀 / ZCODE_DATA_ROOT 覆盖）把真实数据根写进 Environment 段。
+ * 模型对「数据根在哪」的认知只来自提示词里出现过的路径字面量——不声明，它就按习惯猜共享域
+ * `~/.zcode`，把会话库、凭据、日志查到另一个产品身份头上。与常规根 `~/.zcode` 相同时不注入，
+ * 官方构建的提示词保持原文。共享域（skills/commands/plugins/AGENTS.md）判据见 desktop spec
+ * `product-identity-data-root.md`。
+ */
+function buildUserDataRootLines(dataRoot: string): string[] {
+  const conventionalRoot = join(homedir(), ".zcode");
+  if (normalizePathForCompare(dataRoot) === normalizePathForCompare(conventionalRoot)) {
+    return [];
+  }
+  return [
+    `- ${USER_DATA_ROOT_LABEL}: ${dataRoot} (user-level skills / commands / plugins / AGENTS.md are intentionally shared and stay under ${conventionalRoot})`,
+  ];
+}
+
+/** Windows 路径大小写不敏感、分隔符可混用；比较前统一 resolve，避免误判非常规根。 */
+function normalizePathForCompare(path: string): string {
+  const resolved = resolve(path);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
 }
 
 function buildGitSystemContextContent(info: EnvInfo): string {
