@@ -139,6 +139,9 @@ export function mergeConfigs(...configs: PrioritizedConfig[]): RuntimeConfigPatc
     if (config.toolConcurrency) {
       result.toolConcurrency = { ...result.toolConcurrency, ...config.toolConcurrency };
     }
+    if (config.subagents) {
+      result.subagents = { ...result.subagents, ...config.subagents };
+    }
     if (config.modelAnomalyGuard) {
       result.modelAnomalyGuard = {
         ...result.modelAnomalyGuard,

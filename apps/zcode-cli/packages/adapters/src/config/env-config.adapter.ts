@@ -57,9 +57,30 @@ export function parseEnvConfig(
       if (!config.toolConcurrency) config.toolConcurrency = {};
       config.toolConcurrency.maxConcurrency = normalizeNumber(value);
     }
+
+    // Subagent dispatch config（进程级驻留座位闸门上界）
+    else if (configKey === "SUBAGENT_MAX_CONCURRENT") {
+      const maxConcurrent = parseSubagentMaxConcurrent(value);
+      // 非法值（NaN / <1）不覆盖缺省：静默降级到 1 会把并发面掐死，不如保持配置默认。
+      if (maxConcurrent !== undefined) {
+        if (!config.subagents) config.subagents = {};
+        config.subagents.maxConcurrent = maxConcurrent;
+      }
+    }
   }
 
   return config;
+}
+
+/**
+ * 解析 `ZCODE_SUBAGENT_MAX_CONCURRENT`：1–64 **整数**，越界/非法返回 undefined（不覆盖）。
+ * 与配置文件 schema 的 subagents.maxConcurrent 同一纪律：非整数拒绝而不是截断——
+ * 静默截断会把用户写错的值悄悄改语义。
+ */
+function parseSubagentMaxConcurrent(value: string): number | undefined {
+  const num = Number(value);
+  if (!Number.isInteger(num) || num < 1 || num > 64) return undefined;
+  return num;
 }
 
 /**

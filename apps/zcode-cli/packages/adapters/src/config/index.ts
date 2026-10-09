@@ -183,6 +183,10 @@ class ConfigStore {
       if (config.toolConcurrency.maxConcurrency !== undefined)
         this.set(ConfigKey.ToolConcurrencyMax, config.toolConcurrency.maxConcurrency, scope);
     }
+    if (config.subagents) {
+      if (config.subagents.maxConcurrent !== undefined)
+        this.set(ConfigKey.SubagentsMaxConcurrent, config.subagents.maxConcurrent, scope);
+    }
     if (config.modelAnomalyGuard) {
       const previous = this.get(ConfigKey.ModelAnomalyGuard) ?? DefaultConfig.modelAnomalyGuard;
       this.set(
@@ -346,6 +350,10 @@ export class ConfigPortImpl implements ConfigPort {
           this.store.get(ConfigKey.ToolConcurrencyMax) ??
           DefaultConfig.toolConcurrency.maxConcurrency,
       },
+      subagents: {
+        maxConcurrent:
+          this.store.get(ConfigKey.SubagentsMaxConcurrent) ?? DefaultConfig.subagents.maxConcurrent,
+      },
       modelAnomalyGuard:
         this.store.get(ConfigKey.ModelAnomalyGuard) ?? DefaultConfig.modelAnomalyGuard,
       compact: this.store.get(ConfigKey.Compact) ?? DefaultConfig.compact,
@@ -456,6 +464,8 @@ function getDefaultValue(key: ConfigKey): unknown {
       return defaults.logging.format;
     case ConfigKey.ToolConcurrencyMax:
       return defaults.toolConcurrency.maxConcurrency;
+    case ConfigKey.SubagentsMaxConcurrent:
+      return defaults.subagents.maxConcurrent;
     case ConfigKey.ModelAnomalyGuard:
       return defaults.modelAnomalyGuard;
     case ConfigKey.Compact:

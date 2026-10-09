@@ -224,6 +224,11 @@ const toolConcurrencySchema = z.object({
   maxConcurrency: positiveNumberSchema.optional(),
 });
 
+// 子代理驻留上界：1–64 整数。上界 ≥ 1 是座位闸门的不死锁前提，下限在此拦住 0/负值。
+const subagentsSchema = z.object({
+  maxConcurrent: z.number().int().min(1).max(64).optional(),
+});
+
 const modelAnomalyGuardSchema = z.object({
   toolCallWarningThreshold: positiveIntegerSchema.optional(),
   repeatedToolCallWarningThreshold: positiveIntegerSchema.optional(),
@@ -380,6 +385,7 @@ export const ZCodeConfigFileSchema = z
     logging: loggingSchema.optional(),
     ui: uiSchema.optional(),
     toolConcurrency: toolConcurrencySchema.optional(),
+    subagents: subagentsSchema.optional(),
     modelAnomalyGuard: modelAnomalyGuardSchema.optional(),
     compact: compactSchema.optional(),
     hooks: hooksSchema.optional(),
@@ -498,6 +504,7 @@ function parsedConfigFileToRuntimePatch(parsed: ZCodeConfigFile): RuntimeConfigP
   if (parsed.logging) config.logging = parsed.logging;
   if (parsed.ui) config.ui = parsed.ui;
   if (parsed.toolConcurrency) config.toolConcurrency = parsed.toolConcurrency;
+  if (parsed.subagents) config.subagents = parsed.subagents;
   if (parsed.modelAnomalyGuard) config.modelAnomalyGuard = parsed.modelAnomalyGuard;
   if (parsed.compact) config.compact = parsed.compact;
   if (parsed.hooks) config.hooks = parsedHooksToRuntimePatch(parsed.hooks);

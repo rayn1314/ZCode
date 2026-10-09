@@ -169,13 +169,15 @@ export function resolveAppRuntimeConfig(input: {
     // 会话级是稀疏补丁（见 compaction-policy.ts），因此必须逐字段深合并——
     // 浅展开会让「只表达了一项的会话级 patch」把文件里没被表达的键（microcompact 的
     // thresholdTokens / idleThresholdMinutes / minTokenSavings 等）整段抹掉。
-    compact: mergeCompactPolicyConfig(
-      configResult.config.compact,
-      options.runtimeConfig?.compact,
-    ),
+    compact: mergeCompactPolicyConfig(configResult.config.compact, options.runtimeConfig?.compact),
     subagents: {
       ...options.runtimeConfig?.subagents,
       enabled: options.runtimeConfig?.subagents?.enabled ?? configResult.config.features.subagent,
+      // 子代理驻留上界：会话级显式传入优先，否则取配置文件 / env 合并出的进程配置
+      //（缺省 10）。座位闸门每次等座时迟绑定读它，改配置后新派发生效、不召回在跑的。
+      maxConcurrent:
+        options.runtimeConfig?.subagents?.maxConcurrent ??
+        configResult.config.subagents.maxConcurrent,
       outputRootDir: options.runtimeConfig?.subagents?.outputRootDir ?? subagentOutputRootDir,
       builtInModelSelectionOverrides: {
         ...(input.builtInSubagentModelSelectionOverrides ?? {}),

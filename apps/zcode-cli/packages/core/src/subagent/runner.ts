@@ -9,6 +9,7 @@ import {
   DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS,
   HookEventName,
   SessionEventType,
+  SendMessageErrorCode,
   createChildTraceContext,
   createCoreError,
   createSessionEvent,
@@ -62,11 +63,13 @@ import {
 import {
   InMemoryRuntimeTaskRegistry,
   isTerminalRuntimeTask,
+  RuntimeTaskMessageQueueFullError,
   type RuntimeTaskMessageSink,
   type RuntimeTaskPendingMessage,
   type RuntimeTaskRegistry,
   type RuntimeTaskSnapshot,
 } from "../runtime-task/registry.js";
+import { getSubagentSeatGate, type SubagentSeatGate, type SubagentSeatLease } from "./seat-gate.js";
 
 export interface ExploreSubagentRuntimeRequest {
   agentId: string;
@@ -128,6 +131,13 @@ export interface ExploreSubagentPortOptions {
   getAllowedTools?: (profile: AgentProfile) => readonly string[];
   inactivityTimeoutMs?: number;
   autoBackgroundMs?: number;
+  /**
+   * 进程级驻留座位闸门的容量读数（配置 `subagents.maxConcurrent`，缺省 10）。
+   * 每次派发等座时迟绑定读取：改配置后新派发生效，不召回已在跑的。
+   */
+  maxConcurrentSubagents?: number;
+  /** 座位闸门（缺省进程级单例）；测试注入独立实例以隔离进程级计数。 */
+  seatGate?: SubagentSeatGate;
   logger?: Logger;
   /** 父 runtime 的 hook runner；存在时在 SubagentSpawned/SubagentStopped 发射点同步跑生命周期 hook。 */
   hookRunner?: HookRunner;
@@ -251,17 +261,21 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         lifecycle.agentId,
         runOptions?.signal,
       );
+      // 进程级座位闸门：等座放在看门狗武装**之前**——等座是合法等待（有人在跑才有座可等），
+      // 不该吃 inactivity 计时被误杀；取消能力由 taskAbort 提供（父 signal / TaskStop）。
+      // 失败走与元数据写失败同形的清理：没有 child runtime 在跑，不留下 fake running 条目。
+      let seat: SubagentSeatLease | undefined;
+      try {
+        seat = await acquireSubagentSeat(options, taskAbort.signal);
+      } catch (error) {
+        taskAbort.dispose();
+        registry.remove(lifecycle.agentId);
+        throw error;
+      }
       if (hasForegroundModelOverride) {
         borrowedForegroundAgentIds.add(lifecycle.agentId);
       }
-      const activityWatchdog = createSubagentActivityWatchdog({
-        abort: taskAbort.abort,
-        lifecycle,
-        logger: options.logger,
-        request,
-        signal: taskAbort.signal,
-        timeoutMs: options.inactivityTimeoutMs ?? DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS,
-      });
+      const activityWatchdog = createTaskActivityWatchdog(options, request, lifecycle, taskAbort);
       const readyGate = createSubagentSessionReadyGate();
       // child persistence/resume 可能在 onSessionReady 前永久挂起；watchdog 和
       // abort guard 必须覆盖完整 setup，而不能把 Ready 当成取消能力的安装边界。
@@ -329,6 +343,8 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         taskAbort.dispose();
         borrowedForegroundAgentIds.delete(lifecycle.agentId);
         registry.remove(lifecycle.agentId);
+        // 座位在 child ready 之前就已占下；setup 失败即终局，归还座位。
+        seat?.release();
         throw error;
       }
 
@@ -349,6 +365,9 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       );
 
       let autoBackgroundTimer: AutoBackgroundTimer | undefined;
+      // 转后台后执行体改由后台 continuation 持有，看门狗 owner 随之转移：
+      // 前台帧 finally 不能停表，否则转换瞬间挂死就再没有人兜底（spec 不变式）。
+      let handedOffToBackground = false;
       try {
         autoBackgroundTimer =
           !hasForegroundModelOverride && autoBackgroundMs !== undefined
@@ -376,16 +395,23 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         ]);
 
         if (winner.kind === "backgrounded") {
+          handedOffToBackground = true;
           taskAbort.detachParent();
-          activityWatchdog.stop();
-          void completionPromise
+          // guard 版执行体：abort（看门狗超时 / TaskStop）必须能确定性地 settle，
+          // 否则子运行时永不返回时 finalize 永不执行，registry 卡 running 永久 pin 父会话。
+          void guardedCompletionPromise
             .then((completed) =>
               finalizeBackgroundCompletion(options, request, lifecycle, registry, completed),
             )
             .catch((error) =>
               finalizeBackgroundFailure(options, request, lifecycle, registry, error),
             )
-            .finally(taskAbort.dispose);
+            .finally(() => {
+              activityWatchdog.stop();
+              taskAbort.dispose();
+              // 座位随执行体移交给后台 continuation：前台帧不归还，由结算点归还。
+              seat?.release();
+            });
           return createAgentBackgroundedOutput(request, lifecycle);
         }
 
@@ -505,7 +531,12 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           recoverable: true,
         });
       } finally {
-        activityWatchdog.stop();
+        if (!handedOffToBackground) {
+          activityWatchdog.stop();
+          // 终局收口：前台完成/失败/取消都在此归还座位（lease 幂等，重复归还不多放）；
+          // 转后台的座位随执行体交给 continuation，不在此归还。
+          seat?.release();
+        }
         autoBackgroundTimer?.cancel();
       }
     },
@@ -546,6 +577,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         request,
         lifecycle,
         registry,
+        taskAbort,
         {
           signal: taskAbort.signal,
           ...(startOptions?.model ? { model: startOptions.model } : {}),
@@ -584,7 +616,6 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           },
           onSessionStartFailed: readyGate.reject,
         },
-        taskAbort.dispose,
       );
       try {
         await readyGate.promise;
@@ -1000,7 +1031,7 @@ async function sendMessageToLocalAgent(
 
   const message = createRuntimeTaskPendingMessage(request);
   if (!isTerminalRuntimeTask(task)) {
-    return deliverMessageToRunningAgent(registry, task, message);
+    return deliverMessageToRunningAgent(registry, task, message, request);
   }
 
   return resumeTerminalAgentInBackground(
@@ -1018,19 +1049,45 @@ async function deliverMessageToRunningAgent(
   registry: RuntimeTaskRegistry,
   task: RuntimeTaskSnapshot,
   message: RuntimeTaskPendingMessage,
+  request: SubagentSendMessageRequest,
 ): Promise<SubagentSendMessageResult> {
   if (task.messageSink) {
     try {
       const delivery = await task.messageSink.send(message);
       return createSendMessageSuccess(task, message, delivery);
     } catch {
-      registry.queueMessage(task.taskId, message);
-      return createSendMessageSuccess(task, message, "queued");
+      // sink 投递失败回落到队列：队列满是明确业务失败，如实回给调用方。
+      return queueMessageOrFail(registry, task, message, request);
     }
   }
 
-  registry.queueMessage(task.taskId, message);
-  return createSendMessageSuccess(task, message, "queued");
+  return queueMessageOrFail(registry, task, message, request);
+}
+
+/**
+ * 入队并如实报告：队列满时 `queueMessage` 抛
+ * {@link RuntimeTaskMessageQueueFullError}，这里映射成 SendMessage 的
+ * `agent_queue_full` 结构化失败——消息**未入队**，绝不能降级成假成功。
+ */
+function queueMessageOrFail(
+  registry: RuntimeTaskRegistry,
+  task: RuntimeTaskSnapshot,
+  message: RuntimeTaskPendingMessage,
+  request: SubagentSendMessageRequest,
+): SubagentSendMessageResult {
+  try {
+    registry.queueMessage(task.taskId, message);
+    return createSendMessageSuccess(task, message, "queued");
+  } catch (error) {
+    if (error instanceof RuntimeTaskMessageQueueFullError) {
+      return createSendMessageFailure(
+        request,
+        `agent_queue_full: message queue for ${task.agentId} already holds ${error.capacity} pending messages; this message was NOT queued. Retry once the agent has drained its queue.`,
+        SendMessageErrorCode.AGENT_QUEUE_FULL,
+      );
+    }
+    throw error;
+  }
 }
 
 async function resumeTerminalAgentInBackground(
@@ -1098,6 +1155,7 @@ async function resumeTerminalAgentInBackground(
     resumeRequest,
     lifecycle,
     registry,
+    taskAbort,
     { signal: taskAbort.signal },
     {
       resumeFromStore: true,
@@ -1131,7 +1189,6 @@ async function resumeTerminalAgentInBackground(
       },
       onSessionStartFailed: readyGate.reject,
     },
-    taskAbort.dispose,
   );
   try {
     await readyGate.promise;
@@ -1191,6 +1248,7 @@ function createSendMessageSuccess(
 function createSendMessageFailure(
   request: SubagentSendMessageRequest,
   error: string,
+  errorCode?: SendMessageErrorCode,
 ): SubagentSendMessageResult {
   return {
     status: "failed",
@@ -1198,6 +1256,7 @@ function createSendMessageFailure(
     agentId: request.to,
     error,
     message: error,
+    ...(errorCode === undefined ? {} : { errorCode }),
   };
 }
 
@@ -1276,6 +1335,44 @@ async function runAgentToCompletion(
   return { events: childResult.events, output };
 }
 
+/**
+ * 前台 run、后台 runBackgroundAgent（含 SendMessage 复活）共用的等座入口：
+ * 容量每次读当前配置（迟绑定），闸门缺省进程级单例——一个进程里所有会话共享
+ * 同一份驻留预算。
+ */
+async function acquireSubagentSeat(
+  options: ExploreSubagentPortOptions,
+  signal?: AbortSignal,
+): Promise<SubagentSeatLease> {
+  const gate = options.seatGate ?? getSubagentSeatGate();
+  return gate.acquire({
+    ...(signal ? { signal } : {}),
+    ...(options.maxConcurrentSubagents === undefined
+      ? {}
+      : { capacity: options.maxConcurrentSubagents }),
+  });
+}
+
+/**
+ * 前台 run 与后台 runBackgroundAgent 共用的看门狗装配：同一 inactivityTimeoutMs
+ * 注入点与缺省（与模型流 idle 同源常量），让「任何在跑的子代理都有看门狗」只有一处实现。
+ */
+function createTaskActivityWatchdog(
+  options: ExploreSubagentPortOptions,
+  request: SubagentRunRequest,
+  lifecycle: SubagentLifecycle,
+  taskAbort: SubagentTaskAbortHandle,
+): ReturnType<typeof createSubagentActivityWatchdog> {
+  return createSubagentActivityWatchdog({
+    abort: taskAbort.abort,
+    lifecycle,
+    logger: options.logger,
+    request,
+    signal: taskAbort.signal,
+    timeoutMs: options.inactivityTimeoutMs ?? DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS,
+  });
+}
+
 function createSubagentActivityWatchdog(options: {
   abort: (reason?: unknown) => void;
   lifecycle: SubagentLifecycle;
@@ -1298,16 +1395,25 @@ function createSubagentActivityWatchdog(options: {
 
   let lastActivityAt = Date.now();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  // stop 是终局语义（settle 必停表）：执行体结算后迟到的子会话事件不得再把表重新
+  // 武装成一个无人负责的僵尸 timer——否则它到点会 abort 一个已 dispose 的任务。
+  let stopped = false;
 
-  const stop = () => {
+  const clearTimer = () => {
     if (timer) {
       clearTimeout(timer);
       timer = undefined;
     }
   };
 
+  const stop = () => {
+    stopped = true;
+    clearTimer();
+  };
+
   const schedule = () => {
-    stop();
+    if (stopped) return;
+    clearTimer();
     if (options.signal.aborted) return;
     timer = setTimeout(() => {
       const idleMs = Date.now() - lastActivityAt;
@@ -1417,29 +1523,47 @@ async function runBackgroundAgent(
   request: SubagentRunRequest,
   lifecycle: SubagentLifecycle,
   registry: RuntimeTaskRegistry,
+  taskAbort: SubagentTaskAbortHandle,
   runOptions?: SubagentRunOptions,
   executionOptions: SubagentExecutionOptions = {},
-  onSettled?: () => void,
 ): Promise<void> {
   let sessionReady = false;
+  let seat: SubagentSeatLease | undefined;
+  let activityWatchdog: ReturnType<typeof createTaskActivityWatchdog> | undefined;
   try {
     if (isTerminalRuntimeTask(registry.get(lifecycle.agentId) ?? { status: "lost" })) {
       return;
     }
-    const completed = await runAgentToCompletion(
-      options,
+    // 进程级座位闸门（复活即占座）：等座在看门狗武装**之前**——等座是合法等待，不该吃
+    // inactivity 计时；取消能力由 taskAbort 提供（TaskStop / 父 signal）。等座被拒时
+    // acquire 不占座，经下面 sessionStartFailed 分支交回 start()/复活入口的既有失败路径。
+    seat = await acquireSubagentSeat(options, taskAbort.signal);
+    // 后台与前台同构：派发前就武装看门狗（覆盖 child 持久化/恢复这段可能永久挂起的
+    // setup），活动事件经 runExploreAgent 的 reportActivity 由子会话事件订阅送入。
+    activityWatchdog = createTaskActivityWatchdog(options, request, lifecycle, taskAbort);
+    activityWatchdog.start();
+    // 与前台一样用 guard 包执行体：abort（看门狗超时 / TaskStop）后子运行时可能永不
+    // settle；不包 guard 就无法保证「超时 → finalizeBackgroundFailure → registry 离开
+    // running」，父会话会被 hasResidencyBlockingWork 永久 pin 在驻留池。
+    const completed = await guardSubagentPromiseWithAbort(
+      runAgentToCompletion(
+        options,
+        request,
+        lifecycle,
+        registry,
+        runOptions,
+        { reportActivity: activityWatchdog.reportActivity },
+        {
+          ...executionOptions,
+          onSessionReady: async () => {
+            await executionOptions.onSessionReady?.();
+            sessionReady = true;
+          },
+        },
+      ),
       request,
       lifecycle,
-      registry,
-      runOptions,
-      {},
-      {
-        ...executionOptions,
-        onSessionReady: async () => {
-          await executionOptions.onSessionReady?.();
-          sessionReady = true;
-        },
-      },
+      taskAbort.signal,
     );
     await finalizeBackgroundCompletion(options, request, lifecycle, registry, completed);
   } catch (error) {
@@ -1449,7 +1573,12 @@ async function runBackgroundAgent(
     }
     await finalizeBackgroundFailure(options, request, lifecycle, registry, error);
   } finally {
-    onSettled?.();
+    // 不变式：在跑就有表，settle 必停表。
+    activityWatchdog?.stop();
+    taskAbort.dispose();
+    // 终局收口：completed / failed / 看门狗超时 / TaskStop / 复活失败统一在此归还座位
+    //（lease 幂等，同一次 settle 只释放一次）。
+    seat?.release();
   }
 }
 
@@ -1514,7 +1643,21 @@ async function flushPendingMessages(
       await sink.send(message);
     } catch (error) {
       for (const undelivered of pending.slice(index)) {
-        registry.queueMessage(lifecycle.agentId, undelivered);
+        try {
+          registry.queueMessage(lifecycle.agentId, undelivered);
+        } catch (queueError) {
+          // 重排也撞满（flush 期间并发入队挤占了容量）：丢弃剩余并留痕。
+          // flush 是 fire-and-forget 的，这里绝不能让异常冒泡成 unhandled rejection。
+          options.logger?.warn("Dropped undeliverable pending subagent message", {
+            ...traceContextToLogContext(lifecycle.runTraceContext),
+            agentId: lifecycle.agentId,
+            errorMessage: queueError instanceof Error ? queueError.message : String(queueError),
+            event: "subagent.message.requeue.failed",
+            module: "core.subagent",
+            status: "failed",
+          });
+          return;
+        }
       }
       options.logger?.warn("Failed to flush pending subagent message", {
         ...traceContextToLogContext(lifecycle.runTraceContext),

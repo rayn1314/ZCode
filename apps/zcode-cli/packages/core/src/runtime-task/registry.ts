@@ -77,10 +77,7 @@ export interface RuntimeTaskRegistry {
   all(): Record<string, RuntimeTaskSnapshot>;
   get(id: string): RuntimeTaskSnapshot | undefined;
   drainMessages(id: string): RuntimeTaskPendingMessage[];
-  queueMessage(
-    id: string,
-    message: RuntimeTaskPendingMessage,
-  ): RuntimeTaskSnapshot | undefined;
+  queueMessage(id: string, message: RuntimeTaskPendingMessage): RuntimeTaskSnapshot | undefined;
   register(task: RuntimeTaskSnapshot): void;
   remove(id: string): void;
   requestBackground(id: string): boolean;
@@ -115,6 +112,42 @@ const TERMINAL_STATUSES = new Set<RuntimeTaskSnapshot["status"]>([
   "lost",
 ]);
 
+/**
+ * 每个 runtime 在注册表里保留的**终态**条目上限。注册表此前只增不删（终态只 update、
+ * `remove` 仅用于启动前的早期失败），长会话下 Map 无限膨胀。超过 N 时按 settle 时间
+ *（`completedAt`，缺省 `startedAt`）最旧先出。
+ *
+ * 驱逐不破坏既有契约：
+ * - `list-agents` live 行缺失时由 roster 的 history 行补齐（本就读历史投影）；
+ * - `task-output` / `task-stop` 对未知 id 本就返回明确 not-found，不 crash；
+ * - `hasRunningBackgroundRuntimeTask` 只看非终态，驱逐不影响；
+ * - 通知在终态入队时消费，先入队后驱逐的窗口由 N 的余量覆盖。
+ */
+const MAX_TERMINAL_RETAINED = 50;
+
+/**
+ * 单个任务的待投递消息队列上限。`queueMessage` 超限**拒绝**并抛
+ * {@link RuntimeTaskMessageQueueFullError}，由调用方把失败如实回给 SendMessage 调用方
+ *（错误码 `agent_queue_full`），而不是无限堆积内存。
+ */
+export const MAX_PENDING_MESSAGES = 100;
+
+/**
+ * 目标任务的消息队列已满：本条消息**未入队**。调用方（runner 的 queued 分支）据此
+ * 映射 SendMessage 的 `agent_queue_full` 失败，不得降级成假成功。
+ */
+export class RuntimeTaskMessageQueueFullError extends Error {
+  readonly agentId: string;
+  readonly capacity: number;
+
+  constructor(agentId: string, capacity: number) {
+    super(`Message queue for ${agentId} is full (capacity ${capacity})`);
+    this.name = "RuntimeTaskMessageQueueFullError";
+    this.agentId = agentId;
+    this.capacity = capacity;
+  }
+}
+
 export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
   private activeBranchGeneration = 0;
   private readonly backgroundWaiters = new Map<string, Set<RuntimeTaskWaiter>>();
@@ -129,6 +162,8 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.tasks.set(stamped.taskId, stamped);
     this.resolveIfTerminal(stamped.taskId, stamped);
     this.resolveIfBackgrounded(stamped.taskId, stamped);
+    // 直接以终态注册（恢复 / 还原旧 snapshot 等）同样计入终态保留窗口。
+    if (isTerminalRuntimeTask(stamped)) this.evictTerminalOverflow();
   }
 
   setActiveBranchGeneration(generation: number): void {
@@ -145,6 +180,11 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.tasks.set(id, next);
     this.resolveIfTerminal(id, next);
     this.resolveIfBackgrounded(id, next);
+    // 只在「离开非终态」这一刻做驱逐检查：任务活动期的高频 update（messageSink、
+    // 消息入队）不触发全表扫描，终态条目每条最多参与一次。
+    if (!isTerminalRuntimeTask(current) && isTerminalRuntimeTask(next)) {
+      this.evictTerminalOverflow();
+    }
     return next;
   }
 
@@ -171,14 +211,19 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     return Object.fromEntries(this.tasks);
   }
 
-  queueMessage(
-    id: string,
-    message: RuntimeTaskPendingMessage,
-  ): RuntimeTaskSnapshot | undefined {
-    return this.update(id, (task) => ({
-      ...task,
-      pendingMessages: [...(task.pendingMessages ?? []), message],
-    }));
+  queueMessage(id: string, message: RuntimeTaskPendingMessage): RuntimeTaskSnapshot | undefined {
+    return this.update(id, (task) => {
+      const pending = task.pendingMessages ?? [];
+      // 超限拒绝：抛出交调用方如实回给 SendMessage；patcher 内抛错不会走到 tasks.set，
+      // 注册表状态保持原样（不产生半入队）。
+      if (pending.length >= MAX_PENDING_MESSAGES) {
+        throw new RuntimeTaskMessageQueueFullError(id, MAX_PENDING_MESSAGES);
+      }
+      return {
+        ...task,
+        pendingMessages: [...pending, message],
+      };
+    });
   }
 
   drainMessages(id: string): RuntimeTaskPendingMessage[] {
@@ -241,6 +286,27 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     }
   }
 
+  /**
+   * 终态有界保留：超过 {@link MAX_TERMINAL_RETAINED} 条时按 settle 时间最旧先出。
+   * 先收集后删除，避免遍历中改动 Map；只删终态条目，running 永不被驱逐。
+   */
+  private evictTerminalOverflow(): void {
+    const terminal: RuntimeTaskSnapshot[] = [];
+    for (const task of this.tasks.values()) {
+      if (isTerminalRuntimeTask(task)) terminal.push(task);
+    }
+    if (terminal.length <= MAX_TERMINAL_RETAINED) return;
+    terminal.sort(
+      (left, right) =>
+        settledAtMs(left) - settledAtMs(right) || left.taskId.localeCompare(right.taskId),
+    );
+    const overflow = terminal.length - MAX_TERMINAL_RETAINED;
+    for (let index = 0; index < overflow; index++) {
+      const task = terminal[index];
+      if (task) this.remove(task.taskId);
+    }
+  }
+
   private resolveIfTerminal(id: string, task: RuntimeTaskSnapshot): void {
     if (isTerminalRuntimeTask(task)) {
       this.resolveTerminalWaiters(id, task);
@@ -248,10 +314,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     }
   }
 
-  private resolveBackgroundWaiters(
-    id: string,
-    task: RuntimeTaskSnapshot | undefined,
-  ): void {
+  private resolveBackgroundWaiters(id: string, task: RuntimeTaskSnapshot | undefined): void {
     this.resolveWaiters(this.backgroundWaiters, id, task);
   }
 
@@ -289,6 +352,11 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
 
 export function isTerminalRuntimeTask(task: Pick<RuntimeTaskSnapshot, "status">): boolean {
   return TERMINAL_STATUSES.has(task.status);
+}
+
+/** 终态条目的 settle 时间：优先 completedAt，缺省回退 startedAt（只可能出现在畸形快照上）。 */
+function settledAtMs(task: RuntimeTaskSnapshot): number {
+  return task.completedAt?.getTime() ?? task.startedAt.getTime();
 }
 
 export function hasRunningBackgroundRuntimeTask(registry: RuntimeTaskRegistry): boolean {

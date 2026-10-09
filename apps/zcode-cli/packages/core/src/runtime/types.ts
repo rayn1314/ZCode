@@ -172,6 +172,11 @@ export interface AgentRuntimeConfig {
     autoBackgroundMs?: number;
     backgroundBashMaxMs?: number;
     maxTurns?: number;
+    /**
+     * 进程级驻留座位闸门的容量（配置 `subagents.maxConcurrent`，缺省 10）。
+     * 每次派发等座时迟绑定读取，改配置后新派发生效、不召回在跑的。
+     */
+    maxConcurrent?: number;
     outputRootDir?: string;
     profiles?: readonly AgentProfile[];
     builtInModelSelectionOverrides?: Partial<Record<"general-purpose" | "Explore", ModelSelection>>;

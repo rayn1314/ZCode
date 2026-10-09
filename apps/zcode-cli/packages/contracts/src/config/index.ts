@@ -77,6 +77,9 @@ export const ConfigKey = {
   // Tool Concurrency
   ToolConcurrencyMax: "toolConcurrency.maxConcurrency",
 
+  // Subagent dispatch（进程级驻留座位闸门的上界）
+  SubagentsMaxConcurrent: "subagents.maxConcurrent",
+
   // Model anomaly guards
   ModelAnomalyGuard: "modelAnomalyGuard",
 
@@ -150,7 +153,9 @@ export type ConfigValue<K extends ConfigKey> = K extends "modelStream.idleTimeou
                                       ? "debug" | "info" | "warn" | "error"
                                       : K extends "logging.format"
                                         ? "text" | "json"
-                                        : K extends "toolConcurrency.maxConcurrency"
+                                        : K extends
+                                              | "toolConcurrency.maxConcurrency"
+                                              | "subagents.maxConcurrent"
                                           ? number
                                           : K extends "modelAnomalyGuard"
                                             ? ModelAnomalyGuardConfig
@@ -263,6 +268,7 @@ export interface RuntimeConfig {
     format: "text" | "json";
   };
   toolConcurrency: ToolConcurrencyConfig;
+  subagents: SubagentsConfig;
   modelAnomalyGuard: ModelAnomalyGuardConfig;
   compact: CompactConfig;
   hooks: HooksRuntimeConfig;
@@ -286,6 +292,7 @@ export interface RuntimeConfigPatch {
   commandOverrides?: RuntimeConfig["commandOverrides"];
   logging?: Partial<RuntimeConfig["logging"]>;
   toolConcurrency?: Partial<RuntimeConfig["toolConcurrency"]>;
+  subagents?: Partial<RuntimeConfig["subagents"]>;
   modelAnomalyGuard?: Partial<RuntimeConfig["modelAnomalyGuard"]>;
   compact?: Partial<RuntimeConfig["compact"]>;
   hooks?: HooksRuntimeConfigPatch;
@@ -298,6 +305,18 @@ export type UiThemeMode = "dark" | "light";
 export type UiThemePreference = UiThemeMode | "auto";
 
 export const DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS = 600_000;
+
+/**
+ * 子代理派发面上限：**进程级**驻留座位闸门的容量（同一 CLI 进程内所有会话共享）。
+ * 缺省 10，与业界 Codex/Claude Code 的会话内子代理上界同量级；配置面范围校验 1–64。
+ * 定义在 DefaultRuntimeConfig 之前：模块顶层对象字面量直接引用它，受 TDZ 约束。
+ */
+export const DEFAULT_SUBAGENT_MAX_CONCURRENT = 10;
+
+export interface SubagentsConfig {
+  /** 同时驻留（未终态）的子代理数量上限；≥ 1，超出派发按 FIFO 等座。 */
+  maxConcurrent: number;
+}
 
 export interface ModelStreamConfig {
   idleTimeoutMs: number;
@@ -357,6 +376,9 @@ export const DefaultRuntimeConfig: RuntimeConfig = {
   },
   toolConcurrency: {
     maxConcurrency: 10,
+  },
+  subagents: {
+    maxConcurrent: DEFAULT_SUBAGENT_MAX_CONCURRENT,
   },
   modelAnomalyGuard: {
     maxBudgetWarningsPerTurn: 3,
