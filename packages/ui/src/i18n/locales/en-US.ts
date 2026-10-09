@@ -2222,12 +2222,12 @@ const enUS: Record<string, string> = {
   "settings.contextCompaction.microcompact.clearErrorsLabel": "Also clear failed tool results",
   "settings.contextCompaction.microcompact.clearErrorsDescription":
     "When enabled, the body of failed tool results is cleared as well.",
-  "settings.contextCompaction.postTurn.label": "Compact at turn end",
+  "settings.contextCompaction.postTurn.label": "Compact after each turn",
   "settings.contextCompaction.postTurn.description":
-    "Once the auto-compaction threshold is reached, compact right after this turn finishes instead of waiting until the next request. It uses the same threshold as auto-compaction; only the timing is earlier.",
+    "Compact right after a response finishes instead of waiting until the next request.",
   "settings.contextCompaction.modelDownshift.label": "Compact before model downshift",
   "settings.contextCompaction.modelDownshift.description":
-    "Compact before switching to a model with a smaller context window to avoid an overflow on the first request after the switch. It triggers on the same auto-compaction threshold; only the timing is earlier.",
+    "Compact before switching to a model with a smaller context window, avoiding an overflow on the first request after the switch.",
   "settings.contextCompaction.saveFailed": "Saving failed. Please try again.",
   "settings.httpProxy": "HTTP Proxy",
   "settings.httpProxyDescription":

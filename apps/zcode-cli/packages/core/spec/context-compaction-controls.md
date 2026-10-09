@@ -41,7 +41,7 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 | 2 | `compactionMicrocompactEnabled` | `boolean` | `false` | 局部压缩：清理旧工具结果正文 |
 | 3 | `compactionMicrocompactKeepRecentToolResults` | `number` | `5` | 局部压缩保留最近多少组工具结果 |
 | 4 | `compactionMicrocompactClearErrorResults` | `boolean` | `false` | 局部压缩是否连失败的（isError）工具结果一起清 |
-| 5 | `compactionPostTurnEnabled` | `boolean` | `false` | 轮末压缩：够到自动压缩阈值时，一轮成功后立刻压，而非等下一次请求前（阈值与自动压缩共用，只是时机提前） |
+| 5 | `compactionPostTurnEnabled` | `boolean` | `false` | 轮末压缩：一轮成功后主动压，而非等下一次请求前 |
 | 6 | `compactionModelDownshiftEnabled` | `boolean` | `false` | 模型降档提前压：切到更小窗口模型前先压 |
 
 "默认维持现状"是硬约束：不显式打开任何开关时，压缩行为必须与改造前逐位一致（见 §4 I1）。
@@ -108,8 +108,6 @@ adapters 侧共三处必须同时改，缺一处就是**静默失效**（schema 
 - 失败只记 `warn` 日志，**不改变已完成 turn 的结果**（turn 已经成功，压缩是后续维护动作）。
 
 代价与收益说明（写在这里以免日后误判为缺陷）：它只在阈值**已经达到**时才跑，也就是说这份工作在下一轮 `PreRequest` 阶段本来也要做；把时机从"用户发出下一条消息之后"挪到"用户正在读上一条回答时"，用户感知的等待更短，同时消除了下一轮在 `MidTurn` 阶段被压缩打断的风险。代价是这段时间 runtime 仍持有 active turn，新输入会先排队。
-
-**可达窗口（窄，且是结构决定的，不是缺陷）**：轮内每个循环迭代**开头**（发请求之前）都会检查一次——首次 `PreRequest`、其后 `MidTurn`（`turn-loop.ts`），所以工具结果增长会在下一次迭代开头被吃掉。而循环在模型给出**纯文本回答（无工具调用）**时立刻 `break`（`turn-stop.ts`），该回答在 break 前已 commit 进 `messageHistory`（`turn-stop.ts` 入口处）。因此轮末检查看到的 = 上一次 `MidTurn` 检查时的状态 + **本轮最后那次增量**（主要是最后一条 assistant 回答）。推论：**只有"本轮收口时的最后增量把上下文顶过阈值线"这一种情形会触发**；本轮中途已被 `MidTurn` 压过、尾部增长未到线时，轮末记 `compact.post_turn.skipped` 什么都不做。另有一条不常见的 break 路径——工具主动请求结束本轮（`turn-tools.ts`）——那条路上该批工具结果不再被检查，逃逸增量更大、更容易触发。它**不会**让压缩总次数变多，也**不可能**把上下文压得比自动压缩更小（共用同一阈值）；"轮末一定把上下文收拾到安全水位"是另一种语义，本设计不提供。
 
 ### D9. 降档压缩：在 PreModelSwitch 注入之前
 
@@ -228,8 +226,8 @@ adapters 侧共三处必须同时改，缺一处就是**静默失效**（schema 
         - 若阈值为自动，先显示一条提示 `局部压缩的触发点跟随自动压缩阈值。`
         - 数字输入：`保留最近工具结果组数`，`min=1`，`max=50`，默认 `5`；非法值行内报错 `settings.contextCompaction.keepRecentInvalid`。
         - `Switch`：`同时清理失败的工具结果`，默认关。
-   3. **轮末压缩**：`Switch`，副标题 `达到自动压缩阈值时，在本轮回答结束后立刻压好，不必等下一次提问前才压。阈值与自动压缩相同，只是时机提前。`
-   4. **模型降档提前压**：`Switch`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。同样以自动压缩阈值为触发条件，只是时机提前。`
+   3. **轮末压缩**：`Switch`，副标题 `一轮回答结束后就主动压缩，而不是等下一次提问前才压。`
+   4. **模型降档提前压**：`Switch`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。`
 3. **写入中**（`saving`）时卡片内所有控件禁用，避免并发提交互相覆盖。
 4. 开关切换后立即生效（无需重启），不出现"需重启"提示。
 
