@@ -13,6 +13,37 @@
 
 ZCode is an AI coding workspace with desktop, browser, and terminal interfaces. This repository contains the clients, backend services, shared UI, and Agent CLI and runtime source code.
 
+## Enhancements over Upstream
+
+This repository builds on upstream [zai-org/ZCode](https://github.com/zai-org/ZCode) with continuous enhancements. Highlights are listed below; see `git log origin/main..main` for the full history.
+
+### New features
+
+- **Configurable context compaction**: a dedicated "Context Compaction" settings section with four switches — safety-margin threshold, partial compaction, turn-end compaction (independent threshold), and pre-compaction on model downgrade — all off by default; the context capacity panel gains a manual compaction entry.
+- **Extended hook framework**: events expanded to 17 with a single source of truth, full-chain wiring for PreCompact (blockable), PostCompact (with failure outcome), SubagentStart, SubagentStop, SessionEnd and more, `http` and `mcp_tool` handler types with a security model, plus plugin samples; subagent sessions run tool-level hooks the same way as the main session.
+- **Subagents as first-class sessions**: subagent sessions become full session records — launch specs persisted, identity reclaimed on cold recovery, shutdown cascades down the agent tree; input surfaces gated by role policy (restricted sessions disable input); the left pane gains a per-parent subagent block with a running-count badge.
+- **Cross-session messaging**: agents return a handle immediately on background dispatch with per-call model selection; message delivery spans CLI and Host with normal/guide/immediate tiers and queue promotion, anti-loop protection, and recovery across restarts.
+- **Multi-agent runtime governance**: background subagents get an activity watchdog (stuck agents auto-fail instead of pinning the parent session forever) and a process-level FIFO seat gate for the concurrency cap (default 10, configurable; excess dispatch queues without errors); command admission gains an execution-timeout fallback (hung commands settle within 60s), and WebSocket send paths honor backpressure so slow consumers no longer balloon server memory.
+- **Open-source Computer Use**: replaces the closed-source Computer Use with open-computer-use (bridging runtime + preset MCP config + a "computer control" skill).
+- **Multiple API Key presets**: store several keys per provider with custom names and switch via a dropdown in settings; switching reuses the same autosave path as editing the key manually.
+- **Usage ledger**: usage statistics page integrates the ledger, with manual price-basis sync and a paginated model × provider breakdown.
+- **Per-provider rate limiting**: configure a per-minute request cap per provider to avoid quota-type 429s at the source.
+- **Identity-scoped data**: client data roots and app identity are isolated per product identity (including remote injection and remote identity merging), with per-domain migration from another identity, so two clients no longer share and corrupt one data root.
+- **Workflow and task enhancements**: manual workflow start supports pre-selecting the session and subagent model; settings gain an "archive old tasks now" button; the resource manager gains a session-mailbox cleanup category with per-category size display and one-click cleanup.
+
+### Refactoring and engineering governance
+
+- Event roster moved to a single source in `@zcode/shared` and derived at every consumption site; subagent startup disk parsing extracted for reuse.
+- Commit gates adopt oxfmt formatting and static checks, pinning newline and formatting contracts.
+- Dependency upgrades (axios / undici / form-data / ws / nanoid) fix known network-layer and runtime vulnerabilities.
+- Background task waiting switched from busy polling to terminal-state event waiting (shared ticker that stops when idle).
+
+### Fixes (selected)
+
+- Scroll jump on first upward scroll after session switch; false empty-completion detection; AskUserQuestion answers written back to the tool row.
+- Click-through when overlays overlap the title-bar drag region; side chats no longer continue the parent task and recognize quoted references.
+- Log export no longer bundles crash dumps and the task index database; uncaught main-process exceptions are recorded with a local fallback.
+
 ## Updates
 
 - 2026-9-23: Updated to ZCode v3.14.3.
