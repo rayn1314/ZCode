@@ -84,9 +84,40 @@ interface BackgroundTaskLifecycleProvider {
 }
 
 export class BackgroundTaskTracker {
+  /** 正在跟踪的后台任务 id（防重入 + 生命周期标记；终态/丢失时移除）。 */
   private readonly backgroundPollers = new Set<string>();
+  /**
+   * 需要 1s 快照轮询的任务 → 它们的 poll 回调。共享 ticker 只扫描这个集合：
+   * N 个后台任务共用一个 setInterval，集合空了 ticker 自动停，不再 per-task 起表。
+   * 与 backgroundPollers 的差集是「有直接终态 waiter、无快照源」的任务——它们不轮询。
+   */
+  private readonly snapshotPollers = new Map<string, () => Promise<void>>();
+  /** 全 tracker 单个 1Hz ticker；只在 snapshotPollers 非空时存在。 */
+  private ticker: ReturnType<typeof setInterval> | undefined;
 
   constructor(private readonly deps: ToolExecutorDeps) {}
+
+  /**
+   * 把任务的快照轮询登记进共享 ticker。1Hz 扫描由单个 setInterval 承担：
+   * 每拍对活跃任务各触发一次 poll（poll 自带 polling 防重入，慢任务不会堆叠）。
+   */
+  private registerSnapshotPoller(taskId: string, poll: () => Promise<void>): void {
+    this.snapshotPollers.set(taskId, poll);
+    if (this.ticker) return;
+    this.ticker = setInterval(() => {
+      for (const runPoll of this.snapshotPollers.values()) void runPoll();
+    }, 1_000);
+    // 与旧 per-task interval 一致：unref，不让后台轮询阻止进程退出。
+    this.ticker.unref?.();
+  }
+
+  /** 摘除任务的轮询；活跃集合空了就停表，ticker 不常驻。 */
+  private releaseSnapshotPoller(taskId: string): void {
+    this.snapshotPollers.delete(taskId);
+    if (this.snapshotPollers.size > 0 || !this.ticker) return;
+    clearInterval(this.ticker);
+    this.ticker = undefined;
+  }
 
   async trackBackgroundTask(
     toolCall: ExecutableToolCall,
@@ -163,15 +194,14 @@ export class BackgroundTaskTracker {
     let completing = false;
     let polling = false;
     let stopped = false;
-    let timer: ReturnType<typeof setInterval> | undefined;
     let maxRuntimeTimer: ReturnType<typeof setTimeout> | undefined;
 
     const stopTracking = () => {
-      if (timer) clearInterval(timer);
-      timer = undefined;
       if (maxRuntimeTimer) clearTimeout(maxRuntimeTimer);
       maxRuntimeTimer = undefined;
       this.backgroundPollers.delete(taskId);
+      // 终态/丢失即从共享 ticker 的活跃集合摘除；最后一个任务离开时 ticker 停表。
+      this.releaseSnapshotPoller(taskId);
     };
 
     if (
@@ -353,10 +383,7 @@ export class BackgroundTaskTracker {
     };
 
     if (hasSnapshotProvider) {
-      timer = setInterval(() => {
-        void poll();
-      }, 1_000);
-      timer.unref?.();
+      this.registerSnapshotPoller(taskId, poll);
       await poll();
     }
 

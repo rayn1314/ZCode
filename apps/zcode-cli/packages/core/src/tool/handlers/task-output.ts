@@ -31,7 +31,12 @@ const TASK_OUTPUT_MAX_LENGTH = 160_000;
 const TASK_OUTPUT_PERSIST_THRESHOLD_CHARS = 100_000;
 const TASK_OUTPUT_RESULT_BUDGET_BYTES = 400_000;
 const TASK_OUTPUT_PERSIST_PREVIEW_CHARS = 2_000;
-const TASK_OUTPUT_POLL_INTERVAL_MS = 100;
+/**
+ * 兜底 tick 间隔。阻塞等待的主路径是 registry 的事件等待（waitForTerminal），
+ * tick 只在事件缺口（状态词超出终态集、外部 registry 实现不 resolve）时回读复查，
+ * 所以从旧的 100ms 忙轮询放宽到 5s。
+ */
+const TASK_OUTPUT_FALLBACK_TICK_MS = 5_000;
 const TASK_OUTPUT_ERROR_CODE = {
   TASK_ID_REQUIRED: 1,
   TASK_NOT_FOUND: 2,
@@ -226,26 +231,66 @@ function formatPersistedTaskOutputModelContent(input: ToolPersistedModelContentI
   });
 }
 
+/**
+ * 阻塞等待任务终态。主路径是 registry 的事件等待（`waitForTerminal`：终态 update /
+ * remove 即 resolve，不再 100ms 忙轮询）；每段再叠一个兜底 tick，覆盖事件缺口
+ * （外部 registry 实现不 resolve、状态词超出终态集）——tick 只回读复查，间隔 5s。
+ *
+ * 超时/abort 的裁决顺序与旧轮询逐拍一致：每次回到入口先判超时（超时不查 abort，
+ * 直接回当前快照）→ 再判 abort（抛与旧实现同形的 AbortError）→ 再读快照。
+ */
 async function waitForTask(
   taskId: string,
   timeoutMs: number,
   context: ToolExecutionContext,
 ): Promise<RuntimeTaskSnapshot | undefined> {
+  const registry = context.runtimeTaskRegistry;
+  // handler 入口的 requireRuntimeTaskRegistry 已保证在场，这里只为类型收窄 + 保留旧的
+  // 「registry 缺席 → undefined → timeout/null」返回形状。
+  if (!registry) return undefined;
+  // 旧轮询对 timeout<=0 不进循环、不查 abort，直接回当前快照。
+  if (timeoutMs <= 0) return registry.get(taskId);
+
   const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  for (;;) {
+    if (Date.now() - startedAt >= timeoutMs) return registry.get(taskId);
     throwIfAborted(context.abortSignal);
-    const task = context.runtimeTaskRegistry?.get(taskId);
+    const task = registry.get(taskId);
     if (!task) return undefined;
     if (!isTaskActive(task.status)) return task;
-    await delay(TASK_OUTPUT_POLL_INTERVAL_MS);
-  }
-  return context.runtimeTaskRegistry?.get(taskId);
-}
 
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, milliseconds);
-  });
+    // 事件等待 + 兜底 tick 的分段竞速。segment controller 是本段 waiter 的唯一取消
+    // 通道：tick 赢或外层 abort 时都要撤下已注册的 waiter，否则 terminalWaiters 里会
+    // 残留一个要等到任务终态才被清掉的条目。
+    const segment = new AbortController();
+    const forwardAbort = (): void => segment.abort(context.abortSignal.reason);
+    context.abortSignal.addEventListener("abort", forwardAbort, { once: true });
+    const remainingMs = timeoutMs - (Date.now() - startedAt);
+    let tickTimer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        registry.waitForTerminal(taskId, { signal: segment.signal }),
+        new Promise<"tick">((resolve) => {
+          tickTimer = setTimeout(
+            () => resolve("tick"),
+            Math.min(remainingMs, TASK_OUTPUT_FALLBACK_TICK_MS),
+          );
+        }),
+      ]);
+      // 等到终态 / 任务被移除（waitForTerminal 对 remove resolve undefined）后回到入口，
+      // 按旧轮询的顺序统一裁决；tick 同样回到入口回读复查。
+    } catch (error) {
+      // waitForTerminal 的 reject 只来自 signal abort：外层 abort 抛出与旧实现
+      // （throwIfAborted）完全同形的 AbortError；本段 tick 收口的 abort 走不到这里。
+      throwIfAborted(context.abortSignal);
+      throw error;
+    } finally {
+      if (tickTimer) clearTimeout(tickTimer);
+      context.abortSignal.removeEventListener("abort", forwardAbort);
+      // race 因 tick 结束时撤下仍挂着的 waiter；已 resolve 时 abort 无副作用。
+      segment.abort();
+    }
+  }
 }
 
 const isTaskActive = (status: string): boolean => status === "running" || status === "pending";
