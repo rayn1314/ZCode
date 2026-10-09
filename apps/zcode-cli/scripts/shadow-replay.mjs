@@ -1,18 +1,22 @@
 // 影子重放对账（交付 / 测试基建）。
-// 用途：把本机真实 CLI 库（默认 ~/.zcode/cli/db/db.sqlite）的历史会话全量喂给
+// 用途：把本机真实 CLI 库的历史会话全量喂给
 // 冷恢复管线（transcript 合成 → ProductProjection），输出守恒对账报告——
 // 每阶段上线门槛 = 全量重放无崩溃、无静默丢弃、失败清单审查完毕。
+//
+// 源库选择：--db 优先；否则 ZCODE_DATA_ROOT / ZCODE_DATA_BASE_DIR 显式指定的数据根；
+// 再否则在 home 下探测 `.zcode*` 中唯一含 cli/db/db.sqlite 的数据根——多个命中（自建版与
+// 官方版并排各有一个库）时直接报错，绝不静默挑一个：重放错身份的库会产出看似正常的错误对账。
 //
 // 对源库只读：默认把 db（含 -wal/-shm）复制到临时目录再打开——store 打开时会跑
 // 迁移（0015/0016 等），不能直接落在用户真实库上（迁移应由 CLI 正常启动路径应用）。
 // 运行前先构建：pnpm -C apps/zcode-cli build（脚本从各包 dist 导入）。
 //
-// 用法：
-//   node scripts/shadow-replay.mjs [--db <path>] [--limit <n>] [--session <id>] [--verbose] [--no-copy]
+// 用法（需 tsx：contracts/dist 经 @zcode/shared 的 src 导出链，裸 node 解析不了）：
+//   node --import tsx scripts/shadow-replay.mjs [--db <path>] [--limit <n>] [--session <id>] [--verbose] [--no-copy]
 import { parseArgs } from "node:util";
 import { homedir, tmpdir } from "node:os";
 import { join, dirname, basename } from "node:path";
-import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readdirSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -43,8 +47,35 @@ const {
 const { ProductProjection } = projectionModule;
 const { SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION } = contracts;
 
-const sourceDbPath = args.db ?? join(homedir(), ".zcode", "cli", "db", "db.sqlite");
+const sourceDbPath = args.db ?? resolveSourceDbPath();
 const limit = args.limit ? Number(args.limit) : Infinity;
+
+function resolveSourceDbPath() {
+  if (process.env.ZCODE_DATA_ROOT?.trim() || process.env.ZCODE_DATA_BASE_DIR?.trim()) {
+    return join(contracts.resolveZCodeDataRoot(process.env), "cli", "db", "db.sqlite");
+  }
+  const home = homedir();
+  const selfRoots = readdirSync(home, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && entry.name.startsWith(".zcode-"))
+    .map((entry) => join(home, entry.name));
+  const candidates = [...new Set([join(home, ".zcode"), ...selfRoots])].filter((root) =>
+    existsSync(join(root, "cli", "db", "db.sqlite")),
+  );
+  if (candidates.length === 1) {
+    return join(candidates[0], "cli", "db", "db.sqlite");
+  }
+  if (candidates.length > 1) {
+    process.stderr.write(
+      [
+        `多个数据根都含会话库，无法判定要重放哪一个：\n${candidates.map((root) => `  - ${root}`).join("\n")}`,
+        "请用 --db <path> 或 ZCODE_DATA_ROOT=<root> 显式指定。",
+        "",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
+  return join(home, ".zcode", "cli", "db", "db.sqlite");
+}
 
 let dbPath = sourceDbPath;
 if (!args["no-copy"]) {

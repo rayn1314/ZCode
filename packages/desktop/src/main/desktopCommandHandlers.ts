@@ -85,6 +85,8 @@ async function clearAllDataAndRelaunch(options: {
     error: (...args: unknown[]) => void;
   };
 }) {
+  // 提示与日志都用实际删除的路径：credentialsDir 是身份数据根下的 v2（自建版即
+  // `~/.zcode-rayn/v2`），写死 `~/.zcode/v2` 会告知用户一个本进程根本不会删的目录。
   const { response } = await dialog.showMessageBox({
     type: "warning",
     buttons: ["Cancel", "Clear All"],
@@ -92,8 +94,7 @@ async function clearAllDataAndRelaunch(options: {
     cancelId: 0,
     title: "Clear All Data",
     message: "确定要清除所有数据吗？",
-    detail:
-      "将删除 ~/.zcode/v2（配置、凭据、日志）和浏览器缓存（localStorage）。操作不可恢复，清除后应用将自动重启。",
+    detail: `将删除 ${options.credentialsDir}（配置、凭据、日志）和浏览器缓存（localStorage）。操作不可恢复，清除后应用将自动重启。`,
   });
   if (response !== 1) {
     return;
@@ -102,9 +103,9 @@ async function clearAllDataAndRelaunch(options: {
   const { rm } = await import("node:fs/promises");
   try {
     await rm(options.credentialsDir, { recursive: true, force: true });
-    options.logger.info("[clear-all-data] deleted ~/.zcode/v2");
+    options.logger.info(`[clear-all-data] deleted ${options.credentialsDir}`);
   } catch (error) {
-    options.logger.error("[clear-all-data] failed to delete ~/.zcode/v2:", error);
+    options.logger.error(`[clear-all-data] failed to delete ${options.credentialsDir}:`, error);
   }
 
   for (const win of BrowserWindow.getAllWindows()) {

@@ -50,10 +50,13 @@ function parseArgs(argv) {
     printUsageAndExit();
   }
 
+  // 默认落身份数据根：自建环境（桌面宿主注入 ZCODE_DATA_ROOT）各自落各自的根，
+  // 否则回落官方 `~/.zcode`——写死共享根会把自建版的协议流量倾倒进官方数据根。
+  const dataRoot = process.env.ZCODE_DATA_ROOT?.trim() || join(homedir(), ".zcode");
   return {
     command: commandAndArgs[0],
     args: commandAndArgs.slice(1),
-    logDir: logDir || join(homedir(), ".zcode", "v2", "dev", "stdio-traffic"),
+    logDir: logDir || join(dataRoot, "v2", "dev", "stdio-traffic"),
     workspaceKey,
   };
 }

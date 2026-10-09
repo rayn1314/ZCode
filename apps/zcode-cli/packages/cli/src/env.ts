@@ -2,6 +2,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import { config as loadDotenv } from "dotenv";
+import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import {
   ZCODE_RUNTIME_ENV_KEY,
   buildZCodeToolEnvPassthroughEnv,
@@ -135,5 +136,7 @@ function applyBetaStorageDefault(env: CliEnv, argv: readonly string[]): void {
   const explicitBeta = env.ZCODE_BETA === "1" || env.ZCODE_ENV === "beta";
   const invokedAsBeta = argv.some((arg) => /(^|[/\\])zcode-beta(?:$|\.)/u.test(arg));
   if (!explicitBeta && !invokedAsBeta) return;
-  env.ZCODE_STORAGE_DIR = join(homedir(), ".zcode-beta");
+  // 存储根带产品身份后缀：写死 `.zcode-beta` 会让自建身份的 beta 档与官方 beta 共用一个根
+  // （与稳定档各用各的根是同一条隔离规则）。官方空后缀仍是 `.zcode-beta`，路径与历史一致。
+  env.ZCODE_STORAGE_DIR = join(homedir(), `.zcode${ZCODE_DATA_ROOT_SUFFIX}-beta`);
 }
