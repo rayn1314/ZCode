@@ -2305,6 +2305,7 @@ export function createLocalServices(options: {
             return {
               askUserQuestionAutoResolutionEnabled:
                 settings.askUserQuestionAutoResolutionEnabled !== false,
+              permissionRequestAutoDenyEnabled: settings.permissionRequestAutoDenyEnabled !== false,
               nativeSearchEnhancementsEnabled: settings.nativeSearchEnhancementsEnabled !== false,
               memoryEnabled: settings.memoryEnabled === true,
               modelContextBudgetStrategy,

@@ -267,6 +267,7 @@ export function createRemoteWorkspaceServiceCollection(params: {
             preferences: {
               askUserQuestionAutoResolutionEnabled:
                 settings.askUserQuestionAutoResolutionEnabled !== false,
+              permissionRequestAutoDenyEnabled: settings.permissionRequestAutoDenyEnabled !== false,
               nativeSearchEnhancementsEnabled: settings.nativeSearchEnhancementsEnabled !== false,
               memoryEnabled: settings.memoryEnabled === true,
               modelContextBudgetStrategy,

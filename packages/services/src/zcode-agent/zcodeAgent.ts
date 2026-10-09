@@ -567,6 +567,7 @@ export type ZCodeAgentServiceEvent =
 
 export interface ZCodeAgentAppRuntimePreferences {
   askUserQuestionAutoResolutionEnabled: boolean;
+  permissionRequestAutoDenyEnabled: boolean;
   modelIoFullRetentionEnabled?: boolean;
   /** 上下文压缩偏好；缺省按「维持现状」默认值下发，旧调用方无需改动。 */
   compaction?: ZCodeCompactionPreferences;

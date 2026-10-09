@@ -46,6 +46,7 @@ const MIGRATABLE_SETTING_KEYS = [
   "toolGroupingChangesEnabled",
   "zcodeInteractionBehavior",
   "askUserQuestionAutoResolutionEnabled",
+  "permissionRequestAutoDenyEnabled",
   "modelIoFullRetentionEnabled",
   "nativeSearchEnhancementsEnabled",
   "proactiveSuggestionsEnabled",

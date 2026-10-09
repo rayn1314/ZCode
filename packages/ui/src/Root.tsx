@@ -320,6 +320,7 @@ function RootInner({
       .syncAppRuntimePreferences({
         askUserQuestionAutoResolutionEnabled:
           appSettings.askUserQuestionAutoResolutionEnabled !== false,
+        permissionRequestAutoDenyEnabled: appSettings.permissionRequestAutoDenyEnabled !== false,
         modelIoFullRetentionEnabled: appSettings.modelIoFullRetentionEnabled === true,
         compaction,
       })
@@ -330,6 +331,7 @@ function RootInner({
       .syncAppRuntimePreferences({
         askUserQuestionAutoResolutionEnabled:
           appSettings.askUserQuestionAutoResolutionEnabled !== false,
+        permissionRequestAutoDenyEnabled: appSettings.permissionRequestAutoDenyEnabled !== false,
         modelIoFullRetentionEnabled: appSettings.modelIoFullRetentionEnabled === true,
         compaction,
       })
@@ -338,6 +340,7 @@ function RootInner({
       });
   }, [
     appSettings?.askUserQuestionAutoResolutionEnabled,
+    appSettings?.permissionRequestAutoDenyEnabled,
     appSettings?.modelIoFullRetentionEnabled,
     appSettings?.compactionBufferTokens,
     appSettings?.compactionMicrocompactEnabled,

@@ -25,29 +25,51 @@ export type V4InteractionAnswer = {
   // content 直传旧 userInput response 的 content 语义（多题答案/注解无损）。
   action?: "accept" | "decline" | "cancel";
   content?: Record<string, unknown>;
+  // **本地合成**标记，只在登记表到点自动收口时出现（见 V4InteractionRegistrationOptions.deadline）。
+  // 客户端 resolveInteraction 的 answer schema 是严格对象、没有这个字段，所以它永远不从 wire 上来；
+  // 各 resolver 据此把"没人应答"与"用户明确拒绝"区分开（文案与后续行为都不同）。
+  autoResolved?: "timeout";
 };
 
 const ASK_USER_QUESTION_HIDDEN_GRACE_MS = 60_000;
 const ASK_USER_QUESTION_AUTO_RESOLUTION_MS = 300_000;
+
+/**
+ * 未应答的授权请求（permission / ExitPlanMode）默认时限：5 分钟。
+ *
+ * 与「提问自动继续」取同一个产品时长，但不共用它那套倒计时/持久化/snooze——授权场景要的是
+ * "没人就收场"，走的是本表的通用 `deadline`（语义由注册方定，见 V4InteractionDeadline）。
+ */
+export const PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS = 300_000;
 interface V4InteractionRegistryOptions {
   hiddenGraceMs?: number;
   autoResolutionMs?: number;
   now?: () => number;
 }
 
-export function resolveV4InteractionRegistryOptionsFromEnv(
-  env: NodeJS.ProcessEnv,
-): V4InteractionRegistryOptions | undefined {
-  if (env.ZCODE_ENV !== "test") return undefined;
+/**
+ * E2E 时钟缩放：**只在 `ZCODE_ENV=test` 生效**，把交互时钟按比例缩短，供协议面用例在秒级
+ * 验证超时收口。非 test 环境原样返回——生产绝不受这个环境变量影响。
+ */
+export function scaleV4InteractionClockMs(ms: number, env: NodeJS.ProcessEnv): number {
+  if (env.ZCODE_ENV !== "test") return ms;
   const rawScale = env[ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV]?.trim();
-  if (!rawScale) return undefined;
+  if (!rawScale) return ms;
   const scale = Number(rawScale);
   if (!Number.isFinite(scale) || scale < 1 || scale > 1_000) {
     throw new Error(`${ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV} must be between 1 and 1000`);
   }
+  return Math.max(1, Math.round(ms / scale));
+}
+
+export function resolveV4InteractionRegistryOptionsFromEnv(
+  env: NodeJS.ProcessEnv,
+): V4InteractionRegistryOptions | undefined {
+  if (env.ZCODE_ENV !== "test") return undefined;
+  if (!env[ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV]?.trim()) return undefined;
   return {
-    hiddenGraceMs: Math.max(1, Math.round(ASK_USER_QUESTION_HIDDEN_GRACE_MS / scale)),
-    autoResolutionMs: Math.max(1, Math.round(ASK_USER_QUESTION_AUTO_RESOLUTION_MS / scale)),
+    hiddenGraceMs: scaleV4InteractionClockMs(ASK_USER_QUESTION_HIDDEN_GRACE_MS, env),
+    autoResolutionMs: scaleV4InteractionClockMs(ASK_USER_QUESTION_AUTO_RESOLUTION_MS, env),
   };
 }
 
@@ -64,12 +86,31 @@ export type V4InteractionAutoResolution =
       snoozedAt: number;
     };
 
+/**
+ * 到点自动收口：登记方声明"多久没人答，就投递这个合成应答"。
+ *
+ * 与 `initialAutoResolution` 是两套东西：那套是 AskUserQuestion 专有的倒计时（隐藏宽限、
+ * 持久化、snooze），这套只要一个截止计时，**语义完全由注册方决定**——登记表只负责"到点了
+ * 投递"，不解释 answer 里是什么。到点走的是与用户应答完全相同的一条路径（`resolve`），
+ * 所以"先到先得、晚到幂等"自动成立，不需要第二套收口逻辑。
+ */
+export interface V4InteractionDeadline {
+  afterMs: number;
+  answer: V4InteractionAnswer;
+  /**
+   * 到点那一刻再问一次"还该收口吗"。产品语义要求"关闭开关后，当前和后续请求都一直等"，
+   * 所以在途请求的开关状态必须在到点时才裁决，而不是注册时固化。
+   */
+  isStillArmed?: () => boolean;
+}
+
 export interface V4InteractionRegistrationOptions {
   sessionId: string;
   kind: "askUserQuestion" | "other";
   fullAccess?: () => Promise<void>;
   initialAutoResolution?: V4InteractionAutoResolution;
   onAutoResolutionUpdated?: (state: V4InteractionAutoResolution) => void | Promise<void>;
+  deadline?: V4InteractionDeadline;
 }
 
 interface RegisteredInteraction {
@@ -84,6 +125,14 @@ interface RegisteredInteraction {
   autoResolutionEligible: boolean;
   visibleTimer?: ReturnType<typeof setTimeout>;
   deadlineTimer?: ReturnType<typeof setTimeout>;
+  /** 通用截止计时（`deadline`），与上面的 AskUserQuestion 计时互不共用。 */
+  interactionDeadline?: V4InteractionDeadline;
+  /**
+   * 绝对截止时刻。重注册时**沿用**上一次的值：同一 interactionId 会被重发现机制反复重注册，
+   * 若每次都从当前时刻重算，5 分钟的时钟会被一直往后推、永远到不了点。
+   */
+  interactionDeadlineAt?: number;
+  interactionDeadlineTimer?: ReturnType<typeof setTimeout>;
   token: symbol;
 }
 
@@ -133,6 +182,9 @@ export class V4InteractionRegistry {
       const queue = this.queuesBySession.get(options.sessionId) ?? [];
       queue.push(interactionId);
       this.queuesBySession.set(options.sessionId, queue);
+    }
+    if (options?.deadline) {
+      this.scheduleInteractionDeadline(interactionId, entry, options.deadline, previous);
     }
     if (options) {
       if (entry.autoResolution) {
@@ -310,6 +362,30 @@ export class V4InteractionRegistry {
     this.scheduleActiveAutoResolution(interactionId, entry);
   }
 
+  /**
+   * 通用截止计时的唯一实现。到点时与用户应答走同一条投递路径（`resolve`）；`isStillArmed`
+   * 为假（等待期间开关被关掉）则**不收口**，那条请求转回无限等待。
+   */
+  private scheduleInteractionDeadline(
+    interactionId: string,
+    entry: RegisteredInteraction,
+    deadline: V4InteractionDeadline,
+    previous?: RegisteredInteraction,
+  ): void {
+    const deadlineAt =
+      previous?.interactionDeadlineAt ?? this.now() + Math.max(0, deadline.afterMs);
+    entry.interactionDeadline = deadline;
+    entry.interactionDeadlineAt = deadlineAt;
+    entry.interactionDeadlineTimer = setTimeout(
+      () => {
+        if (this.pending.get(interactionId) !== entry) return;
+        if (deadline.isStillArmed && !deadline.isStillArmed()) return;
+        this.resolve(interactionId, deadline.answer);
+      },
+      Math.max(0, deadlineAt - this.now()),
+    );
+  }
+
   private scheduleActiveAutoResolution(interactionId: string, entry: RegisteredInteraction): void {
     const autoResolution = entry.autoResolution;
     if (!autoResolution || autoResolution.state === "snoozed") return;
@@ -363,8 +439,10 @@ export class V4InteractionRegistry {
   private clearTimers(entry: RegisteredInteraction): void {
     if (entry.visibleTimer) clearTimeout(entry.visibleTimer);
     if (entry.deadlineTimer) clearTimeout(entry.deadlineTimer);
+    if (entry.interactionDeadlineTimer) clearTimeout(entry.interactionDeadlineTimer);
     delete entry.visibleTimer;
     delete entry.deadlineTimer;
+    delete entry.interactionDeadlineTimer;
   }
 
   private remove(interactionId: string, entry: RegisteredInteraction): void {

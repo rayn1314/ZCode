@@ -2,6 +2,7 @@ export {
   buildProtocolPermissionOptions,
   buildPermissionDeniedContent,
   buildSessionPermissionUpdates,
+  PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT,
   PERMISSION_DENIED_BY_USER_CONTENT,
   SESSION_ALLOW_PERMISSION_OPTION_KIND,
   toLegacyPermissionOptionsPolicy,

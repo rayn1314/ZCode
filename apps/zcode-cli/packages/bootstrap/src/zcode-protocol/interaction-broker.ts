@@ -24,7 +24,12 @@ import {
 } from "@zcode/shared";
 import type {
   V4InteractionAnswer,
+  V4InteractionDeadline,
   V4InteractionRegistrationOptions,
+} from "../zcode-protocol-v4/interaction-registry.js";
+import {
+  PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS,
+  scaleV4InteractionClockMs,
 } from "../zcode-protocol-v4/interaction-registry.js";
 import type { ZCodeProtocolAgentServerContext } from "./server-types.js";
 import {
@@ -34,6 +39,7 @@ import {
   toLegacyPermissionOptionsPolicy,
   buildPermissionDeniedContent,
   PERMISSION_DENIED_BY_USER_CONTENT,
+  PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT,
 } from "./permission-options.js";
 
 const EXIT_PLAN_MODE_APPROVAL_QUESTION = "Review this implementation plan.";
@@ -56,6 +62,32 @@ export function createProtocolInteractionBroker(
   };
 }
 
+/**
+ * 未应答授权请求的收口时限（permission 与 ExitPlanMode 共用）。
+ *
+ * 开关**实时**读 `appRuntimePreferences`（Host 侧持久化的设置项，默认开启）：关闭时不设时限，
+ * 就等于今天的行为——一直等到有人答。反向不对称与「提问自动继续」一致：开启只对之后注册的
+ * 请求生效，不会给已经挂着的旧请求补一个时钟；而关闭会立刻让在途请求在到点时不再收口
+ * （`isStillArmed`），即"关闭后当前和后续都一直等"。
+ *
+ * 时限走登记表的通用 `deadline`，而不是在这里 `Promise.race` 一个计时器：只有经登记表投递，
+ * 底下那条反向请求才会被真正 abort 掉（否则它会带着每秒重发现一直挂着，迟到应答无处投递）。
+ */
+function resolvePermissionAutoDenyDeadline(
+  context: ZCodeProtocolAgentServerContext,
+): V4InteractionDeadline | undefined {
+  const enabled = context.appRuntimePreferences?.permissionRequestAutoDenyEnabled !== false;
+  if (!enabled) return undefined;
+  return {
+    afterMs: scaleV4InteractionClockMs(
+      PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS,
+      context.deps.env ?? process.env,
+    ),
+    answer: { autoResolved: "timeout" },
+    isStillArmed: () => context.appRuntimePreferences?.permissionRequestAutoDenyEnabled !== false,
+  };
+}
+
 async function requestPermission(
   context: ZCodeProtocolAgentServerContext,
   request: PermissionBrokerRequest,
@@ -67,6 +99,7 @@ async function requestPermission(
     ...request,
     optionsPolicy: toLegacyPermissionOptionsPolicy(request.optionsPolicy),
   });
+  const autoDenyDeadline = resolvePermissionAutoDenyDeadline(context);
   const response = await raceClientRequestWithV4Interaction(
     context,
     request.requestId,
@@ -92,6 +125,14 @@ async function requestPermission(
     // v4 answer → ZCodePermissionResponse：optionId 语义来自 v4 reducer 合成的
     // allowOnce/allowAlways/deny（见 product-projection onPermissionRequested）。
     (answer) => {
+      if (answer.autoResolved === "timeout") {
+        // 与用户应答同一条日志面：事后能区分"没人答"与"用户点了拒绝"。
+        context.logger?.warn("Permission request auto-denied on timeout", {
+          requestId: request.requestId,
+          sessionId: String(request.sessionId),
+          toolName: request.toolName,
+        });
+      }
       const response = v4AnswerToPermissionResponse(answer, permissionOptions, request.toolName);
       return response.decision === "deny" && answer.freeText?.trim()
         ? { ...response, preserveReasonFormatting: true }
@@ -99,6 +140,7 @@ async function requestPermission(
     },
     {
       ...createInteractionRegistrationOptions(request, "other"),
+      ...(autoDenyDeadline ? { deadline: autoDenyDeadline } : {}),
       ...(!request.origin &&
       !request.optionsPolicy &&
       options?.claimResponse &&
@@ -152,6 +194,10 @@ function v4AnswerToPermissionResponse(
   reasonSource?: PermissionBrokerResult["reasonSource"];
   sessionPermissionUpdates?: PermissionBrokerResult["sessionPermissionUpdates"];
 } {
+  // 超时自动收口：这不是"用户拒绝"，文案必须分开（模型据此知道没人应答，可以换方案或再问）。
+  if (answer.autoResolved === "timeout") {
+    return { decision: "deny", reason: PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT };
+  }
   const refineFeedback = answer.freeText?.trim();
   if (
     (toolName === CREATE_WORKFLOW_TOOL_NAME || toolName === AMEND_WORKFLOW_TOOL_NAME) &&
@@ -271,6 +317,7 @@ async function requestExitPlanModeApproval(
   request: PermissionBrokerRequest,
   options?: PermissionBrokerRequestOptions,
 ): Promise<PermissionBrokerResult> {
+  const autoDenyDeadline = resolvePermissionAutoDenyDeadline(context);
   const response = await raceClientRequestWithV4Interaction(
     context,
     request.requestId,
@@ -296,13 +343,21 @@ async function requestExitPlanModeApproval(
     // v4 答 plan approval：allow 类 optionId = 批准；freeText = 计划反馈
     // （planApprovalResponseToBrokerResult 走 plan_approval_feedback deny）；否则 decline。
     (answer) => v4AnswerToPlanApprovalResponse(answer),
-    createInteractionRegistrationOptions(request, "other"),
+    {
+      ...createInteractionRegistrationOptions(request, "other"),
+      // 计划批准也是"人在批准一件事"，同一条时限：超时 = decline，会话留在 plan 模式。
+      ...(autoDenyDeadline ? { deadline: autoDenyDeadline } : {}),
+    },
   );
 
   return planApprovalResponseToBrokerResult(response);
 }
 
 function v4AnswerToPlanApprovalResponse(answer: V4InteractionAnswer): ZCodeUserInputResponse {
+  // 超时自动收口：decline + 独立 reason（否则 core 只会回退成通用的"权限被拒"）。
+  if (answer.autoResolved === "timeout") {
+    return { action: "decline", reason: PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT };
+  }
   // 同 v4AnswerToUserInputResponse——host adapter 收敛路径直传
   // action/content，planApprovalResponseToBrokerResult 继续做 approve/feedback 归一。
   if (answer.action) {

@@ -73,6 +73,7 @@ export const SETTINGS_USER_ACTION_FEATURES = {
   "settings.conversation": [
     "change_interaction_behavior",
     "toggle_ask_user_auto_resolution",
+    "toggle_permission_request_auto_deny",
     "toggle_model_io_retention",
     "toggle_show_reasoning",
     "toggle_show_todos",

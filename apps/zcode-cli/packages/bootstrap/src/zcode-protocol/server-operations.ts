@@ -3291,6 +3291,8 @@ async function requestSessionRuntimePreferences(
       // 增强搜索维持原有默认开启，其他协议/传输错误仍阻止 runtime 创建。
       return {
         askUserQuestionAutoResolutionEnabled: true,
+        // 旧 Host 没有这个设置项 → 按产品默认开启（与 schema 的 .default(true) 同源）。
+        permissionRequestAutoDenyEnabled: true,
         memoryEnabled: false,
         modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
         nativeSearchEnhancementsEnabled: true,
@@ -3331,6 +3333,12 @@ async function resolveSessionStartupPreferences(
   await context.v4Interactions.initializeAskUserQuestionAutoResolutionEnabled(
     runtimePreferences.askUserQuestionAutoResolutionEnabled,
   );
+  // 授权超时开关（`spec/permission-request-timeout.md`）：写进程级 holder 即可，broker 每次
+  // 询问时实时读。不需要 AskUserQuestion 那种"命令优先"仲裁——它没有需要迁移的历史状态，
+  // 而且新 Host 每次应答的都是它**当前**持久化的值，所以迟到的握手只会写入同一个值；
+  // 旧 Host 缺字段时 schema 的 .default(true) 给出产品默认。
+  context.appRuntimePreferences.permissionRequestAutoDenyEnabled =
+    runtimePreferences.permissionRequestAutoDenyEnabled;
   return {
     memoryEnabled: runtimePreferences.memoryEnabled,
     modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,

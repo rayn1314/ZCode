@@ -1479,6 +1479,7 @@ export function createZCodeAgentService(
             preferences: {
               askUserQuestionAutoResolutionEnabled:
                 params.preferences.askUserQuestionAutoResolutionEnabled,
+              permissionRequestAutoDenyEnabled: params.preferences.permissionRequestAutoDenyEnabled,
             },
           },
           zcodeWorkspaceUpdateInteractionPreferencesResultSchema,
@@ -2183,6 +2184,7 @@ export function createZCodeAgentService(
                   // 已校验的 scope，避免首次执行为了 Shell 再次等待远端 client config。
                   (await resolveSessionRuntimePreferences?.(parsed.data.scope)) ?? {
                     askUserQuestionAutoResolutionEnabled: true,
+                    permissionRequestAutoDenyEnabled: true,
                     nativeSearchEnhancementsEnabled: true,
                     memoryEnabled: false,
                   },

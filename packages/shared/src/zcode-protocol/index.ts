@@ -1748,6 +1748,8 @@ export const zcodeSessionRuntimePreferencesResultSchema = z
     nativeSearchEnhancementsEnabled: z.boolean(),
     memoryEnabled: z.boolean().default(false),
     askUserQuestionAutoResolutionEnabled: z.boolean().default(true),
+    // 兼容旧 Host：缺失字段时按「未设置即开启」处理（默认开启授权超时自动拒绝）。
+    permissionRequestAutoDenyEnabled: z.boolean().default(true),
     integratedTerminalShell: integratedTerminalShellSelectionSchema.optional(),
     // 兼容旧 Host：缺少字段时在协议解析边界使用当前默认策略。
     modelContextBudgetStrategy: zcodeModelContextBudgetStrategySchema.default(
@@ -2226,6 +2228,9 @@ export type ZCodeProviderUpdateAccountConfigResult = z.infer<
 export const zcodeInteractionPreferencesSchema = z
   .object({
     askUserQuestionAutoResolutionEnabled: z.boolean(),
+    // 故意 optional：新 CLI 必须能接受旧 Host 发来的命令（旧 Host 不带此字段，按默认开启）；
+    // 新 Host 总会显式发送，因此这里不能像既有项那样写成必填。
+    permissionRequestAutoDenyEnabled: z.boolean().optional(),
   })
   .strict();
 export type ZCodeInteractionPreferences = z.infer<typeof zcodeInteractionPreferencesSchema>;
@@ -2244,6 +2249,7 @@ export const zcodeWorkspaceUpdateInteractionPreferencesResultSchema = z
   .object({
     workspace: zcodeWorkspaceRefSchema,
     askUserQuestionAutoResolutionEnabled: z.boolean(),
+    permissionRequestAutoDenyEnabled: z.boolean(),
     snoozedInteractionCount: z.number().int().nonnegative(),
   })
   .strict();

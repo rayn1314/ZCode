@@ -145,6 +145,12 @@ export interface ZCodeProtocolAgentServerContext {
   logger?: Logger;
   appRuntimePreferences: {
     askUserQuestionAutoResolutionEnabled: boolean;
+    /**
+     * host 同步的授权超时开关（`spec/permission-request-timeout.md`）。
+     * 默认 true：开启后未应答的授权请求（permission / ExitPlanMode）5 分钟自动拒绝。
+     * 协议 broker 在**每次询问时**实时读它，所以改设置立刻对后续请求生效。
+     */
+    permissionRequestAutoDenyEnabled: boolean;
     modelIoFullRetentionEnabled: boolean;
     /** host 同步的 Off-Peak 工具面门禁；缺省 false（fail-closed），供 v4 冷恢复等无 host 参数的路径读取。 */
     offPeakToolEnabled: boolean;

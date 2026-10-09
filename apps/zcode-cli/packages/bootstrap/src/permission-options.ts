@@ -15,6 +15,15 @@ export function buildPermissionDeniedContent(feedback?: string): string {
     : PERMISSION_DENIED_BY_USER_CONTENT;
 }
 
+// 授权请求超时自动收口（`permission-request-timeout.md`）的 reason。
+//
+// 必须与上面的"用户拒绝"分开，理由有两条：
+// 1. 语义不同——用户拒绝是表达偏好，超时只是没人应答。模型据此可以选择换个方案再来、
+//    或在下一条消息里说明需要什么批准，而不是把这个拒绝读成用户不想要这件事；
+// 2. "用户拒绝"的文案带 STOP 指令，照抄会让模型停在那里等一个根本不存在的人。
+export const PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT =
+  "Nobody answered this permission request before it timed out, so the tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). This is not a user denial: continue without this tool, or tell the user what you needed approval for.";
+
 /**
  * 会话授权选项的标识、内部种类与显示名称。
  * optionId 上 v4 wire 原样传递（broker 靠它精确命中）；kind 是 CLI 内部值，v4 投影把它映到

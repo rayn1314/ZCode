@@ -162,6 +162,7 @@ export function useSettings() {
       await refresh();
       if (
         typeof patch.askUserQuestionAutoResolutionEnabled === "boolean" ||
+        typeof patch.permissionRequestAutoDenyEnabled === "boolean" ||
         typeof patch.modelIoFullRetentionEnabled === "boolean" ||
         COMPACTION_SETTING_KEYS.some((key) => patch[key] !== undefined)
       ) {
@@ -170,6 +171,9 @@ export function useSettings() {
           askUserQuestionAutoResolutionEnabled:
             patch.askUserQuestionAutoResolutionEnabled ??
             settings?.askUserQuestionAutoResolutionEnabled !== false,
+          permissionRequestAutoDenyEnabled:
+            patch.permissionRequestAutoDenyEnabled ??
+            settings?.permissionRequestAutoDenyEnabled !== false,
           modelIoFullRetentionEnabled:
             patch.modelIoFullRetentionEnabled ?? settings?.modelIoFullRetentionEnabled === true,
           // 压缩偏好从刷新后的设置快照整体归一化：六个键任一变更都整份下发，

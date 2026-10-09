@@ -2307,6 +2307,9 @@ const enUS: Record<string, string> = {
   "settings.askUserQuestionAutoResolution": "Automatically continue questions",
   "settings.askUserQuestionAutoResolutionDescription":
     "When enabled, Agent questions automatically continue after 5 minutes without an answer. When disabled, current and future questions wait for your response.",
+  "settings.permissionRequestAutoDeny": "Auto-deny unanswered permission requests",
+  "settings.permissionRequestAutoDenyDescription":
+    "When on, a permission request that nobody answers is denied after 5 minutes so the agent can continue. When off, permission requests wait for your response indefinitely.",
   "settings.modelIoFullRetention": "Keep complete model I/O",
   "settings.modelIoFullRetentionDescription":
     "Keep complete model requests and responses without compression, size limits, or automatic deletion.",

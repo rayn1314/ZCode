@@ -321,6 +321,7 @@ export function createBotRemoteWorkspaceService(params: {
         : await params.settingService.get().then((settings) => ({
             askUserQuestionAutoResolutionEnabled:
               settings.askUserQuestionAutoResolutionEnabled !== false,
+            permissionRequestAutoDenyEnabled: settings.permissionRequestAutoDenyEnabled !== false,
             modelIoFullRetentionEnabled: settings.modelIoFullRetentionEnabled === true,
             compaction: resolveCompactionPreferencesFromSettings(settings),
           }));

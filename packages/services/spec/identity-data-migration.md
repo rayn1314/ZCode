@@ -59,9 +59,10 @@
 `closeToTrayOnWindows`、`keepAwakeWhileRunning`、`desktopZoomLevel`、`desktopWindowSize`、
 `desktopChromiumHardwareAccelerationEnabled`、`messageStreamShowReasoning`、`messageStreamShowTodos`、
 `toolGroupingExploreEnabled`、`toolGroupingTerminalEnabled`、`toolGroupingChangesEnabled`、
-`zcodeInteractionBehavior`、`askUserQuestionAutoResolutionEnabled`、`modelIoFullRetentionEnabled`、
-`nativeSearchEnhancementsEnabled`、`proactiveSuggestionsEnabled`、`memoryEnabled`、
-`receivePreviewUpdates`、`autoDownloadAndInstallUpdates`、`zcodeEndpointOrigin`、
+`zcodeInteractionBehavior`、`askUserQuestionAutoResolutionEnabled`、
+`permissionRequestAutoDenyEnabled`、`modelIoFullRetentionEnabled`、`nativeSearchEnhancementsEnabled`、
+`proactiveSuggestionsEnabled`、`memoryEnabled`、`receivePreviewUpdates`、
+`autoDownloadAndInstallUpdates`、`zcodeEndpointOrigin`、
 `startPlanRecommendationDismissed`、`onboardingOccupation`。
 
 实现要点：**只搬源文件里显式出现过的键**（源里没写 = 用户没设过，不要用 schema 默认值覆盖目标），
