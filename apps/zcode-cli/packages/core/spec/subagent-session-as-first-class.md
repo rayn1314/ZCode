@@ -139,7 +139,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - **派生点不变**（2026-10-07 订正原稿）：改写必须由**父 runtime** 派生——`child-client-ports.ts` 的文件头把这条写成了不变式（`parentSessionId` 只能由父填，调用方给不了错的值；历史上正是因为散在各 child 装配点而"两处错、一处对"）。而且 `origin` 需要 `agentId` / `description` / `parentToolCallId` / `parentTurnId` 这些**只有派发点才有**的运行时事实，record 层拿不到。所以本轮不改由谁派生，只改**由谁消费**：子 runtime 不再自己包一层，改为覆盖包携带父已派生好的 `permissionBroker` / `providerRuntimeHeadersPort`，由构造入口原样送进子 runtime deps。
 - `providerRuntimeHeadersPort` 同理（同一 helper 一次派生两个端口）。
 - 代价与补偿不变：用户盯着子会话面板时看不到父会话弹窗，**UI 必须补"有请求等待在父会话处理"的可点击提示**（见 UI 施工规格）。
-- 冷恢复的孤立子会话没有父可派生 → 交互回落成它自己的 sessionId；这条路径今天就是这样，S2/S4 处理"UI 如何认领"。派生点已从 `taskType` 无关的 spawn 侧固定下来，不需要为它加分支。
+- 冷恢复的孤立子会话没有"父 runtime 可派生"这条路径，但**同样改写为父会话**（`parentSessionId` 由 `session.parentID` 回填，bootstrap 侧用 core 已导出的 `createSubagentInteractionBroker` 把协议 broker 包一圈）。2026-10-09 落地，见 `subagent-permission-parity.md` D2：原先这条回落成"子会话自己的 sessionId"，而那个落点在 UI 上没有出口（子区块行不画交互角标、子面板的「等待中」提示读的是父投影）。
 
 ### D7 · 列表：层级展开 + 数据源用 roster
 
@@ -180,7 +180,7 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 - **嵌套闸恒真**：`subagents.enabled === false` 由构造路径写死，spawn 与冷恢复同一条路径，不存在"某条路径漏写"的可能。
 - **删除沿 `(parentSessionId, taskType="subagent_child")` 边递归**；中止沿同一棵树的进行中轮级联。
 - **中止语义不对称**：父级联中止优先于"有活动轮不可回收"；子会话自身回收时"有活动轮不可回收"优先。两者触发源不同，不得互相推导。
-- **交互归属不变**：阻塞交互的 sessionId 恒为父会话，子会话只带 `origin` 标识。
+- **交互归属不变**：阻塞交互的 sessionId 恒为父会话，子会话只带 `origin` 标识。**2026-10-09 起这条对两条构造路径都成立**（原先只有派发路径成立，冷恢复路径落子会话自己的 id，见 `subagent-permission-parity.md` D2）。
 - **不进入任务索引**：`subagent_child` 永远不出现在任务列表与任务索引里。
 - **只读不再是会话级语义**：命令级的拒绝必须给细分 reasonCode。
 - **存储端口方法必须保留接收者调用**：`SessionStorePort.sessionEntries` 在真实 `SqliteSessionStore` 上是**原型方法**（实现体读 `this.db`），因此 `const f = store.sessionEntries; await f(...)` 这类"先解构再裸调用"会丢 `this` 并抛 `TypeError: Cannot read properties of undefined (reading 'db')`。只允许写成 `store.sessionEntries(...)` 或 `store.sessionEntries?.(...)`。这条不变式的代价不对称：违反它时冷恢复的**第一步**（读 launch spec）就失败，`session/resume` 整个请求以 `-32603` 失败——子代理不是退化成受限模式，而是**彻底无法还原身份、也无法继续对话**（2026-10-09 修复，三个违反点分别在 launch spec 读取、roster/`ListAgents`、lifecycle entry 去重）。
@@ -800,12 +800,14 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **验收缺口**：11 条验收路径里，**依赖真实派发的部分已全部执行**（协议面 A/B/C；GUI 侧覆盖验收路径 1–4、7、8、10、11，另加 6 的触发面结论，见上两节）。剩下的只有两条，且性质都不是"还没跑"：
 
-- **第 5 条跑不到，不是没跑到**（实测反例 + 源码定位，见下「待决问题」）：子会话用 `Write` 写文件、用 `Bash` 写文件都**没有**任何授权请求（文件确实落盘：`e2e-child-write.txt`、`perm-probe.txt`），而父会话在**同一个 `build` 模式**下跑同一条 `echo ... > ...` **会**弹授权（`parent-probe.txt` 出现在我点了「允许」之后）。**注意这组对照发生在"子会话已被重新打开"之后，按下面订正过的结论，此时子会话整份白名单已变成预授权——所以它证明的不是"永不询问"，而是"续轮之后不询问"。**
+- **第 5 条跑不到，不是没跑到**（实测反例 + 源码定位，见下「子会话授权与主代理同构」）：子会话用 `Write` 写文件、用 `Bash` 写文件都**没有**任何授权请求（文件确实落盘：`e2e-child-write.txt`、`perm-probe.txt`），而父会话在**同一个 `build` 模式**下跑同一条 `echo ... > ...` **会**弹授权（`parent-probe.txt` 出现在我点了「允许」之后）。注意这组对照发生在"子会话已被重新打开"之后——按当时的结论，此时子会话整份白名单已变成预授权，所以它证明的不是"永不询问"而是"续轮之后不问"。**这条分岔已于 2026-10-09 修掉**：两条构造路径统一落模式规则，续轮之后的子会话写入同样会发起询问（见 `subagent-permission-parity.md`）。
 - **第 9 条的服务端半边**：通道不可外部驱动（见上第 8 条），靠单测 + 同族机制现场证明。
 
-**待决问题（需要你拍板，1 条）：子会话的工具调用要不要升级到父会话询问？**
+**子会话授权与主代理同构（2026-10-09 拍板并落地）**
 
-- **现状是路径相关（2026-10-09 复核订正：原稿写"永远不升级询问"，不准确）**。同一份 agent 日志（`{dataRoot}/cli/log/zcode-2026-10-09.jsonl`）三条事实并列：
+权威定义在 `subagent-permission-parity.md`（主责包 core）。本节只留改动的直接证据，不在这里重抄设计。
+
+同一份 agent 日志（`{dataRoot}/cli/log/zcode-2026-10-09.jsonl`）三条事实并列：
 
   | 时刻 | 会话 | `permission.allowedTools` 规模 | 一条高风险 `Bash`（`scope=system, risk=high`）的判定 |
   | --- | --- | --- | --- |
@@ -813,15 +815,12 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   | 19:52:08 / 20:02:35 | 同一子会话（**被重新打开 / 续轮后**） | 33（= 它的冻结工具面） | `ruleId=rule.allowedTools`、`reason="Tool Bash is explicitly allowed"` → allow |
   | 20:15:01 | 父会话（始终） | 0 | `decision=ask`、`ruleId=mode.build.highRisk` |
 
-  也就是 **派发当轮的子会话没有预授权、走父会话同一套模式规则（写文件会升级到父会话询问）；子会话一旦被重新打开或以新轮冷恢复重建，整份冻结白名单就变成 `permission.allowedTools`，此后对它可调用的任何工具都无条件放行**。同一子会话两处 `Runtime config resolved` 的 `permissionAllowedToolCount` 由 0 变 33，就是这条分岔的直接证据。
-- **机制（源码读数）**：`permission.allowedTools` 由 `bootstrap/src/app/app-config-options.ts:49` 从 `options.runtimeConfig.toolAllowlist` 投影，而 `permission/service.ts:217` 对该集合无条件放行、且位置在 edit / build 两个模式分支**之前**（`deny` / 项目规则 / `alwaysAsk` / `requiresUserInteraction` / plan 都在它之前，所以这些策略仍然生效）。子会话 App 有两条构造路径（`create-app.ts:362`）：带 childScope bundle 时**注入父会话那个 PermissionService 实例**（父的 allowedTools=0，于是落回模式规则）；不带 bundle 时用自己解析出的配置**新建 PermissionService**（拿到 33 那份白名单）。这是"子会话两条构造路径"这一根因在权限面上的又一次现身。
-- **为什么值得你过一眼**：D6 与「已决策不做」里都写着"权限弹窗保持落父会话 + origin 标识"，UI 里也做出了 `subagents.pane.pendingInParent`（子面板顶部「有 N 个请求等待在父会话处理」）——**这套设计的前提是子会话会发起询问**。订正后的状态是：该入口**并非没有触发场景**（派发当轮就会走到，`subagent-interaction-broker.ts` 把 `sessionId` 改写为父会话、`origin` 保留子会话），但在"续轮之后"的分支里完全不可达。**真正的问题从"有无触发场景"变成了"同一个子代理的两轮语义不一致"**：第一轮写文件要问、之后不问。另需注意两点后果面的事实：(1) 询问**没有超时**——`permissionTimeoutMs` 在 CLI 各包里只被读、从未被赋值，未获应答的询问会一直等到有人答或被中止，期间子会话那一轮就停在那里（`interaction-request-recovery` 每秒重发现有协议请求）；(2) 若压根没有 broker（headless / workflow 子代理走 `createDenyPermissionBroker`），这类询问是 **fail-closed 直接拒绝**，表现为工具调用失败、不是挂起。
-- **用户 2026-10-09 提出的方向（B 的具体形态，偏向采纳）**：子代理的授权判定**完全与主代理同一条逻辑**——需要确认就照常停下来问，在会话列表上标出来（`TaskInteractionBadge`「等待确认」）、走系统通知（`usePendingInteractionTaskNotifications` → `platform.showTaskNotification`），超时机制也与主代理一致。核查结论：**这套"问 + 标记 + 通知"的机制已经存在且对子代理天然适用**（`subagent-interaction-broker.ts` 把子代理的询问改写成一条普通会话级交互请求，派发路径还会把 `sessionId` 改写为父会话、保留 `origin`），所以不需要新做 UI；挡住它的只有"预授权投影"这一处。两点必须先说清：
-  - **主代理目前没有超时**。`permissionTimeoutMs` 全仓仅被读取（`core/src/runtime/{types,helpers/runtime-tools}.ts`、`tool/executor/{impl,permission-flow,permission-input-recheck,types}.ts`），**从无赋值**，因此"与主代理一致"= 两边都没有超时（询问会一直挂着等应答）。要加就得两边一起加。
-  - yolo 模式下两边**现在就已经一致**（`mode.yolo` 放行在 `allowedTools` 之前），本改动只在 build / edit 模式产生行为差异。
-  - 落点统一是独立的一小步：派发路径落父会话 + `origin`（D6 原设计），被冷恢复的子代理落它自己的会话（`server-operations.ts:3476` 注入的是按子会话 id 路由的 `createProtocolInteractionBroker`）；若采纳 B，应统一成前者。
-- **取舍（我没动任何行为，三选一）**：(A) **有意为之**——后台子代理不能阻塞在交互上，所以它（已被收窄的）工具集整体预授权；那就要**把两条构造路径统一成"都预授权"**（现在派发当轮不一致，等于同一个子代理第一轮问、之后不问），并把 D6 里"子会话会产生阻塞交互"的措辞收窄。(B) **应当继承**——子会话只预授权"父会话在当前模式下本来也会自动允许"的部分，真正的询问仍落父会话（这正是 D6 + `pendingInParent` 的设计前提）；那要**把两条路径统一成"都不预授权"**，并定一条策略：父会话不在前台时这个询问怎么处置（挂起等答复 / 超时拒绝 / 自动拒绝）。(C) 暂不统一，只把差异登记为已知行为。
-- 我不自行修改的理由：这是**权限语义的产品决策**，且该投影路径同时服务非子会话的预授权（`toolAllowlist` 的既有语义是"免审批清单"），改动面超出子代理这一轮的范围。
+结论（题目选 (B)，并按"完整设计"做完，不是一行改动）：
+
+- **去预授权**：`permission.allowedTools` 不再从子会话的 `toolAllowlist` 投影（`bootstrap/src/app/app-config-options.ts`），两条构造路径统一落模式规则；注册面（工具可见性）不变。
+- **询问统一落父会话**：冷恢复路径也改用 `createSubagentInteractionBroker` 包一层（`server-operations.ts`）；`origin` 需要的 `agentId` / `description` 补进 launch spec（可选字段，存量 spec 缺失则不带 origin）。
+- **超时两边一起加**：`permissionTimeoutMs` 这个一直空着的挂点由 `permission-request-timeout.md` 接管（新设置项、默认开启、5 分钟、自动拒绝），而不是"两边一起无限等"。
+- 原稿里的 A / C 两个选项与"这是产品决策、需你拍板"的说明已被上述拍板取代；yolo 模式行为不变（`mode.yolo` 放行在 `allowedTools` 之前）。
 
 （勘误：本段此前记录"本机数据根跑不起一轮真实 agent"——那是**本机 `~/.zcode-rayn` 的实测现象**，不是本轮改造的缺陷，也不构成验收阻塞：用隔离数据根 + 独立 provider 配置即可跑通真实派发，做法见上文。不要把当时的环境限制读成本产品的功能缺口。）
 
