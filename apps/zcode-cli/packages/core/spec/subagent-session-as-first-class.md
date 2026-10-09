@@ -800,15 +800,24 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **验收缺口**：11 条验收路径里，**依赖真实派发的部分已全部执行**（协议面 A/B/C；GUI 侧覆盖验收路径 1–4、7、8、10、11，另加 6 的触发面结论，见上两节）。剩下的只有两条，且性质都不是"还没跑"：
 
-- **第 5 条跑不到，不是没跑到**（实测反例 + 源码定位，见下「待决问题」）：子会话用 `Write` 写文件、用 `Bash` 写文件都**没有**任何授权请求（文件确实落盘：`e2e-child-write.txt`、`perm-probe.txt`），而父会话在**同一个 `build` 模式**下跑同一条 `echo ... > ...` **会**弹授权（`parent-probe.txt` 出现在我点了「允许」之后）。
+- **第 5 条跑不到，不是没跑到**（实测反例 + 源码定位，见下「待决问题」）：子会话用 `Write` 写文件、用 `Bash` 写文件都**没有**任何授权请求（文件确实落盘：`e2e-child-write.txt`、`perm-probe.txt`），而父会话在**同一个 `build` 模式**下跑同一条 `echo ... > ...` **会**弹授权（`parent-probe.txt` 出现在我点了「允许」之后）。**注意这组对照发生在"子会话已被重新打开"之后，按下面订正过的结论，此时子会话整份白名单已变成预授权——所以它证明的不是"永不询问"，而是"续轮之后不询问"。**
 - **第 9 条的服务端半边**：通道不可外部驱动（见上第 8 条），靠单测 + 同族机制现场证明。
 
 **待决问题（需要你拍板，1 条）：子会话的工具调用要不要升级到父会话询问？**
 
-- **现状是不会**。根因链：子会话的冻结白名单经 `bootstrap/src/app/app-config-options.ts:49` 投影成 `permission.allowedTools`，而 `permission/service.ts:217` 对 `allowedTools` 里的工具**无条件放行，且位置在 edit / build 两个模式分支之前**；这份白名单又与它可调用的工具面**完全同集**（`tool/handlers/index.ts:216` 用同一份白名单过滤）。三者叠起来 = 子会话对任何它能调用的工具都直接放行，**永远不升级询问**。
-- **为什么值得你过一眼**：D6 与「已决策不做」里都写着"权限弹窗保持落父会话 + origin 标识"，UI 里也做出了 `subagents.pane.pendingInParent`（子面板顶部「有 N 个请求等待在父会话处理」）——**这套设计的前提是子会话会发起询问**。而在当前接线下这个入口没有触发场景，等于设计与实现之间有一处对不上。另外这条字段的注释写明它的用途是"headless CLI 的 denylist/allowlist 投影到 permission config"，子代理复用它属于同一字段承载两种语义。
-- **两种取舍都说得通，我没动任何行为**：(A) **有意为之**——后台子代理不能阻塞在交互上，所以它（已被收窄的）工具集整体预授权；那就要把 `pendingInParent` 入口按"当前无触发场景"登记，必要时删掉，并把 D6 里"子会话会产生阻塞交互"的措辞收窄。(B) **应当继承**——子会话只预授权"父会话在当前模式下本来也会自动允许"的部分，真正的询问仍落父会话（这正是 D6 + 该入口的设计前提）；选 B 还要定一条策略：父会话不在前台时这个询问怎么处置。
-- 我不自行修改的理由：这是**权限语义的产品决策**，且该投影路径同时服务非子会话的预授权，改动面超出子代理这一轮的范围。
+- **现状是路径相关（2026-10-09 复核订正：原稿写"永远不升级询问"，不准确）**。同一份 agent 日志（`{dataRoot}/cli/log/zcode-2026-10-09.jsonl`）三条事实并列：
+
+  | 时刻 | 会话 | `permission.allowedTools` 规模 | 一条高风险 `Bash`（`scope=system, risk=high`）的判定 |
+  | --- | --- | --- | --- |
+  | 19:48:07 | 子会话（**派发当轮**） | 0 | 走模式规则：只读命令 `ruleId=mode.build.readOnly` → allow（非只读的命令会走到 ask） |
+  | 19:52:08 / 20:02:35 | 同一子会话（**被重新打开 / 续轮后**） | 33（= 它的冻结工具面） | `ruleId=rule.allowedTools`、`reason="Tool Bash is explicitly allowed"` → allow |
+  | 20:15:01 | 父会话（始终） | 0 | `decision=ask`、`ruleId=mode.build.highRisk` |
+
+  也就是 **派发当轮的子会话没有预授权、走父会话同一套模式规则（写文件会升级到父会话询问）；子会话一旦被重新打开或以新轮冷恢复重建，整份冻结白名单就变成 `permission.allowedTools`，此后对它可调用的任何工具都无条件放行**。同一子会话两处 `Runtime config resolved` 的 `permissionAllowedToolCount` 由 0 变 33，就是这条分岔的直接证据。
+- **机制（源码读数）**：`permission.allowedTools` 由 `bootstrap/src/app/app-config-options.ts:49` 从 `options.runtimeConfig.toolAllowlist` 投影，而 `permission/service.ts:217` 对该集合无条件放行、且位置在 edit / build 两个模式分支**之前**（`deny` / 项目规则 / `alwaysAsk` / `requiresUserInteraction` / plan 都在它之前，所以这些策略仍然生效）。子会话 App 有两条构造路径（`create-app.ts:362`）：带 childScope bundle 时**注入父会话那个 PermissionService 实例**（父的 allowedTools=0，于是落回模式规则）；不带 bundle 时用自己解析出的配置**新建 PermissionService**（拿到 33 那份白名单）。这是"子会话两条构造路径"这一根因在权限面上的又一次现身。
+- **为什么值得你过一眼**：D6 与「已决策不做」里都写着"权限弹窗保持落父会话 + origin 标识"，UI 里也做出了 `subagents.pane.pendingInParent`（子面板顶部「有 N 个请求等待在父会话处理」）——**这套设计的前提是子会话会发起询问**。订正后的状态是：该入口**并非没有触发场景**（派发当轮就会走到，`subagent-interaction-broker.ts` 把 `sessionId` 改写为父会话、`origin` 保留子会话），但在"续轮之后"的分支里完全不可达。**真正的问题从"有无触发场景"变成了"同一个子代理的两轮语义不一致"**：第一轮写文件要问、之后不问。另需注意两点后果面的事实：(1) 询问**没有超时**——`permissionTimeoutMs` 在 CLI 各包里只被读、从未被赋值，未获应答的询问会一直等到有人答或被中止，期间子会话那一轮就停在那里（`interaction-request-recovery` 每秒重发现有协议请求）；(2) 若压根没有 broker（headless / workflow 子代理走 `createDenyPermissionBroker`），这类询问是 **fail-closed 直接拒绝**，表现为工具调用失败、不是挂起。
+- **取舍（我没动任何行为，三选一）**：(A) **有意为之**——后台子代理不能阻塞在交互上，所以它（已被收窄的）工具集整体预授权；那就要**把两条构造路径统一成"都预授权"**（现在派发当轮不一致，等于同一个子代理第一轮问、之后不问），并把 D6 里"子会话会产生阻塞交互"的措辞收窄。(B) **应当继承**——子会话只预授权"父会话在当前模式下本来也会自动允许"的部分，真正的询问仍落父会话（这正是 D6 + `pendingInParent` 的设计前提）；那要**把两条路径统一成"都不预授权"**，并定一条策略：父会话不在前台时这个询问怎么处置（挂起等答复 / 超时拒绝 / 自动拒绝）。(C) 暂不统一，只把差异登记为已知行为。
+- 我不自行修改的理由：这是**权限语义的产品决策**，且该投影路径同时服务非子会话的预授权（`toolAllowlist` 的既有语义是"免审批清单"），改动面超出子代理这一轮的范围。
 
 （勘误：本段此前记录"本机数据根跑不起一轮真实 agent"——那是**本机 `~/.zcode-rayn` 的实测现象**，不是本轮改造的缺陷，也不构成验收阻塞：用隔离数据根 + 独立 provider 配置即可跑通真实派发，做法见上文。不要把当时的环境限制读成本产品的功能缺口。）
 
