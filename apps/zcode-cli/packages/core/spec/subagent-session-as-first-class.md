@@ -647,11 +647,13 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   - 标题：子会话 title，单行截断。
   - 右侧状态指示：`running` / `waiting` / `blocked` 用 `LoaderCircle`（转）或 `PauseCircle`；已结束按 `session/subagents` 的终态 `success` `CheckCircle2` / `failed` `CircleAlert` / `cancelled` `Ban` / `lost` `CircleDashed`。**沿用 `subagentDirectory.status.*` 的同一套图标与文案，不新造第二套状态语汇**；不新增 `killed` 取值，不单靠颜色区分（配 `aria-label`）。已结束项的状态与图标逐字复用 `SubagentDirectorySidePane` 里那个 `StatusIcon`（该函数应上提为共享件，不要复制一份）。
   - 点击 → 经壳层既有的 `handleOpenSubagentSession`（`OpenScopedSubagentSideTabRequest` → `openSubagentSessionSidePane`）。左栏目前**没有**这条 prop/context，需要新增：照 `WorkflowRunOpenProvider`（`v4/workflowRunOpenContext.tsx`，挂在 `WorkspaceShellLayout` 里包住 `WorkspaceSidebar`）的先例加一个 context，避免把回调穿过 4 个 section。
-- **插入点（三个，不是一个）**：左栏的"一行"有**两种行组件**，必须都覆盖：
+- **插入点（四个，不是一个）**：行组件只有**两种**（`MemoTaskItem` 与 `GroupedTaskItem`），但 `MemoTaskItem` 被三个各自独立的列表容器渲染，**容器不同就得各加一处**：
   - Timeline / Pinned 走 `MemoTaskItem`（`TaskListItem.tsx` 的 `<li>`），列表是**普通 `.map`**（非虚拟化）→ 在 `ul` 内该行之后追加同级的子区块节点（`<li>` 或 `<div>`）。
   - Archived 走**自己内联的 `<li>`**（`WorkspaceArchivedTasksFlatSection.tsx`）→ 同上追加。
+  - 项目区（「组织方式 = 项目」时的工作区行）走 `WorkspaceSidebarItem` → `TaskList` → `MemoTaskItem`（`TaskList.tsx` 自己的 `<ul>`）：与 Timeline/Pinned 是同一个行组件，但**列表容器不同**，是独立的第四处。
   - Grouped 走 `GroupedTaskItem`（`workspace-grouped-tasks/task-item.tsx` 的包装 `div`，顶层与组内**共用一个组件**）→ 插在包装 `div` 内、`<GroupedTaskRow/>` **之后**（在行自己的背景/内边距之外，不会被 `bg-selected` 卡片吞掉）；Grouped 有虚拟化，但两处虚拟列表都用 `rowVirtualizer.measureElement`，元素变高会被重新量回，不会与相邻行叠压。
-  - Grouped 的顶层与组内共用 `GroupedTaskItem`，所以 Grouped 只需改一处；加上 Timeline/Pinned 一处与 Archived 一处，共三个插入点。
+  - 合计四处：Grouped 一处（顶层与组内共用组件）、Timeline/Pinned 一处、Archived 一处、项目区一处。
+  - **项目区这一处在 S4c 漏掉了**（2026-10-09 用户报"只有子代理计数角标、点开父会话看不到子列表"后查实）：角标走的是 sessions-index 的 `runningSubagentCount`，四个列表容器都吃得到；子区块却只挂进了另外三个，于是项目区行**有角标、永远没有子列表**（进行中和已结束都没有，不是"要等结束"）。补救就是补上这条插入点。
   - ⚠ 行级点击陷阱：`TaskListItem` 的 `<li>` 自身带 `onClick={handleSelect}` 与 `tabIndex`。子区块内的按钮必须 `event.stopPropagation()`（否则点子代理会连带再选一次父会话、并触发父行的 `onContextMenu` 绑定）。
 - **状态**：
   - 空：**不渲染区块**，不显示空态占位。
@@ -780,6 +782,8 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 8. **验收路径 9 的 UI 半边**：子面板内**不存在**「切换模式」（模式选择器）与「分叉」（fork 行内动作），只有 composer 自身控件；同一时刻父会话面板两者都在。服务端半边**未驱动**：fork 是 v4 命令（旧协议 `session/fork` 的客户端链已删），外部没有可驱动通道；不过"角色不允许的命令会被明确拒绝并带 reasonCode"这一机制已由第 6 条现场证明，命令矩阵本身有单测覆盖。
 9. **验收路径 6 的触发面（结论：GUI 里没有这条路径）**：左栏任务行右键菜单**只有「归档任务」，没有删除**；命令面板搜「删除」返回空；删除入口只存在于**归档页**（`WorkspaceArchivedTasksFlatSection.tsx`，文案 `taskList.delete`）。我在归档页真删了一次并逐库核对：任务索引 `v2/tasks-index.sqlite` 变成 `archived:1, deleted:1`，而 agent 的 `session` / `session_entry` **一行未动**（父子三行 session + 全部 35 条 entry 原样）。也就是说 GUI 的「删除任务」是任务索引层软删除，`zcodeTaskService` 的文档注释也明写"不清理 CLI 会话"；而验收路径 6 说的"删除父会话"指 `v4 deleteSession`（递归关闭子树），**GUI 里没有它的入口**（`v4Pane.deleteSession` 文案存在但全仓无引用），旧协议也没有 `session/delete` 方法。递归关停本身的实现与单测在 `session-tree.ts`，本轮未能从外部驱动。
 10. 两条**与子代理无关的既存现象**（**未修，仅登记**）：(a) 重启后主会话标签页标题回落到「新建任务」，而左栏与面板里都是真实标题——重启恢复走的是"开一个草稿型 tab 再灌入会话"的路径，标签因此停在草稿标题；本轮是强杀进程（非优雅退出）后重启，无法排除强杀放大了这个差异；不在本轮触碰文件内，另立任务更合适。(b) 应用日志里 `agent.pendingPermissions` 在父会话那次授权被批准后**仍停在 1**（连续四个采样点都是 1），像是计数没有回落；它对 UI 没有可见影响（等待确认角标已消失、命令也确实执行了），可能是采样口径问题，**证据不足以定论**，只登记不做结论。
+
+**取证面覆盖说明（2026-10-09 补记，读本节时必须先看这一条）**：上面 1–4 的观测全部发生在**「任务」区**——隔离 profile 没有打开任何项目，而左栏默认「组织方式 = 项目」（`resolveSidebarTaskViewMode` 的兜底分支），所以项目区是空的、走不到 `TaskList` 那条列表容器。后果是"项目区行只有角标、没有子区块"这条缺口当时**没有被走到**，是用户后来报"只看得到计数代理图标、点开主会话看不到子列表"才查实的（缺口成因与补救见「左栏任务列表：层级态」的插入点一节）。教训：验收挑中的是哪条列表容器，取决于当时左栏的视图模式，**换视图模式要重跑一遍**。
 
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
   - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。

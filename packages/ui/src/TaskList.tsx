@@ -1,5 +1,5 @@
 /* eslint-disable max-lines -- TaskList 同时承接 workspace 列表渲染、行内操作和外部数据源兼容，先集中收口避免 UI 结构漂移。 */
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Settings2 } from "lucide-react";
 import type { ZCodeTaskMeta } from "@zcode/shared";
 import { TID_TASK_LIST, TID_TASK_EMPTY, TID_TASK_SETTINGS_BUTTON } from "@zcode/shared";
@@ -13,6 +13,7 @@ import { useTabStore } from "@/store/TabStoreProvider.js";
 import { MemoTaskItem, TaskListItemContextMenuContent } from "@/TaskListItem.js";
 import { TaskListLoadingHint } from "@/TaskListLoadingHint.js";
 import { TaskRenameDialog } from "@/TaskRenameDialog.js";
+import { SubagentSubBlock } from "@/v4/SubagentSubBlock.js";
 import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
 import { compareZCodeTaskListItems } from "@/lib/taskListOrdering.js";
 import { logger } from "@/logger.js";
@@ -354,28 +355,43 @@ export const TaskList = memo(function TaskList({
 
   function renderTaskItem(task: (typeof visibleSourceTasks)[number]) {
     const isPinned = pinnedTaskIdSet.has(task.taskId);
+    const isActive = isWorkspaceActive && task.taskId === activeTaskId;
     return (
-      <MemoTaskItem
-        key={task.taskId}
-        workspacePath={workspacePath}
-        remoteSessionId={remoteSessionId}
-        task={task}
-        isPinned={isPinned}
-        isActive={isWorkspaceActive && task.taskId === activeTaskId}
-        isMobileActive={false}
-        onSelectTask={handleSelectTaskItem}
-        onArchiveTaskInline={handleArchiveTaskFromInline}
-        onCancelArchiveConfirm={handleCancelArchiveConfirm}
-        isArchiveConfirming={pendingArchiveTaskId === task.taskId}
-        onTogglePinTask={handleTogglePinTask}
-        onStartRenameTask={handleStartRenameTask}
-        onArchiveTask={handleArchiveTask}
-        onMarkTaskAsUnread={handleMarkTaskAsUnread}
-        onOpenTaskContextMenu={handleOpenTaskContextMenu}
-        actionsDisabled={Boolean(readOnlyReason)}
-        actionsDisabledReason={readOnlyReason}
-        intl={intl}
-      />
+      <Fragment key={task.taskId}>
+        <MemoTaskItem
+          workspacePath={workspacePath}
+          remoteSessionId={remoteSessionId}
+          task={task}
+          isPinned={isPinned}
+          isActive={isActive}
+          isMobileActive={false}
+          onSelectTask={handleSelectTaskItem}
+          onArchiveTaskInline={handleArchiveTaskFromInline}
+          onCancelArchiveConfirm={handleCancelArchiveConfirm}
+          isArchiveConfirming={pendingArchiveTaskId === task.taskId}
+          onTogglePinTask={handleTogglePinTask}
+          onStartRenameTask={handleStartRenameTask}
+          onArchiveTask={handleArchiveTask}
+          onMarkTaskAsUnread={handleMarkTaskAsUnread}
+          onOpenTaskContextMenu={handleOpenTaskContextMenu}
+          actionsDisabled={Boolean(readOnlyReason)}
+          actionsDisabledReason={readOnlyReason}
+          intl={intl}
+        />
+        {/* 子代理子区块与行同级：放进 MemoTaskItem 的 `<li>` 会落进行自己的 bg-selected
+            高亮卡片里，spec 要求区块在行的高亮/内边距之外（与置顶区同一形状）。
+            项目区这条列表容器在 S4c 漏挂过，角标却照常显示，表现为"有角标、没有子列表"。 */}
+        {isActive ? (
+          <li>
+            <SubagentSubBlock
+              workspacePath={workspacePath}
+              workspaceIdentity={workspaceIdentity}
+              remoteSessionId={remoteSessionId}
+              parentSessionId={task.taskId}
+            />
+          </li>
+        ) : null}
+      </Fragment>
     );
   }
 
