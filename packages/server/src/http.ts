@@ -7,14 +7,7 @@ import { Hono, type Context } from "hono";
 import { serve } from "@hono/node-server";
 import { createNodeWebSocket } from "@hono/node-ws";
 import type { WebSocket } from "ws";
-import {
-  Emitter,
-  VSBuffer,
-  SocketProtocol,
-  ChannelServer,
-  LoggingChannelServer,
-  type ISocket,
-} from "@zcode/rpc";
+import { SocketProtocol, ChannelServer, LoggingChannelServer } from "@zcode/rpc";
 import {
   ServiceCollection,
   IZCodeAgentService,
@@ -40,45 +33,7 @@ import {
 } from "@zcode/shared";
 import { connectRemote, createRemoteBackend, type RemoteConnection } from "./remote/index.js";
 import { createHostCapabilityStore } from "./hostCapability.js";
-
-function wrapWebSocket(ws: WebSocket): ISocket {
-  const onData = new Emitter<VSBuffer>();
-  const onClose = new Emitter<void>();
-  const onEnd = new Emitter<void>();
-
-  ws.on("message", (raw: Buffer | ArrayBuffer | Buffer[]) => {
-    const buf = Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer);
-    onData.fire(VSBuffer.wrap(new Uint8Array(buf)));
-  });
-  ws.on("close", () => {
-    onClose.fire();
-    onEnd.fire();
-  });
-  ws.on("error", () => {
-    onClose.fire();
-    onEnd.fire();
-  });
-
-  return {
-    onData: onData.event,
-    onClose: onClose.event,
-    onEnd: onEnd.event,
-    write(buffer: VSBuffer) {
-      if (ws.readyState === ws.OPEN) {
-        ws.send(buffer.buffer);
-      }
-    },
-    end() {
-      ws.close();
-    },
-    drain() {
-      return Promise.resolve();
-    },
-    dispose() {
-      ws.close();
-    },
-  };
-}
+import { attachSendFlowControl, wrapWebSocket } from "./websocketBackpressure.js";
 
 const log = (...args: unknown[]) =>
   console.log(formatLogPrefix("zcode-server:http", process.pid), ...args);
@@ -101,6 +56,12 @@ function setupChannelServer(
         role: clientMode === "desktop-continuous" ? "trusted-host-relay" : "terminal-client",
       })
     : undefined;
+  // 发送水位 → 传输流控：本机 ws 出口拥塞时让 CLI 暂停该连接的 flush，把「服务端向
+  // 单连接的待发字节」钉在高水位附近，而不是随慢消费者无界增长。
+  // 失败语义见 packages/server/spec/websocket-send-backpressure.md。
+  attachSendFlowControl(socket, () => connectionScope, {
+    onForwardError: (state, error) => log("connection flow forward failed", state, error),
+  });
   const overrides = new Map<string, unknown>();
   if (connectionScope) {
     overrides.set(IZCodeAgentService.channelName, connectionScope.service);
