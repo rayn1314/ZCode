@@ -162,3 +162,17 @@
 
 子代理换一个 turn 重试时，`origin.childTurnId` 跟着换成新 turn 的 id——说明 origin 是**逐轮**构造的，
 不是把首次派发的事实缓存下来复用。
+
+**冷恢复路径单独跑了一次两阶段 E2E**（上面那次只覆盖派发路径，而"重启之后"正是被报的那个症状）：
+
+1. 阶段 1：父会话派一个只读子代理（读一行文件），拿到 childSessionId，**退出 app-server 进程**
+   ——子会话 runtime 不在内存里了；
+2. 阶段 2：全新进程里只 `session/resume` **那个子会话**（走 `createRecord` 的冷恢复分支），
+   再往子会话发一轮"把某行写进某个文件"的输入。
+
+结果：子会话的 `Write` 触发 `interaction/requestPermission`，`sessionId` = **父会话**，
+`origin` = `{kind:"subagent", agentId, agentType, childSessionId, childTurnId, description, parentSessionId}`
+——`agentId` / `description` 只可能来自 launch spec，证明确实还原出来了。无人应答时两次 `Write`
+都被超时自动拒绝（`decision:"deny"` + 独立文案），子会话轮次正常收场，目标文件不存在。
+与上表的预测一致：冷恢复的 origin **没有** `parentToolCallId` / `parentTurnId`（那两项是派发那一刻的
+现场事实，规格里没存，也不该编）。
