@@ -80,7 +80,19 @@ export const PROTOCOL_V4_LIMITS = {
   pendingCommandsDisplayMax: 32,
   commandPendingTtlMs: 24 * 60 * 60 * 1000,
   idempotencyTablePerSession: 512,
+  // commands/query 单 key 等待上限（CommandInbox.queryOne 消费）。对账是只读路径，
+  // 不跟随 execute（commandExecuteTimeoutMs）一起挂：到点必须先给调用方可操作的收口，
+  // 再由客户端稍后重查。10s 与既有声明值保持一致，避免两处漂移。
   conversationQueryTimeoutMs: 10_000,
+  // 命令 execute 路径的准入 gate 持有上限（gateway await admitCommandInput/executeCommand）。
+  // 挂死根因：CommandInbox 的 per-session/@global FIFO gate 持有到 settle，execute 永不
+  // resolve 时该桶之后所有 handle 与 queryCommands 永久等待；gateway 的 finally 只覆盖
+  // 同步异常，不覆盖挂起。依据（宁可宽松也不误杀）：handler 内显式等待的上界是 5s
+  // （waitForSessionIdle/preemptActiveTurnAndWait）与 30s（logicalFrameAssemblyTimeoutMs），
+  // 其余合法路径都是本机 IO 与进程内状态迁移——createSession 建 record/历史导入 resume、
+  // fork 拷贝、附件读盘；compact/sendText 只推进到 admission/入队，不等 turn 结束。
+  // 60s 给慢盘与冷机器留足余量，超时即强制 failed 终态释放 gate。
+  commandExecuteTimeoutMs: 60_000,
   attachmentMaxBytes: 20 * 1024 * 1024,
   attachmentChunkMaxBytes: 512 * 1024,
   attachmentPreviewMaxBytes: VIDEO_INPUT_MAX_BYTES,

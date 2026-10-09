@@ -72,6 +72,14 @@ type CommandInboxOutcome =
 // createSession 与 null sessionId query 归全局桶。
 const GLOBAL_BUCKET = "@global";
 
+/** queryOne 超时哨兵：与「查到了 CommandAck」区分，避免把超时误当 unknown。 */
+const QUERY_TIMED_OUT: unique symbol = Symbol("commandInbox.queryTimedOut");
+
+interface CommandInboxOptions {
+  /** commands/query 单 key 等待上限；缺省 PROTOCOL_V4_LIMITS.conversationQueryTimeoutMs（测试注入缩短）。 */
+  conversationQueryTimeoutMs?: number;
+}
+
 export function queueItemIdForCommand(commandId: string): string {
   return `queue_${commandId}`;
 }
@@ -111,8 +119,15 @@ export class CommandInbox {
   private readonly admissionSeq = new Map<string, number>();
   private readonly keyGates = new AsyncGateRegistry();
   private readonly sessionGates = new AsyncGateRegistry();
+  private readonly conversationQueryTimeoutMs: number;
 
-  constructor(private readonly host: CommandInboxHost) {}
+  constructor(
+    private readonly host: CommandInboxHost,
+    options: CommandInboxOptions = {},
+  ) {
+    this.conversationQueryTimeoutMs =
+      options.conversationQueryTimeoutMs ?? PROTOCOL_V4_LIMITS.conversationQueryTimeoutMs;
+  }
 
   async handle(raw: unknown): Promise<CommandInboxOutcome> {
     const parsed = parseCommandEnvelope(raw);
@@ -271,14 +286,52 @@ export class CommandInbox {
   private async queryOne(
     key: CommandKey,
   ): Promise<{ key: CommandKey; result: CommandAck | "unknown" }> {
-    const releaseKey = await this.keyGates.acquire(this.keyGateKey(key));
+    // 对账是只读路径，不能被执行面的挂起拖住：execute deadline（commandExecuteTimeoutMs，
+    // 60s）远长于查询上限，若查询也跟着等，客户端在挂死窗口内拿不到任何可操作结论。
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const gate: { release: GateRelease | null } = { release: null };
+    const timeout = new Promise<typeof QUERY_TIMED_OUT>((resolve) => {
+      timer = setTimeout(() => resolve(QUERY_TIMED_OUT), this.conversationQueryTimeoutMs);
+      // 不阻止进程退出；查询超时只在运行期有意义。
+      if (typeof timer === "object" && timer !== null && "unref" in timer) timer.unref();
+    });
+    const lookup = (async () => {
+      const release = await this.keyGates.acquire(this.keyGateKey(key));
+      gate.release = release;
+      try {
+        return await this.lookupExact(key);
+      } finally {
+        release();
+      }
+    })();
     try {
-      return { key, result: (await this.lookupExact(key)) ?? "unknown" };
+      const result = await Promise.race([lookup, timeout]);
+      if (result === QUERY_TIMED_OUT) {
+        // 提前放掉 key gate：卡住的 lookup 还在后台跑，别让后续同 key 的 handle/query
+        // 排在它后面。release 幂等，lookup 结束时的 finally 重复调用无害。
+        gate.release?.();
+        return { key, result: this.queryTimedOutAck(key) };
+      }
+      return { key, result: result ?? "unknown" };
     } catch (error) {
       return { key, result: this.queryUnavailableAck(key, error) };
     } finally {
-      releaseKey();
+      if (timer) clearTimeout(timer);
     }
+  }
+
+  /**
+   * 超时收口：仍在执行的命令回它当前的 admission ACK——「尚未定论」的诚实答案，
+   * 客户端稍后重查即可拿到终态；查不到在途事实则按查询不可用收口（客户端同样稍后重查）。
+   */
+  private queryTimedOutAck(key: CommandKey): CommandAck {
+    const inflight = this.inFlight.get(this.bucketKey(key.sessionId))?.get(key.commandId);
+    if (inflight) return { ...inflight.ack };
+    return this.queryUnavailableAck(
+      key,
+      null,
+      `command query timed out after ${this.conversationQueryTimeoutMs}ms`,
+    );
   }
 
   private async lookupExact(key: CommandKey): Promise<CommandAck | null> {
@@ -448,11 +501,12 @@ export class CommandInbox {
     return ack.status === "failed" ? ack : { ...ack, status: "duplicate" };
   }
 
-  private queryUnavailableAck(key: CommandKey, _error: unknown): CommandAck {
+  private queryUnavailableAck(key: CommandKey, _error: unknown, message?: string): CommandAck {
     return {
       commandId: key.commandId,
       status: "failed",
       reasonCode: "fault.command.queryUnavailable",
+      ...(message ? { message } : {}),
       revisionAtDecision: key.sessionId === null ? 0 : (this.host.getRevision(key.sessionId) ?? 0),
     };
   }

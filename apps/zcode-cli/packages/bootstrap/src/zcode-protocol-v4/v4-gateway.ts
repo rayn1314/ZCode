@@ -445,6 +445,10 @@ interface ConversationV4GatewayOptions {
   now?: () => number;
   /** logEpoch 生成器（默认进程内随机；测试注入固定值保证确定性）。 */
   createLogEpoch?: (sessionId: string) => string;
+  /** execute deadline；缺省 PROTOCOL_V4_LIMITS.commandExecuteTimeoutMs（测试注入缩短）。 */
+  commandExecuteTimeoutMs?: number;
+  /** commands/query 单 key 上限；缺省 PROTOCOL_V4_LIMITS.conversationQueryTimeoutMs（测试注入缩短）。 */
+  conversationQueryTimeoutMs?: number;
 }
 
 interface FlushState {
@@ -629,6 +633,8 @@ export class ConversationV4Gateway {
   private readonly attachmentPruneTimer: ReturnType<typeof setInterval>;
   private readonly now: () => number;
   private readonly createLogEpoch: (sessionId: string) => string;
+  /** 命令 execute deadline（值与依据见 PROTOCOL_V4_LIMITS.commandExecuteTimeoutMs）。 */
+  private readonly commandExecuteTimeoutMs: number;
   private readonly telemetryNormalizer = new ConversationTelemetryFactNormalizer();
   private readonly cuaPermissionNormalizer = new CuaPermissionObservationNormalizer();
   private readonly telemetryEventIds = new Set<string>();
@@ -653,34 +659,39 @@ export class ConversationV4Gateway {
   ) {
     this.now = options.now ?? Date.now;
     this.createLogEpoch = options.createLogEpoch ?? defaultLogEpoch;
+    this.commandExecuteTimeoutMs =
+      options.commandExecuteTimeoutMs ?? PROTOCOL_V4_LIMITS.commandExecuteTimeoutMs;
     this.coldResume = new ColdSessionResumeCoordinator(host);
-    this.inbox = new CommandInbox({
-      getRevision: (sessionId) => {
-        if (!this.host.sessionExists(sessionId)) return null;
-        // 已知会话但尚无事件 → 投影未建，revision 视为 0（draft 起点）。
-        return this.publishers.get(sessionId)?.getSnapshot().revision ?? 0;
+    this.inbox = new CommandInbox(
+      {
+        getRevision: (sessionId) => {
+          if (!this.host.sessionExists(sessionId)) return null;
+          // 已知会话但尚无事件 → 投影未建，revision 视为 0（draft 起点）。
+          return this.publishers.get(sessionId)?.getSnapshot().revision ?? 0;
+        },
+        getLogEpoch: (sessionId) => this.publishers.get(sessionId)?.getSnapshot().logEpoch ?? null,
+        validateRowTarget: (envelope) => {
+          const action = rowTargetActionForCommand(envelope.type);
+          if (!action || envelope.sessionId === null) return { verdict: "allow" };
+          const target = (envelope.payload as { target?: ConversationRowTarget }).target;
+          if (!target) return { verdict: "reject", reasonCode: "proto.invalidPayload" };
+          const resolution = this.publishers
+            .get(envelope.sessionId)
+            ?.resolveRowActionTarget(target, action);
+          if (!resolution) return { verdict: "stale", reasonCode: "proto.staleTarget" };
+          if (resolution.ok) return { verdict: "allow" };
+          return resolution.status === "stale"
+            ? { verdict: "stale", reasonCode: resolution.reasonCode }
+            : { verdict: "reject", reasonCode: resolution.reasonCode };
+        },
+        lookupTranscriptCommand: (key) => this.host.lookupTranscriptCommand?.(key) ?? null,
+        lookupTimelineCommand: (key) => this.host.lookupTimelineCommand?.(key) ?? null,
+        lookupChildCommand: (key) => this.host.lookupChildCommand?.(key) ?? null,
+        lookupDiscardedCommand: (key) => this.host.lookupDiscardedCommand?.(key) ?? null,
+        now: this.now,
       },
-      getLogEpoch: (sessionId) => this.publishers.get(sessionId)?.getSnapshot().logEpoch ?? null,
-      validateRowTarget: (envelope) => {
-        const action = rowTargetActionForCommand(envelope.type);
-        if (!action || envelope.sessionId === null) return { verdict: "allow" };
-        const target = (envelope.payload as { target?: ConversationRowTarget }).target;
-        if (!target) return { verdict: "reject", reasonCode: "proto.invalidPayload" };
-        const resolution = this.publishers
-          .get(envelope.sessionId)
-          ?.resolveRowActionTarget(target, action);
-        if (!resolution) return { verdict: "stale", reasonCode: "proto.staleTarget" };
-        if (resolution.ok) return { verdict: "allow" };
-        return resolution.status === "stale"
-          ? { verdict: "stale", reasonCode: resolution.reasonCode }
-          : { verdict: "reject", reasonCode: resolution.reasonCode };
-      },
-      lookupTranscriptCommand: (key) => this.host.lookupTranscriptCommand?.(key) ?? null,
-      lookupTimelineCommand: (key) => this.host.lookupTimelineCommand?.(key) ?? null,
-      lookupChildCommand: (key) => this.host.lookupChildCommand?.(key) ?? null,
-      lookupDiscardedCommand: (key) => this.host.lookupDiscardedCommand?.(key) ?? null,
-      now: this.now,
-    });
+      { conversationQueryTimeoutMs: options.conversationQueryTimeoutMs },
+    );
     this.attachmentUploads = new AttachmentUploadRegistry({
       now: this.now,
       putSessionAttachment: async (sessionId, input) => {
@@ -2413,6 +2424,10 @@ export class ConversationV4Gateway {
     this.localTtft.admitted(outcome.envelope.commandId);
     let durableInputIntent: ConversationInputIntent | null = null;
     let settledAck: CommandAck | null = null;
+    let executeDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+    // admission 与 execute 串成一条执行链，但拆成两个 promise：deadline 命中后，
+    // 迟到的 admission 完成只允许回收它自己建立的 durable input / pin，不改写终态。
+    let admissionWork: Promise<void> = Promise.resolve();
     type CommandFinal = Parameters<typeof outcome.settle>[0];
     const reportError = (scope: string, error: unknown): void => {
       try {
@@ -2422,6 +2437,11 @@ export class ConversationV4Gateway {
       }
     };
     const settleOnce = (final: CommandFinal): CommandAck => {
+      // deadline 只保护到第一个终态为止；settle 是唯一收口点，在这里一并停表。
+      if (executeDeadlineTimer) {
+        clearTimeout(executeDeadlineTimer);
+        executeDeadlineTimer = null;
+      }
       if (settledAck) return settledAck;
       const ack = {
         ...outcome.ack,
@@ -2457,6 +2477,27 @@ export class ConversationV4Gateway {
         reportError("v4.command.input.release", releaseError);
       }
     };
+    // 挂死根因：inbox 的 per-session/@global FIFO gate 持有到 settle，execute 不 settle
+    // 就永久锁桶；finally 只覆盖同步异常、不覆盖挂起。命令进入 execute 路径即启动
+    // deadline（值与依据见 PROTOCOL_V4_LIMITS.commandExecuteTimeoutMs），到点强制
+    // failed 终态——settleOnce 释放 gate、给调用方回 ACK，并由 catch 分支打 error 日志。
+    const executeDeadline = new Promise<never>((_, reject) => {
+      executeDeadlineTimer = setTimeout(
+        () =>
+          reject(
+            new V4CommandExecuteTimeoutError(this.commandExecuteTimeoutMs, outcome.envelope.type),
+          ),
+        this.commandExecuteTimeoutMs,
+      );
+      // 不阻止进程退出；deadline 只在运行期保护 gate。
+      if (
+        typeof executeDeadlineTimer === "object" &&
+        executeDeadlineTimer !== null &&
+        "unref" in executeDeadlineTimer
+      ) {
+        executeDeadlineTimer.unref();
+      }
+    });
     try {
       const admission = {
         admissionSeq: outcome.admissionSeq,
@@ -2486,12 +2527,17 @@ export class ConversationV4Gateway {
           message: `conversation projection would exceed ${PROTOCOL_V4_LIMITS.logicalFrameAssemblyMaxBytes} bytes`,
         });
       }
-      durableInputIntent =
-        (await this.host.admitCommandInput?.(outcome.envelope, admission)) ?? null;
-      if (durableInputIntent && outcome.envelope.sessionId !== null) {
-        this.inbox.pinLiveInput(outcome.envelope.sessionId, durableInputIntent);
-      }
-      const result = await this.host.executeCommand(outcome.envelope, admission);
+      admissionWork = (async () => {
+        durableInputIntent =
+          (await this.host.admitCommandInput?.(outcome.envelope, admission)) ?? null;
+        if (durableInputIntent && outcome.envelope.sessionId !== null) {
+          this.inbox.pinLiveInput(outcome.envelope.sessionId, durableInputIntent);
+        }
+      })();
+      const execution = admissionWork.then(() =>
+        this.host.executeCommand(outcome.envelope, admission),
+      );
+      const result = await Promise.race([execution, executeDeadline]);
       // 新建/侧聊命令采用结果会话的开关，避免把父会话或当前 App 设置误记到新会话。
       const telemetrySessionId =
         result?.type === "createSession" || result?.type === "createSelectionSideSession"
@@ -2515,6 +2561,29 @@ export class ConversationV4Gateway {
           reasonCode: error.reasonCode,
         };
         releaseDurableInput(final);
+        return settleOnce(final);
+      }
+      if (error instanceof V4CommandExecuteTimeoutError) {
+        // 挂死收口：必须给调用方一个 failed ACK，否则 handleCommand 自己也永久挂起。
+        reportError("v4.command.execute.timeout", error);
+        const final = {
+          status: "failed" as const,
+          reasonCode: error.reasonCode,
+          // 文案直说两件事：超时了、准入 gate 已被释放（会话不会再被这条命令锁住）。
+          message: `命令执行超时（${error.timeoutMs}ms），会话准入已释放`,
+        };
+        // 取消链路可能与原命令同样挂起，detached 触发；失败已在 cancelDurableInput 内上报。
+        // admission 迟到落定时由它自己完成取消与解 pin（IIFE 内的 pin 先于本 handler
+        // 注册，顺序有保证）；admission 已落定时同一 handler 立即执行、幂等无害。
+        void admissionWork.then(
+          () => {
+            void cancelDurableInput(final.reasonCode);
+            releaseDurableInput(final);
+          },
+          () => {
+            // admission 在超时后才失败：没有 durable input 需要回收。
+          },
+        );
         return settleOnce(final);
       }
       reportError("v4.command.execute", error);
@@ -3487,5 +3556,22 @@ export class V4CommandNoopError extends Error {
   ) {
     super(message ?? `v4 command is a no-op (${reasonCode})`);
     this.name = "V4CommandNoopError";
+  }
+}
+
+/**
+ * execute deadline 命中：命令未在 commandExecuteTimeoutMs 内收口。gateway 据此强制
+ * failed 终态并释放准入 gate；迟到的正常完成不得改写该终态
+ * （settleOnce 与 inbox settle 双重幂等），只能回收它自己建立的 durable input / pin。
+ */
+export class V4CommandExecuteTimeoutError extends Error {
+  readonly reasonCode = "fault.command.executeTimeout";
+
+  constructor(
+    readonly timeoutMs: number,
+    readonly commandType: string,
+  ) {
+    super(`v4 command execute timed out after ${timeoutMs}ms: ${commandType}`);
+    this.name = "V4CommandExecuteTimeoutError";
   }
 }
