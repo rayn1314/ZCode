@@ -109,6 +109,8 @@ adapters 侧共三处必须同时改，缺一处就是**静默失效**（schema 
 
 代价与收益说明（写在这里以免日后误判为缺陷）：它只在阈值**已经达到**时才跑，也就是说这份工作在下一轮 `PreRequest` 阶段本来也要做；把时机从"用户发出下一条消息之后"挪到"用户正在读上一条回答时"，用户感知的等待更短，同时消除了下一轮在 `MidTurn` 阶段被压缩打断的风险。代价是这段时间 runtime 仍持有 active turn，新输入会先排队。
 
+**可达窗口（窄，且是结构决定的，不是缺陷）**：轮内每个循环迭代**开头**（发请求之前）都会检查一次——首次 `PreRequest`、其后 `MidTurn`（`turn-loop.ts`），所以工具结果增长会在下一次迭代开头被吃掉。而循环在模型给出**纯文本回答（无工具调用）**时立刻 `break`（`turn-stop.ts`），该回答在 break 前已 commit 进 `messageHistory`（`turn-stop.ts` 入口处）。因此轮末检查看到的 = 上一次 `MidTurn` 检查时的状态 + **本轮最后那次增量**（主要是最后一条 assistant 回答）。推论：**只有"本轮收口时的最后增量把上下文顶过阈值线"这一种情形会触发**；本轮中途已被 `MidTurn` 压过、尾部增长未到线时，轮末记 `compact.post_turn.skipped` 什么都不做。另有一条不常见的 break 路径——工具主动请求结束本轮（`turn-tools.ts`）——那条路上该批工具结果不再被检查，逃逸增量更大、更容易触发。它**不会**让压缩总次数变多，也**不可能**把上下文压得比自动压缩更小（共用同一阈值）；"轮末一定把上下文收拾到安全水位"是另一种语义，本设计不提供。
+
 ### D9. 降档压缩：在 PreModelSwitch 注入之前
 
 位置：`turn-model.ts` 的 `applySubmissionExecutionState` 内，`setSessionModelSelection` + `persistRuntimeModelSelection` 之后、`emitModelSelected` **之前**。
