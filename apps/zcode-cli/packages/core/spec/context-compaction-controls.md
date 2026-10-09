@@ -41,7 +41,7 @@ ZCode 的压缩链路本身是完整的：手动 `/compact`（`StandaloneTurn`�
 | 2 | `compactionMicrocompactEnabled` | `boolean` | `false` | 局部压缩：清理旧工具结果正文 |
 | 3 | `compactionMicrocompactKeepRecentToolResults` | `number` | `5` | 局部压缩保留最近多少组工具结果 |
 | 4 | `compactionMicrocompactClearErrorResults` | `boolean` | `false` | 局部压缩是否连失败的（isError）工具结果一起清 |
-| 5 | `compactionPostTurnEnabled` | `boolean` | `false` | 轮末压缩：一轮成功后主动压，而非等下一次请求前 |
+| 5 | `compactionPostTurnEnabled` | `boolean` | `false` | 轮末压缩：够到自动压缩阈值时，一轮成功后立刻压，而非等下一次请求前（阈值与自动压缩共用，只是时机提前） |
 | 6 | `compactionModelDownshiftEnabled` | `boolean` | `false` | 模型降档提前压：切到更小窗口模型前先压 |
 
 "默认维持现状"是硬约束：不显式打开任何开关时，压缩行为必须与改造前逐位一致（见 §4 I1）。
@@ -226,8 +226,8 @@ adapters 侧共三处必须同时改，缺一处就是**静默失效**（schema 
         - 若阈值为自动，先显示一条提示 `局部压缩的触发点跟随自动压缩阈值。`
         - 数字输入：`保留最近工具结果组数`，`min=1`，`max=50`，默认 `5`；非法值行内报错 `settings.contextCompaction.keepRecentInvalid`。
         - `Switch`：`同时清理失败的工具结果`，默认关。
-   3. **轮末压缩**：`Switch`，副标题 `一轮回答结束后就主动压缩，而不是等下一次提问前才压。`
-   4. **模型降档提前压**：`Switch`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。`
+   3. **轮末压缩**：`Switch`，副标题 `达到自动压缩阈值时，在本轮回答结束后立刻压好，不必等下一次提问前才压。阈值与自动压缩相同，只是时机提前。`
+   4. **模型降档提前压**：`Switch`，副标题 `切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。同样以自动压缩阈值为触发条件，只是时机提前。`
 3. **写入中**（`saving`）时卡片内所有控件禁用，避免并发提交互相覆盖。
 4. 开关切换后立即生效（无需重启），不出现"需重启"提示。
 

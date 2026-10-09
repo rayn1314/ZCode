@@ -2088,10 +2088,10 @@ const zhCN: Record<string, string> = {
     "开启后，执行失败的工具结果正文也会一起清理。",
   "settings.contextCompaction.postTurn.label": "轮末压缩",
   "settings.contextCompaction.postTurn.description":
-    "一轮回答结束后就主动压缩，而不是等下一次提问前才压。",
+    "达到自动压缩阈值时，在本轮回答结束后立刻压好，不必等下一次提问前才压。阈值与自动压缩相同，只是时机提前。",
   "settings.contextCompaction.modelDownshift.label": "模型降档提前压",
   "settings.contextCompaction.modelDownshift.description":
-    "切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。",
+    "切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。同样以自动压缩阈值为触发条件，只是时机提前。",
   "settings.contextCompaction.saveFailed": "保存失败，请重试。",
   "settings.httpProxy": "HTTP 代理",
   "settings.httpProxyDescription":
