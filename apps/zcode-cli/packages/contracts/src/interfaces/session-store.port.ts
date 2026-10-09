@@ -835,6 +835,17 @@ export interface SubagentLaunchSpecEntryData {
   agentType: string;
   /** 子代理呈现名（`zcode-<agentType>`）。 */
   agentName: string;
+  /**
+   * 派发时分配的子代理标识（`agent_<uuid>`）。
+   *
+   * 存它只有一个理由：冷恢复要给阻塞交互构造 `origin`，而 `origin.agentId` 是必填、又
+   * **不能就地编造**——它同时是 `SendMessage` 的寻址键，编一个等于指向不存在的收件人。
+   * 存量规格没有这个字段（可选），读取侧据此降级为"改写为父会话但不带 origin"，
+   * 见 `core/spec/subagent-permission-parity.md` D3。
+   */
+  agentId?: string;
+  /** 派发时父代理给出的任务描述；同样只服务冷恢复的 `origin` 归属显示。 */
+  description?: string;
   /** persona 的寻址键：恢复时按它重解析 profile，不落正文。 */
   profileName: string;
   profileSource: string;

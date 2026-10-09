@@ -88,6 +88,30 @@ test("读到规格：按类型过滤，取子会话自己那一行", async () =>
   assert.deepEqual(spec, VALID_SPEC);
 });
 
+test("身份与派发描述：可选字段，有则原样读回，无则不产生空键", async () => {
+  const withIdentity = {
+    ...VALID_SPEC,
+    agentId: "agent_child_1",
+    description: "调研权限链路",
+  };
+  const spec = await readSubagentLaunchSpec({
+    sessionStore: storeWith([specEntry(withIdentity)]),
+    sessionId: CHILD,
+  });
+  assert.deepEqual(spec, withIdentity);
+
+  // 存量规格（本轮改造之前落库）没有这两个字段：冷恢复仍然要能读出规格（工具面与 persona
+  // 照常回填），只是构造不出交互 origin 的 agentId——那条降级在
+  // `core/spec/subagent-permission-parity.md` D3 里定义。
+  const legacy = await readSubagentLaunchSpec({
+    sessionStore: storeWith([specEntry({ ...VALID_SPEC })]),
+    sessionId: CHILD,
+  });
+  assert.equal(legacy?.agentId, undefined);
+  assert.equal(legacy?.description, undefined);
+  assert.equal("agentId" in (legacy ?? {}), false);
+});
+
 test("无 entry / 无存储 / 结构不可用 → undefined（受限模式），三种路径都不抛", async () => {
   const none = await readSubagentLaunchSpec({
     sessionStore: storeWith([]),

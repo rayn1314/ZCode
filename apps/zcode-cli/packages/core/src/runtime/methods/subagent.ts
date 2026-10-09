@@ -408,6 +408,10 @@ export function createDefaultSubagentPort(
             data: {
               agentType: request.agentType,
               agentName: `zcode-${request.agentType}`,
+              // 身份 + 派发描述只服务冷恢复的交互 origin（`subagent-permission-parity.md` D3）：
+              // agentId 不能就地编造（它是 SendMessage 的寻址键）。
+              agentId: request.agentId,
+              description: request.description,
               profileName: request.profile.name,
               profileSource: request.profile.source,
               toolset: builtInExplore ? "explore" : "main",

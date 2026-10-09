@@ -120,9 +120,15 @@ function parseLaunchSpec(value: unknown): SubagentLaunchSpecEntryData | undefine
   }
   const toolDisallowlist = stringArray(data.toolDisallowlist);
   const maxTurns = typeof data.maxTurns === "number" ? data.maxTurns : undefined;
+  // 可选身份字段：存量规格没有它们（改造前落库）。缺失**不影响规格可用性**——冷恢复仍然
+  // 能还原工具面与 persona，只是构造不出交互 origin 的 agentId（见 D3 的降级语义）。
+  const agentId = nonEmptyString(data.agentId);
+  const description = nonEmptyString(data.description);
   return {
     agentType,
     agentName,
+    ...(agentId === undefined ? {} : { agentId }),
+    ...(description === undefined ? {} : { description }),
     profileName,
     profileSource,
     toolset,
@@ -137,13 +143,16 @@ function logMissing(
   input: { sessionId: SessionId; logger?: Logger; traceContext?: TraceContext },
   reason: "no_session_store" | "no_entry" | "malformed_entry",
 ): void {
-  input.logger?.debug("Subagent launch spec unavailable; child session falls back to limited mode", {
-    ...(input.traceContext ? traceContextToLogContext(input.traceContext) : {}),
-    event: "subagent_launch_spec.missing",
-    module: "bootstrap.subagent_launch_spec",
-    reason,
-    sessionId: input.sessionId,
-  });
+  input.logger?.debug(
+    "Subagent launch spec unavailable; child session falls back to limited mode",
+    {
+      ...(input.traceContext ? traceContextToLogContext(input.traceContext) : {}),
+      event: "subagent_launch_spec.missing",
+      module: "bootstrap.subagent_launch_spec",
+      reason,
+      sessionId: input.sessionId,
+    },
+  );
 }
 
 function stringArray(value: unknown): readonly string[] | undefined {

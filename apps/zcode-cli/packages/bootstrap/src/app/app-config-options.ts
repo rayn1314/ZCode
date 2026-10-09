@@ -46,7 +46,19 @@ export function createConfigCliOverrides(options: ZCodeAppOptions): RuntimeConfi
   if (options.runtimeConfig?.mode) {
     permission.mode = options.runtimeConfig.mode;
   }
-  if (options.runtimeConfig?.toolAllowlist) {
+  // 子会话**不投影** allowlist → permission.allowedTools（`core/spec/subagent-permission-parity.md`）。
+  //
+  // toolAllowlist 是"会话级工具面"（哪些工具注册/可见），permission.allowedTools 是"免审批清单"
+  // （哪些工具不用问）。把前者投影成后者，等于宣布"子会话的整份冻结工具面都免审批"：条件是在
+  // 冷恢复路径重新解析配置来新建 PermissionService 时——那条路径因此对写入类工具一路静默放行，
+  // 与派发当轮（注入父会话那个 PermissionService 实例、落模式规则）语义相反，同一个子代理
+  // 第一轮问、之后不问。
+  //
+  // 这里只对子会话收手：headless CLI 的 `--allowed-tools` 同时读作"工具面 + 免审批清单"是它
+  // 既有语义（`-p` 没有交互面、broker fail-closed），不属本轮改动面。注册面不受影响——
+  // 工具注册过滤器读的是 runtimeConfig.toolAllowlist 本身，不是这个投影。
+  const isSubagentChildSession = options.runtimeConfig?.taskType === "subagent_child";
+  if (options.runtimeConfig?.toolAllowlist && !isSubagentChildSession) {
     permission.allowedTools = [...options.runtimeConfig.toolAllowlist];
   }
   if (options.runtimeConfig?.toolDisallowlist) {

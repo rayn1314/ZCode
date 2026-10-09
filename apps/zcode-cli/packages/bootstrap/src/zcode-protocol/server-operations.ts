@@ -15,6 +15,8 @@ import type {
   SubagentChildBorrowedPorts,
 } from "../app/subagent-child-scope.js";
 import {
+  createSubagentInteractionBroker,
+  createSubagentInteractionRoutingBroker,
   repairPersistedRemoteSessionPaths,
   type SubagentChildLaunchBundle,
   type SubagentChildSessionHost,
@@ -37,6 +39,7 @@ import {
   type MessageId,
   type ModelId,
   type ModelProviderId,
+  type PermissionBrokerPort,
   type QueryId,
   type SessionEvent,
   SessionEventType,
@@ -44,6 +47,7 @@ import {
   type SessionId,
   type SessionInfo,
   type SessionTaskType,
+  type SubagentLaunchSpecEntryData,
   type CollaborationMode,
   type TargetCompletionVerificationPayload,
   type TraceContext,
@@ -3364,6 +3368,54 @@ async function materializeSessionRecord(
   return createRecord(context, params, sessionId, resume, startupPreferences, trace);
 }
 
+/**
+ * 本次 record 的阻塞交互 broker。
+ *
+ * 冷恢复的子会话必须与派发路径**同一条改写规则**：permission / AskUserQuestion / ExitPlanMode
+ * 一律改写为父会话（`core/spec/subagent-permission-parity.md` D2）。落子会话自己的 id 时那条询问
+ * 在 UI 上几乎没有出口——子区块的行模型不画交互角标，子面板顶部的「等待中」提示读的是
+ * 父会话投影里的 `origin.childSessionId`，于是它只在"用户正好打开那个子面板"时才可见。
+ *
+ * `origin` 的 `agentId` / `description` **只能**来自 launch spec（D3）：存量规格没有这两个字段，
+ * 此时仍然改写路由，但不带 origin——宁可少一个来源徽标，也不编造 agentId（它同时是
+ * `SendMessage` 的寻址键）。异常数据（子会话行没有 parent_id）保持今天的行为：落自己的 id。
+ */
+function resolvePermissionBrokerForRecord(
+  context: ZCodeProtocolAgentServerContext,
+  input: {
+    taskType: SessionTaskType;
+    sessionId: SessionId;
+    parentSessionId?: SessionId;
+    subagentLaunchSpec?: SubagentLaunchSpecEntryData;
+  },
+): PermissionBrokerPort {
+  const broker = createProtocolInteractionBroker(context);
+  if (input.taskType !== "subagent_child" || !input.parentSessionId) return broker;
+
+  const spec = input.subagentLaunchSpec;
+  if (!spec?.agentId || !spec.description) {
+    context.logger?.warn(
+      "Subagent interaction origin unavailable; routing blocking interactions to the parent session only",
+      {
+        agentType: spec?.agentType,
+        parentSessionId: input.parentSessionId,
+        reason: spec?.agentId ? "missing_description" : "missing_agent_id",
+        sessionId: input.sessionId,
+        event: "zcode_protocol.subagent_origin_unavailable",
+      },
+    );
+    return createSubagentInteractionRoutingBroker(broker, input.parentSessionId);
+  }
+
+  return createSubagentInteractionBroker(broker, {
+    agentId: spec.agentId,
+    agentType: spec.agentType,
+    childSessionId: input.sessionId,
+    description: spec.description,
+    parentSessionId: input.parentSessionId,
+  });
+}
+
 async function createRecord(
   context: ZCodeProtocolAgentServerContext,
   params: ZCodeSessionRecordParams,
@@ -3473,7 +3525,13 @@ async function createRecord(
     // ZCode Protocol app-server 以前没有注入可等待的交互 broker，
     // core 遇到 permission / AskUserQuestion 只能走默认拒绝，UI 永远收不到阻塞请求。
     // 这里把阻塞交互转换成 server-to-client JSON-RPC request，由 app 通过 response 释放 runtime。
-    permissionBroker: createProtocolInteractionBroker(context),
+    // 子会话的这份还要把 permission / AskUserQuestion / ExitPlanMode 改写为父会话（见下方 helper）。
+    permissionBroker: resolvePermissionBrokerForRecord(context, {
+      taskType,
+      sessionId,
+      parentSessionId,
+      subagentLaunchSpec,
+    }),
     automationPort: createProtocolAutomationPort(context, () => ownSessionRecord),
     // 只接入 Host 已开放的工具面；缺省不注入。复用现行异步工厂，
     // 不恢复旧 deferred ModelAdapter/Registry overlay，也不改变 Session Selection。

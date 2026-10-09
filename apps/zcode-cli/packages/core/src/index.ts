@@ -141,6 +141,14 @@ export type {
   ChildClientPortsContext,
   ClientFacingPorts,
 } from "./runtime/helpers/child-client-ports.js";
+// 子会话阻塞交互的改写包装。bootstrap 的冷恢复路径必须复用**同一条**改写规则（sessionId 改写为
+// 父会话 + 保留 origin），否则同一个子代理在"派发当轮"与"重启后重开"两种状态下的询问落点不同。
+export {
+  createSubagentInteractionBroker,
+  createSubagentInteractionRoutingBroker,
+} from "./runtime/helpers/subagent-interaction-broker.js";
+export { buildSubagentInteractionOrigin } from "./subagent/interaction-origin.js";
+export type { SubagentInteractionOriginContext } from "./subagent/interaction-origin.js";
 export type {
   ActiveTurnInfo,
   AgentRuntimeConfig,
