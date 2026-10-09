@@ -8,6 +8,7 @@ export type StorageRootId = "home" | "dataBaseDir";
 
 export const STORAGE_CATEGORY_IDS = [
   "sessionStore",
+  "sessionMailbox",
   "subagentTranscripts",
   "toolOutputs",
   "modelTrajectory",

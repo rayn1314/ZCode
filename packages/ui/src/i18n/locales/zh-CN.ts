@@ -2345,6 +2345,7 @@ const zhCN: Record<string, string> = {
   "resourceManager.storage.confirmTitle": "清理「{category}」？",
   "resourceManager.storage.confirmSize": "将删除约 {size}。",
   "resourceManager.storage.category.sessionStore": "会话记录与数据库",
+  "resourceManager.storage.category.sessionMailbox": "会话信箱归档消息",
   "resourceManager.storage.category.subagentTranscripts": "子代理产物",
   "resourceManager.storage.category.toolOutputs": "工具输出与临时缓存",
   "resourceManager.storage.category.modelTrajectory": "模型调用轨迹",
@@ -2357,6 +2358,8 @@ const zhCN: Record<string, string> = {
   "resourceManager.storage.category.other": "其他",
   "resourceManager.storage.categoryDescription.sessionStore":
     "任务索引、会话快照与 checkpoint，随任务删除或自动归档清理。",
+  "resourceManager.storage.categoryDescription.sessionMailbox":
+    "已投递的信封与投递失败的死信；未投递消息受保护不会清除。",
   "resourceManager.storage.categoryDescription.subagentTranscripts":
     "子代理运行的完整对话记录（transcript.jsonl），单文件可达数十 MB；最近 24 小时有活动的会话会保留。",
   "resourceManager.storage.categoryDescription.toolOutputs":

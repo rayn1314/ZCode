@@ -24,6 +24,9 @@ export interface StorageCleanScope {
 
 const CLEANABILITY: Record<StorageCategoryId, StorageCleanability> = {
   sessionStore: "none",
+  // 信箱 read/failed 是已投递的历史信封（只进不出、无 TTL），用户在资源管理器手动清理即删；
+  // unread/ 不属于本类别，永不清（见 classify 的文件规则）。
+  sessionMailbox: "safe",
   // 只有 subagent 的 transcript.jsonl 可删；其余工具输出与临时缓存暂不可删。
   subagentTranscripts: "safe",
   toolOutputs: "none",
@@ -46,6 +49,14 @@ interface FileRule {
 
 /** 文件级规则：按顺序求值，先命中先生效（备份/缓存要排在泛化的 config 之前）。 */
 const FILE_RULES: FileRule[] = [
+  // 信箱已投递信封：只有 {sessionId}/read|failed 下的单层信封文件归本类别。
+  // unread/（未投递的活数据）与更深的嵌套（结构外残留）不匹配本规则，落到 config 前缀规则
+  // （cleanability=none），被计划的分类过滤双重挡住，绝不会被清理器触达。
+  {
+    categoryId: "sessionMailbox",
+    pattern: /^mailbox\/[^/]+\/(?:read|failed)\/[^/]+$/,
+    entryKeySegments: 3,
+  },
   // subagent 运行记录（单文件可达数十 MB），按会话目录聚合
   {
     categoryId: "subagentTranscripts",
@@ -74,6 +85,8 @@ const FILE_RULES: FileRule[] = [
 /** 前缀规则：值为相对根的目录前缀，命中最长者。 */
 const PREFIX_RULES: Record<Exclude<StorageCategoryId, "other">, string[]> = {
   sessionStore: ["v2/sessions", "v2/session-bindings", "v2/checkpoints"],
+  // 信封由上面的文件规则按 read|failed 逐文件命中；前缀留空，避免 unread/ 被整前缀划入。
+  sessionMailbox: [],
   // transcript.jsonl 由上面的文件规则先命中，其余 cli/agents 内容留在这里
   subagentTranscripts: [],
   toolOutputs: [
@@ -205,6 +218,9 @@ const FILE_RULE_SCOPES: Partial<Record<StorageCategoryId, string[]>> = {
 /** 只靠文件规则、且需要递归枚举的类别：候选按分类过滤后只剩命中文件规则的路径。 */
 const RECURSIVE_FILE_RULE_SCOPES: Partial<Record<StorageCategoryId, string[]>> = {
   subagentTranscripts: ["cli/agents"],
+  // 信箱按 {sessionId}/{read,failed,unread} 三层存放，规则只覆盖 read|failed；
+  // 递归枚举 mailbox 后由 planStorageClean 的分类过滤剔除 unread 与结构外残留。
+  sessionMailbox: ["mailbox"],
 };
 
 export function getStorageCleanScopes(categoryId: StorageCategoryId): StorageCleanScope[] {

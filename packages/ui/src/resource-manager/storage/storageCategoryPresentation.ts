@@ -8,6 +8,7 @@ import {
   FileText,
   Folder,
   KeyRound,
+  Mail,
   PackageOpen,
   Route,
 } from "lucide-react";
@@ -16,6 +17,7 @@ import { APP_USAGE_MODEL_CHART_COLORS } from "@/settings/usage-stats/appUsageCha
 
 export const STORAGE_CATEGORY_ICONS: Record<StorageCategoryId, typeof Folder> = {
   sessionStore: Database,
+  sessionMailbox: Mail,
   subagentTranscripts: Bot,
   toolOutputs: FileOutput,
   modelTrajectory: Route,

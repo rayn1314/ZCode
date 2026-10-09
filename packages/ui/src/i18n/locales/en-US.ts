@@ -2495,6 +2495,7 @@ const enUS: Record<string, string> = {
   "resourceManager.storage.confirmTitle": 'Clean "{category}"?',
   "resourceManager.storage.confirmSize": "About {size} will be deleted.",
   "resourceManager.storage.category.sessionStore": "Sessions & databases",
+  "resourceManager.storage.category.sessionMailbox": "Session mailbox archives",
   "resourceManager.storage.category.subagentTranscripts": "Subagent transcripts",
   "resourceManager.storage.category.toolOutputs": "Tool outputs & temporary caches",
   "resourceManager.storage.category.modelTrajectory": "Model call trajectories",
@@ -2507,6 +2508,8 @@ const enUS: Record<string, string> = {
   "resourceManager.storage.category.other": "Other",
   "resourceManager.storage.categoryDescription.sessionStore":
     "Task index, session snapshots and checkpoints; cleaned by deleting or archiving tasks.",
+  "resourceManager.storage.categoryDescription.sessionMailbox":
+    "Delivered envelopes and failed dead letters; undelivered messages are protected and never cleared.",
   "resourceManager.storage.categoryDescription.subagentTranscripts":
     "Full conversation records of subagent runs (transcript.jsonl), up to tens of MB each; sessions active in the last 24 hours are kept.",
   "resourceManager.storage.categoryDescription.toolOutputs":
