@@ -1,7 +1,10 @@
 export { createConfiguredHookRunner } from "./configured-runner.js";
 export { createHookExecutionDescriptor, sanitizeHookDisplayText } from "./display-metadata.js";
 export { InMemoryHookRunner, createInMemoryHookRunner } from "./runner.js";
-export { createSessionMailboxHookRegistrations } from "./session-mailbox.js";
+export {
+  createSessionMailboxHookRegistrations,
+  SessionMailboxEnqueueRejectedError,
+} from "./session-mailbox.js";
 export type {
   ConfiguredHookRunnerOptions,
   HookCallback,

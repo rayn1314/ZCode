@@ -43,4 +43,17 @@ export interface SessionMailboxPort {
     input: { sessionId: SessionId; messageId: string },
     opts?: { signal?: AbortSignal },
   ): Promise<boolean>;
+
+  /**
+   * 回滚（审计修复 #2）：把 drain 已归档到 `read/` 的信封放回 `unread/`，供下一轮重读。
+   *
+   * drain 是"先归档再交出"（防双读）；交出后 steer/入队失败时正文已离开 `unread/`，
+   * 不回滚就永不重试。回滚保持"不丢不重"：失败信封下轮重读恰一次；重复回滚/重投已落
+   * 盘时收敛为单份（幂等）。只操作该信封自身的文件，不触碰 `failed/`（坏档隔离语义不变）。
+   * 真实 IO 故障向上抛，不假装成功。
+   */
+  restoreToUnread(
+    input: { sessionId: SessionId; envelope: SessionMailboxEnvelope },
+    opts?: { signal?: AbortSignal },
+  ): Promise<void>;
 }

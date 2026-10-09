@@ -115,6 +115,7 @@ export * from "./markdown-artifact-images.js";
 export * from "./serviceAuthority.js";
 export * from "./server-remote.js";
 export * from "./session-mailbox.js";
+export * from "./session-message.js";
 
 export interface ICredentialStore {
   get(key: string): Promise<string | null>;

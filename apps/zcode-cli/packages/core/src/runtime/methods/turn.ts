@@ -63,6 +63,7 @@ import { scheduleProjectMemoryExtraction } from "../helpers/project-memory-extra
 import { appendBrowserTurnScreenshot } from "./browser-turn-screenshot.js";
 import { clearBrowserTurnState } from "../../repl/browser-turn-state.js";
 import { applySubmissionExecutionState, createTurnModel } from "./turn-model.js";
+import { inboundChainIntentAction } from "./session-message-chain.js";
 import { maybeCompactAfterTurn } from "./post-turn-compact.js";
 import { rebuildContextPrefix } from "./context-refresh.js";
 
@@ -98,11 +99,15 @@ export async function executeTurnCommand(
   options?: ExecuteTurnOptions,
   startReservation?: ActiveTurnStartReservation,
 ): Promise<TurnResult> {
-  // 防环链（spec D7）必须在任何 await 之前落定：命令面输入（intent 在场）不带链 = 人重新开话头
-  // → 清空本会话入站链。core 内部派生的轮次（后台结果、子代理通知、hook 续跑）不带 intent，
-  // 因此不会误清。
+  // 防环链（spec D7 + 审计修复 #4）必须在任何 await 之前落定：命令面输入里**只有人类
+  // 输入才清链**；会话消息来源（intent.clientId = session-message-port，含 Host 回执）
+  // 无链时不清——否则 A↔B 循环插一条回执就让 hop 计数归零，cap 失效。core 内部派生
+  // 的轮次（后台结果、子代理通知、hook 续跑）不带 intent，因此不会走到这里。
   if (options?.intent) {
-    this.noteInboundSessionMessageChain(options.intent.sessionMessageChain);
+    const chainAction = inboundChainIntentAction(options.intent);
+    if (chainAction.kind !== "keep") {
+      this.noteInboundSessionMessageChain(chainAction.kind === "set" ? chainAction.chain : undefined);
+    }
   }
   // 普通 Turn 过去在异步初始化完成后才读取 Session Selection/输出样式，
   // 初始化期间发生的切模会越过 admission 边界，错误影响已经开始的 Turn。

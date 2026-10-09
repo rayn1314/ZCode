@@ -5,6 +5,7 @@ import {
   createToolExecutor,
   getCurrentTraceContext,
   registerBuiltInTools,
+  SessionMailboxEnqueueRejectedError,
   traceContextToLogContext,
 } from "../deps.js";
 import type { HookRunner, SessionId, ToolExecutor, TraceContext } from "../deps.js";
@@ -131,20 +132,17 @@ function createRuntimeHookRunner(
         traceContext,
       });
       if (result.kind === "rejected") {
-        runtime.logger?.warn("Session mailbox input was not queued", {
-          ...traceContextToLogContext(traceContext),
-          event: "session.mailbox.queue_rejected",
-          module: "core.runtime",
-          reason: result.reason,
-          status: "completed",
-        });
+        // 被拒必须以异常上抛（审计修复 #2）：hook 据此把信封回滚 unread、下轮重读。
+        // 旧实现只写 warn，正文已离开 unread，这条消息就永不重试了。
+        throw new SessionMailboxEnqueueRejectedError(result.reason);
       }
     },
     mailbox: deps.sessionMailboxPort,
-    // 接收侧记链（spec D7）：mailbox 通路的结构化信封经 hook 上报给 runtime；
-    // 它是入站链的唯一写入点之一，工具侧只经 reader 读取。
+    // 接收侧记链（spec D7 + 审计修复 #4）：mailbox 通路的结构化信封经 hook 上报给 runtime；
+    // 只在本批有链时调用（无链批次不清链），它是入站链的写入点之一，工具侧只经 reader 读取。
     noteInboundSessionMessageChain: (chain) => runtime.noteInboundSessionMessageChain(chain),
     sessionId,
+    logger: runtime.logger,
   })) {
     if ("register" in hookRunner && typeof hookRunner.register === "function") {
       hookRunner.register(hook);

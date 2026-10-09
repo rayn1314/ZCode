@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { SESSION_MESSAGE_CLIENT_ID } from "@zcode/shared";
 import {
   HookEventName,
   SessionMessageChainExceededError,
@@ -15,6 +16,7 @@ import {
   createSessionMailboxHookRegistrations,
   resolveDrainedSessionMessageChain,
 } from "../src/hooks/session-mailbox.js";
+import { inboundChainIntentAction } from "../src/runtime/methods/session-message-chain.js";
 import type { ToolHandlerFailure } from "../src/tool/types.js";
 
 /**
@@ -22,7 +24,8 @@ import type { ToolHandlerFailure } from "../src/tool/types.js";
  * - 发送侧算：读会话**实时**入站链，有链则 hop+1、origin 保持，无链则本次消息即链首；
  * - reader 缺席按无链处理，不因能力缺席报错；
  * - cap 唯一裁决点在发送侧端口：超限必须是明确失败（不是 success，更不是 stored）；
- * - mailbox 通路：每次非空 drain 上报一次"本批最后一条带链的链"，空 drain 绝不上报。
+ * - mailbox 通路：只有本批存在带链消息才上报一次（取最后一条的链）；空批与无链批
+ *   都不上报——mailbox 来信不是人类插话，无链批不清链（审计修复 #4）。
  */
 
 const SENDER_SESSION = "sess_parent";
@@ -172,12 +175,12 @@ test("本批取最后一条带链的消息：中间的无链旧信封不影响",
   );
 });
 
-test("整批都没有链：返回 undefined（由调用方语义决定清不清）", () => {
+test("整批都没有链：返回 undefined（调用方据此**不清链**，审计修复 #4）", () => {
   assert.equal(resolveDrainedSessionMessageChain([envelope(), envelope()]), undefined);
   assert.equal(resolveDrainedSessionMessageChain([]), undefined);
 });
 
-test("hook：非空 drain 上报一次；空 drain 绝不上报（空批不能清链）", async () => {
+test("hook：非空 drain 上报带链消息；空批与无链批都不上报（不清链）", async () => {
   const notes: Array<SessionMessageChain | undefined> = [];
   const chain: SessionMessageChain = { hop: 2, originMessageId: "msg_root" };
   const mailbox: SessionMailboxPort = {
@@ -188,6 +191,7 @@ test("hook：非空 drain 上报一次；空 drain 绝不上报（空批不能�
     async consume() {
       return false;
     },
+    async restoreToUnread() {},
   };
   const [registration] = createSessionMailboxHookRegistrations({
     mailbox,
@@ -209,8 +213,43 @@ test("hook：非空 drain 上报一次；空 drain 绝不上报（空批不能�
   await registration!.callback(hookInput, { hookIndex: 0 });
   assert.deepEqual(notes, [chain]);
 
-  // 非空但整批都不带链 = 来人没带链（人重新开话头），上报 undefined 明确清链。
+  // 审计修复 #4：mailbox 信封只可能来自会话（session/subagent），永远不是人类插话。
+  // 无链批 = 旧客户端/无链信封，若按"人重新开话头"清链，A↔B 循环插一条就绕过 cap。
   mailbox.drainUnread = async () => [envelope({ messageId: "msg_plain" })];
   await registration!.callback(hookInput, { hookIndex: 0 });
-  assert.deepEqual(notes, [chain, undefined]);
+  assert.deepEqual(notes, [chain], "无链批不得上报（不清链）");
+});
+
+// ── 命令面输入的清链裁决（spec D7 修订 + 审计修复 #4） ──
+
+test("人类输入（无链）→ clear：人再说一句话即重置链深", () => {
+  assert.deepEqual(
+    inboundChainIntentAction({ clientId: "renderer", sessionMessageChain: undefined }),
+    { kind: "clear" },
+  );
+});
+
+test("会话消息输入（无链）→ keep：回执/无链投递不得清链", () => {
+  assert.deepEqual(
+    inboundChainIntentAction({
+      clientId: SESSION_MESSAGE_CLIENT_ID,
+      sessionMessageChain: undefined,
+    }),
+    { kind: "keep" },
+  );
+});
+
+test("带链输入（不论提交端）→ set：链照常传播", () => {
+  const chain: SessionMessageChain = { hop: 3, originMessageId: "msg_root" };
+  assert.deepEqual(inboundChainIntentAction({ clientId: "renderer", sessionMessageChain: chain }), {
+    kind: "set",
+    chain,
+  });
+  assert.deepEqual(
+    inboundChainIntentAction({
+      clientId: SESSION_MESSAGE_CLIENT_ID,
+      sessionMessageChain: chain,
+    }),
+    { kind: "set", chain },
+  );
 });

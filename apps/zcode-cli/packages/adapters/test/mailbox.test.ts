@@ -236,6 +236,78 @@ test("consume 对空会话与已 drain 归档是幂等 no-op", async () => {
   });
 });
 
+test("restoreToUnread：drain 归档后回滚，下一轮 drain 重读恰一次", async () => {
+  await withRoot(async (rootDir) => {
+    const mailbox = createNodeSessionMailboxAdapter({ rootDir });
+    await mailbox.deliver(envelope({ messageId: "msg_retry" }));
+
+    const drained = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.equal(drained.length, 1);
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "unread")), []);
+
+    // 审计修复 #2：交出后 steer 失败 → 回滚 unread；不能只留在 read/（正文永不重试）。
+    await mailbox.restoreToUnread({ sessionId: TARGET, envelope: drained[0]! });
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "unread")), [
+      "20261003T031500123Z_msg_retry.json",
+    ]);
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "read")), []);
+
+    const retried = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.deepEqual(
+      retried.map((message) => message.messageId),
+      ["msg_retry"],
+    );
+  });
+});
+
+test("restoreToUnread 幂等：unread 已有同名副本时收敛为单份，不产生双投", async () => {
+  await withRoot(async (rootDir) => {
+    const mailbox = createNodeSessionMailboxAdapter({ rootDir });
+    const target = envelope({ messageId: "msg_dup" });
+    await mailbox.deliver(target);
+    const drained = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.equal(drained.length, 1);
+
+    // 极端场景：消息在 read/ 期间被重投（ACK 丢失重投落回 unread），随后再回滚——
+    // 两侧各有一份时必须收敛成 unread 一份，read/ 旧副本清掉。
+    await mailbox.deliver(target);
+    await mailbox.restoreToUnread({ sessionId: TARGET, envelope: drained[0]! });
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "unread")), [
+      "20261003T031500123Z_msg_dup.json",
+    ]);
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "read")), []);
+
+    const retried = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.equal(retried.length, 1, "回滚后只能被重读一次，不能出现两条");
+  });
+});
+
+test("restoreToUnread 只碰目标信封，坏档隔离（failed/）不受影响", async () => {
+  await withRoot(async (rootDir) => {
+    const mailbox = createNodeSessionMailboxAdapter({ rootDir });
+    const unreadDir = join(rootDir, "sess_target", "unread");
+    await mkdir(unreadDir, { recursive: true });
+    await writeFile(join(unreadDir, "00000000T000000000Z_msg_broken.json"), "{ not json", "utf8");
+    await mailbox.deliver(envelope({ messageId: "msg_good" }));
+
+    const drained = await mailbox.drainUnread({ sessionId: TARGET });
+    assert.deepEqual(
+      drained.map((message) => message.messageId),
+      ["msg_good"],
+    );
+    // 坏档已隔离到 failed/。
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "failed")), [
+      "00000000T000000000Z_msg_broken.json",
+    ]);
+
+    await mailbox.restoreToUnread({ sessionId: TARGET, envelope: drained[0]! });
+    assert.deepEqual(await readdir(unreadDir), ["20261003T031500123Z_msg_good.json"]);
+    assert.deepEqual(await readdir(join(rootDir, "sess_target", "failed")), [
+      "00000000T000000000Z_msg_broken.json",
+    ]);
+  });
+});
+
 test("consume 拒绝可借文件名穿越的 messageId", async () => {
   await withRoot(async (rootDir) => {
     const mailbox = createNodeSessionMailboxAdapter({ rootDir });

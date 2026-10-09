@@ -25,7 +25,7 @@ import {
 
 /**
  * 契约：SessionMessagePort 三档投递（spec D3）。
- * 这些用例覆盖 reachable 判定、guide/startNow 选择、mailbox 降级与失败语义；
+ * 这些用例覆盖 reachable 判定、恒 guide 投递档（审计修复 #1）、mailbox 降级与失败语义；
  * 不依赖真实协议服务器，用窄宿主替身直接验证接口行为。
  */
 
@@ -79,6 +79,9 @@ function createHost(overrides: Partial<FakeHostState> = {}): {
     async consume() {
       return false;
     },
+    async restoreToUnread() {
+      return;
+    },
   };
   const host: SessionMessageDeliveryHost = {
     hasResidentSession: (sessionId) => state.resident.has(sessionId),
@@ -112,13 +115,24 @@ test("active turn routes a guide delivery and reports steered", async () => {
   assert.match(state.sends[0]!.text, /from_session="sess_sender"/);
 });
 
-test("idle resident target is woken with startNow", async () => {
+test("idle resident target 也用 guide 唤醒（恒用 guide，不再发会抢占的 startNow）", async () => {
+  // 审计修复 #1：投递档按发送时刻的 active 快照选档会与目标刚起的轮竞态，
+  // startNow 分支会 preemptActiveTurnAndWait abort 它；恒用 guide 后空闲目标
+  // 由 admitPrompt 空闲分支开新轮（woken），忙时由 guide 路由裁决，绝不抢占。
   const { host, state } = createHost();
   const result = await new BootstrapSessionMessagePort(host).deliver(createRequest());
 
   assert.equal(result.status, "woken");
-  assert.equal(state.sends[0]?.requestedDelivery, "startNow");
+  assert.equal(state.sends[0]?.requestedDelivery, "guide");
   assert.equal(state.stored.length, 0);
+});
+
+test("显式 requestId 不改变 v4 幂等键：commandId 恒由 messageId 派生（与 Host 同源）", async () => {
+  // 审计修复 #3：CLI 与 Host 两条路径必须共享同一去重键；requestId 只留给跨进程路由。
+  const { host, state } = createHost();
+  await new BootstrapSessionMessagePort(host).deliver(createRequest({ requestId: "req_custom" }));
+
+  assert.equal(state.sends[0]?.commandId, "session-message:msg_abc");
 });
 
 test("subagent sender keeps its senderKind in the envelope", async () => {
@@ -326,6 +340,9 @@ function createWiringFixture(options: {
     },
     async consume() {
       return false;
+    },
+    async restoreToUnread() {
+      return;
     },
   };
   const context = {

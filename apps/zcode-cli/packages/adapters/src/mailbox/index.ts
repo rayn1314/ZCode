@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import type {
   Logger,
@@ -75,7 +75,8 @@ export class NodeSessionMailboxAdapter implements SessionMailboxPort {
       }
 
       // 先归档到 read/ 再交出：rename 失败时信封仍留在 unread/，下一轮可重读，
-      // 既不丢也不会被重复返回。
+      // 既不丢也不会被重复返回。交出后的"交付失败"由调用方经 restoreToUnread 回滚
+      // （契约 #2）：回滚后下轮重读恰一次，仍不产生双投。
       try {
         await rename(unreadPath, join(readDir, entry));
       } catch (error) {
@@ -98,17 +99,48 @@ export class NodeSessionMailboxAdapter implements SessionMailboxPort {
 
     const unreadDir = this.sessionDir(validated.toSessionId, "unread");
     await mkdir(unreadDir, { recursive: true });
+    await this.writeEnvelopeFile(unreadDir, validated, opts);
+  }
 
-    const fileName = buildSessionMailboxFileName(validated);
-    const targetPath = join(unreadDir, fileName);
-    // 临时文件必须与目标同目录：rename 才在同一文件系统内保持原子。
-    const tempPath = join(unreadDir, `.${fileName}.${randomUUID()}${TEMP_FILE_SUFFIX}`);
+  /**
+   * 回滚已归档的信封（契约 restoreToUnread）：drain 后 steer/入队失败时把正文送回
+   * `unread/`，下一轮重读恰一次。只碰该信封自身文件，坏档隔离（failed/）不受影响。
+   */
+  async restoreToUnread(
+    input: { sessionId: SessionId; envelope: SessionMailboxEnvelope },
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    const envelope = assertEnvelope(input.envelope);
+    opts?.signal?.throwIfAborted();
+
+    const fileName = buildSessionMailboxFileName(envelope);
+    const readPath = join(this.sessionDir(input.sessionId, "read"), fileName);
+    const unreadDir = this.sessionDir(input.sessionId, "unread");
+    const unreadPath = join(unreadDir, fileName);
+    await mkdir(unreadDir, { recursive: true });
+
+    // 幂等收敛：unread 已有同名（重投已落盘 / 已回滚过）→ 消息已在待读，
+    // 去掉 read/ 旧副本即可，绝不在 unread 里留下第二份可读消息。
+    if (await pathExists(unreadPath)) {
+      await removeFileIfExists(readPath);
+      return;
+    }
     try {
-      await writeFile(tempPath, JSON.stringify(validated), "utf8");
-      opts?.signal?.throwIfAborted();
-      await rename(tempPath, targetPath);
+      await rename(readPath, unreadPath);
+      return;
     } catch (error) {
-      await removeTempFile(tempPath);
+      if (isNotFound(error)) {
+        // read/ 副本缺失（重复回滚 / 外部清理）：信封仍在内存，按 deliver 的原子写重写，
+        // 不能因为磁盘副本消失就把消息丢掉。
+        await this.writeEnvelopeFile(unreadDir, envelope, opts);
+        return;
+      }
+      // Windows 上目标在上面的存在性检查之后被并发写入时 rename 会失败：
+      // 若 unread 此刻已有同名，回滚目的已达，只清掉 read/ 旧副本。
+      if (await pathExists(unreadPath)) {
+        await removeFileIfExists(readPath);
+        return;
+      }
       throw error;
     }
   }
@@ -143,6 +175,25 @@ export class NodeSessionMailboxAdapter implements SessionMailboxPort {
       }
     }
     return consumed;
+  }
+
+  /** 原子落盘：临时文件与目标同目录，rename 保证读侧永远只见完整 JSON。 */
+  private async writeEnvelopeFile(
+    targetDir: string,
+    envelope: SessionMailboxEnvelope,
+    opts?: { signal?: AbortSignal },
+  ): Promise<void> {
+    const fileName = buildSessionMailboxFileName(envelope);
+    const targetPath = join(targetDir, fileName);
+    const tempPath = join(targetDir, `.${fileName}.${randomUUID()}${TEMP_FILE_SUFFIX}`);
+    try {
+      await writeFile(tempPath, JSON.stringify(envelope), "utf8");
+      opts?.signal?.throwIfAborted();
+      await rename(tempPath, targetPath);
+    } catch (error) {
+      await removeTempFile(tempPath);
+      throw error;
+    }
   }
 
   private async readEnvelopeFile(
@@ -218,6 +269,25 @@ async function removeTempFile(tempPath: string): Promise<void> {
     await unlink(tempPath);
   } catch {
     // 清理是尽力而为：写失败时真正的错误由调用方抛出，临时残留不影响 drain。
+  }
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    throw error;
+  }
+}
+
+async function removeFileIfExists(path: string): Promise<void> {
+  try {
+    await unlink(path);
+  } catch (error) {
+    if (isNotFound(error)) return;
+    throw error;
   }
 }
 

@@ -14,6 +14,8 @@ async function inject(envelope: SessionMailboxEnvelope): Promise<string> {
     mailbox: {
       drainUnread: async () => [envelope],
       deliver: async () => {},
+      consume: async () => false,
+      restoreToUnread: async () => {},
     },
     sessionId: "sess_target",
   });

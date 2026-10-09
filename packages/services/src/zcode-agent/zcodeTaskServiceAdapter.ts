@@ -9,8 +9,10 @@ import {
   type NetworkObservation,
 } from "@zcode/rpc";
 import {
+  SESSION_MESSAGE_CLIENT_ID,
   coalesceConsecutiveZCodeAssistants,
   createSessionTraceId,
+  sessionMessageV4CommandId,
   decodeCustomModelValue,
   deriveZCodeTaskStatusFromSessionSnapshot,
   extractPlanStepsFromToolInput,
@@ -271,6 +273,36 @@ function formatSessionMessageResultText(result: SessionMessageDeliveryResult): s
     "For reference only. No action is required.",
     "</session-message>",
   ].join("\n");
+}
+
+/**
+ * task_complete → task 行 status（审计修复 #5）。
+ *
+ * 旧实现无条件写 "completed"：可 turn.completed 的 resultType 里还有 error_*（max_turns /
+ * max_budget / during_execution / max_tool_calls），它们在投影侧派生 phase "error"、
+ * syncer 落 "error"，事件流却把同一轮写成 "completed"——行状态与投影互相打架。
+ * 对齐的词表（product-projection onTurnComplete / zcodeTaskIndexSyncer）：
+ * - success / cancelled → completedSuccess/completedInterrupted → "completed"
+ *   （ZCodeTaskPersistStatus 没有独立 interrupted 值，completedInterrupted 就落 "completed"）；
+ * - error_* 及未识别的 stopReason → 投影 default 分支 → phase "error" → "error"；
+ *   错误正文不在 TurnComplete payload 里，因此不动 lastError（与 syncer 的 error 分支一致，
+ *   权威值由随后的回源 snapshot 写入）；
+ * - 缺省 "complete"（旧 payload 无 resultType 时上游的兜底值）→ "completed"，保持兼容。
+ */
+function taskIndexPatchFromTaskComplete(stopReason: string): {
+  status: "completed" | "error";
+  lastError?: undefined;
+  updatedAt: number;
+} {
+  const updatedAt = Date.now();
+  switch (stopReason) {
+    case "success":
+    case "cancelled":
+    case "complete":
+      return { status: "completed", lastError: undefined, updatedAt };
+    default:
+      return { status: "error", updatedAt };
+  }
 }
 
 const MAX_LIVE_TOOL_PROJECTION_TASKS = 128;
@@ -577,8 +609,12 @@ export function createZCodeTaskServiceAdapter(
               : {}),
           },
           sessionId: target.taskId,
-          // requestId 作为幂等键：跨进程重投由 CommandInbox 去重，不会二次注入。
-          commandId: request.requestId,
+          // 幂等键与 CLI 直投同源（审计修复 #3）：只由 messageId 派生，不借用 requestId——
+          // 两键共享 CommandInbox 去重，ACK 丢失重投才不会二次注入。
+          commandId: sessionMessageV4CommandId(request.messageId),
+          // 提交端标记为会话消息机器（审计修复 #4）：接收侧据此不清防环链
+          //（回执/无链投递 ≠ 人类插话）。
+          clientId: SESSION_MESSAGE_CLIENT_ID,
         }),
       });
       assertV4CommandAckOk("sendText", ack, `session-message to=${target.taskId}`);
@@ -713,6 +749,9 @@ export function createZCodeTaskServiceAdapter(
             requestedDelivery: "guide",
           },
           sessionId: source.taskId,
+          // 回执是会话消息机器的输入而非人类 prompt（审计修复 #4）：带这个提交端，
+          // 目标即使恰好空闲开新轮也不会清防环链（否则插一条回执就把 hop 计数归零）。
+          clientId: SESSION_MESSAGE_CLIENT_ID,
         }),
       });
     } catch (error) {
@@ -1703,11 +1742,7 @@ export function createZCodeTaskServiceAdapter(
           workspacePath: params.workspacePath,
           workspaceIdentity: params.workspaceIdentity,
           taskId: params.taskId,
-          patch: {
-            status: "completed",
-            lastError: undefined,
-            updatedAt: Date.now(),
-          },
+          patch: taskIndexPatchFromTaskComplete(event.stopReason),
         })
         .catch((error) => {
           logger.warn(undefined, "同步 task_complete 到 task index 失败", error);

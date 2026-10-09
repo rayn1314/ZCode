@@ -153,7 +153,11 @@ test("空闲目标也用 guide 投递（不用会抢占回合的 startNow），�
   const envelope = fixture.envelopes[0]!;
   assert.equal(envelope.type, "sendText");
   assert.equal(envelope.sessionId, TARGET_SESSION);
-  assert.equal(envelope.commandId, "req_1");
+  // 幂等键与 CLI 直投同源（审计修复 #3）：由 messageId 派生而非 requestId，
+  // 两键共享 CommandInbox 去重，ACK 丢失重投不会二次注入。
+  assert.equal(envelope.commandId, "session-message:msg_1");
+  // 提交端标记为会话消息机器（审计修复 #4）：接收侧据此不清防环链。
+  assert.equal(envelope.clientId, "session-message-port");
   const payload = fixture.payloadOf(0);
   // 跨进程只能拿到滞后的事件投影，无法权威确认目标是否空闲；startNow 会抢占并中止运行中回合，
   // 所以实时投递一律用 guide，由目标 CLI 的 admission 自行裁决（忙则引导/排队，闲则开轮）。
@@ -294,6 +298,9 @@ test("源会话正在跑回合时才投回执，且用不抢占的 guide", async
   const envelope = fixture.envelopes[0]!;
   assert.equal(envelope.type, "sendText");
   assert.equal(envelope.sessionId, SOURCE_SESSION);
+  // 回执同样带会话消息提交端（审计修复 #4）：目标若恰好已空闲开新轮，
+  // 这条无链输入不得被当成"人类插话"清掉防环链。
+  assert.equal(envelope.clientId, "session-message-port");
   const payload = fixture.payloadOf(0);
   assert.equal(payload.requestedDelivery, "guide");
   assert.match(payload.text, /<session-message source="delivery-result"/);

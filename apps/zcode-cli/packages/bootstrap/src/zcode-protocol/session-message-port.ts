@@ -4,12 +4,20 @@
 //
 // 单一 owner、单条写路径：跨会话投递统一经 v4 命令面（CommandInbox 幂等 /
 // revision 门 / 投影 / queue-guide 语义），不在 core 或本层另造 steerTurn 直调。
-// `steerTurn` 对无活动回合只会回 `no_active_turn`，唤醒只能靠 sendText(startNow)。
+// `steerTurn` 对无活动回合只会回 `no_active_turn`，唤醒不走 steerTurn——
+// guide 档在目标空闲时由 sendText → startPromptTurn → admitPrompt 空闲分支开新轮。
 //
 // 可达性分三档：
-//   1. 常驻 + 有活动回合 → sendText(requestedDelivery=guide) → steered
-//   2. 常驻 + 空闲       → sendText(requestedDelivery=startNow) → woken
+//   1. 常驻（不论忙闲） → sendText(requestedDelivery=guide) → steered/woken
+//   2. 不在进程内先冷恢复，恢复后同上
 //   3. 不在进程内且冷恢复失败 / v4 投递被拒 → mailbox deliver → stored
+//
+// 恒用 guide 而不按活动回合切换（审计修复 #1）：`hasActiveTurn` 是发送时刻的快照，
+// 目标可能在快照之后刚起轮；startNow 分支会 preemptActiveTurnAndWait 把它 abort 掉
+// （session-flow.ts）。guide 由目标自己的 admission 裁决：忙且可引导 → steered、
+// 忙不可引导 → 排队、空闲 → startPromptTurn 的 guide 路由开新轮（admitPrompt 空闲分支
+// 不看 queueDelivery，直接 reserve+入队唤醒），既不抢占也不饿死空闲目标。
+// Host 跨进程路径已刻意恒用 guide（zcodeTaskServiceAdapter），此处与它对齐。
 //
 // 失败语义（spec）：不丢、不假装成功。mailbox 落盘本身失败时直接抛出，让调用方看到
 // 真实原因；因可达性不足而落 mailbox 属预期降级，返回 stored 并带 detail。
@@ -28,6 +36,7 @@ import type {
   SessionMessagePort,
 } from "@zcode/contracts";
 import { SESSION_MESSAGE_MAX_HOP, SessionMessageChainExceededError } from "@zcode/contracts";
+import { sessionMessageV4CommandId } from "@zcode/shared";
 import { V4_NOTIFICATIONS, type CommandAck } from "@zcode/shared/zcode-protocol-v4";
 
 /** v4 命令面投递结果：accepted 是否被接收，detail 记录被拒原因。 */
@@ -41,7 +50,11 @@ export interface SessionMessageV4SendInput {
   sessionId: string;
   commandId: string;
   text: string;
-  requestedDelivery: "guide" | "startNow";
+  /**
+   * 投递档恒为 guide（审计修复 #1）：startNow 的抢占语义与"投递消息"冲突，
+   * 空闲目标由 guide 路由开新轮完成唤醒，不再区分忙闲。
+   */
+  requestedDelivery: "guide";
   /** 防环链（spec D7）：随 payload 结构化到达接收方 runtime，投递层只透传不裁决。 */
   sessionMessageChain?: SessionMessageChain;
 }
@@ -50,7 +63,10 @@ export interface SessionMessageV4SendInput {
 export interface SessionMessageDeliveryHost {
   /** 目标是否已在进程内常驻（`context.sessions` 有 record）。 */
   hasResidentSession(sessionId: string): boolean;
-  /** 目标是否有活动回合；决定 guide（引导）还是 startNow（唤醒）。 */
+  /**
+   * 目标是否有活动回合；**只用于回执状态（steered/woken）的近似判定**，
+   * 不再参与投递档选择（审计修复 #1：档位恒为 guide）。
+   */
   hasActiveTurn(sessionId: string): boolean;
   /** 冷恢复入口：把持久化会话拉回常驻。失败应抛出，由本层降级 mailbox。 */
   ensureSessionResident(sessionId: string): Promise<boolean>;
@@ -65,8 +81,8 @@ export interface SessionMessageDeliveryHost {
   logger?: Logger;
 }
 
-/** v4 命令面的来源标识；仅用于信封必填字段，不参与裁决。 */
-export const SESSION_MESSAGE_CLIENT_ID = "session-message-port";
+/** v4 命令面的来源标识；常量单源在 `@zcode/shared`（Host 转投与回执共用同一值）。 */
+export { SESSION_MESSAGE_CLIENT_ID } from "@zcode/shared";
 const MAILBOX_SOURCE = "session-message";
 
 export class BootstrapSessionMessagePort implements SessionMessagePort {
@@ -101,17 +117,19 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
       }
     }
 
-    // 活动回合必须走 guide：startNow 会抢占并中止正在跑的回合，那不是“投递消息”。
+    // 投递档恒用 guide（审计修复 #1）：startNow 会抢占并 abort 目标可能刚起的轮，
+    // 而 hasActiveTurn 只是发送时刻的快照，竞态窗口无法在发送侧关闭。详见文件头注释。
     const active = this.host.hasActiveTurn(target);
-    const requestedDelivery = active ? "guide" : "startNow";
 
     let outcome: SessionMessageV4SendResult;
     try {
       outcome = await this.host.sendViaV4({
         sessionId: target,
-        commandId: request.requestId ?? `${MAILBOX_SOURCE}:${request.messageId}`,
+        // 幂等键只由 messageId 派生（审计修复 #3）：与 Host 转投路径同源，
+        // 两键共享 CommandInbox 去重，ACK 丢失重投不会产生第二条消息。
+        commandId: sessionMessageV4CommandId(request.messageId),
         text: formatDeliveryText(request),
-        requestedDelivery,
+        requestedDelivery: "guide",
         ...(chain ? { sessionMessageChain: chain } : {}),
       });
     } catch (error) {
@@ -125,9 +143,11 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
       );
     }
 
-    // 落地方式如实反映：目标当时有活动回合即 steered（guide 注入），空闲即 woken（开新轮）。
-    // 三档由可达性 + 活动回合判定，不再从 ACK 的 admitted delivery 反推——steerTurn 的
-    // admission receipt 也用 `queued` 表达“已接受”，按它判定会把引导误报成入队。
+    // 落地方式如实反映：投递档恒为 guide，目标当时有活动回合即 steered（guide 注入），
+    // 空闲即 woken（guide 路由开新轮）。判定只用发送时刻的活动回合快照，不从 ACK 的
+    // admitted delivery 反推——steerTurn 的 admission receipt 也用 `queued` 表达"已接受"，
+    // 按它判定会把引导误报成入队；忙但不可引导时此处会把 queued 近似报成 steered，
+    // 属既有近似（与 Host 侧投影口径一致），不影响"不抢占"的核心约束。
     return {
       toSessionId: target,
       messageId: request.messageId,
@@ -195,8 +215,9 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
   }
 
   /**
-   * 上报的 requestId 可能缺省（同进程调用方未提供）；跨进程幂等需要稳定键，
-   * 用与 v4 commandId 同源的 `session-message:<messageId>` 兜底，重投不产生第二条消息。
+   * requestId 只服务跨进程路由与结果关联（main 的 pending 表按它对账），缺省时用
+   * `session-message:<messageId>` 兜底保证稳定。**它不再是 v4 幂等键**——Host 转投的
+   * commandId 与本层直投一样只由 messageId 派生（审计修复 #3，见 sessionMessageV4CommandId）。
    */
   private notifySendRequested(request: SessionMessageDeliveryRequest): void {
     if (!this.host.notify) return;
@@ -208,7 +229,7 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
           createdAt: request.createdAt,
           fromSessionId: request.fromSessionId,
           messageId: request.messageId,
-          requestId: request.requestId ?? `${MAILBOX_SOURCE}:${request.messageId}`,
+          requestId: request.requestId ?? sessionMessageV4CommandId(request.messageId),
           toSessionId: request.toSessionId,
           ...(request.senderKind ? { senderKind: request.senderKind } : {}),
           // 跨进程 main 路由原样透传；链在目标 Host 落地（live 或 mailbox）后必须连续。

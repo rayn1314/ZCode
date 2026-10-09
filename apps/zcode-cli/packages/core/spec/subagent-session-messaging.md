@@ -40,19 +40,18 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 不新增按 title/alias 解析会话的服务：`ListSessionsInput` 没有 title/parentID 谓词，title 可变且可重名；会话寻址一律用 `sess_*` 主键（与 `ReadSessionContext` 的既有约定一致）。
 
-**S1b / S2 之后的订正（2026-10-07 复核）**：子会话已升格为正式 record（`subagent_child` 有自己的 session entry 与 `context.sessions` 条目），所以 `sess_subagent_*` 目标在 D3 的档 1 / 档 2 判定上与正式会话**完全同形**——常驻 + 有活动回合 → `sendText(guide)` 得 `steered`，常驻 + 空闲 → `sendText(startNow)` 得 `woken`。改造前子会话没有 record，发给 `sess_subagent_*` 的信封必然撞上只读门，在 `session-message-port.ts` 里被捕获后静默降级成 mailbox `stored`（日志 `v4 delivery not accepted: …`），`steered` / `woken` 对子会话根本不可达；S2 打开输入面后三态才真正生效。这条是 S2 的验收项，准入单源与角色规则见 `subagent-session-as-first-class.md`。
+**S1b / S2 之后的订正（2026-10-07 复核）**：子会话已升格为正式 record（`subagent_child` 有自己的 session entry 与 `context.sessions` 条目），所以 `sess_subagent_*` 目标在 D3 的档 1 / 档 2 判定上与正式会话**完全同形**——常驻目标一律 `sendText(guide)`（忙得 steered、闲得 woken；**2026-10-09 起投递档不再按忙闲切换**，见 D3 修订与 `session-message-audit-fixes.md` 修复 1）。改造前子会话没有 record，发给 `sess_subagent_*` 的信封必然撞上只读门，在 `session-message-port.ts` 里被捕获后静默降级成 mailbox `stored`（日志 `v4 delivery not accepted: …`），`steered` / `woken` 对子会话根本不可达；S2 打开输入面后三态才真正生效。这条是 S2 的验收项，准入单源与角色规则见 `subagent-session-as-first-class.md`。
 
 ### D3 · 投递 owner 是 bootstrap 的 `SessionMessagePort`
 
 新增 `contracts/src/interfaces/session-message.port.ts`，由 bootstrap 实现并注入每个 runtime（父与子都注入）。投递按可达性分三档，**单一 owner、单条写路径**：
 
 1. **本进程且目标常驻**（`context.sessions` 有 record）：
-   - 目标有活动回合 → `sendText`，`requestedDelivery: "guide"`（等价于现有 `steerTurn({delivery:"guide"})` 的注入点）；
-   - 目标空闲 → `sendText`，`requestedDelivery: "startNow"`（开新一轮，即"唤醒"）。
+   - 不论忙闲一律 `sendText`，`requestedDelivery: "guide"`（**2026-10-09 审计修订**：原为"有活动回合 → guide / 空闲 → startNow"。`hasActiveTurn` 是发送时刻快照，目标可能在快照后刚起轮，startNow 分支会 `preemptActiveTurnAndWait` 把它 abort 掉；恒 guide 后由目标自己的 admission 裁决——忙且可引导 → steered、忙不可引导 → 排队、空闲 → `startPromptTurn` 的 guide 路由开新轮完成唤醒，理由与测试见 `session-message-audit-fixes.md` 修复 1）；
 2. **本进程但目标已冷**（被 `SessionResidentPool` 卸载）：先 `coldResume.ensureResumed` 拉起 record，再按 1 投递。
 3. **目标不在本进程**（别的 workspace/进程）：写 mailbox（`deliver`）+ 发 workspace 事件，交给 desktop main 路由到目标 host 的 `deliverSessionMessage`；目标仍不可达时只留 mailbox，等其下次自醒 `drainUnread`。
 
-投递走 v4 写路径（而非直接 `record.app.runtime.steerTurn`），以获得 CommandInbox 幂等、revision 门、投影与 queue/guide 语义，避免第二条写路径。**不直接调 `steerTurn` 做唤醒**：`steering.ts` 对无活动回合一律 `no_active_turn`，唤醒只能靠 `sendText(start_turn)`。
+投递走 v4 写路径（而非直接 `record.app.runtime.steerTurn`），以获得 CommandInbox 幂等、revision 门、投影与 queue/guide 语义，避免第二条写路径。**不直接调 `steerTurn` 做唤醒**：`steering.ts` 对无活动回合一律 `no_active_turn`，唤醒靠 `sendText` 进入 `admitPrompt` 的空闲分支开新轮（guide 档在空闲目标上即完成唤醒）。
 
 ### D4 · 身份模型（独立 vs 附属）
 
@@ -78,7 +77,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **链身份随消息走，投递层不做任何记账。** 每条会话消息可携带 `chain = { originMessageId, hop }`：`originMessageId` 是链首消息 id，`hop` 是它在链上的深度（链首为 1）。投递层不维护"上一条是谁发的"这类状态，因此不存在多写者与过期判断。
 - **发送侧算，接收侧记。** `SendMessage` 发 `sess_*` 时读本会话当前入站链：`hop = 入站链.hop + 1`、`origin = 入站链.originMessageId`；没有入站链（本轮由人或内部事件触发）则 `hop = 1`、`origin` 取本次 `messageId`。
 - **链必须结构化到达接收方 runtime。** live 通路（`sendText`）过去只传文本，而闭合的 payload schema 会静默剥离未知键，所以给 `sendText` payload 与 `QueueItem` 增加可选字段 `sessionMessageChain`，经 `inputIntentMetadata` 落到 `TurnInputIntentMetadata.sessionMessageChain`，core 在输入 admission 时读取。mailbox 通路直接读信封的 `chain`。两条通路在 core 汇合到同一处记录。
-- **入站链的唯一持有者**是 core 的会话 runtime（`AgentRuntime` 一个私有字段）。设置点：mailbox drain（结构化信封）与 v4 intent admission（携带链时）。清除点是**精确**的而非超时：一次来自命令面的输入（`ExecuteTurnOptions.intent` 在场）若不带链，说明这是人重新开的输入，链深归零；core 内部派生的轮次（后台结果、子代理通知、hook 续跑）不带 intent，因此不会误清。mid-turn 的 `steerTurn` 只"带链则设置"，不清除——那一轮的开链/清链已由该轮 admission 决定。
+- **入站链的唯一持有者**是 core 的会话 runtime（`AgentRuntime` 一个私有字段）。设置点：mailbox drain（结构化信封）与 v4 intent admission（携带链时）。清除点是**精确**的而非超时，且**只有人类输入才清链**（**2026-10-09 审计修订，原为"任何无链的命令面输入都清链"**）：一次来自命令面的输入（`ExecuteTurnOptions.intent` 在场）若不带链，只有当提交端**不是**会话消息机器（`intent.clientId !== "session-message-port"`，覆盖同进程直投、Host 实时投递与回执）时才视为"人重新开的输入"、链深归零；会话消息来源的无链输入（回执、旧客户端无链信封）**不清链**——否则 A↔B 循环里插一条回执就把 hop 计数归零、cap 失效。同理，mailbox 整批无链也不再清链（来信永远不是人类插话）。修订原因与裁决函数见 `session-message-audit-fixes.md` 修复 4。core 内部派生的轮次（后台结果、子代理通知、hook 续跑）不带 intent，因此不会误清。mid-turn 的 `steerTurn` 只"带链则设置"，不清除——那一轮的开链/清链已由该轮 admission 决定。
 - **发送侧读的是实时值，不是轮次快照**：链在本回合中途也可能被注入（guide），所以工具上下文拿到的是 reader 端口而非快照值。
 - **子代理继承父会话的当前链**（spawn 时快照进子 runtime），否则"父会话收信 → 派子代理回信"会绕过计数。
 - **cap 只在发送侧裁决**：`BootstrapSessionMessagePort.deliver` 是发送方进程里唯一的写侧入口（三档都经过它），`hop > SESSION_MESSAGE_MAX_HOP(=6)` 时**拒绝投递**并返回明确失败：不落盘、不唤醒、不改动目标。接收侧只如实记录与传播，不静默丢弃。
@@ -108,7 +107,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
     │              ├─ 运行中无 sink ─► registry.queueMessage（下一工具轮）
     │              └─ 终态 ─► resumeTerminalAgentInBackground（复用同一 agentId）
     └─ sess_*  ─► SessionMessagePort（bootstrap 实现）
-                   ├─ 本进程常驻 ─► sendText(guide) ｜ 空闲: sendText(startNow)
+                   ├─ 本进程常驻 ─► sendText(guide)（恒 guide；忙 steer/排队，闲开新轮）
                    ├─ 本进程已冷 ─► coldResume.ensureResumed ─► 同上
                    └─ 跨进程 ─► mailbox.deliver(unread/) + workspace 事件
                                  └─► desktop main(taskRealtimeBus) ─► 目标 host
@@ -213,7 +212,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 ## 实施阶段
 
 - **阶段 1（core/contracts）已落地**：Agent 默认即句柄 + `wait`；`ListAgents`；读取面改按 output.status。
-- **阶段 2（core/contracts/adapters/bootstrap）已落地**：mailbox `deliver`；`SessionMessagePort` + 本进程三档投递（活动 `guide` / 空闲 `startNow` / 不可达 mailbox `stored`）；`SendMessage` 支持 `sess_*`；子代理注册 `SendMessage`；身份字段；消息开关默认开启（显式 `0`/`false` 关闭）。
+- **阶段 2（core/contracts/adapters/bootstrap）已落地**：mailbox `deliver`；`SessionMessagePort` + 本进程三档投递（常驻恒 `guide`，不可达 mailbox `stored`；落地时为"活动 guide / 空闲 startNow"，**2026-10-09 收敛为恒 guide**，见 `session-message-audit-fixes.md` 修复 1）；`SendMessage` 支持 `sess_*`；子代理注册 `SendMessage`；身份字段；消息开关默认开启（显式 `0`/`false` 关闭）。
 - **阶段 3（services/desktop/shared）已落地**：`deliverSessionMessage` 三态 + 回执；mailbox `consume` 去重（CLI adapters 与 Host services 共 `@zcode/shared` 的落盘规则）；CLI→Host 触发通道走 v4 sideband 通知 `v4/session/message-send-requested`，Host 转 main 实时路由。
 - **阶段 4（core/contracts）已落地**：`Agent` 支持调用级 `model`（`resolveInput` 用 `modelCatalogPort` 规范化、解不开即业务失败、只活一次不回写配置，优先级 `turn override > 调用级 > profile > 父模型`）。**已知不对称**：该选型只在本次前台 `run`（`wait: true` 且 profile 不强制后台）生效；后台/复活路径无选型通道，会跑在 profile/会话模型上。
 - **阶段 5（contracts/shared/core/bootstrap/services/desktop）已落地**：防环链（D7）——链随消息结构化携带、接收方 runtime 记录、发送侧端口按 `SESSION_MESSAGE_MAX_HOP` 拒绝超限投递。
@@ -234,7 +233,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 ## 验收与验证
 
 - core 单测：默认立即返回 `agentId`；`wait:true` 阻塞并返回正文；`ListAgents` 投影；`SendMessage` 目标解析（`agent_*`/`sess_*`）。
-- bootstrap 集成：同进程投递（活动 → guide；空闲 → startNow 开新回合）；冷会话先 `ensureResumed`。
+- bootstrap 集成：同进程投递恒用 `guide`（忙 → steered/排队，闲 → 开新轮唤醒，不抢占）；冷会话先 `ensureResumed`。
 - services 单测：`deliverSessionMessage` 实时投递（统一 `guide`，不抢占）、不可达落 mailbox、命中后 `consume` 去重、回执投回源会话。
 - 门禁：`pnpm typecheck:cli`、`pnpm lint`；触及根包补 `pnpm typecheck`。
 

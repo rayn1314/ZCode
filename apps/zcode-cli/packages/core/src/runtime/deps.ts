@@ -265,6 +265,7 @@ export {
   createConfiguredHookRunner,
   createInMemoryHookRunner,
   createSessionMailboxHookRegistrations,
+  SessionMailboxEnqueueRejectedError,
 } from "../hooks/index.js";
 export type { HookRunner, HookRunResult } from "../hooks/index.js";
 export type { ToolDependency, ToolSchedule } from "../tool/scheduler.js";
