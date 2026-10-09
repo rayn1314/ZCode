@@ -2069,12 +2069,12 @@ const zhCN: Record<string, string> = {
   "settings.contextCompaction.title": "上下文压缩",
   "settings.contextCompaction.description":
     "控制会话上下文如何自动压缩。默认全部关闭，保持当前行为。",
-  "settings.contextCompaction.threshold.label": "自动压缩阈值",
-  "settings.contextCompaction.threshold.auto": "自动（当前模型约 {percent}%）",
-  "settings.contextCompaction.threshold.autoUnknown": "自动",
-  "settings.contextCompaction.threshold.explicit": "窗口的 {percent}%",
-  "settings.contextCompaction.threshold.reset": "恢复自动",
-  "settings.contextCompaction.thresholdInvalid": "请输入 1–100 之间的整数。",
+  "settings.contextCompaction.buffer.label": "安全余量",
+  "settings.contextCompaction.buffer.info":
+    "当前模型：窗口 {window}K → 阈值 {threshold}K（约 {percent}%）",
+  "settings.contextCompaction.buffer.infoUnknown": "自动",
+  "settings.contextCompaction.buffer.reset": "恢复默认",
+  "settings.contextCompaction.bufferInvalid": "请输入 1–100 之间的整数（单位：千 tokens）。",
   "settings.contextCompaction.keepRecentInvalid": "请输入 1–50 之间的整数。",
   "settings.contextCompaction.microcompact.label": "局部压缩",
   "settings.contextCompaction.microcompact.description":
@@ -2088,7 +2088,14 @@ const zhCN: Record<string, string> = {
     "开启后，执行失败的工具结果正文也会一起清理。",
   "settings.contextCompaction.postTurn.label": "轮末压缩",
   "settings.contextCompaction.postTurn.description":
-    "一轮回答结束后就主动压缩，而不是等下一次提问前才压。",
+    "达到轮末压缩阈值时，在本轮回答结束后立刻压好，不必等下一次提问前才压。阈值默认与自动压缩相同，可在下方提前。",
+  "settings.contextCompaction.postTurn.offsetLabel": "提前量",
+  "settings.contextCompaction.postTurn.offsetDescription":
+    "以千 tokens 为单位。0 表示与自动压缩阈值相同；填 3 表示比自动阈值早 3000 tokens 触发。",
+  "settings.contextCompaction.postTurn.offsetEffective":
+    "轮末阈值约为 {threshold}K（窗口的 {percent}%）。",
+  "settings.contextCompaction.postTurnOffsetInvalid":
+    "请输入 0–100 之间的整数（单位：千 tokens）。",
   "settings.contextCompaction.modelDownshift.label": "模型降档提前压",
   "settings.contextCompaction.modelDownshift.description":
     "切换到上下文窗口更小的模型前先压缩，避免切换后首次请求超窗。",

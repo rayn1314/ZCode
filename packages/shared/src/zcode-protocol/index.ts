@@ -1701,19 +1701,24 @@ export const zcodeModelContextBudgetStrategySchema = z.enum(["legacy", "prefligh
 export type ZCodeModelContextBudgetStrategy = z.infer<typeof zcodeModelContextBudgetStrategySchema>;
 
 /**
- * 上下文压缩偏好（协议层六项）。
+ * 上下文压缩偏好（协议层七项）。
  *
  * 刻意**不含** `contextWindow`：窗口由当前模型推导，禁止由配置覆盖（spec 不变式 I3）。
  * `.strict()` 让任何多余字段（含 contextWindow）在解析边界就被拒绝。
+ *
+ * 用户调的是**安全余量**（tokens），不是阈值百分比：阈值 = 输入侧上限 − 余量。
+ * 百分比只是反算出来的只读展示值（`getAutoCompactThresholdPercent`）。
  */
 export const zcodeCompactionPreferencesSchema = z
   .object({
-    /** 自动压缩阈值占模型完整窗口的百分比；null = 沿用运行时公式阈值。 */
-    thresholdPercent: z.number().int().min(1).max(100).nullable(),
+    /** 自动压缩的安全余量（tokens）；null = 不覆盖（让 CLI 文件值 / 默认 13000 生效）。 */
+    bufferTokens: z.number().int().min(1_000).max(100_000).nullable(),
     microcompactEnabled: z.boolean(),
     microcompactKeepRecentToolResults: z.number().int().min(1).max(50),
     microcompactClearErrorResults: z.boolean(),
     postTurnEnabled: z.boolean(),
+    /** 轮末阈值相对自动阈值的提前量（tokens）；0 = 与自动阈值相同。总是 present。 */
+    postTurnThresholdOffsetTokens: z.number().int().min(0).max(100_000),
     modelDownshiftEnabled: z.boolean(),
   })
   .strict();
@@ -1721,11 +1726,12 @@ export type ZCodeCompactionPreferences = z.infer<typeof zcodeCompactionPreferenc
 
 /** 「维持现状」默认值：不显式配置任何开关时的压缩行为。 */
 export const DEFAULT_ZCODE_COMPACTION_PREFERENCES: ZCodeCompactionPreferences = {
-  thresholdPercent: null,
+  bufferTokens: null,
   microcompactEnabled: false,
   microcompactKeepRecentToolResults: 5,
   microcompactClearErrorResults: false,
   postTurnEnabled: false,
+  postTurnThresholdOffsetTokens: 0,
   modelDownshiftEnabled: false,
 };
 

@@ -18,9 +18,10 @@ test("文件 compact 段经 schema → ConfigStore.getAll() 端到端保留", ()
   const parsed = parseConfigFileToRuntimePatchWithDiagnostics({
     compact: {
       enabled: false,
-      thresholdPercent: 70,
+      bufferTokens: 20_000,
       microcompact: { enabled: true, thresholdTokens: 1234, keepRecentToolResults: 20 },
       postTurnEnabled: true,
+      postTurnThresholdOffsetTokens: 6_000,
     },
   });
 
@@ -30,8 +31,9 @@ test("文件 compact 段经 schema → ConfigStore.getAll() 端到端保留", ()
   const compact = port.getAll().compact;
 
   assert.equal(compact.enabled, false);
-  assert.equal(compact.thresholdPercent, 70);
+  assert.equal(compact.bufferTokens, 20_000);
   assert.equal(compact.postTurnEnabled, true);
+  assert.equal(compact.postTurnThresholdOffsetTokens, 6_000);
   assert.equal(compact.microcompact?.enabled, true);
   assert.equal(compact.microcompact?.thresholdTokens, 1234);
   assert.equal(compact.microcompact?.keepRecentToolResults, 20);
@@ -64,10 +66,17 @@ test("会话级覆盖合并（mergeCompactConfig）逐字段：文件值在未�
   assert.equal(merged.microcompact?.thresholdTokens, 1234);
 });
 
-test("越界阈值百分比被 schema 拒绝，不静默夹紧", () => {
-  for (const thresholdPercent of [0, 101, 1.5]) {
+test("越界安全余量 / 提前量被 schema 拒绝，不静默夹紧", () => {
+  for (const bufferTokens of [999, 100_001, 1_500.5]) {
     assert.throws(() =>
-      parseConfigFileToRuntimePatchWithDiagnostics({ compact: { thresholdPercent } }),
+      parseConfigFileToRuntimePatchWithDiagnostics({ compact: { bufferTokens } }),
+    );
+  }
+  for (const postTurnThresholdOffsetTokens of [-1, 100_001, 2.5]) {
+    assert.throws(() =>
+      parseConfigFileToRuntimePatchWithDiagnostics({
+        compact: { postTurnThresholdOffsetTokens },
+      }),
     );
   }
 });

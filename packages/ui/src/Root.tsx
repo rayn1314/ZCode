@@ -314,7 +314,7 @@ function RootInner({
     if (!appSettings) {
       return;
     }
-    // 压缩偏好是六项整体：任一变化都整份下发，运行态拿到的始终是自洽快照。
+    // 压缩偏好是七项整体：任一变化都整份下发，运行态拿到的始终是自洽快照。
     const compaction = resolveCompactionPreferencesFromSettings(appSettings);
     void services.zcodeAgentService
       .syncAppRuntimePreferences({
@@ -339,11 +339,12 @@ function RootInner({
   }, [
     appSettings?.askUserQuestionAutoResolutionEnabled,
     appSettings?.modelIoFullRetentionEnabled,
-    appSettings?.compactionThresholdPercent,
+    appSettings?.compactionBufferTokens,
     appSettings?.compactionMicrocompactEnabled,
     appSettings?.compactionMicrocompactKeepRecentToolResults,
     appSettings?.compactionMicrocompactClearErrorResults,
     appSettings?.compactionPostTurnEnabled,
+    appSettings?.compactionPostTurnThresholdOffsetTokens,
     appSettings?.compactionModelDownshiftEnabled,
     services.botsService,
     services.zcodeAgentService,

@@ -19,17 +19,22 @@ export interface AutoCompactPolicyConfig {
   maxOutputTokens?: number;
   modelContextBudgetStrategy?: "legacy" | "preflight-v1";
   summaryReserveTokens?: number;
-  bufferTokens?: number;
   /**
-   * 自动压缩阈值占模型完整上下文窗口的百分比（1–100）。
-   * 缺省时沿用「(窗口 − output reserve) − buffer」公式；显式设置时按窗口百分比计算。
-   * 越界值视为缺省，避免把阈值算成一个必然触发压缩的极小值。
+   * 自动压缩的安全余量（tokens）：阈值 = 输入侧上限 − 本值。
+   * 用户调的就是这个绝对余量，而不是百分比——百分比会随模型窗口漂移（小窗口上按比例
+   * 吃掉的缓冲只剩几百 token），且"显示值照抄回填"无法复现自动值。缺省 13000。
    */
-  thresholdPercent?: number;
+  bufferTokens?: number;
   maxConsecutiveFailures?: number;
   microcompact?: LocalMicrocompactPolicyConfig;
   /** 轮末主动压缩：一轮成功后、下一次请求前就先把上下文压好。 */
   postTurnEnabled?: boolean;
+  /**
+   * 轮末压缩的独立阈值提前量（tokens，0–100000 整数）。
+   * 轮末阈值 = max(1, 自动阈值 − 本值)；缺省/0 即与自动压缩阈值完全相同。
+   * 因此改造后轮末**可以比自动压缩更早**触发——这是本字段存在的意义。
+   */
+  postTurnThresholdOffsetTokens?: number;
   /** 模型降档提前压：切到上下文窗口更小的模型前先压。 */
   modelDownshiftEnabled?: boolean;
 }
@@ -92,41 +97,56 @@ export function getAutoCompactOutputReserveTokens(config: AutoCompactPolicyConfi
 
 export function getAutoCompactThreshold(config: AutoCompactPolicyConfig = {}): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(config);
-  const percent = normalizeThresholdPercent(config.thresholdPercent);
-  if (percent !== undefined) {
-    // 显式百分比以「模型完整窗口」为分母：用户理解的是"窗口用到 80% 就压"，
-    // 而不是"扣掉 output reserve 之后再用掉 80%"。
-    const contextWindow = positiveInt(config.contextWindow) ?? DEFAULT_COMPACT_CONTEXT_WINDOW;
-    const percentThreshold = Math.floor((contextWindow * percent) / 100);
-    // 阈值不能越过输入侧上限：超过 effectiveContextWindow 等于永不触发。
-    return Math.min(effectiveContextWindow, Math.max(1, percentThreshold));
-  }
   const buffer = positiveInt(config.bufferTokens) ?? AUTOCOMPACT_BUFFER_TOKENS;
   return Math.max(0, effectiveContextWindow - buffer);
 }
 
 /**
- * 归一化阈值百分比：只接受 1–100 的整数。
- * 越界（0、负数、非有限数、大于 100）一律按"未配置"处理并回落公式阈值——
- * 这是 fail-safe 方向：宁可沿用既有阈值，也不把阈值改成一个用户没要求过的值。
- * 三个配置入口（AppSettings / 协议偏好 / CLI config）都会先做范围校验，此处是最后一道防线。
+ * 有效的阈值百分比（相对模型完整窗口）。
+ *
+ * 这是**只读展示值**：用户调的是安全余量（tokens），百分比由实际阈值反算而来，
+ * 便于决策日志与设置页如实反映"当前约到窗口的几成"。
  */
-function normalizeThresholdPercent(value: number | undefined): number | undefined {
-  const normalized = positiveInt(value);
-  if (normalized === undefined || normalized < 1 || normalized > 100) return undefined;
-  return normalized;
+export function getAutoCompactThresholdPercent(config: AutoCompactPolicyConfig = {}): number {
+  const contextWindow = positiveInt(config.contextWindow) ?? DEFAULT_COMPACT_CONTEXT_WINDOW;
+  if (contextWindow <= 0) return DEFAULT_AUTOCOMPACT_THRESHOLD_PERCENT;
+  return Math.min(
+    100,
+    Math.max(0, Math.floor((getAutoCompactThreshold(config) / contextWindow) * 100)),
+  );
 }
 
 /**
- * 有效的阈值百分比（相对模型完整窗口）。
- * 显式配置时即配置值；否则由实际阈值反算，便于决策日志如实反映"当前约到窗口的几成"。
+ * 归一化轮末压缩的提前量：只接受 0–100000 的整数。
+ * 越界（负数、>100000、非有限数）、非整数一律按"未配置"处理（返回 undefined）。
+ * 与 `resolveCompactionPreferencesFromSettings` 同向的 fail-safe：宁可沿用自动压缩阈值，
+ * 也不把阈值改成用户没要求过的值（不夹紧、不报错）。
  */
-export function getAutoCompactThresholdPercent(config: AutoCompactPolicyConfig = {}): number {
-  const override = normalizeThresholdPercent(config.thresholdPercent);
-  if (override !== undefined) return override;
-  const contextWindow = positiveInt(config.contextWindow) ?? DEFAULT_COMPACT_CONTEXT_WINDOW;
-  if (contextWindow <= 0) return DEFAULT_AUTOCOMPACT_THRESHOLD_PERCENT;
-  return Math.min(100, Math.max(0, Math.floor((getAutoCompactThreshold(config) / contextWindow) * 100)));
+function normalizePostTurnThresholdOffsetTokens(value: number | undefined): number | undefined {
+  if (value === undefined || !Number.isFinite(value) || !Number.isInteger(value)) return undefined;
+  if (value < 0 || value > 100_000) return undefined;
+  return value;
+}
+
+/**
+ * 轮末压缩阈值的偏移合成：轮末阈值 = max(1, 自动阈值 − offsetTokens)。
+ *
+ * offset 为 0 / 未配置时**原样返回入参对象**（引用相等）——这一步是硬不变式，必须保留：
+ * 只要重算一次阈值就会产生与改造前的数值差（且会改写 config），破坏"offset 缺省时轮末判定
+ * 逐位相同"的保证。真的要偏移时才通过抬高 `bufferTokens` 表达（阈值 = 输入侧上限 − buffer），
+ * 全程只有 tokens 加减，不经过任何百分比换算。
+ *
+ * 夹紧到 1：提前量再大也不能把阈值压成 0 或负数（那会变成每次轮末都压）。
+ */
+export function applyPostTurnThresholdOffset(
+  config: AutoCompactPolicyConfig,
+  offsetTokens: number | undefined,
+): AutoCompactPolicyConfig {
+  const offset = normalizePostTurnThresholdOffsetTokens(offsetTokens);
+  if (offset === undefined || offset === 0) return config; // ← 硬不变式，别省
+  const targetThreshold = Math.max(1, getAutoCompactThreshold(config) - offset);
+  const effectiveContextWindow = getEffectiveContextWindowSize(config);
+  return { ...config, bufferTokens: Math.max(0, effectiveContextWindow - targetThreshold) };
 }
 
 export function shouldAutoCompact(input: {

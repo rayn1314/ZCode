@@ -417,10 +417,12 @@ function migrateLegacyWorkspaceSession(value: unknown): unknown {
   return migrated;
 }
 
-// 上下文压缩阈值百分比：只接受 1–100 的整数，null 表示「自动」（沿用 core 的公式阈值）。
-// 越界值在这一层就拒绝，避免把必然触发压缩的极小阈值写进偏好。
-const compactionThresholdPercentSchema = z.number().int().min(1).max(100).nullable();
+// 自动压缩安全余量（tokens）：1000–100000 的整数，null 表示「不覆盖」（沿用默认余量）。
+// 越界值在这一层就拒绝，避免把"必然触发压缩"的极小余量写进偏好。
+const compactionBufferTokensSchema = z.number().int().min(1_000).max(100_000).nullable();
 const compactionMicrocompactKeepRecentToolResultsSchema = z.number().int().min(1).max(50);
+// 轮末压缩提前量（tokens）：0–100000 的整数；0 与缺省同义（与自动压缩阈值相同）。
+const compactionPostTurnThresholdOffsetTokensSchema = z.number().int().min(0).max(100_000);
 
 const appSettingsObjectSchema = z.object({
   recentProjects: z.array(z.string()).default([]),
@@ -467,13 +469,14 @@ const appSettingsObjectSchema = z.object({
   onboardingOccupation: appSettingsOccupationSchema.nullish(),
   proactiveSuggestionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().default(false),
-  // 上下文压缩控制（默认全部「维持现状」）：阈值缺省/null = 沿用 core 的公式阈值。
-  compactionThresholdPercent: compactionThresholdPercentSchema.optional(),
+  // 上下文压缩控制（默认全部「维持现状」）：余量缺省/null = 沿用默认安全余量。
+  compactionBufferTokens: compactionBufferTokensSchema.optional(),
   compactionMicrocompactEnabled: z.boolean().default(false),
   compactionMicrocompactKeepRecentToolResults:
     compactionMicrocompactKeepRecentToolResultsSchema.default(5),
   compactionMicrocompactClearErrorResults: z.boolean().default(false),
   compactionPostTurnEnabled: z.boolean().default(false),
+  compactionPostTurnThresholdOffsetTokens: compactionPostTurnThresholdOffsetTokensSchema.default(0),
   compactionModelDownshiftEnabled: z.boolean().default(false),
   lastWorkspaceSession: z.array(appWorkspaceSessionEntrySchema).default([]),
   lastActiveTabIndex: z.number().int().nonnegative().default(0),
@@ -560,13 +563,14 @@ export const appSettingsPatchSchema = z.object({
     .nullish(),
   proactiveSuggestionsEnabled: z.boolean().optional(),
   memoryEnabled: z.boolean().optional(),
-  // 压缩偏好 patch：显式 null 表示「恢复自动阈值」，区别于「不修改」。
-  compactionThresholdPercent: compactionThresholdPercentSchema.optional(),
+  // 压缩偏好 patch：显式 null 表示「恢复默认余量」，区别于「不修改」。
+  compactionBufferTokens: compactionBufferTokensSchema.optional(),
   compactionMicrocompactEnabled: z.boolean().optional(),
   compactionMicrocompactKeepRecentToolResults:
     compactionMicrocompactKeepRecentToolResultsSchema.optional(),
   compactionMicrocompactClearErrorResults: z.boolean().optional(),
   compactionPostTurnEnabled: z.boolean().optional(),
+  compactionPostTurnThresholdOffsetTokens: compactionPostTurnThresholdOffsetTokensSchema.optional(),
   compactionModelDownshiftEnabled: z.boolean().optional(),
   lastWorkspaceSession: z.array(appWorkspaceSessionEntrySchema).optional(),
   lastActiveTabIndex: z.number().int().nonnegative().optional(),

@@ -124,7 +124,7 @@ import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-
  * 会话级压缩策略的可写面，**稀疏语义**。
  *
  * - `undefined` = 不修改（保持 `config.compact` 里的现值 / CLI 文件值）；
- * - `thresholdPercent: null` = 显式清除百分比覆盖，回到公式阈值；
+ * - `bufferTokens: null` = 显式清除安全余量覆盖，回到默认余量（13000）；
  * - 布尔 `false` = 显式关闭。
  *
  * 刻意**不含** `enabled`：压缩总开关归 CLI 文件配置所有，设置页不得关掉自动压缩路径。
@@ -133,13 +133,15 @@ import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-
  * 键（如文件里的 `thresholdTokens`）不会被写空。
  */
 export type AgentRuntimeCompactionPolicyPatch = {
-  thresholdPercent?: number | null;
+  bufferTokens?: number | null;
   microcompact?: {
     enabled?: boolean;
     keepRecentToolResults?: number;
     clearErrorResults?: boolean;
   };
   postTurnEnabled?: boolean;
+  /** 轮末压缩阈值相对自动压缩阈值的提前量（0–100000 tokens）；稀疏：undefined = 不改。 */
+  postTurnThresholdOffsetTokens?: number;
   modelDownshiftEnabled?: boolean;
 };
 

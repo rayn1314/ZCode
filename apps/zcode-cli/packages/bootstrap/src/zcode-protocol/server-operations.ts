@@ -3411,7 +3411,7 @@ async function createRecord(
       // Memory Settings 是现有 CLI features.memory/use 之外的总开关。只在关闭时
       // 写入 override，避免开启值反向覆盖用户已有的 CLI 禁用配置。
       ...(startupPreferences.memoryEnabled ? {} : { memory: { enabled: false } }),
-      // 压缩偏好：把 Host 解析出的六项映射成运行时可写策略面（稀疏，见上）。
+      // 压缩偏好：把 Host 解析出的七项映射成运行时可写策略面（稀疏，见上）。
       // 会话级覆盖 CLI 文件级 config.compact；逐字段合并由 resolveAppRuntimeConfig 完成（spec D5/D6）。
       ...(Object.keys(compactionOverride).length > 0 ? { compact: compactionOverride } : {}),
       // desktop-continuous session/create 由 UI 先解析 ~/.zcode/.agents 的 enabled MCP，

@@ -3445,7 +3445,7 @@ export function createZCodeAgentService(
       const normalizedPreferences: ZCodeAgentAppRuntimePreferences = {
         ...preferences,
         modelIoFullRetentionEnabled: preferences.modelIoFullRetentionEnabled === true,
-        // 缺省按「维持现状」默认值规范化，保证 latestAppRuntimePreferences 快照始终携带完整六项。
+        // 缺省按「维持现状」默认值规范化，保证 latestAppRuntimePreferences 快照始终携带完整七项。
         compaction: preferences.compaction ?? DEFAULT_ZCODE_COMPACTION_PREFERENCES,
       };
       latestAppRuntimePreferences = normalizedPreferences;

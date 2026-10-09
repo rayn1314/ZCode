@@ -12,15 +12,16 @@ import { useServices } from "./useServices.js";
 import { usePlatform } from "./usePlatform.js";
 
 /**
- * 压缩偏好的六个设置键：任一变更都要把完整压缩偏好下发给运行态。
+ * 压缩偏好的七个设置键：任一变更都要把完整压缩偏好下发给运行态。
  * 与 AppSettings / 协议 schema 的字段一一对应，增删必须同步。
  */
 const COMPACTION_SETTING_KEYS = [
-  "compactionThresholdPercent",
+  "compactionBufferTokens",
   "compactionMicrocompactEnabled",
   "compactionMicrocompactKeepRecentToolResults",
   "compactionMicrocompactClearErrorResults",
   "compactionPostTurnEnabled",
+  "compactionPostTurnThresholdOffsetTokens",
   "compactionModelDownshiftEnabled",
 ] as const satisfies readonly (keyof AppSettings)[];
 

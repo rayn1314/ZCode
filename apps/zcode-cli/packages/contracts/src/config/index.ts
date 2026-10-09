@@ -157,12 +157,12 @@ export type ConfigValue<K extends ConfigKey> = K extends "modelStream.idleTimeou
                                             : K extends "compact"
                                               ? CompactConfig
                                               : K extends "hooks"
-                                              ? HooksRuntimeConfig
-                                              : K extends "ui.locale"
-                                                ? UiLocale
-                                                : K extends "ui.theme"
-                                                  ? UiThemePreference
-                                                  : unknown;
+                                                ? HooksRuntimeConfig
+                                                : K extends "ui.locale"
+                                                  ? UiLocale
+                                                  : K extends "ui.theme"
+                                                    ? UiThemePreference
+                                                    : unknown;
 
 // ============================================================
 // Config Scope
@@ -400,8 +400,8 @@ export interface ModelAnomalyGuardConfig {
 export interface CompactConfig {
   /** 压缩总开关；false 关闭全部自动/响应式压缩路径。 */
   enabled?: boolean;
-  /** 自动压缩阈值占模型完整窗口的百分比（1–100）；缺省沿用运行时公式阈值。 */
-  thresholdPercent?: number;
+  /** 自动压缩的安全余量（tokens，1000–100000）；缺省沿用默认余量 13000。 */
+  bufferTokens?: number;
   /** 局部压缩：清理较早的工具结果正文。 */
   microcompact?: {
     enabled?: boolean;
@@ -414,6 +414,8 @@ export interface CompactConfig {
   };
   /** 轮末主动压缩。 */
   postTurnEnabled?: boolean;
+  /** 轮末压缩阈值的提前量（0–100000 tokens）：轮末阈值 = 自动阈值 − 本值；0 = 相同。 */
+  postTurnThresholdOffsetTokens?: number;
   /** 模型降档提前压。 */
   modelDownshiftEnabled?: boolean;
 }

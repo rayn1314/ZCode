@@ -324,10 +324,10 @@ export interface AppSettings {
   /** 新建或冷恢复 Session 是否启用 Memory；默认关闭。 */
   memoryEnabled?: boolean;
   /**
-   * 自动压缩阈值占模型完整上下文窗口的百分比（1–100 整数）。
-   * null/缺省 = 沿用既有公式阈值，不改变默认行为。
+   * 自动压缩的安全余量（tokens，1000–100000 整数）。阈值 = 输入侧上限 − 余量。
+   * null/缺省 = 不覆盖，沿用默认余量（13000），不改变默认行为。
    */
-  compactionThresholdPercent?: number | null;
+  compactionBufferTokens?: number | null;
   /** 局部压缩：清理较早的工具结果正文，只保留最近若干组。默认关闭。 */
   compactionMicrocompactEnabled?: boolean;
   /** 局部压缩保留最近多少组工具结果（1–50）。默认 5。 */
@@ -336,6 +336,11 @@ export interface AppSettings {
   compactionMicrocompactClearErrorResults?: boolean;
   /** 轮末压缩：一轮成功后主动压缩，而不是等下一次提问前。默认关闭。 */
   compactionPostTurnEnabled?: boolean;
+  /**
+   * 轮末压缩阈值的提前量（0–100000 tokens）：轮末阈值 = max(1, 自动阈值 − 本值)。
+   * 0/缺省 = 与自动压缩阈值相同，不改变默认行为。
+   */
+  compactionPostTurnThresholdOffsetTokens?: number;
   /** 模型降档提前压：切换到上下文窗口更小的模型前先压缩。默认关闭。 */
   compactionModelDownshiftEnabled?: boolean;
   onboardingOccupation?:

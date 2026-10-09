@@ -23,7 +23,11 @@ import {
   type ChildClientPortsContext,
   type ClientFacingPorts,
 } from "../helpers/child-client-ports.js";
-import type { AgentRuntimeConfig, ActiveTurnInfo, AgentRuntimeCompactionPolicyPatch } from "../types.js";
+import type {
+  AgentRuntimeConfig,
+  ActiveTurnInfo,
+  AgentRuntimeCompactionPolicyPatch,
+} from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { cloneModelSelection } from "../model-selection.js";
 import { applyRuntimeExecutionState } from "../execution-state.js";
@@ -77,20 +81,23 @@ export function updateCompactionPolicy(
 ): void {
   // 逐字段合并，禁止整体替换：CLI 文件里的 compact 段（例如 enabled:false、
   // microcompact.thresholdTokens、idleThresholdMinutes、minTokenSavings）必须活过一次
-  // 设置页热更新——设置页只拥有六个开关，它没表达的键一律保持文件值。
+  // 设置页热更新——设置页只拥有七个开关，它没表达的键一律保持文件值。
   const current = this.config.compact;
   const next: AutoCompactPolicyConfig = { ...current };
-  if (patch.thresholdPercent === null) {
-    // 显式清除：回到 core 的公式阈值，而不是把 null 写进策略对象。
-    delete next.thresholdPercent;
-  } else if (patch.thresholdPercent !== undefined) {
-    next.thresholdPercent = patch.thresholdPercent;
+  if (patch.bufferTokens === null) {
+    // 显式清除：回到默认安全余量，而不是把 null 写进策略对象。
+    delete next.bufferTokens;
+  } else if (patch.bufferTokens !== undefined) {
+    next.bufferTokens = patch.bufferTokens;
   }
   if (patch.microcompact) {
     next.microcompact = { ...current?.microcompact, ...patch.microcompact };
   }
   if (patch.postTurnEnabled !== undefined) {
     next.postTurnEnabled = patch.postTurnEnabled;
+  }
+  if (patch.postTurnThresholdOffsetTokens !== undefined) {
+    next.postTurnThresholdOffsetTokens = patch.postTurnThresholdOffsetTokens;
   }
   if (patch.modelDownshiftEnabled !== undefined) {
     next.modelDownshiftEnabled = patch.modelDownshiftEnabled;

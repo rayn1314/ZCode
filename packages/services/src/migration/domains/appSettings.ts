@@ -51,11 +51,12 @@ const MIGRATABLE_SETTING_KEYS = [
   "proactiveSuggestionsEnabled",
   "memoryEnabled",
   // 压缩偏好只表达用户意图，不含机器/工作区状态，跨身份迁移应带上。
-  "compactionThresholdPercent",
+  "compactionBufferTokens",
   "compactionMicrocompactEnabled",
   "compactionMicrocompactKeepRecentToolResults",
   "compactionMicrocompactClearErrorResults",
   "compactionPostTurnEnabled",
+  "compactionPostTurnThresholdOffsetTokens",
   "compactionModelDownshiftEnabled",
   "receivePreviewUpdates",
   "autoDownloadAndInstallUpdates",

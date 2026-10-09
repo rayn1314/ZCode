@@ -155,7 +155,7 @@ export interface ZCodeProtocolAgentServerContext {
      */
     dynamicWorkflowEnabled: boolean;
     /**
-     * host 同步的上下文压缩偏好（六项）。
+     * host 同步的上下文压缩偏好（七项）。
      * 缺省为「维持现状」默认值：未知该方法的旧 Host 创建的会话行为与升级前一致。
      */
     compaction: ZCodeCompactionPreferences;

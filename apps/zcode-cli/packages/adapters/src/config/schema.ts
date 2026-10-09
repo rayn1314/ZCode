@@ -234,7 +234,7 @@ const modelAnomalyGuardSchema = z.object({
 // 越界值在这里就被拒绝，避免把必然触发压缩的极小阈值写进运行态。
 const compactSchema = z.object({
   enabled: z.boolean().optional(),
-  thresholdPercent: z.number().int().min(1).max(100).optional(),
+  bufferTokens: z.number().int().min(1_000).max(100_000).optional(),
   microcompact: z
     .object({
       enabled: z.boolean().optional(),
@@ -247,6 +247,7 @@ const compactSchema = z.object({
     })
     .optional(),
   postTurnEnabled: z.boolean().optional(),
+  postTurnThresholdOffsetTokens: z.number().int().min(0).max(100_000).optional(),
   modelDownshiftEnabled: z.boolean().optional(),
 });
 

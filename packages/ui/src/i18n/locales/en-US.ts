@@ -2204,12 +2204,13 @@ const enUS: Record<string, string> = {
   "settings.contextCompaction.title": "Context compaction",
   "settings.contextCompaction.description":
     "Control how the conversation context is compacted automatically. Everything is off by default, keeping the current behavior.",
-  "settings.contextCompaction.threshold.label": "Auto-compaction threshold",
-  "settings.contextCompaction.threshold.auto": "Automatic (about {percent}% for the current model)",
-  "settings.contextCompaction.threshold.autoUnknown": "Automatic",
-  "settings.contextCompaction.threshold.explicit": "{percent}% of the window",
-  "settings.contextCompaction.threshold.reset": "Reset to automatic",
-  "settings.contextCompaction.thresholdInvalid": "Enter an integer between 1 and 100.",
+  "settings.contextCompaction.buffer.label": "Safety margin",
+  "settings.contextCompaction.buffer.info":
+    "Current model: window {window}K → threshold {threshold}K (about {percent}%)",
+  "settings.contextCompaction.buffer.infoUnknown": "Automatic",
+  "settings.contextCompaction.buffer.reset": "Reset to default",
+  "settings.contextCompaction.bufferInvalid":
+    "Enter an integer between 1 and 100 (in thousands of tokens).",
   "settings.contextCompaction.keepRecentInvalid": "Enter an integer between 1 and 50.",
   "settings.contextCompaction.microcompact.label": "Local compaction",
   "settings.contextCompaction.microcompact.description":
@@ -2224,7 +2225,14 @@ const enUS: Record<string, string> = {
     "When enabled, the body of failed tool results is cleared as well.",
   "settings.contextCompaction.postTurn.label": "Compact after each turn",
   "settings.contextCompaction.postTurn.description":
-    "Compact right after a response finishes instead of waiting until the next request.",
+    "Once the post-turn threshold is reached, compaction happens right after the response finishes instead of waiting until the next request. The threshold matches the auto-compaction threshold by default and can be advanced below.",
+  "settings.contextCompaction.postTurn.offsetLabel": "Advance by",
+  "settings.contextCompaction.postTurn.offsetDescription":
+    "In thousands of tokens. 0 means the same as the auto-compaction threshold; 3 triggers 3,000 tokens earlier.",
+  "settings.contextCompaction.postTurn.offsetEffective":
+    "Compaction after a turn triggers at about {threshold}K (about {percent}% of the window).",
+  "settings.contextCompaction.postTurnOffsetInvalid":
+    "Enter an integer between 0 and 100 (in thousands of tokens).",
   "settings.contextCompaction.modelDownshift.label": "Compact before model downshift",
   "settings.contextCompaction.modelDownshift.description":
     "Compact before switching to a model with a smaller context window, avoiding an overflow on the first request after the switch.",

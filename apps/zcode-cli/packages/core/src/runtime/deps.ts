@@ -306,6 +306,7 @@ export {
   hasEnoughMessagesToCompact,
   maybeLocalMicrocompactMessages,
   shouldAutoCompact,
+  applyPostTurnThresholdOffset,
   buildDefaultMicrocompactThreshold,
 } from "../compact/index.js";
 export type { AutoCompactDecision, AutoCompactPolicyConfig } from "../compact/index.js";

@@ -3,6 +3,7 @@ import test from "node:test";
 import { CompactPhase, CompactReason, CompactTrigger } from "@zcode/contracts";
 import { maybeCompactForModelDownshift } from "../src/runtime/methods/model-downshift-compact.js";
 import { maybeCompactAfterTurn } from "../src/runtime/methods/post-turn-compact.js";
+import { evaluateRuntimeAutoCompactDecision } from "../src/runtime/methods/compact-decision.js";
 import type { AgentRuntimeInternal } from "../src/runtime/internal.js";
 import type { ActiveTurnSteeringState } from "../src/runtime/types.js";
 import type { RuntimeMessageEntry } from "../src/agent/message-history.js";
@@ -29,7 +30,10 @@ const MODEL = {
 } as unknown as Parameters<typeof maybeCompactForModelDownshift>[1]["model"];
 
 function entry(role: "user" | "assistant", text: string): RuntimeMessageEntry {
-  return { message: { role, content: text }, metadata: role === "user" ? { source: "real_user" } : undefined };
+  return {
+    message: { role, content: text },
+    metadata: role === "user" ? { source: "real_user" } : undefined,
+  };
 }
 
 function history(): RuntimeMessageEntry[] {
@@ -49,6 +53,7 @@ function stubRuntime(input: {
   compact: Record<string, unknown>;
   hasQueuedCommand?: boolean;
   calls: CompactCall[];
+  entries?: RuntimeMessageEntry[];
 }): AgentRuntimeInternal {
   return {
     autoCompactConsecutiveFailures: 0,
@@ -63,7 +68,7 @@ function stubRuntime(input: {
     },
     config: { compact: input.compact, midConversationSystem: undefined },
     logger: undefined,
-    messageHistory: { borrowReadOnlyRuntimeEntries: () => history() },
+    messageHistory: { borrowReadOnlyRuntimeEntries: () => input.entries ?? history() },
     runtimeCommandQueue: { hasPending: () => input.hasQueuedCommand === true },
   } as unknown as AgentRuntimeInternal;
 }
@@ -73,8 +78,11 @@ const TRACE_CONTEXT = {
   traceId: "trace_test",
 } as unknown as Parameters<typeof maybeCompactForModelDownshift>[1]["traceContext"];
 
-/** thresholdPercent:1 让"阈值已达到"只依赖少量文本，判定稳定不依赖估算细节。 */
-const REACHED_THRESHOLD = { enabled: true, thresholdPercent: 1 };
+/**
+ * 安全余量 106000 让"阈值已达到"只依赖少量文本（128K 窗口 → 输入侧上限 107000 → 阈值 1000），
+ * 判定稳定、不依赖估算细节。
+ */
+const REACHED_THRESHOLD = { enabled: true, bufferTokens: 106_000 };
 
 test("降档提前压：窗口变小且阈值已达到时，以 model_downshift 真调用压缩", async () => {
   const calls: CompactCall[] = [];
@@ -189,7 +197,10 @@ test("轮末压缩：有排队输入或开关关闭时不下手", async () => {
 
   const disabledCalls: CompactCall[] = [];
   await maybeCompactAfterTurn(
-    stubRuntime({ calls: disabledCalls, compact: { ...REACHED_THRESHOLD, postTurnEnabled: false } }),
+    stubRuntime({
+      calls: disabledCalls,
+      compact: { ...REACHED_THRESHOLD, postTurnEnabled: false },
+    }),
     {
       activeTurn: { pendingInputs: [] } as unknown as ActiveTurnSteeringState,
       events: [],
@@ -203,10 +214,14 @@ test("轮末压缩：有排队输入或开关关闭时不下手", async () => {
 });
 
 test("轮末压缩：压缩抛错只吞掉，不向调用方冒泡", async () => {
-  const runtime = stubRuntime({ calls: [], compact: { ...REACHED_THRESHOLD, postTurnEnabled: true } });
-  (runtime as unknown as { compactActiveConversation: unknown }).compactActiveConversation = async () => {
-    throw new Error("compact exploded");
-  };
+  const runtime = stubRuntime({
+    calls: [],
+    compact: { ...REACHED_THRESHOLD, postTurnEnabled: true },
+  });
+  (runtime as unknown as { compactActiveConversation: unknown }).compactActiveConversation =
+    async () => {
+      throw new Error("compact exploded");
+    };
 
   await assert.doesNotReject(
     maybeCompactAfterTurn(runtime, {
@@ -216,4 +231,78 @@ test("轮末压缩：压缩抛错只吞掉，不向调用方冒泡", async () =>
       traceContext: TRACE_CONTEXT,
     }),
   );
+});
+
+/**
+ * 提前量真的接进了轮末判定（不是纯函数摆设）：
+ * 让 token 数正好落在 (自动阈值 − 提前量, 自动阈值) 之间——传 `forPostTurn: true` 会压，
+ * 不传（自动压缩语义）不会；低于 (自动阈值 − 提前量) 时传了也不压。
+ *
+ * 128K 窗口 → 输入侧上限 107000 → 默认自动阈值 94000；提前量 6000 → 轮末阈值 88000。
+ */
+function historyWithUsage(tokenCount: number): RuntimeMessageEntry[] {
+  return [
+    entry("user", "第一轮问题"),
+    entry("assistant", LONG_TEXT),
+    entry("user", "第二轮问题"),
+    {
+      message: { role: "assistant", content: LONG_TEXT },
+      // usage 挂在最后一条 assistant 上：provider 基线 + 其后增量为 0，tokenCount 完全可控。
+      tokens: {
+        input: tokenCount - 1,
+        output: 1,
+        reasoning: 0,
+        total: tokenCount,
+        cache: { read: 0, write: 0 },
+      },
+    } as unknown as RuntimeMessageEntry,
+  ];
+}
+
+function decisionRuntime(
+  entries: RuntimeMessageEntry[],
+  offsetTokens: number,
+): AgentRuntimeInternal {
+  return stubRuntime({
+    calls: [],
+    entries,
+    compact: { enabled: true, postTurnThresholdOffsetTokens: offsetTokens },
+  });
+}
+
+test("轮末提前量接进判定：token 落在 (自动阈值−提前量, 自动阈值) 时只有轮末会压", () => {
+  const runtime = decisionRuntime(historyWithUsage(90_000), 6_000);
+
+  const autoDecision = evaluateRuntimeAutoCompactDecision(runtime, MODEL);
+  assert.equal(autoDecision.threshold, 94_000);
+  assert.equal(autoDecision.shouldCompact, false);
+  assert.equal(autoDecision.reason, "below_threshold");
+
+  const postTurnDecision = evaluateRuntimeAutoCompactDecision(runtime, MODEL, {
+    forPostTurn: true,
+  });
+  assert.equal(postTurnDecision.threshold, 88_000);
+  assert.equal(postTurnDecision.shouldCompact, true);
+  assert.equal(postTurnDecision.reason, "above_threshold");
+});
+
+test("轮末提前量接进判定：低于 (自动阈值−提前量) 时轮末也不压", () => {
+  const runtime = decisionRuntime(historyWithUsage(87_000), 6_000);
+
+  const postTurnDecision = evaluateRuntimeAutoCompactDecision(runtime, MODEL, {
+    forPostTurn: true,
+  });
+  assert.equal(postTurnDecision.threshold, 88_000);
+  assert.equal(postTurnDecision.shouldCompact, false);
+});
+
+test("轮末提前量为 0 时判定与自动压缩逐位相同", () => {
+  const runtime = decisionRuntime(historyWithUsage(93_000), 0);
+
+  const autoDecision = evaluateRuntimeAutoCompactDecision(runtime, MODEL);
+  const postTurnDecision = evaluateRuntimeAutoCompactDecision(runtime, MODEL, {
+    forPostTurn: true,
+  });
+  assert.equal(postTurnDecision.threshold, autoDecision.threshold);
+  assert.equal(postTurnDecision.shouldCompact, autoDecision.shouldCompact);
 });

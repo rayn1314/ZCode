@@ -31,7 +31,7 @@ const SHELL_SELECTION = { dialect: "posix", display: { name: "bash" }, source: "
 const PARENT_COMPACTION = {
   ...DEFAULT_ZCODE_COMPACTION_PREFERENCES,
   microcompactEnabled: true,
-  thresholdPercent: 0.8,
+  bufferTokens: 20_000,
 };
 
 interface Harness {
@@ -221,7 +221,7 @@ test("装配事实从父借：启动输入 / event store / 起始偏好，且子
   // 起始偏好（inherit）覆盖覆盖包里的默认值。
   assert.equal(runtimeConfig.nativeSearchEnhancementsEnabled, true);
   assert.deepEqual(runtimeConfig.memory, { enabled: false });
-  assert.equal((runtimeConfig.compact as { thresholdPercent?: number }).thresholdPercent, 0.8);
+  assert.equal((runtimeConfig.compact as { bufferTokens?: number }).bufferTokens, 20_000);
   // 协议入口补的 workspace 事实照旧。
   assert.equal(runtimeConfig.workspacePath, WORKDIR);
   assert.equal(runtimeConfig.modelStreaming, "on");
