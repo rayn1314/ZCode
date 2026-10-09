@@ -97,7 +97,11 @@ export const providerTemplateConfigRuleSchema = providerTemplateDataSchema.exten
   config: providerConfigDataSchema
     .pick({ logo: true, access: true, api: true, builtinModelIds: true })
     .extend({
-      access: apiKeyAccessDataSchema.omit({ apiKey: true }).nullable().optional(),
+      // 模板不得携带任何密钥材料：apiKey 与预设池一并 omit，只允许模板预设非密钥字段。
+      access: apiKeyAccessDataSchema
+        .omit({ apiKey: true, apiKeyPresets: true })
+        .nullable()
+        .optional(),
     }),
 });
 export const builtinProviderConfigRuleSchema = providerConfigRuleSchema.extend({

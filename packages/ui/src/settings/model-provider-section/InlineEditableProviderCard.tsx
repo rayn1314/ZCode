@@ -35,6 +35,9 @@ import { resolveModelProviderDisplayName } from "./constants.js";
 import { useProviderDetailFeedback } from "./ProviderDetailFeedback.js";
 import { useIdleTrigger } from "./useIdleTrigger.js";
 import { useOptimisticReorder } from "./useOptimisticReorder.js";
+import { ApiKeyPresetSwitcher } from "./ApiKeyPresetSwitcher.js";
+import { ApiKeyPresetManagerDialog } from "./ApiKeyPresetManagerDialog.js";
+import { type ApiKeyPreset } from "./apiKeyPreset.js";
 
 type ProviderNameEditKeyAction = "commit" | "cancel";
 type ProviderDraftCleanupAction = "commit" | "skip-delete";
@@ -129,6 +132,8 @@ function resolveVisibleProviderModelsForEdit(
   return provider.models.map((model) => structuredClone(model));
 }
 
+const EMPTY_API_KEY_PRESETS: readonly ApiKeyPreset[] = [];
+
 function projectModelsToOrder(
   models: readonly ProviderSettingsFormModel[],
   modelIds: readonly string[],
@@ -198,6 +203,7 @@ export function InlineEditableProviderCard({
   const [baseUrlValue, setBaseUrlValue] = useState(provider.config.api?.baseUrl ?? "");
   const [apiKeyValue, setApiKeyValue] = useState(getProviderFormApiKey(provider));
   const [apiKeyVisible, setApiKeyVisible] = useState(false);
+  const [apiKeyPresetDialogOpen, setApiKeyPresetDialogOpen] = useState(false);
   const [requestsPerMinuteValue, setRequestsPerMinuteValue] = useState(() =>
     formatProviderRequestsPerMinuteDraft(provider.config.requestPolicy?.requestsPerMinute ?? null),
   );
@@ -642,6 +648,48 @@ export function InlineEditableProviderCard({
     void commitPendingDraft("api-key-blur").catch(() => undefined);
   }, [commitPendingDraft]);
 
+  const handleApplyApiKeyPreset = useCallback(
+    (presetApiKey: string) => {
+      // 切换就是一次 Key 编写：写进草稿后立即提交，与手动改 Key 走同一条保存链。
+      markDraftDirty("apiKeyValue");
+      draftRef.current.apiKeyValue = presetApiKey;
+      setApiKeyValue(presetApiKey);
+      void commitPendingDraft("api-key-preset-switch").catch(() => undefined);
+    },
+    [commitPendingDraft, markDraftDirty],
+  );
+
+  const handleSaveApiKeyPresets = useCallback(
+    async (presets: readonly ApiKeyPreset[]): Promise<void> => {
+      // 预设回写必须并入未提交的表单草稿，否则这次保存会用旧 Key 覆盖刚输入的值。
+      const resolved =
+        resolvePendingProviderDraftSave({
+          provider,
+          draft: draftRef.current,
+          readOnlyEndpoints,
+          now: Date.now,
+        }) ?? provider;
+      const effectiveAccess = resolved.config.access;
+      if (!isApiKeyAccess(effectiveAccess)) return;
+      const personalAccess = resolved.personalConfig.access;
+      const nextPersonalAccess = isApiKeyAccess(personalAccess)
+        ? { ...personalAccess, apiKeyPresets: [...presets] }
+        : { type: effectiveAccess.type, apiKeyPresets: [...presets] };
+      await saveProviderWithCleanupGuard({
+        ...resolved,
+        config: {
+          ...resolved.config,
+          access: { ...effectiveAccess, apiKeyPresets: [...presets] },
+        },
+        personalConfig: {
+          ...resolved.personalConfig,
+          access: nextPersonalAccess,
+        },
+      });
+    },
+    [provider, readOnlyEndpoints, saveProviderWithCleanupGuard],
+  );
+
   const handleTextCommitKeyDown = useCallback((event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") {
       return;
@@ -802,6 +850,10 @@ export function InlineEditableProviderCard({
   const headerProviderName = providerDisplayName;
   const isAccountProvider = provider.config.access?.type === "zhipu-account";
   const isApiKeyProvider = isApiKeyAccess(provider.config.access);
+  const apiKeyPresets: readonly ApiKeyPreset[] =
+    isApiKeyAccess(provider.config.access) && provider.config.access.apiKeyPresets
+      ? provider.config.access.apiKeyPresets
+      : EMPTY_API_KEY_PRESETS;
   const effectiveHeaderVisible = headerVisible && statusSection === undefined;
   // 折叠态的唯一提示就是这枚徽标：配过额度就必须显示，否则用户只会以为这层是空的。
   const providerRequestPolicyConfigured =
@@ -882,18 +934,26 @@ export function InlineEditableProviderCard({
         )}
 
         {isApiKeyProvider ? (
-          <ProviderApiKeySection
-            apiKeyValue={apiKeyValue}
-            apiKeyVisible={apiKeyVisible}
-            presetApiKeyUrl={presetApiKeyUrl}
-            onOpenPresetApiKey={onOpenPresetApiKey}
-            onApiKeyChange={handleApiKeyValueChange}
-            onApiKeyBlur={handleApiKeyBlur}
-            onApiKeyKeyDown={handleTextCommitKeyDown}
-            onApiKeyCompositionStart={handleTechnicalInputCompositionStart}
-            onApiKeyCompositionEnd={handleTechnicalInputCompositionEnd}
-            onToggleApiKeyVisibility={() => setApiKeyVisible((value) => !value)}
-          />
+          <>
+            <ProviderApiKeySection
+              apiKeyValue={apiKeyValue}
+              apiKeyVisible={apiKeyVisible}
+              presetApiKeyUrl={presetApiKeyUrl}
+              onOpenPresetApiKey={onOpenPresetApiKey}
+              onApiKeyChange={handleApiKeyValueChange}
+              onApiKeyBlur={handleApiKeyBlur}
+              onApiKeyKeyDown={handleTextCommitKeyDown}
+              onApiKeyCompositionStart={handleTechnicalInputCompositionStart}
+              onApiKeyCompositionEnd={handleTechnicalInputCompositionEnd}
+              onToggleApiKeyVisibility={() => setApiKeyVisible((value) => !value)}
+            />
+            <ApiKeyPresetSwitcher
+              presets={apiKeyPresets}
+              currentApiKey={apiKeyValue}
+              onApply={handleApplyApiKeyPreset}
+              onManage={() => setApiKeyPresetDialogOpen(true)}
+            />
+          </>
         ) : null}
 
         <ProviderRequestPolicySection
@@ -921,6 +981,17 @@ export function InlineEditableProviderCard({
           settingsRevision={settingsRevision ?? 0}
         />
       </div>
+
+      {isApiKeyProvider ? (
+        <ApiKeyPresetManagerDialog
+          open={apiKeyPresetDialogOpen}
+          onOpenChange={setApiKeyPresetDialogOpen}
+          presets={apiKeyPresets}
+          currentApiKey={apiKeyValue}
+          onApply={handleApplyApiKeyPreset}
+          onSavePresets={handleSaveApiKeyPresets}
+        />
+      ) : null}
     </div>
   );
 }

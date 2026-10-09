@@ -38,12 +38,14 @@ export class ApiKeyAccessConfig extends ConfigOverlay<ApiKeyAccessConfig> {
   readonly type: ApiKeyAccessConfigObject["type"];
   readonly apiKey?: ApiKeyAccessConfigInput["apiKey"];
   readonly apiKeyManagementUrl?: ApiKeyAccessConfigInput["apiKeyManagementUrl"];
+  readonly apiKeyPresets?: ApiKeyAccessConfigInput["apiKeyPresets"];
 
   constructor(input: ApiKeyAccessConfigInput = {}) {
     super();
     this.type = input.type ?? "api-key";
     this.apiKey = input.apiKey;
     this.apiKeyManagementUrl = input.apiKeyManagementUrl;
+    this.apiKeyPresets = freezeApiKeyPresets(input.apiKeyPresets);
     Object.freeze(this);
   }
 
@@ -52,6 +54,9 @@ export class ApiKeyAccessConfig extends ConfigOverlay<ApiKeyAccessConfig> {
       type: next.type,
       apiKey: this.overlayValue(this.apiKey, next.apiKey),
       apiKeyManagementUrl: this.overlayValue(this.apiKeyManagementUrl, next.apiKeyManagementUrl),
+      // 预设池是独立叶子：undefined=继承模板层（模板永不携带，实际即保留个人层原值），
+      // 有值=整组替换——增删改预设本来就该整体换掉，不做逐项合并。
+      apiKeyPresets: this.overlayValue(this.apiKeyPresets, next.apiKeyPresets),
     });
   }
 
@@ -65,6 +70,7 @@ export class ApiKeyAccessConfig extends ConfigOverlay<ApiKeyAccessConfig> {
       ...objectWithoutUndefined({
         apiKey: this.apiKey,
         apiKeyManagementUrl: this.apiKeyManagementUrl,
+        apiKeyPresets: this.apiKeyPresets,
       }),
     };
   }
@@ -388,6 +394,14 @@ function freezeProviderLogo(
   logo: ProviderLogoRef | null | undefined,
 ): ProviderLogoRef | null | undefined {
   return logo ? Object.freeze({ ...logo }) : logo;
+}
+
+/** 预设池按值整体替换，冻结一层防止共享对象被调用方事后改写。 */
+function freezeApiKeyPresets(
+  presets: ApiKeyAccessConfigInput["apiKeyPresets"],
+): ApiKeyAccessConfigInput["apiKeyPresets"] {
+  if (!presets) return presets;
+  return Object.freeze(presets.map((preset) => Object.freeze({ ...preset })));
 }
 
 /** requestPolicy 是纯数据（单个标量），冻结一层即可；空对象归一为 undefined 免得写进盘。 */

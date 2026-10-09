@@ -27,11 +27,24 @@ const nonBlankRequiredString = z.string().refine((value) => value.trim().length 
   params: { configIssueCode: "required-field-missing" },
 });
 
+/**
+ * 同一供应商的多 Key 预存池：切换 = 把选中项写进生效 `apiKey`，不引入 active 指针。
+ * 与 `apiKey` 同级同文件存放（明文、0600），安全级别与现状一致；模板层禁止携带（见 rule-data-schema）。
+ */
+export const apiKeyPresetDataSchema = z
+  .object({
+    id: z.string().min(1),
+    name: nonBlankRequiredString,
+    apiKey: nonBlankRequiredString,
+  })
+  .strict();
+
 export const apiKeyAccessDataSchema = z
   .object({
     type: z.enum(["api-key", "zhipu-coding-plan-api-key"]),
     apiKey: z.string().nullable().optional(),
     apiKeyManagementUrl: z.string().url().nullable().optional(),
+    apiKeyPresets: z.array(apiKeyPresetDataSchema).readonly().nullable().optional(),
   })
   .strict();
 export const completeApiKeyAccessDataSchema = apiKeyAccessDataSchema.extend({
