@@ -5,7 +5,11 @@ import { ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV } from "@zcode/shared";
 import { createProtocolInteractionBroker } from "../src/zcode-protocol/interaction-broker.js";
 import { PERMISSION_AUTO_DENIED_ON_TIMEOUT_CONTENT } from "../src/permission-options.js";
 import type { ZCodeProtocolAgentServerContext } from "../src/zcode-protocol/server-types.js";
-import { V4InteractionRegistry } from "../src/zcode-protocol-v4/interaction-registry.js";
+import {
+  PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS,
+  scaleV4InteractionClockMs,
+  V4InteractionRegistry,
+} from "../src/zcode-protocol-v4/interaction-registry.js";
 
 /**
  * 「没人应答的授权请求会自己收场」的协议面契约（spec: `spec/permission-request-timeout.md`）。
@@ -17,7 +21,7 @@ import { V4InteractionRegistry } from "../src/zcode-protocol-v4/interaction-regi
  * 时钟用与 AskUserQuestion 同一个 E2E 缩放环境变量（300s / 1000 = 300ms）。
  */
 const CLOCK_SCALE = "1000";
-const SCALED_TIMEOUT_MS = 300_000 / 1000;
+const SCALED_TIMEOUT_MS = PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS / Number(CLOCK_SCALE);
 /** 断言"没有发生"时要多等一会儿——留出计时抖动余量。 */
 const NO_EVENT_WAIT_MS = SCALED_TIMEOUT_MS + 700;
 
@@ -264,4 +268,25 @@ test("到点那一刻开关已关：不收口，转为继续等待", async () =>
   assert.equal(registry.hasPendingForSession("sess_parent"), true);
   registry.resolve(request.requestId, { optionId: "deny" });
   await pending;
+});
+
+test("时限固定五分钟；缩放只在测试环境生效（生产环境绝不被缩短）", () => {
+  // spec D3：默认值是固定的 5 分钟，不是可配数字。
+  assert.equal(PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS, 300_000);
+
+  // 那个缩放环境变量是**测试专供**：生产环境（ZCODE_ENV 不是 test）即使被误设，
+  // 时限也必须原样——否则一个测试开关就能把生产的安全网缩到毫秒级。
+  assert.equal(
+    scaleV4InteractionClockMs(PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS, {
+      [ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV]: CLOCK_SCALE,
+    }),
+    300_000,
+  );
+  assert.equal(
+    scaleV4InteractionClockMs(PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS, {
+      ZCODE_ENV: "test",
+      [ASK_USER_QUESTION_E2E_CLOCK_SCALE_ENV]: CLOCK_SCALE,
+    }),
+    SCALED_TIMEOUT_MS,
+  );
 });
