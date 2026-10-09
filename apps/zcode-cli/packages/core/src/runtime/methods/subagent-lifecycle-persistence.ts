@@ -94,7 +94,11 @@ export function buildSubagentLifecycleEntry(input: {
 /**
  * 事件汇处理：`SubagentSpawned` / `SubagentStopped` 落一条稳定 id 的 session entry。
  *
- * 读旧行是为了让 stop 保留 created/startedAt（见 `buildSubagentLifecycleEntry` 约束 b）。
+ * 写侧是**单语句 upsert**（`session_entry.id` 主键 + `on conflict(id) do update`）：
+ * 不存在则 insert、存在则覆写同一行，spawn/stop 永远落在同一条记录上。
+ * 读侧只为让 stop 保留 created/startedAt（见 `buildSubagentLifecycleEntry` 约束 b），
+ * 因此按 `(sessionID, id, type)` 单行读，不把该 session 该类型的行全取回来再 find——
+ * 事件汇每条生命周期事件都走这里，全量读会把代价放大成 O(事件数 × 条目数)。
  * 失败只 warn：列表是辅助能力，落盘失败不能打断子代理生命周期。
  */
 export async function persistSubagentLifecycleEntry(
@@ -127,12 +131,26 @@ async function readExistingLifecycleEntry(
   payload: unknown,
 ): Promise<SessionEntryInfo | undefined> {
   const agentId = nonEmptyString(asRecord(payload).agentId);
-  // 保留接收者再调用：真实 `SqliteSessionStore.sessionEntries` 是原型方法，
+  // agentId 缺失时没有可寻址的行，`buildSubagentLifecycleEntry` 同样会跳过。
+  if (!agentId) return undefined;
+  // 保留接收者再调用：真实 `SqliteSessionStore.sessionEntry/sessionEntries` 是原型方法，
   // 解构后裸调用会丢 `this`，实现体 `this.db` 直接 TypeError。
   const store = runtime.sessionStore;
-  if (!agentId || !store?.sessionEntries) return undefined;
-  const entries = await store.sessionEntries({ sessionID, type: SESSION_ENTRY_SUBAGENT_LIFECYCLE });
+  if (!store) return undefined;
   const entryId = subagentLifecycleEntryId(agentId);
+
+  if (store.sessionEntry) {
+    const entry = await store.sessionEntry({
+      sessionID,
+      id: entryId,
+      type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+    });
+    return entry ?? undefined;
+  }
+  // 旧宿主未实现单行读时退回全量读：结果等价（同一 id、同一 session/type 过滤），
+  // 只有成本差别；新路径已在 `SqliteSessionStore.sessionEntry` 上覆盖。
+  if (!store.sessionEntries) return undefined;
+  const entries = await store.sessionEntries({ sessionID, type: SESSION_ENTRY_SUBAGENT_LIFECYCLE });
   return entries.find((entry) => entry.id === entryId);
 }
 

@@ -1170,6 +1170,18 @@ export interface SessionStorePort {
     sessionID: SessionId;
     type?: SessionEntryType | string;
   }): Promise<SessionEntryInfo[]>;
+  /**
+   * 单行读：按 `(sessionID, id[, type])` 取一条 entry，命中主键 O(1)。
+   *
+   * `sessionEntries` 是「列出该 session 某类型全部行」，被高频事件路径拿来做
+   * 「读一条 → 改一条」时读放大成 O(事件数 × 条目数)；这类路径应改用本方法。
+   * 行不存在返回 `null`。旧宿主可不实现（调用方需保留 `sessionEntries` 回退）。
+   */
+  sessionEntry?(input: {
+    sessionID: SessionId;
+    id: string;
+    type?: SessionEntryType | string;
+  }): Promise<SessionEntryInfo | null>;
   // ── session_input 账本（可选方法，旧宿主可不实现）──
   /** admission：输入已被接受（排队/待注入），durable 记账。幂等（同 id 重入更新 payload）。 */
   saveSessionInput?(input: {

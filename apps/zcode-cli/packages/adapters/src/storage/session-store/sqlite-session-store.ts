@@ -336,12 +336,11 @@ export class SqliteSessionStore
     const entryId = `v4_command_fact:child:${metadata.parentSessionId}:${metadata.sourceCommandId}`;
     this.db.exec("begin immediate");
     try {
-      const existing = sessionEntryRepository
-        .sessionEntries(this.db, {
-          sessionID: input.parentID,
-          type: "v4/command_fact",
-        })
-        .find((entry) => entry.id === entryId);
+      const existing = sessionEntryRepository.sessionEntry(this.db, {
+        sessionID: input.parentID,
+        id: entryId,
+        type: "v4/command_fact",
+      });
       if (existing) {
         const childSessionId = forkChildSessionId(existing);
         if (!childSessionId) {
@@ -395,12 +394,11 @@ export class SqliteSessionStore
     const entryId = `v4_command_fact:child:${commandFact.parentSessionId}:${commandFact.sourceCommandId}`;
     this.db.exec("begin immediate");
     try {
-      const existing = sessionEntryRepository
-        .sessionEntries(this.db, {
-          sessionID: child.parentID,
-          type: "v4/command_fact",
-        })
-        .find((entry) => entry.id === entryId);
+      const existing = sessionEntryRepository.sessionEntry(this.db, {
+        sessionID: child.parentID,
+        id: entryId,
+        type: "v4/command_fact",
+      });
       if (existing) {
         const existingChildId = forkChildSessionId(existing);
         const existingChild = existingChildId
@@ -657,6 +655,14 @@ export class SqliteSessionStore
     type?: SessionEntryType | string;
   }): Promise<SessionEntryInfo[]> {
     return sessionEntryRepository.sessionEntries(this.db, input);
+  }
+
+  async sessionEntry(input: {
+    sessionID: SessionId;
+    id: string;
+    type?: SessionEntryType | string;
+  }): Promise<SessionEntryInfo | null> {
+    return sessionEntryRepository.sessionEntry(this.db, input);
   }
 
   // ── session_input 账本──

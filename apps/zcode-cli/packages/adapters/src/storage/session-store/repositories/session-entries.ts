@@ -77,3 +77,35 @@ export function sessionEntries(
 
   return (rows as unknown as SessionEntryRow[]).map(decodeSessionEntryRow);
 }
+
+/**
+ * 单行读：`id` 是 `session_entry` 主键，命中即 O(1)，不必像 `sessionEntries`
+ * 那样把该 session 该类型的行全取回来再 find。
+ * `session_id`/`type` 是语义护栏：主键碰撞（跨 session 同 id）时不把别人的行读成本行。
+ */
+export function sessionEntry(
+  db: DatabaseSync,
+  input: { sessionID: SessionId; id: string; type?: SessionEntryType | string },
+): SessionEntryInfo | null {
+  const row = (
+    input.type
+      ? db
+          .prepare(
+            `
+          select * from session_entry
+          where id = ? and session_id = ? and type = ?
+          `,
+          )
+          .get(input.id, input.sessionID, input.type)
+      : db
+          .prepare(
+            `
+          select * from session_entry
+          where id = ? and session_id = ?
+          `,
+          )
+          .get(input.id, input.sessionID)
+  ) as SessionEntryRow | undefined;
+
+  return row ? decodeSessionEntryRow(row) : null;
+}
