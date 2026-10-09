@@ -112,7 +112,7 @@ OpenCode 里**没有"子代理实体"**：子会话就是一行带 `parentID` �
 
 ### D5 · 生命周期：删除递归、中止沿树、其余不级联
 
-- **删除即级联**：删除父会话时**递归删除**其子会话（沿 `parentSessionId` 且 `taskType === "subagent_child"` 的边；只按 `parentSessionId` 会误伤 fork 与选段侧聊，它们同样带 `parentID`）。
+- **删除即级联**：删除父会话时**递归删除**其子会话（沿 `parentSessionId` 且 `taskType === "subagent_child"` 的边；只按 `parentSessionId` 会误伤 fork 与选段侧聊，它们同样带 `parentID`）。**注意这里"删除"的语义是"递归关闭"，不是抹掉记录**（2026-10-09 现场核对）：`v4 deleteSession` 的语义 = `closeSession`（先递归关闭子树、再释放自己的运行时资源），**明确不删 record**——`session-mgmt.ts:154` 的注释写明"message 库无删除 API，历史仍在库里，只是不再出现在活跃注册表"，与旧协议路径一致。同时区分**另一层**：左栏/归档页的「删除任务」是任务索引层的软删除（`v2/tasks-index.sqlite` 里置 `deleted:1`），`zcodeTaskService` 的文档注释明确"**不清理 CLI 会话**"，实测删完之后父子三行 session 与全部 35 条 entry 原封不动。两者不是同一条路径，不要互相当成对方的实现。
 - **中止沿树级联**：中止（stop）父会话的运行轮时，中止其子/孙会话正在跑的轮。级联中止写终态，**不向父投通知**（父正在被中止）。
 - **不级联的三种情形**（触发源不同，不得互相套用）：
   - 关闭标签页：仅失去订阅者，不影响子会话。
@@ -774,13 +774,18 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 2. **点开子条目 → 侧栏子面板**：面板标题栏显示子会话标题 + **`子代理 · general-purpose` 身份徽标** + 状态词「已结束」。
 3. **子会话可输入**：子面板有独立 composer，发一句话后子会话开新轮并正常回复；同时**父会话轮次与面板都不受影响**（父会话的「已工作 21 秒」保持不变）。
 4. **重启应用 → 冷恢复**：强制结束 dev 进程后重新启动，左栏父子条目仍在；点开子条目——**历史两轮完整回显、身份徽标仍是 `general-purpose`、composer 可用**；再发一条消息，子会话开出第三轮并回复「收到了」。应用日志里 `TypeError: ... reading 'db'` 出现次数为 0（这条正是「真实派发端到端」C 里修复前必崩的那条路径，现在由 renderer 走一遍也不崩）。
-5. 顺带观测到一条与子代理无关的既存现象（**未修，仅登记**）：重启后主会话标签页标题回落到「新建任务」，而左栏与面板里都是真实标题。本轮是强杀进程（非优雅退出）后重启，无法排除是强杀导致的恢复态差异；不在本轮触碰文件内，另立任务更合适。
+5. **中止沿树级联（验收路径 7）**：派发一个前台子代理（`wait: true`，任务 `sleep 90`）→ 父会话轮仍活跃时点「停止生成」→ 左栏该子条目从「运行中」变「**已取消**」，父会话轮显示已停止；`session_input` 里来自该子会话的通知行 **0 条**——中止确实沿树传播，且没有谎报完成。
+6. **受限模式（验收路径 11，破坏性构造）**：停应用 → 直接删掉某子会话的 `runtime/subagent_launch_spec` 行 → 重启 → 点开该子会话：面板顶部出现「此子代理的身份未能还原，暂不可输入」，composer 的 `contenteditable` 变 **`false`**（输入面是**真关闭**，不是只加样式），历史仍可读。再用协议面对它直发消息：`session/resume` 正常，`session/send` 被拒，`-32010` + `reasonCode: "guard.subagentLimitedMode"`——受限模式在**强制面**同样成立，且是明确拒绝，不是静默丢弃。
+7. **验收路径 10**：在子会话里要求它「用 Agent 工具派发一个子代理」→ 子会话明确回答没有该工具。**但这轮同时暴露一条方法论**：让模型自述工具清单**不可信**——同一次回答里它列了 `CreateWorkflow`/`AmendWorkflow`/`ListModels` 一长串它并不拥有的工具（自相矛盾：它同时又承认自己没有 `Glob`）。权威判据在服务端：`registerBuiltInTools` 按冻结白名单硬过滤（`tool/handlers/index.ts:216`），派发类工具另需 `includeAgent === true`（`:222`），而白名单里既无 `Agent`/`Task` 也无任何 workflow 工具。**验收时不要把"模型说的话"当证据。**
+8. **验收路径 9 的 UI 半边**：子面板内**不存在**「切换模式」（模式选择器）与「分叉」（fork 行内动作），只有 composer 自身控件；同一时刻父会话面板两者都在。服务端半边**未驱动**：fork 是 v4 命令（旧协议 `session/fork` 的客户端链已删），外部没有可驱动通道；不过"角色不允许的命令会被明确拒绝并带 reasonCode"这一机制已由第 6 条现场证明，命令矩阵本身有单测覆盖。
+9. **验收路径 6 的触发面（结论：GUI 里没有这条路径）**：左栏任务行右键菜单**只有「归档任务」，没有删除**；命令面板搜「删除」返回空；删除入口只存在于**归档页**（`WorkspaceArchivedTasksFlatSection.tsx`，文案 `taskList.delete`）。我在归档页真删了一次并逐库核对：任务索引 `v2/tasks-index.sqlite` 变成 `archived:1, deleted:1`，而 agent 的 `session` / `session_entry` **一行未动**（父子三行 session + 全部 35 条 entry 原样）。也就是说 GUI 的「删除任务」是任务索引层软删除，`zcodeTaskService` 的文档注释也明写"不清理 CLI 会话"；而验收路径 6 说的"删除父会话"指 `v4 deleteSession`（递归关闭子树），**GUI 里没有它的入口**（`v4Pane.deleteSession` 文案存在但全仓无引用），旧协议也没有 `session/delete` 方法。递归关停本身的实现与单测在 `session-tree.ts`，本轮未能从外部驱动。
+10. 两条**与子代理无关的既存现象**（**未修，仅登记**）：(a) 重启后主会话标签页标题回落到「新建任务」，而左栏与面板里都是真实标题——重启恢复走的是"开一个草稿型 tab 再灌入会话"的路径，标签因此停在草稿标题；本轮是强杀进程（非优雅退出）后重启，无法排除强杀放大了这个差异；不在本轮触碰文件内，另立任务更合适。(b) 应用日志里 `agent.pendingPermissions` 在父会话那次授权被批准后**仍停在 1**（连续四个采样点都是 1），像是计数没有回落；它对 UI 没有可见影响（等待确认角标已消失、命令也确实执行了），可能是采样口径问题，**证据不足以定论**，只登记不做结论。
 
 - 门禁（命令均已实测，不是照抄 AGENTS.md）：
   - 根 `pnpm lint` / `pnpm fmt:check` **都不覆盖** `apps/zcode-cli`：根 `.oxlintrc.json` 的 `ignorePatterns` 含 `apps/zcode-cli`，且给 `oxfmt --check` / `oxlint` 传该目录下的文件会返回 `No files found to lint` / `Expected at least one target file`（`--no-ignore` 也绕不过）。
   - CLI 侧可用的类型门禁：`pnpm typecheck:cli`。
   - CLI 侧可用的 lint：**逐子包**跑 `pnpm --dir apps/zcode-cli/packages/<pkg> run lint`（= 该子包的 `oxlint src --no-ignore`）。**不要写 `pnpm --dir apps/zcode-cli run lint`**——它的脚本是 `turbo run lint`，而该独立 workspace 里 `turbo` 不可解析（实测 `Command "turbo" not found`）。
-  - CLI 的 lint 是**既存红债**，不能当绿灯：本检出 `packages/core` 实测 31 errors / 10 warnings（`max-lines` 超 400、`NOOP_CALL` 未使用等）。CLI 改动按"不新增错误"衡量，不要求清零。
+  - CLI 的 lint 是**既存红债**，不能当绿灯：本检出 `packages/core` 实测 31 errors / 10 warnings（`max-lines` 超 400、`NOOP_CALL` 未使用等），`packages/bootstrap` 实测 20 errors / 22 warnings（2026-10-09 复测，与本文记录一致）。CLI 改动按"不新增错误"衡量，不要求清零——本轮三处修复与三条新测试都**没有**新增违规（按文件逐条核对过）。
   - CLI 的 `format:check` 只覆盖 `package.json` 与 `**/*.{json,ts,mjs}`，**不覆盖 markdown**——本文与其它 spec 不在任何格式化门禁内。
   - 触及根包（`packages/ui`、`packages/shared` 等）：`pnpm typecheck` + `pnpm lint` + `pnpm fmt:check`。
   - `pnpm architecture:check -- --changed`。
@@ -789,13 +794,17 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **本轮范围内、按阶段排期**：S1a、S1b、S2–S5 —— **全部已落地**（各阶段事实与复核结论见上文各节）。
 
-**验收缺口（本轮未执行，须补）**：上述 11 条验收路径里**依赖真实派发的部分已全部执行**（协议面 A/B/C + 桌面 GUI 1–4、8，见「真实派发端到端」两节）。**尚未覆盖**的是这几条，它们要么需要构造异常态、要么需要第二个设备/进程：
+**验收缺口**：11 条验收路径里，**依赖真实派发的部分已全部执行**（协议面 A/B/C；GUI 侧覆盖验收路径 1–4、7、8、10、11，另加 6 的触发面结论，见上两节）。剩下的只有两条，且性质都不是"还没跑"：
 
-- 第 5 条（子代理工具调用触发授权 → 弹窗落父会话 + 子面板顶部"有 N 个请求等待在父会话处理"跳转）：本轮子代理用的 `Bash`/文件类工具都在 `yolo` 模式下免授权，没有构造出阻塞交互。
-- 第 6 条后半（删除父会话 → 子会话被递归删除）：只在单测层面覆盖（`session-tree`），没有在 GUI 里实际删一次。
-- 第 7 条（中止父会话运行轮 → 子代理进行中的轮被中止）：GUI 未跑；单测覆盖了级联本身。
-- 第 9 / 11 条（fork 与模式切换控件在子会话里不渲染 / 受限模式子会话 composer 禁用且直发被拒）：第 11 条需要**人为删掉某子会话的 launch spec 行**才能构造，属破坏性构造；第 9 条可从现有子面板直接看，但本轮没有逐项核对 fork 行内动作与模式选择器。
-- 第 10 条（子代理派生子代理被明确拒绝）：本轮拿到的是**间接**证据——launch spec 的冻结白名单里没有 `Agent`/`Task`，冷恢复后子会话自述工具面也不含它们；没有真的让子代理去点一次派发。
+- **第 5 条跑不到，不是没跑到**（实测反例 + 源码定位，见下「待决问题」）：子会话用 `Write` 写文件、用 `Bash` 写文件都**没有**任何授权请求（文件确实落盘：`e2e-child-write.txt`、`perm-probe.txt`），而父会话在**同一个 `build` 模式**下跑同一条 `echo ... > ...` **会**弹授权（`parent-probe.txt` 出现在我点了「允许」之后）。
+- **第 9 条的服务端半边**：通道不可外部驱动（见上第 8 条），靠单测 + 同族机制现场证明。
+
+**待决问题（需要你拍板，1 条）：子会话的工具调用要不要升级到父会话询问？**
+
+- **现状是不会**。根因链：子会话的冻结白名单经 `bootstrap/src/app/app-config-options.ts:49` 投影成 `permission.allowedTools`，而 `permission/service.ts:217` 对 `allowedTools` 里的工具**无条件放行，且位置在 edit / build 两个模式分支之前**；这份白名单又与它可调用的工具面**完全同集**（`tool/handlers/index.ts:216` 用同一份白名单过滤）。三者叠起来 = 子会话对任何它能调用的工具都直接放行，**永远不升级询问**。
+- **为什么值得你过一眼**：D6 与「已决策不做」里都写着"权限弹窗保持落父会话 + origin 标识"，UI 里也做出了 `subagents.pane.pendingInParent`（子面板顶部「有 N 个请求等待在父会话处理」）——**这套设计的前提是子会话会发起询问**。而在当前接线下这个入口没有触发场景，等于设计与实现之间有一处对不上。另外这条字段的注释写明它的用途是"headless CLI 的 denylist/allowlist 投影到 permission config"，子代理复用它属于同一字段承载两种语义。
+- **两种取舍都说得通，我没动任何行为**：(A) **有意为之**——后台子代理不能阻塞在交互上，所以它（已被收窄的）工具集整体预授权；那就要把 `pendingInParent` 入口按"当前无触发场景"登记，必要时删掉，并把 D6 里"子会话会产生阻塞交互"的措辞收窄。(B) **应当继承**——子会话只预授权"父会话在当前模式下本来也会自动允许"的部分，真正的询问仍落父会话（这正是 D6 + 该入口的设计前提）；选 B 还要定一条策略：父会话不在前台时这个询问怎么处置。
+- 我不自行修改的理由：这是**权限语义的产品决策**，且该投影路径同时服务非子会话的预授权，改动面超出子代理这一轮的范围。
 
 （勘误：本段此前记录"本机数据根跑不起一轮真实 agent"——那是**本机 `~/.zcode-rayn` 的实测现象**，不是本轮改造的缺陷，也不构成验收阻塞：用隔离数据根 + 独立 provider 配置即可跑通真实派发，做法见上文。不要把当时的环境限制读成本产品的功能缺口。）
 
