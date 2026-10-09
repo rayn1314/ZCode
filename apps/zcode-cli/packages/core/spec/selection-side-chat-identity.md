@@ -23,19 +23,24 @@
 
 1. **新增 ContextSection source** `selection_side_chat_identity`，携带稳定、system 注入的身份段：
    - 明确自己是父任务开出的辅助对话，不是主 Agent；
-   - 父对话历史只是参考，不得自动续做、重跑工具或接手编辑；
-   - 只在侧边对话里回答新问题，工作区改动仅在用户明确要求时进行；
-   - 用户消息末尾的 `# userselect:` 块是被引用的选段，回答必须围绕它。
+   - 父对话历史只是参考，**默认把侧边对话里的每条消息当作新话题**，直接回答，不自动续做父任务；
+   - 只有用户在侧边对话里**明确要求接手**时，才继续父任务或改动工作区；
+   - 用户消息末尾的 `# userselect:` 块是被引用的选段，回答必须围绕它——但引用块不是「新话题」
+     的唯一形式，不带引用块的新问题同样按新话题处理。
 2. **按 `taskType === "selection_side_chat"` 注入**：在 `createContextBuilderFromSnapshot` 里对
    辅助对话调用 `addSection`，其它 taskType 不产生任何额外段。
-3. **强化 fork 边界消息**：`SELECTION_SIDE_CHAT_BOUNDARY` 增加一句对 `# userselect:` 块的解释。
-   该消息只影响新建的辅助对话；已存在的辅助对话通过 system 身份段（冷恢复同样会重建上下文）生效。
+3. **强化 fork 边界消息**：`SELECTION_SIDE_CHAT_BOUNDARY` 同步表达「新话题优先、明确要求才续父任务」，
+   并增加一句对 `# userselect:` 块的解释。该消息只影响新建的辅助对话；已存在的辅助对话通过 system
+   身份段（冷恢复同样会重建上下文）生效。
 
 ## 行为
 
 - 辅助对话的首轮及后续轮次，system 消息中包含「辅助对话身份段」；普通会话 / 子代理 / 工作流子代理
   的 system 消息不包含该段。
-- 新建辅助对话的继承历史末尾，边界消息包含对 `# userselect:` 引用块的解释。
+- 用户在辅助对话里发送的新问题（无论是否带 `# userselect:` 引用块）默认按独立新话题处理，直接回答；
+  不自动续做父任务，仅当用户明确要求接手时才继续父任务或改动工作区。
+- 新建辅助对话的继承历史末尾，边界消息包含「新话题优先、明确要求才续父任务」及对 `# userselect:`
+  引用块的解释。
 - 冷恢复的辅助对话（`createRecord` 重建）同样获得身份段：`runtimeConfig.taskType` 持久化为
   `selection_side_chat`，`createContextBuilderFromSnapshot` 在 resume 时重新执行注入。
 

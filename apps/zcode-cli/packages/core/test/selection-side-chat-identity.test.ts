@@ -10,7 +10,7 @@ import type { ContextBuilderConfig } from "../src/context/types.js";
 
 /**
  * 辅助对话身份段契约（spec: core/spec/selection-side-chat-identity.md）：
- * - 身份段落在 system 层，内容覆盖「辅助角色 / 不续父任务 / 引用块含义」；
+ * - 身份段落在 system 层，内容覆盖「辅助角色 / 默认新话题、仅明确要求才续父任务 / 引用块含义」；
  * - 只有 `taskType === "selection_side_chat"` 会注入，其它 taskType 不产生额外段。
  */
 
@@ -34,13 +34,14 @@ function systemContent(config: ContextBuilderConfig, taskType: string | undefine
     .join("\n");
 }
 
-test("身份段本身：system 注入，覆盖角色、不续父任务、引用块说明", () => {
+test("身份段本身：system 注入，覆盖角色、默认新话题、仅明确要求才续父任务、引用块说明", () => {
   const section = buildSelectionSideChatIdentitySection();
   assert.equal(section.source, "selection_side_chat_identity");
   assert.equal(section.injectionTarget, "system");
   assert.equal(section.cacheHint, "stable");
   assert.ok(section.content.includes("auxiliary conversation opened from a parent task"));
-  assert.ok(section.content.includes("Do NOT continue the parent's active work"));
+  assert.ok(section.content.includes("new, independent topics"));
+  assert.ok(section.content.includes("only when the user explicitly asks you to take it over"));
   assert.ok(section.content.includes("# userselect:"));
 });
 

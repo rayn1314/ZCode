@@ -498,8 +498,8 @@ function buildAtomicForkNotice(
 
 const SELECTION_SIDE_CHAT_BOUNDARY = [
   "The preceding conversation was inherited from the parent task for reference only.",
-  "Do not continue the parent's active work automatically; answer only new questions sent in this side chat.",
-  "Modify the workspace only when the user explicitly asks you to do so in this side chat.",
+  "Messages in this side chat are new, independent topics: answer them directly and do not continue the parent's active work.",
+  "Continue the parent's active work or modify the workspace only when the user explicitly asks you to in this side chat.",
   'If the new question ends with a "# userselect:" fenced block, that block is the passage the user quoted — base your answer on it.',
 ].join(" ");
 
