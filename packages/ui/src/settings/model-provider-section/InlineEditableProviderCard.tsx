@@ -827,6 +827,50 @@ export function InlineEditableProviderCard({
     [onAddPersonalModel, provider.providerId, runSaveOperation],
   );
 
+  const handleAddModels = useCallback(
+    async (modelIds: readonly string[]) => {
+      if (!onAddPersonalModel) throw new Error("当前设置入口未装配 Personal Model 添加能力");
+      const normalized = [...new Set(modelIds.map((id) => id.trim()).filter(Boolean))];
+      if (normalized.length === 0) return;
+      const notification = saveNotificationRef.current;
+      const feedbackKey = `model-fetch-add:${provider.providerId}`;
+      notification.showFeedback({
+        key: feedbackKey,
+        message: notification.formatMessage({ id: "settings.modelProvider.fetchModelsAdding" }),
+        state: "pending",
+        durationMs: 0,
+      });
+      try {
+        for (const modelId of normalized) {
+          // 拉取到的模型走推荐配置：内置规则命中的自动补全元数据，未命中的以「待补全」进入列表。
+          await onAddPersonalModel(provider.providerId, modelId, {}, true);
+        }
+        notification.showFeedback({
+          key: feedbackKey,
+          message: notification.formatMessage(
+            { id: "settings.modelProvider.fetchModelsAddSuccess" },
+            { count: normalized.length },
+          ),
+          state: "success",
+        });
+      } catch (error) {
+        notification.showFeedback({
+          key: feedbackKey,
+          message: notification.formatMessage(
+            { id: "settings.modelProvider.fetchModelsAddFailure" },
+            { error: error instanceof Error ? error.message : String(error) },
+          ),
+          state: "failure",
+          durationMs: 8_000,
+          dismissible: true,
+          dismissLabel: notification.formatMessage({ id: "common.close" }),
+        });
+        throw error;
+      }
+    },
+    [onAddPersonalModel, provider.providerId],
+  );
+
   const handleReorderModelIds = useCallback(
     (modelIds: string[]) => {
       if (!onReorderModelIds) return;
@@ -977,8 +1021,12 @@ export function InlineEditableProviderCard({
           onModelEnabledChange={handleModelEnabledChange}
           onDeleteModel={handleDeleteModel}
           onAddModel={handleAddModel}
+          onAddModels={handleAddModels}
           onReorderModelIds={onReorderModelIds ? handleReorderModelIds : undefined}
           settingsRevision={settingsRevision ?? 0}
+          baseUrl={baseUrlValue}
+          apiKey={apiKeyValue}
+          apiFormat={apiFormat}
         />
       </div>
 

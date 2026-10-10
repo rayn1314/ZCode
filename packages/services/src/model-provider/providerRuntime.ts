@@ -24,10 +24,12 @@ import {
   type ModelSelectionConfiguredDefaultSource,
   type ProviderSettingsConnectivityTester,
 } from "./providerFacadeServices.js";
+import type { ProviderModelFetcher } from "./providerModelFetch.js";
 
 export interface ProviderRuntimeOptions extends ProviderConfigRuntimeOptions {
   readonly accountSource?: RefreshableProviderSource<AccountProviderConfigSnapshot>;
   readonly testConnectivity?: ProviderSettingsConnectivityTester;
+  readonly fetchProviderModels?: ProviderModelFetcher;
 }
 
 export interface ProviderRuntimeDependencies {
@@ -35,6 +37,7 @@ export interface ProviderRuntimeDependencies {
   readonly accountSource?: RefreshableProviderSource<AccountProviderConfigSnapshot>;
   readonly disposeAccountSource?: () => void;
   readonly testConnectivity?: ProviderSettingsConnectivityTester;
+  readonly fetchProviderModels?: ProviderModelFetcher;
   readonly modelSelectionConfiguredDefaultSource?: ModelSelectionConfiguredDefaultSource;
   readonly disposeModelSelectionConfiguredDefaultSource?: () => void;
 }
@@ -105,6 +108,7 @@ export class ProviderRuntime {
       settingsFacade,
       ensureReady,
       dependencies.testConnectivity,
+      dependencies.fetchProviderModels,
     );
     this.#modelSelectionRuntime = createModelSelectionService(
       createNodeModelSelectionFacade(this.registryService),
@@ -194,7 +198,7 @@ function createSettingsMutationTarget(
 }
 
 export function createProviderRuntime(options: ProviderRuntimeOptions): ProviderRuntime {
-  const { accountSource, testConnectivity, ...configRuntimeOptions } = options;
+  const { accountSource, testConnectivity, fetchProviderModels, ...configRuntimeOptions } = options;
   const configRuntime = createProviderConfigRuntime(configRuntimeOptions);
   const modelSelectionConfiguredDefaultSource = new NodeModelSelectionConfigRepository({
     personalRepository: configRuntime.personalRepository,
@@ -203,6 +207,7 @@ export function createProviderRuntime(options: ProviderRuntimeOptions): Provider
     configRuntime,
     accountSource,
     testConnectivity,
+    fetchProviderModels,
     modelSelectionConfiguredDefaultSource,
     disposeModelSelectionConfiguredDefaultSource: () =>
       modelSelectionConfiguredDefaultSource.dispose(),

@@ -13,10 +13,12 @@ import type {
   ProviderSettingsFormModel,
 } from "@/lib/providerSettingsFormTypes.js";
 import type { ModelConnectivityResult } from "@zcode/shared";
-import type { ProviderApiType, ProviderConfigObject } from "@zcode/provider";
+import { isApiKeyAccess, type ProviderApiType, type ProviderConfigObject } from "@zcode/provider";
+import type { ProviderModelFetchRequest } from "@zcode/services";
 import {
   TID_MODEL_PROVIDER_ADD_MODEL_BUTTON,
   TID_MODEL_PROVIDER_BASE_URL_INPUT,
+  TID_MODEL_PROVIDER_FETCH_MODELS_BUTTON,
   TID_MODEL_PROVIDER_MODEL_DELETE_BUTTON,
   TID_MODEL_PROVIDER_MODEL_INPUT,
   TID_MODEL_PROVIDER_NAME_EDIT_BUTTON,
@@ -31,6 +33,7 @@ import {
   Trash2,
   MoreHorizontal,
   ChevronRightIcon,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -57,6 +60,7 @@ import {
 import { SortableProviderModelList } from "@/settings/model-provider-section/SortableProviderModelList.js";
 import { useProviderModelDraft } from "@/settings/model-provider-section/useProviderModelDraft.js";
 import { ProviderLogo } from "@/settings/model-provider-section/ProviderLogo.js";
+import { ProviderModelFetchDialog } from "@/settings/model-provider-section/ProviderModelFetchDialog.js";
 
 export { formatModelContextWindowLabel } from "@/lib/tokenNumberFormat.js";
 export {
@@ -466,8 +470,12 @@ export function ProviderModelsSection({
   onModelEnabledChange,
   onDeleteModel,
   onAddModel,
+  onAddModels,
   onReorderModelIds,
   settingsRevision = 0,
+  baseUrl = "",
+  apiKey = "",
+  apiFormat,
 }: {
   providerId: string;
   providerName?: string;
@@ -483,12 +491,20 @@ export function ProviderModelsSection({
   onDeleteModel: (modelId: string) => void;
   onModelEnabledChange?: (modelId: string, enabled: boolean) => void | Promise<void>;
   onAddModel: (model: ProviderSettingsFormModel) => void | Promise<void>;
+  onAddModels?: (modelIds: readonly string[]) => Promise<void>;
   onReorderModelIds?: (modelIds: string[]) => void;
   settingsRevision?: number;
+  /** 表单当前 Base URL（未保存修改也生效），用于拉取模型列表。 */
+  baseUrl?: string;
+  /** 表单当前 API Key。 */
+  apiKey?: string;
+  /** 表单当前 API 格式，决定拉取模型时的鉴权头。 */
+  apiFormat?: ProviderApiType;
 }) {
   const { intl } = useZCodeIntl();
   const { providerSettingsService } = useServices();
   const [addDialogOpen, setAddDialogOpen] = useState(false);
+  const [fetchDialogOpen, setFetchDialogOpen] = useState(false);
   const [addSaving, setAddSaving] = useState(false);
   const addSavingRef = useRef(false);
   const [addCommitError, setAddCommitError] = useState<string | null>(null);
@@ -506,6 +522,11 @@ export function ProviderModelsSection({
     (modelId: string) => providerSettingsService.resolveModelConfig({ providerId, modelId }),
     [providerId, providerSettingsService],
   );
+  const fetchModels = useCallback(
+    (input: ProviderModelFetchRequest) => providerSettingsService.fetchProviderModels(input),
+    [providerSettingsService],
+  );
+  const canFetchModels = isApiKeyAccess(providerAccess);
   const editor = useProviderModelDraft({
     model: addModel,
     open: addDialogOpen,
@@ -582,17 +603,32 @@ export function ProviderModelsSection({
         <span className="text-ui-base text-foreground-subtle">
           {intl.formatMessage({ id: "settings.modelProvider.models" })}
         </span>
-        <Button
-          type="button"
-          variant="secondary"
-          size="default"
-          className="rounded-lg"
-          data-testid={TID_MODEL_PROVIDER_ADD_MODEL_BUTTON}
-          onClick={openAddDialog}
-        >
-          <Plus data-icon="inline-start" aria-hidden="true" />
-          {intl.formatMessage({ id: "settings.modelProvider.addModel" })}
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          {canFetchModels ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="default"
+              className="rounded-lg"
+              data-testid={TID_MODEL_PROVIDER_FETCH_MODELS_BUTTON}
+              onClick={() => setFetchDialogOpen(true)}
+            >
+              <Download data-icon="inline-start" aria-hidden="true" />
+              {intl.formatMessage({ id: "settings.modelProvider.fetchModels" })}
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            variant="secondary"
+            size="default"
+            className="rounded-lg"
+            data-testid={TID_MODEL_PROVIDER_ADD_MODEL_BUTTON}
+            onClick={openAddDialog}
+          >
+            <Plus data-icon="inline-start" aria-hidden="true" />
+            {intl.formatMessage({ id: "settings.modelProvider.addModel" })}
+          </Button>
+        </div>
       </div>
       {models.length > 0 ? (
         <div className="overflow-hidden rounded-lg border border-input-border bg-input">
@@ -689,6 +725,17 @@ export function ProviderModelsSection({
           }}
         />
       </>
+      <ProviderModelFetchDialog
+        open={fetchDialogOpen}
+        onOpenChange={setFetchDialogOpen}
+        providerId={providerId}
+        baseUrl={baseUrl}
+        apiKey={apiKey}
+        apiFormat={apiFormat}
+        configuredModelIds={models.map((model) => model.modelId)}
+        fetchModels={fetchModels}
+        onAddModels={onAddModels}
+      />
     </div>
   );
 }

@@ -404,6 +404,7 @@ import {
   IProviderSettingsService,
 } from "./model-provider/providerFacadeServices.js";
 import { createProviderSettingsConnectivityTester } from "./model-provider/providerSettingsConnectivity.js";
+import { createProviderModelFetcher } from "./model-provider/providerModelFetch.js";
 import {
   createProviderProvisioningSource,
   listProviderProvisioningCredentialKeys,
@@ -1675,6 +1676,9 @@ export function createLocalServices(options: {
         }
         return providerConnectivityAgentService.testModelConnectivity(input);
       },
+    }),
+    fetchProviderModels: createProviderModelFetcher({
+      fetch: hostApiNetworkTransport.fetch,
     }),
     disposeAccountSource: () => {
       disposeAccountProviderInvalidation();

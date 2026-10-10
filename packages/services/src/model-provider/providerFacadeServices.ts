@@ -19,6 +19,11 @@ import {
 import { createServiceDescriptor } from "../descriptors.js";
 import type { ModelConnectivityResult } from "@zcode/shared";
 import { createServiceLogger } from "../logger/serviceLogger.js";
+import type {
+  ProviderModelFetchRequest,
+  ProviderModelFetchResult,
+  ProviderModelFetcher,
+} from "./providerModelFetch.js";
 
 export type {
   ProviderSettingsProviderView,
@@ -68,6 +73,8 @@ export interface IProviderSettingsService {
   testModelConnectivity(
     input: ProviderSettingsConnectivityRequest,
   ): Promise<ModelConnectivityResult>;
+  /** 从供应商端点拉取可用模型列表（只读，不写配置）。 */
+  fetchProviderModels(input: ProviderModelFetchRequest): Promise<ProviderModelFetchResult>;
 }
 
 export const IProviderSettingsService = createServiceDescriptor<IProviderSettingsService>(
@@ -110,6 +117,7 @@ export function createProviderSettingsService(
   facade: ProviderSettingsFacade,
   ensureReady: () => Promise<void> = async () => {},
   testConnectivity?: ProviderSettingsConnectivityTester,
+  fetchProviderModels?: ProviderModelFetcher,
 ): IProviderSettingsService {
   return {
     onDidChange: toEvent((listener) => facade.onDidChange(listener)),
@@ -205,6 +213,13 @@ export function createProviderSettingsService(
         providerId: input.providerId,
         modelId: input.modelId,
       });
+    },
+    fetchProviderModels: async (input) => {
+      await ensureReady();
+      if (!fetchProviderModels) {
+        throw new Error("当前 Environment 未装配模型拉取能力");
+      }
+      return fetchProviderModels(input);
     },
   };
 }

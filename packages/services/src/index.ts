@@ -10,6 +10,15 @@ export {
   type ProviderSettingsView,
 } from "./model-provider/providerFacadeServices.js";
 export {
+  createProviderModelFetcher,
+  ProviderModelFetchError,
+  type FetchedProviderModel,
+  type ProviderModelFetchErrorCode,
+  type ProviderModelFetchRequest,
+  type ProviderModelFetchResult,
+  type ProviderModelFetcher,
+} from "./model-provider/providerModelFetch.js";
+export {
   createAccountRequestAuthService,
   type IAccountRequestAuthService,
   type AccountRequestAuthInput,
