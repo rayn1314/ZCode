@@ -168,7 +168,8 @@ permission / AskUserQuestion / ExitPlanMode 仍然改写到**父会话**，带 `
 
 ### D10 · 本轮边界
 
-- 远端 / 跨机器的子会话：不做输入面（远端 mailbox 不共享是既有未决问题），只在列表里可见、只读。
+- **子会话输入面对本地与远端 workspace 一视同仁**（2026-10-10 订正）。原稿写「远端 / 跨机器的子会话不做输入面（远端 mailbox 不共享是既有未决问题）」，其前提是「父↔子 mailbox 不跨机器共享」。但 **UI 输入并不走 mailbox**：它走 v4 `sendText`（`V4PaneConversationProvider` 按 scope 连到目标 workspace 的会话层），父子协作走进程内 `coordinatorResponsePort`（`core/src/tool/handlers/respond-to-coordinator.ts`），两者都与机器边界无关；远端 server 受理子会话 `sendText` 亦有既有落库证据（`session_input` 的 `kind=sendText` / `status=promoted`）。真正不可输入的是**受限模式**（读不到 launch spec），由 `inputRouting.mode = "reject"` 与准入层强制，与远端与否无关。
+  - 据此关闭原遗留项「远端子会话的输入面（依赖跨机器 mailbox 共享）」。关闭的是 **UI 输入面**；`SendMessage` 工具在父子跨机器时的 **mailbox 投递**仍按 `subagent-session-messaging.md` 的未决问题处理，两者不是一件事。
 - usage 归属：仍按 `subagent` 记账，不拆成独立会话统计。
 - 已结束子代理的保留：沿用现有 ended 分页，不新增保留策略。
 - 子会话删除：允许单独删除（连记录一起）；父删除时递归删除。不提供归档。
@@ -693,7 +694,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
   | `subagentChild`（子代理子会话，**本轮新增**） | 有 | 有 | **有** | 无 | 无 | 无 | 无 | **无** | 有 | 无 | 否 | 有 | 有 |
 
   实现落点（键名与上表逐列对应，落在 `packages/ui/src/v4/sessionPaneCapabilities.ts`）：`readOnly` → `shape === "observe"`；`forkActionsEnabled` → `fork && seed`；`suppressGoalCommands` → `!goalCommands`（即 `shape !== "interactive"`）；goal 的**展示**两处（`statusPanelModel.goal` 与状态面板的 `goal` 入参）→ `goalPanel`，**与 goal 命令分开**——只读视图本来就看得到 goal 进度、只是没有控制入口，把展示一起关掉是信息量退化而不是"统一语义"（S4 复核时发现并订正：原方案这一段写作"六项抑制条件统一为 `shape !== "interactive"`，`observe` 被 `readOnly` 已经挡住、语义不变"，但 `observe` 的 goal 区块此前是渲染的，按原写法会静默关掉它）；`pauseGoal` / `resumeGoal` → `goalCommands`；`assistantFeedback` 单独成列（真值向量与 `goalCommands` / `selectionActions` 目前一致，但同值不是同一业务，不合并）；权限模式选择器仅在 `subagentChild` 形态下不挂载。
-- **`subagentChild` 形态只给本地子会话（D10 的落点）**：面板形态按 workspace 是否远端分支——`isRemoteWorkspaceTarget({workspacePath, workspaceIdentity, remoteSessionId})`（`lib/workspaceServiceResolver.ts`，`useWorkspaceTaskLists.ts:294` 同源用法）为真则 `observe`，否则 `subagentChild`。远端不开口子：父↔子 mailbox 不跨机器共享，开输入面等于放出一个"能打字但接不通父会话"的面板。顶部条（状态词 + 授权提示）对远端**照常渲染**，`observe` 只是没有 composer。
+- **`subagentChild` 形态对本地与远端子会话一视同仁（D10 订正后的落点）**：面板一律 `subagentChild`，不再按 workspace 是否远端分叉。原判据（`isRemoteWorkspaceTarget({workspacePath, workspaceIdentity, remoteSessionId})` 为真则 `observe`，`lib/workspaceServiceResolver.ts`）依据的「父↔子 mailbox 不跨机器共享」对 UI 输入路径不成立——UI 输入走 v4 `sendText`、父子协作走进程内 `coordinatorResponsePort`（论证与证据见 D10 订正）。`observe` 形态仍保留给 workflow actor 与只读 transcript（`WorkflowActorSessionSidePane.tsx`）。顶部条（状态词 + 授权提示）照常渲染，输入面不再按远端隐藏。
 - **权限模式选择器为什么只能在 UI 侧藏**：composer 的模式选择器读的是 **workspace 级** `configOptions`（`v4-workspace-config.ts` 的 `toV4WorkspaceConfigState`，数据源是"该 workspace 第一个在册会话的 settings"）——它是 workspace 作用域的，同一个 workspace 的父会话与子会话共用一份，服务端按会话裁剪会把父会话的选择器一起关掉。因此这里由 UI 形态决定，强制面仍由 S2 的 `guard.subagentCannotEscalatePermission` 承担（纵深：藏起来 + 发出去也被拒并给出 reasonCode）。
 - **Plan 勾选项一并隐藏**：它与三种权限模式在同一个菜单里、走同一条 `switchCollaborationMode`，而该命令对子会话被 S2 拒绝；只藏一半会留下一个必定失败的控件。
 - **授权请求提示（新增，必需）**：当父会话上存在属于本子代理的待处理交互（`origin.kind === "subagent"` 且 childSessionId 匹配）时，面板顶部显示可点击提示，点击切到父会话标签页；无请求时隐藏。
@@ -727,6 +728,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 9. 在子会话尝试 fork / 切换权限模式 → 控件不存在（fork 行内动作不渲染、模式选择器不挂载），发命令直发也被拒并给出 reasonCode。
 10. 子代理尝试派生子代理 → `Agent` 工具不可用，返回明确错误而非隐式挂起。
 11. 构造一个读不到 launch spec 的子会话（用改造前的存量子会话，或删掉它的 `runtime/subagent_launch_spec` 行）→ 冷恢复后 composer 禁用、顶部一行"此子代理的身份未能还原，暂不可输入"；发一条 `sendText` 直发也被拒（`guard.subagentLimitedMode`），不是只靠 UI 藏。
+12. **远端 workspace（WSL / SSH / Docker）的子会话**（2026-10-10 订正 D10 后的验收面）：面板与本地同形，**有 composer**（不再因远端被判成 `observe` 只读）；在其中输入一条 → 子会话开新轮、父会话不被阻塞；顶部条（状态词 + 授权提示）照常渲染。受限模式（第 11 条）在远端同样成立——判断依据是 launch spec 是否存在，与本地/远端无关。
 
 ## 验证
 
@@ -826,7 +828,7 @@ export function stopSubagentDescendantTurns(context, rootSessionId: string, reas
 
 **本轮不做、需另立任务**：
 
-- 远端子会话的输入面（依赖跨机器 mailbox 共享，是既有未决问题）。
+- `SendMessage` 工具在**父子跨机器**（父↔子不共享文件系统）时的 mailbox 投递——与 `subagent-session-messaging.md` 的「跨机器 mailbox 共享」同源。注意它**不影响** UI 给子会话的输入面：后者走 v4 `sendText`，已于 2026-10-10 放开（见 D10 订正）。
 - fork / 选段侧聊（会让父子关系从"树"变成"图"，需重设防环与归属）。
 - 子会话归档与保留策略。
 - 子代理再派生（结构性禁止，不是待办）。

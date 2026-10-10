@@ -5,7 +5,6 @@ import { Badge } from "@/components/ui/badge.js";
 import type { MessageFileLinkTarget } from "@/components/ai-elements/message.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import type { CodeViewerSource } from "@/lib/codeViewer.js";
-import { isRemoteWorkspaceTarget } from "@/lib/workspaceServiceResolver.js";
 import type {
   OpenScopedSubagentSideTabRequest,
   OpenBackgroundBashSideTabRequest,
@@ -154,22 +153,19 @@ const SubagentSessionContent = memo(function SubagentSessionContent({
   onOpenSubagentSession: (request: OpenScopedSubagentSideTabRequest) => void;
   onOpenParentSession?: (target: OpenParentSessionTarget) => void;
 }) {
-  // 远端 / 跨机器的子会话不做输入面（D10）：父子 mailbox 不跨机器共享，给它 composer 等于放出
-  // 一个"能打字但接不通父会话"的面板。判据用仓库既有的单一真相源，不自己拼 identity 布尔。
-  const remote = isRemoteWorkspaceTarget({
-    workspacePath: tab.workspacePath,
-    ...(tab.workspaceIdentity ? { workspaceIdentity: tab.workspaceIdentity } : {}),
-    ...(tab.remoteSessionId ? { remoteSessionId: tab.remoteSessionId } : {}),
-  });
-
   return (
     <SessionPane
       paneId={tab.id}
       sessionId={tab.childSessionId}
       openTrigger="subagent"
       rootSessionId={tab.rootSessionId}
-      // 顶部条（身份 / 状态词 / 授权提示）两种形态都要，只有输入面按远端与否分叉。
-      shape={remote ? "observe" : "subagentChild"}
+      // 子会话面板一律 subagentChild，本地与远端 workspace 一视同仁：UI 输入走 v4 `sendText`
+      // （按 scope 连到目标 workspace 的会话层），父子协作走进程内 `coordinatorResponsePort`，
+      // 都不依赖跨机器共享的 mailbox。原「远端则 observe」的判据建立在"父↔子 mailbox 不跨机器
+      // 共享"这一前提上，而该前提对 UI 输入路径不成立（远端 server 已受理子会话 sendText，
+      // 见 session_input kind=sendText/status=promoted 的既有记录）。真正不可输入的只有受限模式
+      // （读不到 launch spec），由 inputRouting.mode="reject" 与准入层强制，与远端与否无关。
+      shape="subagentChild"
       allowWorkspaceFileRewind
       paneTopStrip={
         <SubagentPaneTopStrip tab={tab} {...(onOpenParentSession ? { onOpenParentSession } : {})} />
