@@ -4,6 +4,7 @@ import {
   SendMessageInputSchema,
   SendMessageOutputSchema,
   SessionMessageChainExceededError,
+  SessionMessageUndeliverableError,
   type SendMessageInput,
   type SendMessageOutput,
   type SessionMessageChain,
@@ -12,12 +13,7 @@ import {
   type SessionMessageSenderKind,
   type TraceContext,
 } from "@zcode/contracts";
-import type {
-  ToolEntry,
-  ToolExecutionContext,
-  ToolHandler,
-  ToolHandlerFailure,
-} from "../types.js";
+import type { ToolEntry, ToolExecutionContext, ToolHandler, ToolHandlerFailure } from "../types.js";
 import { assertNotOffPeakTurn } from "./off-peak.js";
 
 const MAX_SEND_MESSAGE_MODEL_BYTES = 4096;
@@ -30,6 +26,7 @@ const SEND_MESSAGE_FAILURE_CODE = {
   SUBAGENT_REGISTRY_UNAVAILABLE: 2,
   SESSION_MESSAGE_UNAVAILABLE: 3,
   CHAIN_EXCEEDED: 4,
+  UNDELIVERABLE: 5,
 } as const;
 /**
  * SendMessage 续跑已完成子 Agent 走
@@ -51,7 +48,7 @@ const SEND_MESSAGE_PROVIDER_DESCRIPTION = [
   "",
   "Recipients, by `to` prefix:",
   "- `agent_<uuid>`: a subagent this session spawned; use the `agentId` from the Agent result. The message is steered into its active turn, queued for its next tool round, or resumes a settled agent in the background.",
-  "- `sess_*`: any session by its ID (for a subagent, `sess_subagent_<uuid>`). Cross-session delivery reports how it landed: `steered` (injected into the target's running turn), `woken` (opened a new turn for an idle or cold session), or `stored` (target unreachable; kept in its mailbox for the next drain). You cannot send to your own session ID.",
+  "- `sess_*`: any session by its ID (for a subagent, `sess_subagent_<uuid>`). Cross-session delivery reports how it landed: `steered` (injected into the target's running turn), `woken` (opened a new turn for an idle or cold session), or `stored` (target unreachable; kept in its mailbox for the next drain). A session ID that does not exist is a hard failure — nothing is delivered or stored; verify the ID instead of assuming `stored`. You cannot send to your own session ID.",
   "- Any other value is rejected. Address sessions by their `sess_*` ID, not by title.",
   "",
   "Replies between two sessions are chain-limited: a message that would exceed 6 hops in one back-and-forth chain is rejected instead of delivered. If that happens, stop replying, summarize what you learned, and report to the user; a new human message resets the chain.",
@@ -174,6 +171,14 @@ async function sendToSession(
       return {
         result: false,
         errorCode: SEND_MESSAGE_FAILURE_CODE.CHAIN_EXCEEDED,
+        message: error.message,
+      };
+    }
+    // 目标不存在同样是硬失败（spec 失败语义）：不落盘、不唤醒，文案自带"核对 id"的下一步。
+    if (error instanceof SessionMessageUndeliverableError) {
+      return {
+        result: false,
+        errorCode: SEND_MESSAGE_FAILURE_CODE.UNDELIVERABLE,
         message: error.message,
       };
     }

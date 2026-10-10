@@ -39,6 +39,29 @@ export class SessionMessageChainExceededError extends Error {
 }
 
 /**
+ * 目标会话不存在：冷恢复失败后经 session store 证伪的硬失败（spec 失败语义）。
+ * 与链超限同形——"拒绝"不是"降级"：不写 mailbox、不唤醒、不落盘（不存在的会话
+ * 没有 drainer，落 mailbox 就是死信）。`reason` 暂只有 `not_found` 一种，单列成
+ * 字段而非枚举新值：`SessionMessageDeliveryStatus` 表达的是"实际落地方式"，拒绝不是落地方式。
+ */
+export class SessionMessageUndeliverableError extends Error {
+  readonly toSessionId: string;
+  readonly messageId: string;
+  readonly reason: "not_found";
+
+  constructor(input: { toSessionId: string; messageId: string }) {
+    super(
+      `session_message_undeliverable: session "${input.toSessionId}" does not exist, so message ${input.messageId} was neither delivered nor stored. ` +
+        "Verify the session ID (it may have been deleted or never existed) before retrying; do not assume the message was queued.",
+    );
+    this.name = "SessionMessageUndeliverableError";
+    this.toSessionId = input.toSessionId;
+    this.messageId = input.messageId;
+    this.reason = "not_found";
+  }
+}
+
+/**
  * 会话级入站链读取口：由接收方 runtime 实现并注入工具上下文。
  * 工具侧只能读，不得自行推导链深（链可能在回合中途被 guide 注入，必须读实时值）。
  */

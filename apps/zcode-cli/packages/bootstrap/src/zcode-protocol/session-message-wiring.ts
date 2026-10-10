@@ -6,7 +6,7 @@
 // 单一实例、进程级一份：由 ZCodeProtocolAgentServer 构造时创建，注入每个
 // createWorkspaceZCodeApp 生成的 runtime（见 workspace-model-runtime.ts）。
 
-import type { SessionMailboxPort, SessionMessagePort } from "@zcode/contracts";
+import type { SessionId, SessionMailboxPort, SessionMessagePort } from "@zcode/contracts";
 import {
   BootstrapSessionMessagePort,
   SESSION_MESSAGE_CLIENT_ID,
@@ -34,6 +34,14 @@ export function createBootstrapSessionMessagePort(
       if (!gateway) return false;
       await gateway.ensureSessionResident(sessionId);
       return context.sessions.has(sessionId);
+    },
+    // 存在性权威判据 = session store（单一全局 SQLite，按 sessionId 建键、跨 workspace 共享，
+    // 即"本机上这个会话存不存在"）。store 缺席时 fail-open 按存在对待——证明不了不存在
+    // 就不能拒绝（spec 失败语义）。
+    sessionExists: async (sessionId) => {
+      const store = context.deps?.sessionStore;
+      if (!store) return true;
+      return (await store.getSession(sessionId as SessionId)) != null;
     },
     sendViaV4: (input) => sendViaV4(context, input),
     mailbox,

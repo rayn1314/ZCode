@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   SendMessageOutputSchema,
+  SessionMessageUndeliverableError,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryStatus,
   type SendMessageOutput,
@@ -41,7 +42,11 @@ async function run(inputValue: unknown, context: unknown): Promise<unknown> {
 
 function asFailure(output: unknown): ToolHandlerFailure {
   const candidate = output as Partial<ToolHandlerFailure>;
-  assert.equal(candidate.result, false, `expected a ToolHandlerFailure, got ${JSON.stringify(output)}`);
+  assert.equal(
+    candidate.result,
+    false,
+    `expected a ToolHandlerFailure, got ${JSON.stringify(output)}`,
+  );
   assert.equal(typeof candidate.message, "string");
   return candidate as ToolHandlerFailure;
 }
@@ -70,7 +75,9 @@ test("agent_*：走子代理端口，不触碰跨会话端口", async () => {
     },
   });
 
-  const output = SendMessageOutputSchema.parse(await run(input("agent_abc"), context)) as SendMessageOutput;
+  const output = SendMessageOutputSchema.parse(
+    await run(input("agent_abc"), context),
+  ) as SendMessageOutput;
 
   assert.equal(output.delivery, "steered");
   assert.equal(output.agentId, "agent_abc");
@@ -79,7 +86,9 @@ test("agent_*：走子代理端口，不触碰跨会话端口", async () => {
 });
 
 test("agent_* 且本 runtime 无子代理注册表：明确失败（能力缺席）", async () => {
-  const failure = asFailure(await run(input("agent_abc"), createContext({ subagentPort: undefined })));
+  const failure = asFailure(
+    await run(input("agent_abc"), createContext({ subagentPort: undefined })),
+  );
 
   assert.equal(failure.errorCode, 2);
   assert.match(failure.message, /subagent_registry_unavailable/);
@@ -157,10 +166,35 @@ test("sess_*：拒绝把消息发给自己", async () => {
 });
 
 test("sess_* 且无跨会话端口：明确失败（能力缺席）", async () => {
-  const failure = asFailure(await run(input("sess_target"), createContext({ sessionMessagePort: undefined })));
+  const failure = asFailure(
+    await run(input("sess_target"), createContext({ sessionMessagePort: undefined })),
+  );
 
   assert.equal(failure.errorCode, 3);
   assert.match(failure.message, /session_message_unavailable/);
+});
+
+test("sess_* 目标不存在：undeliverable 是硬失败（errorCode 5），不映射成 stored", async () => {
+  const context = createContext({
+    sessionMessagePort: {
+      deliver: async (request: SessionMessageDeliveryRequest) => {
+        throw new SessionMessageUndeliverableError({
+          toSessionId: request.toSessionId,
+          messageId: request.messageId,
+        });
+      },
+    },
+  });
+
+  const failure = asFailure(await run(input("sess_target"), context));
+
+  assert.equal(failure.errorCode, 5);
+  assert.match(failure.message, /session_message_undeliverable/);
+  assert.match(failure.message, /sess_target/);
+  // 文案必须让模型可执行：目标不存在、消息没投也没存、下一步是核对 id。
+  assert.match(failure.message, /does not exist/);
+  assert.match(failure.message, /neither delivered nor stored/);
+  assert.match(failure.message, /[Vv]erify the session ID/);
 });
 
 test("非 agent_*/sess_* 前缀：输入校验失败", async () => {

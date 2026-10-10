@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   SESSION_MESSAGE_MAX_HOP,
   SessionMessageChainExceededError,
+  SessionMessageUndeliverableError,
   type SessionMailboxEnvelope,
   type SessionMailboxPort,
   type SessionMessageDeliveryRequest,
@@ -48,6 +49,8 @@ interface FakeHostState {
   active: Set<string>;
   resumeResult: boolean | "throw";
   resumeCalls: number;
+  /** session store 中该目标是否存在；false 时冷恢复失败分支必须拒绝而非落 mailbox。 */
+  sessionExists: boolean;
   sendResult: SessionMessageV4SendResult | "throw";
   sends: SessionMessageV4SendInput[];
   stored: SessionMailboxEnvelope[];
@@ -63,6 +66,7 @@ function createHost(overrides: Partial<FakeHostState> = {}): {
     active: new Set(),
     resumeResult: false,
     resumeCalls: 0,
+    sessionExists: true,
     sendResult: { accepted: true },
     sends: [],
     stored: [],
@@ -91,6 +95,9 @@ function createHost(overrides: Partial<FakeHostState> = {}): {
       if (state.resumeResult === "throw") throw new Error("cold resume blew up");
       if (state.resumeResult) state.resident.add(sessionId);
       return state.resumeResult === true;
+    },
+    async sessionExists() {
+      return state.sessionExists;
     },
     async sendViaV4(input) {
       if (state.sendResult === "throw") throw new Error("v4 blew up");
@@ -166,12 +173,56 @@ test("cold target is resumed before delivery", async () => {
   assert.equal(state.stored.length, 0);
 });
 
-test("cold resume failure degrades to stored, never drops the message", async () => {
-  const { host, state } = createHost({ resident: new Set(), resumeResult: "throw" });
+test("cold resume failure on an existing session degrades to stored, never drops the message", async () => {
+  const { host, state } = createHost({
+    resident: new Set(),
+    resumeResult: "throw",
+    sessionExists: true,
+  });
   const result = await new BootstrapSessionMessagePort(host).deliver(createRequest());
 
   assert.equal(result.status, "stored");
   assert.equal(state.stored.length, 1);
+  assert.match(result.detail ?? "", /target not resident but persisted/);
+});
+
+// ── 目标不存在 = 发送方可见的硬失败（spec 失败语义：不落盘、不唤醒） ──
+
+test("不常驻 + 冷恢复失败 + 目标不存在：抛 undeliverable，不写 mailbox、不投递", async () => {
+  const { host, state } = createHost({
+    resident: new Set(),
+    resumeResult: "throw",
+    sessionExists: false,
+  });
+
+  await assert.rejects(
+    () => new BootstrapSessionMessagePort(host).deliver(createRequest()),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionMessageUndeliverableError);
+      assert.equal(error.toSessionId, "sess_target");
+      assert.equal(error.messageId, "msg_abc");
+      assert.equal(error.reason, "not_found");
+      assert.match(error.message, /does not exist/);
+      assert.match(error.message, /neither delivered nor stored/);
+      return true;
+    },
+  );
+  assert.equal(state.stored.length, 0, "不存在的目标落 mailbox 就是死信，必须拒绝");
+  assert.equal(state.sends.length, 0);
+  assert.equal(state.resumeCalls, 1, "拒绝发生在存在性检查，冷恢复仍按预期尝试过");
+});
+
+test("不常驻 + 冷恢复失败 + 目标存在：仍 stored（合法延迟投递不受误伤）", async () => {
+  const { host, state } = createHost({
+    resident: new Set(),
+    resumeResult: false,
+    sessionExists: true,
+  });
+  const result = await new BootstrapSessionMessagePort(host).deliver(createRequest());
+
+  assert.equal(result.status, "stored");
+  assert.equal(state.stored.length, 1);
+  assert.equal(state.sends.length, 0);
 });
 
 test("rejected v4 delivery is stored instead of pretending success", async () => {
@@ -306,6 +357,8 @@ function createWiringFixture(options: {
   resident: boolean;
   active: boolean;
   gatewayAbsent?: boolean;
+  /** 模拟 `context.deps.sessionStore`；缺省即 store 缺席（fail-open 场景）。 */
+  sessionStore?: { getSession(sessionId: string): Promise<unknown> };
 }): WiringFixture {
   const envelopes: unknown[] = [];
   const stored: SessionMailboxEnvelope[] = [];
@@ -348,6 +401,7 @@ function createWiringFixture(options: {
   const context = {
     sessions,
     v4Gateway: gateway,
+    deps: options.sessionStore ? { sessionStore: options.sessionStore } : {},
     notify: (notification: { method: string; params: unknown }) => {
       notifications.push(notification);
     },
@@ -411,7 +465,9 @@ test("wiring 构造的信封（含 sessionMessageChain）通过真实 parseComma
 test("wiring：链必须显式进 sendText payload（zod object 会静默剥离未知键）", async () => {
   const fixture = createWiringFixture({ resident: true, active: false });
   const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
-  await port.deliver(createRequest({ sessionMessageChain: { hop: 3, originMessageId: "msg_root" } }));
+  await port.deliver(
+    createRequest({ sessionMessageChain: { hop: 3, originMessageId: "msg_root" } }),
+  );
 
   const envelope = fixture.envelopes[0] as {
     payload: { sessionMessageChain?: unknown };
@@ -439,6 +495,50 @@ test("wiring degrades to mailbox when the v4 gateway is absent", async () => {
     toSessionId: "sess_target",
     senderKind: "session",
   });
+});
+
+// ── wiring 的存在性映射：store 查无 → 拒绝；store 命中 / store 缺席 → 仍落 mailbox ──
+
+test("wiring：store 查无此会话 → 冷恢复失败分支拒绝（undeliverable），不落 mailbox", async () => {
+  const fixture = createWiringFixture({
+    resident: false,
+    active: false,
+    gatewayAbsent: true,
+    sessionStore: { getSession: async () => null },
+  });
+  const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
+
+  await assert.rejects(
+    () => port.deliver(createRequest()),
+    (error: unknown) => {
+      assert.ok(error instanceof SessionMessageUndeliverableError);
+      return true;
+    },
+  );
+  assert.equal(fixture.stored.length, 0);
+});
+
+test("wiring：store 命中 → 仍落 mailbox（存在但不可达是合法延迟投递）", async () => {
+  const fixture = createWiringFixture({
+    resident: false,
+    active: false,
+    gatewayAbsent: true,
+    sessionStore: { getSession: async () => ({ id: "sess_target" }) },
+  });
+  const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
+  const result = await port.deliver(createRequest());
+
+  assert.equal(result.status, "stored");
+  assert.equal(fixture.stored.length, 1);
+});
+
+test("wiring：store 缺席 fail-open（证明不了不存在就不拒绝），冷恢复失败仍落 mailbox", async () => {
+  const fixture = createWiringFixture({ resident: false, active: false, gatewayAbsent: true });
+  const port = createBootstrapSessionMessagePort(fixture.context, fixture.mailbox);
+  const result = await port.deliver(createRequest());
+
+  assert.equal(result.status, "stored");
+  assert.equal(fixture.stored.length, 1);
 });
 
 test("resident targets do not emit the cross-process signal", async () => {

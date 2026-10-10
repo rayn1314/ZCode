@@ -10,7 +10,9 @@
 // 可达性分三档：
 //   1. 常驻（不论忙闲） → sendText(requestedDelivery=guide) → steered/woken
 //   2. 不在进程内先冷恢复，恢复后同上
-//   3. 不在进程内且冷恢复失败 / v4 投递被拒 → mailbox deliver → stored
+//   3. 不在进程内且冷恢复失败 → 先问 store 存在性：不存在 → 抛
+//      SessionMessageUndeliverableError（拒绝，不落盘不唤醒）；存在 / v4 投递被拒
+//      → mailbox deliver → stored
 //
 // 恒用 guide 而不按活动回合切换（审计修复 #1）：`hasActiveTurn` 是发送时刻的快照，
 // 目标可能在快照之后刚起轮；startNow 分支会 preemptActiveTurnAndWait 把它 abort 掉
@@ -20,7 +22,8 @@
 // Host 跨进程路径已刻意恒用 guide（zcodeTaskServiceAdapter），此处与它对齐。
 //
 // 失败语义（spec）：不丢、不假装成功。mailbox 落盘本身失败时直接抛出，让调用方看到
-// 真实原因；因可达性不足而落 mailbox 属预期降级，返回 stored 并带 detail。
+// 真实原因；因可达性不足而落 mailbox 属预期降级，返回 stored 并带 detail；
+// 但目标在 store 中根本不存在时拒绝——不存在的会话没有 drainer，落 mailbox 是死信。
 //
 // 本文件依赖被收窄成 SessionMessageDeliveryHost，装配层把 context.sessions /
 // gateway / 冷恢复 / mailbox 绑进闭包，因此三档语义可以脱离协议服务器做单测。
@@ -35,7 +38,11 @@ import type {
   SessionMessageDeliveryResult,
   SessionMessagePort,
 } from "@zcode/contracts";
-import { SESSION_MESSAGE_MAX_HOP, SessionMessageChainExceededError } from "@zcode/contracts";
+import {
+  SESSION_MESSAGE_MAX_HOP,
+  SessionMessageChainExceededError,
+  SessionMessageUndeliverableError,
+} from "@zcode/contracts";
 import { sessionMessageV4CommandId } from "@zcode/shared";
 import { V4_NOTIFICATIONS, type CommandAck } from "@zcode/shared/zcode-protocol-v4";
 
@@ -70,6 +77,12 @@ export interface SessionMessageDeliveryHost {
   hasActiveTurn(sessionId: string): boolean;
   /** 冷恢复入口：把持久化会话拉回常驻。失败应抛出，由本层降级 mailbox。 */
   ensureSessionResident(sessionId: string): Promise<boolean>;
+  /**
+   * 目标会话在本机 session store 中是否存在（存在性权威判据，spec 失败语义）。
+   * 只在冷恢复失败分支调用；store 缺席（证明不了不存在）必须 fail-open 返回 true，
+   * 不能拒绝无法证伪的投递。
+   */
+  sessionExists(sessionId: string): Promise<boolean>;
   sendViaV4(input: SessionMessageV4SendInput): Promise<SessionMessageV4SendResult>;
   /** 不可达时兜底落盘；不可写时抛出，不假装成功。 */
   mailbox: SessionMailboxPort;
@@ -105,14 +118,28 @@ export class BootstrapSessionMessagePort implements SessionMessagePort {
         toSessionId: target,
       });
     }
-    // 档 2 前置：不在进程内先尝试冷恢复；恢复不出 record 即落盘。
+    // 档 2 前置：不在进程内先尝试冷恢复；恢复不出 record 即按存在性分流（spec 失败语义）。
     if (!this.host.hasResidentSession(target)) {
       const resumed = await this.tryEnsureResident(target);
       if (!resumed) {
+        // 不存在的会话没有 drainer，落 mailbox 就是死信——必须变成发送方可见的硬失败。
+        // 存在但此刻恢复不出（resumeFailed 等）仍走 mailbox：有持久 drainer 兜底。
+        if (!(await this.host.sessionExists(target))) {
+          this.host.logger?.warn("Session message rejected: target session does not exist", {
+            event: "session.message.undeliverable",
+            module: "bootstrap.session_message",
+            messageId: request.messageId,
+            sessionId: target,
+          });
+          throw new SessionMessageUndeliverableError({
+            toSessionId: target,
+            messageId: request.messageId,
+          });
+        }
         return await this.storeToMailbox(
           request,
           opts,
-          "target not resident; cold resume unavailable",
+          "target not resident but persisted; deferred to mailbox",
         );
       }
     }
