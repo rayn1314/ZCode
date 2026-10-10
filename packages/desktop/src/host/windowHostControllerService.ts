@@ -282,6 +282,15 @@ export function createWindowHostControllerRuntime(options: {
       case "mark-unread":
         await service.setTaskUnread({ ...base, unread: true });
         break;
+      case "mark-workspace-read":
+        // 菜单打开到点击之间远端 session 可能被替换；不能把旧地址的批量清除落到同 identity 的新 source。
+        if (sourceKey(current.scope) !== sourceKey(scope)) {
+          throw new Error("未读清除批次的 source 已替换");
+        }
+        return service.markWorkspaceTasksRead({
+          workspacePath: base.workspacePath,
+          ...(base.workspaceIdentity ? { workspaceIdentity: base.workspaceIdentity } : {}),
+        });
       case "open":
       case "resume":
         // open/resume 的 Controller 职责是验证唯一 source；conversation 随后仍走 scoped facade。
@@ -597,7 +606,7 @@ export function createWindowHostControllerRuntime(options: {
           return { deletedTaskIds: [], skippedTaskIds: [], failedTaskIds: [] };
         }
         const result = await projection.mutate(address, { kind: "delete-archived-batch", taskIds });
-        if (!result || typeof result === "boolean") {
+        if (!result || typeof result === "boolean" || !("deletedTaskIds" in result)) {
           throw new Error("归档删除批次未返回逐项目标结果");
         }
         const resolved = options.resolveSource({
@@ -606,6 +615,23 @@ export function createWindowHostControllerRuntime(options: {
         });
         if (resolved) {
           // 只在整批结束后收敛投影，与 source 的一次事件共享 single-flight；刷新失败不改写已提交结果。
+          await refreshSource(resolved, true).catch((error) =>
+            options.onSourceError?.(resolved.scope, "refresh", error),
+          );
+        }
+        return result;
+      },
+      async markWorkspaceTasksRead({ address }) {
+        const result = await projection.mutate(address, { kind: "mark-workspace-read" });
+        if (!result || typeof result === "boolean" || !("clearedTaskIds" in result)) {
+          throw new Error("未读清除批次未返回清除结果");
+        }
+        const resolved = options.resolveSource({
+          workspacePath: address.workspacePath,
+          workspaceIdentity: address.workspaceIdentity,
+        });
+        if (resolved) {
+          // 与 source 的一次事件共享 single-flight；刷新失败不改写已提交的清除结果。
           await refreshSource(resolved, true).catch((error) =>
             options.onSourceError?.(resolved.scope, "refresh", error),
           );

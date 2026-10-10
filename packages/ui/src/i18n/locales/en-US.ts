@@ -1654,6 +1654,9 @@ const enUS: Record<string, string> = {
   "workspaceSidebar.searchTasksPlaceholder": "Search tasks...",
   "workspaceSidebar.searchArchivedTasksPlaceholder": "Search archived tasks...",
   "workspaceSidebar.closeTaskSearch": "Close task search",
+  "workspaceSidebar.markAllAsRead": "Mark all as read",
+  "workspaceSidebar.markAllAsReadEmpty": "No unread conversations",
+  "workspaceSidebar.markAllAsReadFailed": "Could not mark as read",
   "workspaceSidebar.remove": "Remove",
   "workspaceSidebar.removeRunningWorkspace.title": "Remove a running project?",
   "workspaceSidebar.removeRunningWorkspace.description":

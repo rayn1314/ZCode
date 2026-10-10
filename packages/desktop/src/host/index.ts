@@ -1944,6 +1944,21 @@ function createControllerRoutedTaskService(
           return meta;
         };
       }
+      if (property === "markWorkspaceTasksRead") {
+        return async (params: Parameters<IZCodeTaskService["markWorkspaceTasksRead"]>[0]) => {
+          // workspace 级批量不针对具体 task，投影里可以没有对应行：必须 allowMissingTask
+          // 才能解析出 source 地址，否则会被"无法解析唯一 source"拦下。
+          return windowHostControllerRuntime.service.markWorkspaceTasksRead({
+            address: await windowHostControllerRuntime.resolveTaskAddress({
+              taskId: "",
+              workspacePath: params.workspacePath,
+              ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
+              attachmentScope,
+              allowMissingTask: true,
+            }),
+          });
+        };
+      }
       const value = Reflect.get(target, property, receiver) as unknown;
       return typeof value === "function" ? value.bind(target) : value;
     },

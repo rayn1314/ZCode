@@ -117,6 +117,7 @@ import type {
   ZCodeWorkspaceEventSubscriptionParams,
   IZCodeTaskService,
   ZCodeArchivedTaskDeletionResult,
+  ZCodeWorkspaceUnreadClearResult,
   ZCodeTaskReadyOutcome,
   ZCodeTaskTerminalOutcome,
 } from "../session/zcodeTaskService.js";
@@ -3353,6 +3354,23 @@ export function createZCodeTaskServiceAdapter(
       // unread 归属在 tasks-index、sessions-index 不携带，必须走 task_meta_changed 触发 membership 重拉。
       emitWorkspaceTaskListChanged(params, meta, "task_meta_changed");
       return meta;
+    },
+
+    async markWorkspaceTasksRead(params): Promise<ZCodeWorkspaceUnreadClearResult> {
+      const { clearedTaskIds } = await taskIndexRepo.clearWorkspaceUnread({
+        workspacePath: params.workspacePath,
+        workspaceIdentity: params.workspaceIdentity,
+      });
+      // 逐条对账 service overlay：不这么做，随后到达的 snapshot 会把已清掉的 marker 写回。
+      for (const taskId of clearedTaskIds) {
+        setOverlay({ ...params, taskId }, { unreadAt: undefined });
+      }
+      if (clearedTaskIds.length > 0) {
+        // 批次只广播一次。unread 归属在 tasks-index、sessions-index 不携带，
+        // 必须走 task_meta_changed 让所有观察端重拉 membership（含手机端兜底）。
+        emitWorkspaceTaskListChanged(params, undefined, "task_meta_changed");
+      }
+      return { clearedTaskIds };
     },
 
     async archiveTask(params): Promise<ZCodeTaskMeta> {

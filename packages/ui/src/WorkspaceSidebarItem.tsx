@@ -9,6 +9,7 @@ import {
   type MouseEvent,
 } from "react";
 import {
+  CheckCheck,
   CheckIcon,
   CircleAlert,
   Cloud,
@@ -61,6 +62,7 @@ import {
   TID_WORKSPACE_CLOSE,
   TID_WORKSPACE_FILE_TREE_BUTTON,
   TID_WORKSPACE_ITEM,
+  TID_WORKSPACE_MARK_READ,
   testId,
 } from "@zcode/shared";
 import type { ZCodeTaskMeta } from "@zcode/shared";
@@ -68,7 +70,12 @@ import { useBaseWorkspaceServices, useWorkspaceServices } from "@/hooks/useWorks
 import {
   applyTaskQueryCacheMutation,
   invalidateTaskQueryCacheByScopes,
+  markTaskQueryCacheScopesStale,
+  reconcileTaskQueryCacheUnread,
+  rollbackTaskQueryCacheUnread,
+  setTaskQueryCacheUnreadOverlay,
 } from "@/store/taskQueryCacheStore.js";
+import { bumpTaskListMembershipVersion } from "@/v4/taskListMembershipVersion.js";
 import { useRemotePinnedTaskStore } from "@/store/remotePinnedTaskStore.js";
 import { useRemoteTimelineTaskStore } from "@/store/remoteTimelineTaskStore.js";
 import { logger } from "@/logger.js";
@@ -262,6 +269,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
   const [workspaceRowHovered, setWorkspaceRowHovered] = useState(false);
   const [workspaceRowFocusWithin, setWorkspaceRowFocusWithin] = useState(false);
   const [workspaceActionMenuOpen, setWorkspaceActionMenuOpen] = useState(false);
+  const [markingWorkspaceRead, setMarkingWorkspaceRead] = useState(false);
   const [isHoverNone] = useState(
     () =>
       typeof window !== "undefined" &&
@@ -699,6 +707,64 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
     ],
   );
 
+  // 项目级「全部标为已读」：口径与项目行蓝点一致（非置顶、非归档、未删除），由服务端
+  // 在单个事务里清完；这里只负责先做可见行的乐观反馈、回包后对账。
+  const handleMarkWorkspaceRead = useCallback(async () => {
+    if (readOnlyReason || markingWorkspaceRead) {
+      return;
+    }
+    const scope = {
+      workspacePath: tab.workspacePath,
+      ...(tab.workspaceIdentity ? { workspaceIdentity: tab.workspaceIdentity } : {}),
+    };
+    const visibleUnreadTasks = taskItemsRef.current.filter(
+      (task) => typeof task.unreadAt === "number",
+    );
+    for (const task of visibleUnreadTasks) {
+      setTaskQueryCacheUnreadOverlay(task, undefined);
+      setTaskUnreadIndicator(tab.workspacePath, task.taskId, false, tab.workspaceIdentity);
+    }
+    setMarkingWorkspaceRead(true);
+    try {
+      const { clearedTaskIds } = await zcodeTaskService.markWorkspaceTasksRead(scope);
+      // 分页窗口之外的未读不在可见列表里，只能靠回包带回的 taskId 收蓝点。
+      const clearedIds = [
+        ...new Set([...visibleUnreadTasks.map((task) => task.taskId), ...clearedTaskIds]),
+      ];
+      for (const taskId of clearedIds) {
+        reconcileTaskQueryCacheUnread({ taskId, ...scope }, undefined);
+        setTaskUnreadIndicator(tab.workspacePath, taskId, false, tab.workspaceIdentity);
+      }
+      // 项目行蓝点还依赖 unreadTaskKeys，而它只在 membership 重拉时重算，必须 bump。
+      bumpTaskListMembershipVersion();
+    } catch (error) {
+      for (const task of visibleUnreadTasks) {
+        rollbackTaskQueryCacheUnread(task, task.unreadAt);
+      }
+      markTaskQueryCacheScopesStale([scope]);
+      bumpTaskListMembershipVersion();
+      toast(intl.formatMessage({ id: "workspaceSidebar.markAllAsReadFailed" }));
+      logger.warn(
+        "[WorkspaceSidebar] 全部标为已读失败",
+        {
+          workspacePath: tab.workspacePath,
+          workspaceIdentity: tab.workspaceIdentity ?? null,
+        },
+        error,
+      );
+    } finally {
+      setMarkingWorkspaceRead(false);
+    }
+  }, [
+    intl,
+    markingWorkspaceRead,
+    readOnlyReason,
+    setTaskUnreadIndicator,
+    tab.workspaceIdentity,
+    tab.workspacePath,
+    zcodeTaskService,
+  ]);
+
   const handleCopyRemoteWorkspaceError = useCallback(() => {
     if (!remoteWorkspaceError || remoteWorkspaceError.trim().length === 0) {
       return;
@@ -930,6 +996,28 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
                             onOpenMcpSync={() => setRemoteMcpSyncOpen(true)}
                             onOpenPluginSync={() => setRemotePluginSyncOpen(true)}
                           />
+                          <DropdownMenuItem
+                            data-testid={testId(TID_WORKSPACE_MARK_READ, tab.workspacePath)}
+                            disabled={
+                              Boolean(readOnlyReason) || !taskListHasUnread || markingWorkspaceRead
+                            }
+                            title={
+                              taskListHasUnread
+                                ? undefined
+                                : intl.formatMessage({ id: "workspaceSidebar.markAllAsReadEmpty" })
+                            }
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onSelect={(event) => {
+                              event.preventDefault();
+                              void handleMarkWorkspaceRead();
+                            }}
+                          >
+                            <CheckCheck className="h-3.5 w-3.5" />
+                            {intl.formatMessage({ id: "workspaceSidebar.markAllAsRead" })}
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             data-testid={testId(TID_WORKSPACE_CLOSE, tab.workspacePath)}
                             onMouseDown={(event) => {

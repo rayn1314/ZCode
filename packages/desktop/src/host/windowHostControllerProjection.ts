@@ -1,7 +1,10 @@
 /* eslint-disable max-lines -- 投影状态、V4 帧与离线替换属于同一个一致性边界。 */
 import { isDeepStrictEqual } from "node:util";
 import type { ZCodeTaskMeta } from "@zcode/shared";
-import type { ZCodeArchivedTaskDeletionResult } from "@zcode/services";
+import type {
+  ZCodeArchivedTaskDeletionResult,
+  ZCodeWorkspaceUnreadClearResult,
+} from "@zcode/services";
 import {
   CONTROLLER_TASKS_INDEX_TOPIC,
   CONTROLLER_WORKSPACES_TOPIC,
@@ -57,10 +60,15 @@ export type WindowHostControllerMutation =
   | { kind: "delete-archived-batch"; taskIds: string[] }
   | { kind: "mark-read"; expectedUnreadAt?: number }
   | { kind: "mark-unread" }
+  | { kind: "mark-workspace-read" }
   | { kind: "open" }
   | { kind: "resume" };
 
-export type WindowHostControllerMutationResult = void | boolean | ZCodeArchivedTaskDeletionResult;
+export type WindowHostControllerMutationResult =
+  | void
+  | boolean
+  | ZCodeArchivedTaskDeletionResult
+  | ZCodeWorkspaceUnreadClearResult;
 
 interface ControllerSource {
   scope: WindowHostControllerSourceScope;
@@ -493,6 +501,8 @@ export function createWindowHostControllerProjection(options: { createId: () => 
         !source ||
         (mutation.kind !== "delete-archived" &&
           mutation.kind !== "delete-archived-batch" &&
+          // workspace 级批量未读清除不针对具体 task，投影里可以没有对应行。
+          mutation.kind !== "mark-workspace-read" &&
           !source.rows.has(taskKey(address)))
       ) {
         throw new Error("没有与任务地址匹配的 source");

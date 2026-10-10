@@ -197,6 +197,8 @@ export const TID_WORKSPACE_LIST = "workspace-list";
 export const TID_WORKSPACE_ITEM = "workspace-item";
 /** 侧边栏关闭工作区按钮（动态后缀为 workspacePath） */
 export const TID_WORKSPACE_CLOSE = "workspace-close";
+/** 项目行「全部标为已读」菜单项（动态后缀为 workspacePath） */
+export const TID_WORKSPACE_MARK_READ = "workspace-mark-all-read";
 /** 项目视图里的对话二级分区 */
 export const TID_CONVERSATION_SECTION = "conversation-section";
 /** 项目视图里的项目二级分区 */

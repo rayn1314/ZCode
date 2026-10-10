@@ -1537,6 +1537,9 @@ const zhCN: Record<string, string> = {
   "workspaceSidebar.searchTasksPlaceholder": "搜索任务...",
   "workspaceSidebar.searchArchivedTasksPlaceholder": "搜索归档任务...",
   "workspaceSidebar.closeTaskSearch": "关闭任务搜索",
+  "workspaceSidebar.markAllAsRead": "全部标为已读",
+  "workspaceSidebar.markAllAsReadEmpty": "没有未读会话",
+  "workspaceSidebar.markAllAsReadFailed": "标记已读失败",
   "workspaceSidebar.remove": "移除",
   "workspaceSidebar.removeRunningWorkspace.title": "移除运行中的项目？",
   "workspaceSidebar.removeRunningWorkspace.description":

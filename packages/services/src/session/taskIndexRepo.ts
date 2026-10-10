@@ -17,6 +17,7 @@ import {
   type ZCodeProvider,
   type ZCodeTaskMeta,
 } from "@zcode/shared";
+import { matchesTaskListMembershipKind } from "@zcode/shared/zcode-protocol-v4";
 import type {
   ZCodeTaskListQuery,
   ZCodeTaskListResult,
@@ -1527,6 +1528,90 @@ export class TaskIndexRepo {
         throw error;
       }
     });
+  }
+
+  /**
+   * 把项目行未读蓝点覆盖的那批 task 一次性标为已读（「全部标为已读」）。
+   *
+   * 口径必须与蓝点判定逐字一致：蓝点统计的是 task list membership 为 `timeline` 的未读
+   * （由 `matchesTaskListMembershipKind` 定义），即非置顶、非归档、未删除。这里复用同一个
+   * 判定函数而不是在 SQL 里重写条件——两处副本一旦漂移，就会出现「蓝点还亮着却清不掉」
+   * 或「已经清干净了蓝点还在」。
+   *
+   * 单事务内读改写：事务期间并发产生的未读写入进不来，语义等价于「以执行时刻为准全部清除」，
+   * 所以不需要逐条 expectedUnreadAt（那是给「看着旧行快照点单条」的 compare-and-clear 用的）。
+   */
+  async clearWorkspaceUnread(params: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+  }): Promise<{ clearedTaskIds: string[] }> {
+    await this.ensureReady();
+    const database = this.getDatabase();
+    const unreadRows = database
+      .prepare(
+        `SELECT
+          workspace_key,
+          workspace_path,
+          workspace_identity,
+          task_id,
+          title,
+          task_status,
+          provider,
+          mode,
+          model,
+          migration_source,
+          forked_from_task_id,
+          cron_automation_id,
+          off_peak_task_id,
+          created_at,
+          updated_at,
+          unread_at,
+          last_unread_at,
+          pinned,
+          archived,
+          deleted,
+          title_overridden,
+          searchable_text,
+          meta_json
+        FROM tasks
+        WHERE workspace_key = ? AND unread_at IS NOT NULL AND deleted = 0`,
+      )
+      .all(workspaceKey(params)) as unknown as TaskIndexRow[];
+    // 置顶区、归档区的未读不点亮项目行蓝点，也就不归这个入口管：只清蓝点口径内的行。
+    const badgeRows = unreadRows.filter((row) =>
+      matchesTaskListMembershipKind(
+        { pinned: row.pinned === 1, archived: row.archived === 1 },
+        "timeline",
+      ),
+    );
+    if (badgeRows.length === 0) {
+      return { clearedTaskIds: [] };
+    }
+
+    const clearedTaskIds: string[] = [];
+    // 事务体必须保持同步：sqlite 是单连接的同步驱动，BEGIN 与 COMMIT 之间一旦引入 await，
+    // 其它写链就会插进这个批次，破坏「一次事务清完」的原子性。
+    database.exec("BEGIN IMMEDIATE");
+    try {
+      for (const row of badgeRows) {
+        // 走 writeRecord 而不是裸 UPDATE：unreadAt 同时投影在 unread_at 列与 meta_json 里，
+        // 也要让 last_unread_at 水位按既有规则推进，否则后续 CAS 版本会互相打架。
+        this.writeRecord({
+          meta: { ...rowToMeta(row), unreadAt: undefined },
+          pinned: row.pinned === 1,
+          archived: row.archived === 1,
+          deleted: false,
+          titleOverridden: row.title_overridden === 1,
+          writeUnreadAt: true,
+        });
+        clearedTaskIds.push(row.task_id);
+      }
+      database.exec("COMMIT");
+    } catch (error) {
+      database.exec("ROLLBACK");
+      throw error;
+    }
+    return { clearedTaskIds };
   }
 
   async deleteArchivedTask(params: {

@@ -66,6 +66,11 @@ export interface ZCodeArchivedTaskDeletionResult {
   failedTaskIds: string[];
 }
 
+/** 项目级「全部标为已读」的结果：本次真正从 unread 清成 read 的 taskId。 */
+export interface ZCodeWorkspaceUnreadClearResult {
+  clearedTaskIds: string[];
+}
+
 /** 一次模型请求里出现的消息内容片段（文本 / 工具调用 / 工具结果 / 其他原始结构）。 */
 export type ZCodeModelTrajectoryContentPart =
   | { kind: "text"; text: string }
@@ -694,6 +699,15 @@ export interface IZCodeTaskService {
     /** 仅用于已读 compare-and-clear；缺省时保持既有无条件写入语义。 */
     expectedUnreadAt?: number;
   }): Promise<ZCodeTaskMeta>;
+
+  /**
+   * 把项目行未读蓝点口径内的 task 一次性标为已读（「全部标为已读」）：
+   * 非置顶、非归档、未删除，与 `matchesTaskListMembershipKind(…, "timeline")` 一致。
+   */
+  markWorkspaceTasksRead(params: {
+    workspacePath: string;
+    workspaceIdentity?: string;
+  }): Promise<ZCodeWorkspaceUnreadClearResult>;
 
   /** 归档 task，使其从默认任务列表中隐藏 */
   archiveTask(params: {

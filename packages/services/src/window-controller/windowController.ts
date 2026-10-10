@@ -13,7 +13,10 @@ import type {
   WindowHostTaskAddress,
 } from "@zcode/shared/zcode-protocol-v4";
 import { createServiceDescriptor } from "../descriptors.js";
-import type { ZCodeArchivedTaskDeletionResult } from "#src/session/zcodeTaskService.js";
+import type {
+  ZCodeArchivedTaskDeletionResult,
+  ZCodeWorkspaceUnreadClearResult,
+} from "#src/session/zcodeTaskService.js";
 import type {
   ZCodeTaskListItem,
   ZCodeTaskListQuery,
@@ -27,6 +30,7 @@ export type WindowHostControllerMutation =
   | { kind: "delete-archived" }
   | { kind: "mark-read"; expectedUnreadAt?: number }
   | { kind: "mark-unread" }
+  | { kind: "mark-workspace-read" }
   | { kind: "open" }
   | { kind: "resume" };
 
@@ -55,6 +59,10 @@ export interface IWindowControllerService {
     address: WindowHostTaskAddress;
     taskIds: string[];
   }): Promise<ZCodeArchivedTaskDeletionResult>;
+  /** 项目级「全部标为已读」：address 只承载 workspace 身份，不针对单个 task。 */
+  markWorkspaceTasksRead(params: {
+    address: WindowHostTaskAddress;
+  }): Promise<ZCodeWorkspaceUnreadClearResult>;
   listTaskList(params: ZCodeTaskListQuery): Promise<WindowHostControllerTaskListResult>;
   mutateTask(params: {
     address: WindowHostTaskAddress;
