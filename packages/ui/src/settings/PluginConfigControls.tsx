@@ -3,9 +3,45 @@ import { useState } from "react";
 import type { ZCodePluginInfo, ZCodePluginScope, ZCodePluginUserConfigOption } from "@zcode/shared";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select.js";
 import { Switch } from "@/components/ui/switch.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { SettingsScopeBadge } from "@/settings/SettingsScopeBadge.js";
+
+interface PluginOptionChoice {
+  label: string;
+  raw: string | number | boolean;
+  value: string;
+}
+
+/**
+ * 把清单声明的 options 候选转成 Select 选项。
+ *
+ * Radix 的 Select 只接受非空字符串 value，所以统一 String() 化并保留 raw 原值，回写时按 raw
+ * 还原（数值/布尔候选不会退化成字符串）。当前值不在候选里时（旧值、外部手改、候选项被插件
+ * 收窄）额外补一项，避免下拉把已有值显示成空、让用户以为配置丢了。
+ */
+function toPluginOptionChoices(
+  option: ZCodePluginUserConfigOption,
+  current: string | number | boolean,
+): PluginOptionChoice[] {
+  const choices = (option.options ?? []).map((raw) => ({
+    label: String(raw),
+    raw,
+    value: String(raw),
+  }));
+  const currentText = String(current);
+  if (currentText !== "" && !choices.some((choice) => choice.value === currentText)) {
+    choices.push({ label: currentText, raw: current, value: currentText });
+  }
+  return choices;
+}
 
 interface PluginConfigControlsProps {
   getValue: (
@@ -51,6 +87,7 @@ export function PluginConfigControls({
         {entries.map(([key, option]) => {
           const label = option.title ?? key;
           const value = getValue(plugin, key, option);
+          const choices = option.options?.length ? toPluginOptionChoices(option, value) : [];
           const clearPending = isOptionClearPending?.(plugin.id, key) ?? false;
           const canClearOption =
             onClearOption !== undefined &&
@@ -152,6 +189,34 @@ export function PluginConfigControls({
                     disabled={isSaving}
                     onCheckedChange={(checked) => onSetDraft(plugin.id, key, checked)}
                   />
+                  {clearButton}
+                </div>
+              ) : choices.length > 0 ? (
+                <div className="flex items-center gap-1">
+                  <Select
+                    value={String(value)}
+                    disabled={isSaving}
+                    onValueChange={(next) => {
+                      const choice = choices.find((item) => item.value === next);
+                      onSetDraft(plugin.id, key, choice ? choice.raw : next);
+                    }}
+                  >
+                    <SelectTrigger
+                      size="lg"
+                      className="min-w-0 flex-1"
+                      data-testid="plugin-store-config-input"
+                      data-config-key={key}
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {choices.map((choice) => (
+                        <SelectItem key={choice.value} value={choice.value}>
+                          {choice.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   {clearButton}
                 </div>
               ) : (

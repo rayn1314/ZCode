@@ -2587,6 +2587,10 @@ export const zcodePluginUserConfigOptionSchema = z
   .object({
     default: zcodePluginOptionValueSchema.optional(),
     description: z.string().optional(),
+    // 枚举候选：清单声明它表示该键只接受这组值（如 code-modernization 的 track/panel）。
+    // 必须收下，否则 .strict() 会把带 options 的插件清单判为非法，连整个插件列表都解析失败。
+    // 这里只做「允许并透传」，选项语义（下拉呈现、是否校验取值）由消费方决定。
+    options: z.array(zcodePluginOptionValueSchema).optional(),
     required: z.boolean().optional(),
     sensitive: z.boolean().optional(),
     title: z.string().optional(),

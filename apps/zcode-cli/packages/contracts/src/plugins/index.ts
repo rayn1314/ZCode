@@ -57,6 +57,8 @@ export type PluginDiagnosticCode =
 export interface PluginUserConfigOption {
   default?: string | number | boolean;
   description?: string;
+  /** 枚举候选：声明后该键只应取这组值，UI 以选择控件呈现而不是自由文本。 */
+  options?: Array<string | number | boolean>;
   title?: string;
   required?: boolean;
   sensitive?: boolean;
