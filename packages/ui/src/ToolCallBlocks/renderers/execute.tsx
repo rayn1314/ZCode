@@ -7,8 +7,10 @@ import { SquareTerminalIcon } from "lucide-react";
 import { useCallback, useMemo } from "react";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
+import { TruncationNoticeChip } from "@/ToolCallBlocks/TruncationNoticeChip.js";
 import { ToolLayout } from "../ToolLayout.js";
 import type { ToolCallBlockRenderContext } from "../shared.js";
+import { detectTruncationNotice } from "../truncationNotice.js";
 
 const EXECUTE_TOOL_ICON = <SquareTerminalIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
@@ -326,6 +328,7 @@ export function ExecuteToolCallBlock(context: ToolCallBlockRenderContext) {
     ),
     [contentParts.executionCommand, failureVisibleText, intl, isRunning, resultText, outputPreview],
   );
+  const notice = detectTruncationNotice(toolCall);
 
   return (
     <>
@@ -357,6 +360,7 @@ export function ExecuteToolCallBlock(context: ToolCallBlockRenderContext) {
               intl.formatMessage({ id: "chat.toolCall.execute.execute" }))
         }
         secondaryText={isOfficeMode ? undefined : secondaryTextNode}
+        noticeChip={notice ? <TruncationNoticeChip notice={notice} /> : undefined}
         statusLabel={statusLabel}
         statusTooltip={isOfficeMode ? undefined : failureVisibleText}
         showFailureStatus={toolCall.status === "failed"}

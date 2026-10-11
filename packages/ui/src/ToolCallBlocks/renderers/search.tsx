@@ -2,8 +2,14 @@ import { SearchIcon } from "lucide-react";
 import { useMemo } from "react";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
+import { TruncationNoticeChip } from "@/ToolCallBlocks/TruncationNoticeChip.js";
 import { ToolLayout } from "../ToolLayout.js";
 import type { ToolCallBlockRenderContext } from "../shared.js";
+import {
+  detectTruncationNotice,
+  formatSearchRangeLabel,
+  resolveSearchRange,
+} from "../truncationNotice.js";
 
 const SEARCH_TOOL_ICON = <SearchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
@@ -95,6 +101,12 @@ export function SearchToolCallBlock(context: ToolCallBlockRenderContext) {
     () => <span className="truncate">{searchPrimaryText}</span>,
     [searchPrimaryText],
   );
+  // 主文本保持一句完整摘要，分页范围只作为弱元数据挂 secondaryText（spec 见 range-and-truncation）。
+  const searchRange = resolveSearchRange(toolCall.input);
+  const rangeLabel = searchRange
+    ? formatSearchRangeLabel(searchRange, (id, values) => intl.formatMessage({ id }, values))
+    : undefined;
+  const notice = detectTruncationNotice(toolCall);
 
   return (
     <>
@@ -113,6 +125,12 @@ export function SearchToolCallBlock(context: ToolCallBlockRenderContext) {
         // search 的主文本直接拼成一句完整摘要，不再拆 secondaryText；
         // 这样能避免 title 干扰，也更适合列表/目录查询这类操作。
         primaryText={primaryText}
+        secondaryText={
+          rangeLabel ? (
+            <span className="shrink-0 text-foreground-subtlest">{rangeLabel}</span>
+          ) : undefined
+        }
+        noticeChip={notice ? <TruncationNoticeChip notice={notice} /> : undefined}
         statusLabel={statusLabel}
         statusTooltip={toolCall.status === "failed" ? errorText : undefined}
         showFailureStatus={toolCall.status === "failed"}

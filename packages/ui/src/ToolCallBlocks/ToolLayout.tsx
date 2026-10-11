@@ -54,6 +54,11 @@ interface ToolLayoutProps {
    * 虚线下划线与悬停提示只属于词，灯不该被划线，也不该成为另一个悬停目标。
    */
   statusIndicator?: ReactNode;
+  /**
+   * 状态词左侧的弱元数据徽标（如截断种类）。独立于状态词显示：成功态没有状态词时
+   * 徽标仍要出现在行尾，因此不复用 statusIndicator 的同显同隐语义。
+   */
+  noticeChip?: ReactNode;
   showStatusLabel?: boolean;
   showFailureStatus?: boolean;
   isRunning?: boolean;
@@ -94,6 +99,7 @@ function ToolLayoutComponent({
   statusLabel,
   statusTooltip,
   statusIndicator,
+  noticeChip,
   showStatusLabel = false,
   showFailureStatus = false,
   isRunning = false,
@@ -291,15 +297,15 @@ function ToolLayoutComponent({
         <span className="whitespace-nowrap">{statusLabel}</span>
       )
     ) : null;
+  // 有徽标或状态词任一就包一层对齐容器；状态指示灯仍与状态词同显同隐（不单独出现）。
   const statusNode =
-    statusWordNode !== null && statusIndicator != null ? (
+    noticeChip != null || statusWordNode !== null ? (
       <span className="inline-flex shrink-0 items-center gap-1.5">
-        {statusIndicator}
+        {noticeChip}
+        {statusWordNode !== null && statusIndicator != null ? statusIndicator : null}
         {statusWordNode}
       </span>
-    ) : (
-      statusWordNode
-    );
+    ) : null;
 
   return (
     <Collapsible

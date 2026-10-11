@@ -5,9 +5,12 @@ import { ToolCallBlock } from "@/ToolCallBlocks.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { getExecuteSecondaryText } from "@/ToolCallBlocks/renderers/execute.js";
-import { buildReadSummary, ReadFileChip } from "@/ToolCallBlocks/renderers/read.js";
+import {
+  buildReadSummary,
+  ReadFileChip,
+  renderReadSecondaryText,
+} from "@/ToolCallBlocks/renderers/read.js";
 import { getSearchPrimaryText } from "@/ToolCallBlocks/renderers/search.js";
-import { renderFilePath } from "@/ToolCallBlocks/shared.js";
 import { resolveToolCallIdentity } from "@/lib/toolIdentity.js";
 import { ToolLayout } from "../ToolLayout.js";
 import type { ToolCallBlockRenderContext } from "../shared.js";
@@ -18,7 +21,8 @@ import type { ZCodePlanStep } from "@zcode/shared";
 const EXPLORE_TOOL_ICON = <SearchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
 type IntlLike = {
-  formatMessage: (descriptor: { id: string }, values?: Record<string, string>) => string;
+  // 与 IntlProvider 真实签名一致（范围/计数文案要传数字）。
+  formatMessage: (descriptor: { id: string }, values?: Record<string, string | number>) => string;
 };
 
 type ExploreChildSummary = {
@@ -325,7 +329,9 @@ function getLatestExploreChildSummary(
         actionKindLabel,
         <ReadFileChip summary={readSummary} clickable={canOpenPreview} onClick={openFilePreview} />,
       ),
-      secondaryText: renderFilePath(readSummary.filePath),
+      secondaryText: renderReadSecondaryText(readSummary, (id, values) =>
+        intl.formatMessage({ id }, values),
+      ),
       title: readSummary.path,
     };
   }
@@ -397,6 +403,9 @@ export function ExploreToolCallBlock(context: ToolCallBlockRenderContext) {
   const { intl } = useZCodeIntl();
   const { toolCallNode, isRunning, statusLabel, errorText } = context;
   const { toolCall, childToolCalls } = toolCallNode;
+  // file 桶按路径去重：同一文件被读多次只计 1（「2 文件」却两行同一文件正是用户报告的重复观感）；
+  // 读不出路径的条目按条计——宁可保守计多，也不误把不同条目合并。
+  const countedFilePaths = new Set<string>();
   const counts = childToolCalls.reduce<Record<ExploreBucket, number>>(
     (acc, childToolCallNode) => {
       const bucket = classifyExploreToolCall({
@@ -404,6 +413,15 @@ export function ExploreToolCallBlock(context: ToolCallBlockRenderContext) {
         title: childToolCallNode.toolCall.title,
         input: childToolCallNode.toolCall.input,
       });
+      if (bucket === "file") {
+        const filePath = buildReadSummary(childToolCallNode.toolCall)?.path;
+        if (filePath !== undefined) {
+          if (countedFilePaths.has(filePath)) {
+            return acc;
+          }
+          countedFilePaths.add(filePath);
+        }
+      }
       acc[bucket] += 1;
       return acc;
     },

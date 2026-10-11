@@ -1,5 +1,5 @@
 import { SearchIcon } from "lucide-react";
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, type ReactNode } from "react";
 import {
   FileDisplayIcon,
   FOLDER_FILE_ICON_SRC,
@@ -10,6 +10,14 @@ import { ToolLayout } from "../ToolLayout.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
 import type { ToolCallBlockRenderContext } from "../shared.js";
 import { renderFilePath } from "../shared.js";
+import { TruncationNoticeChip } from "@/ToolCallBlocks/TruncationNoticeChip.js";
+import {
+  detectTruncationNotice,
+  formatReadRangeLabel,
+  resolveOutputText,
+  resolveReadRange,
+  type ReadRange,
+} from "../truncationNotice.js";
 
 const READ_TOOL_ICON = <SearchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
@@ -19,6 +27,8 @@ export type ReadSummary = {
   filePath: string | null;
   fileIconSrc: string;
   entryType: "file" | "directory";
+  /** 读取范围（spec: spec/tool-call-range-and-truncation.md）；整读缺省。 */
+  range?: ReadRange;
 };
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
@@ -135,6 +145,7 @@ function createReadSummary(
   options: {
     fileName?: string;
     entryType?: "file" | "directory";
+    range?: ReadRange;
   } = {},
 ): ReadSummary {
   const entryType = options.entryType ?? "file";
@@ -146,6 +157,7 @@ function createReadSummary(
     filePath: descriptor.filePath,
     fileIconSrc: entryType === "directory" ? FOLDER_FILE_ICON_SRC : descriptor.fileIconSrc,
     entryType,
+    ...(options.range ? { range: options.range } : {}),
   };
 }
 
@@ -153,6 +165,8 @@ export function buildReadSummary(
   toolCall: ToolCallBlockRenderContext["toolCallNode"]["toolCall"],
 ): ReadSummary | null {
   const input = toolCall.input;
+  // 读取范围与路径推导无关，但同属这张卡的摘要事实，统一在这里算好挂进 summary。
+  const range = resolveReadRange(input, resolveOutputText(toolCall)) ?? undefined;
   if (isPlainRecord(input) && Array.isArray(input.parsed_cmd)) {
     const cwd =
       typeof input.cwd === "string" && input.cwd.trim().length > 0
@@ -188,6 +202,7 @@ export function buildReadSummary(
       return createReadSummary(absolutePath, {
         fileName,
         entryType: "file",
+        range,
       });
     }
   }
@@ -199,6 +214,7 @@ export function buildReadSummary(
     // 之前 summary 构建会直接漏掉这类 read 卡片，导致 primary/secondary 都退回标题。
     return createReadSummary(directInputMetadata.path, {
       entryType: directInputMetadata.entryType,
+      range,
     });
   }
 
@@ -206,8 +222,30 @@ export function buildReadSummary(
   return rawMetadata.path
     ? createReadSummary(rawMetadata.path, {
         entryType: rawMetadata.entryType,
+        range,
       })
     : null;
+}
+
+/**
+ * Read 摘要行的 secondary：路径 + 读取范围并列（宿主容器 inline-flex gap-2 提供分隔）。
+ * 独立导出供 Explore 组的子行摘要复用，避免父子两处各拼一份。
+ */
+export function renderReadSecondaryText(
+  summary: Pick<ReadSummary, "filePath" | "range"> | null,
+  format: (id: string, values?: Record<string, string | number>) => string,
+): ReactNode {
+  if (!summary) {
+    return undefined;
+  }
+
+  const rangeLabel = summary.range ? formatReadRangeLabel(summary.range, format) : undefined;
+  return (
+    <>
+      {renderFilePath(summary.filePath)}
+      {rangeLabel ? <span className="shrink-0 text-foreground-subtlest">{rangeLabel}</span> : null}
+    </>
+  );
 }
 
 export function ReadFileChip({
@@ -277,6 +315,7 @@ export function ReadToolCallBlock(context: ToolCallBlockRenderContext) {
       ),
     [canOpenPreview, intl, openFilePreview, summary, toolCall.kind, toolCall.title],
   );
+  const notice = detectTruncationNotice(toolCall);
 
   return (
     <>
@@ -291,7 +330,10 @@ export function ReadToolCallBlock(context: ToolCallBlockRenderContext) {
         sourceLabel={context.sourceLabel}
         primaryText={primaryText}
         prioritizePrimaryText
-        secondaryText={summary ? renderFilePath(summary.filePath) : undefined}
+        secondaryText={renderReadSecondaryText(summary, (id, values) =>
+          intl.formatMessage({ id }, values),
+        )}
+        noticeChip={notice ? <TruncationNoticeChip notice={notice} /> : undefined}
         statusLabel={statusLabel}
         statusTooltip={toolCall.status === "failed" ? errorText : undefined}
         showFailureStatus={toolCall.status === "failed"}

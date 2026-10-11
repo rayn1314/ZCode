@@ -2,9 +2,11 @@ import { WrenchIcon } from "lucide-react";
 import { useCallback, type ReactNode } from "react";
 import { ToolCallBody } from "@/ToolCallBlocks/ToolCallBody.js";
 import { ToolSnapshotFieldNotice } from "@/ToolCallBlocks/ToolSnapshotFieldNotice.js";
+import { TruncationNoticeChip } from "@/ToolCallBlocks/TruncationNoticeChip.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { ToolLayout } from "../ToolLayout.js";
 import type { ToolCallBlockRenderContext } from "../shared.js";
+import { detectTruncationNotice } from "../truncationNotice.js";
 
 const FALLBACK_TOOL_ICON = <WrenchIcon className="size-4 shrink-0 text-foreground-subtle" />;
 
@@ -38,6 +40,8 @@ export function FallbackToolCallBlock(context: FallbackToolCallBlockProps) {
       : toolCall.kind;
   const hasInlinePreview = displayModel.inlinePreview.type !== "none";
   const handleLoadFullToolCallFields = context.onLoadFullToolCallFields;
+  // 通用截断徽标（budget/persisted/display/previewHeadTail 等），让未单独定制的工具也看得见截断。
+  const notice = detectTruncationNotice(toolCall);
   const renderContent = useCallback(
     () => (
       <>
@@ -97,6 +101,7 @@ export function FallbackToolCallBlock(context: FallbackToolCallBlockProps) {
           : (toolCall.title ?? intl.formatMessage({ id: "chat.toolCall.toolCall" }))
       }
       secondaryText={context.summaryOnly || toolCall.status === "failed" ? undefined : statusLabel}
+      noticeChip={notice ? <TruncationNoticeChip notice={notice} /> : undefined}
       statusLabel={toolCall.status === "failed" ? statusLabel : undefined}
       statusTooltip={toolCall.status === "failed" ? errorText : undefined}
       showFailureStatus={toolCall.status === "failed"}

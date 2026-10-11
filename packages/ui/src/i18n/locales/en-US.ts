@@ -5944,6 +5944,37 @@ const enUS: Record<string, string> = {
   "chat.toolCall.search.searched": "Searched",
   "chat.toolCall.read.reading": "Reading",
   "chat.toolCall.read.read": "Read",
+  "chat.toolCall.read.range.lines": "lines {start}–{end}",
+  "chat.toolCall.read.range.linesFrom": "from line {start}",
+  "chat.toolCall.read.range.firstLines": "first {limit} lines",
+  "chat.toolCall.read.range.pages": "pages {pages}",
+  "chat.toolCall.search.range.limit": "first {limit}",
+  "chat.toolCall.search.range.offset": "skip {offset}",
+  // 截断徽标：中性弱元数据，短文案 ≤4 字；tooltip 给一句细节。
+  "chat.toolCall.notice.unchanged.label": "Unchanged",
+  "chat.toolCall.notice.unchanged.tooltip":
+    "The file is unchanged since the last read; no content was returned again.",
+  "chat.toolCall.notice.partialView.label": "Partial",
+  "chat.toolCall.notice.partialView.tooltip":
+    "Output exceeded the token budget; only part of the file is shown.",
+  "chat.toolCall.notice.resultsTruncated.label": "Capped",
+  "chat.toolCall.notice.resultsTruncated.tooltip":
+    "Too many matches; only the first {limit} are shown.",
+  "chat.toolCall.notice.resultsTruncated.tooltipGeneric":
+    "Too many matches; only part of the results are shown.",
+  "chat.toolCall.notice.webfetch.label": "Truncated",
+  "chat.toolCall.notice.webfetch.tooltip":
+    "Fetched content exceeded the budget and was truncated before processing.",
+  "chat.toolCall.notice.persisted.label": "Saved",
+  "chat.toolCall.notice.persisted.tooltip":
+    "Output was too long; the full content was saved to a file and only a preview is shown.",
+  "chat.toolCall.notice.budget.label": "Budget",
+  "chat.toolCall.notice.budget.tooltip": "Output exceeded the per-call budget and was truncated.",
+  "chat.toolCall.notice.displayTruncated.label": "Truncated",
+  "chat.toolCall.notice.displayTruncated.tooltip": "Tool output was truncated for display.",
+  "chat.toolCall.notice.previewHeadTail.label": "Preview",
+  "chat.toolCall.notice.previewHeadTail.tooltip":
+    "Output is too long; only the beginning and end are shown.",
   "chat.toolCall.sessionContext.reading": "Reading context",
   "chat.toolCall.sessionContext.read": "Read context",
   "chat.toolCall.sessionContext.title": "Read session context",
