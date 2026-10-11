@@ -33,14 +33,6 @@ interface SubagentsContextStoreState {
     subagentsService: ISubagentsService,
     workspaceIdentity?: string,
   ) => Promise<void>;
-  setEnabled: (
-    workspacePath: string,
-    provider: ZCodeProvider,
-    agentId: string,
-    enabled: boolean,
-    subagentsService: ISubagentsService,
-    workspaceIdentity?: string,
-  ) => Promise<void>;
 }
 
 const inFlightLoads = new Map<string, ReturnType<ISubagentsService["list"]>>();
@@ -183,20 +175,5 @@ export const useSubagentsContextStore = create<SubagentsContextStoreState>((set,
       set,
       get,
     );
-  },
-  async setEnabled(workspacePath, provider, agentId, enabled, subagentsService, workspaceIdentity) {
-    try {
-      await subagentsService.setEnabled({ agentId, enabled });
-      await get().refresh(workspacePath, provider, subagentsService, workspaceIdentity);
-    } catch (error) {
-      const key = getSubagentsContextKey(workspacePath, provider, workspaceIdentity);
-      const message = error instanceof Error ? error.message : String(error);
-      set((state) => {
-        const existing = state.contexts[key];
-        return existing
-          ? updateContext(state, key, { ...existing, loading: false, error: message })
-          : {};
-      });
-    }
   },
 }));

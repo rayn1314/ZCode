@@ -51,6 +51,7 @@ import {
   isBuiltInExploreAgentProfile,
   normalizeAgentProfiles,
   type AgentProfile,
+  type BuiltInSubagentModelSelectionOverrides,
 } from "./profile.js";
 import { EXPLORE_AGENT_ALLOWED_TOOLS } from "./explore-tools.js";
 import { formatLocalAgentTaskNotification } from "./completion-notification.js";
@@ -122,10 +123,17 @@ export interface ExploreSubagentPortOptions {
   // 返回 undefined 可让 TypeScript 拒绝 async enqueue，避免 fake-notified。
   enqueueParentTaskNotification?: EnqueueParentTaskNotification;
   outputRootDir?: string;
-  profiles?: readonly AgentProfile[];
-  builtInModelSelectionOverrides?: Partial<
-    Record<"general-purpose" | "Explore", import("@zcode/shared").ModelSelection>
-  >;
+  /**
+   * 用户 / 项目 / 插件 profile 的**迟绑定**读取（spec `subagent-settings-sync.md` D3）：
+   * 每次派发现算，profile 清单热重载后下一发即生效。
+   * 与 `maxConcurrentSubagents` 同一模式：端口不得持有构造期副本。
+   */
+  getProfiles?: () => readonly AgentProfile[];
+  /**
+   * 内置子代理模型覆盖**迟绑定**读取（同上）：每次派发现算 built-in profiles，
+   * 设置页热更新 runtime config 后下一发即生效。
+   */
+  getBuiltInModelSelectionOverrides?: () => BuiltInSubagentModelSelectionOverrides;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
   createAgentId?: () => string;
   getAllowedTools?: (profile: AgentProfile) => readonly string[];
@@ -168,9 +176,12 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
   const registry = options.runtimeTaskRegistry ?? new InMemoryRuntimeTaskRegistry();
   const abortControllers = new Map<string, AbortController>();
   const borrowedForegroundAgentIds = new Set<string>();
-  const profiles = normalizeAgentProfiles(options.profiles ?? [], {
-    builtInModelSelectionOverrides: options.builtInModelSelectionOverrides,
-  });
+  // 迟读而非构造期烘焙：配置热重载（内置覆盖 / 插件覆盖 / 启用状态）只改 runtime config，
+  // 端口在每次派发时按当前值现算 profile 清单。
+  const resolveProfiles = () =>
+    normalizeAgentProfiles(options.getProfiles?.() ?? [], {
+      builtInModelSelectionOverrides: options.getBuiltInModelSelectionOverrides?.(),
+    });
   const autoBackgroundMs = normalizeAutoBackgroundMs(options.autoBackgroundMs);
 
   const port: SubagentPort & { start: NonNullable<SubagentPort["start"]> } = {
@@ -178,7 +189,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       rawRequest: SubagentLaunchRequest,
       launchOptions?: SubagentLaunchOptions,
     ): Promise<AgentOutput> {
-      const { profile, request } = resolveAgentProfileForRequest(profiles, rawRequest);
+      const { profile, request } = resolveAgentProfileForRequest(resolveProfiles(), rawRequest);
       const executionRequest = toSubagentExecutionRequest(request);
       const waitRequested = rawRequest.wait === true;
       const profileRequestsBackground = profile.background === true;
@@ -232,7 +243,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       rawRequest: SubagentRunRequest,
       runOptions?: SubagentRunOptions,
     ): Promise<AgentOutput> {
-      const { profile, request } = resolveAgentProfileForRequest(profiles, rawRequest);
+      const { profile, request } = resolveAgentProfileForRequest(resolveProfiles(), rawRequest);
       const lifecycle = createSubagentLifecycle(options, request, profile);
       const startedAt = new Date(lifecycle.startedAt);
       const hasForegroundModelOverride = runOptions?.modelOverride !== undefined;
@@ -545,7 +556,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       rawRequest: SubagentStartRequest,
       startOptions?: SubagentStartOptions,
     ): Promise<AgentBackgroundedOutput> {
-      const { profile, request } = resolveAgentProfileForRequest(profiles, rawRequest);
+      const { profile, request } = resolveAgentProfileForRequest(resolveProfiles(), rawRequest);
       const lifecycle = createSubagentLifecycle(options, request, profile);
       const startedAt = new Date(lifecycle.startedAt);
       const output = createAgentBackgroundedOutput(request, lifecycle);
@@ -683,7 +694,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
     ): Promise<SubagentSendMessageResult> {
       return sendMessageToLocalAgent(
         options,
-        profiles,
+        resolveProfiles(),
         registry,
         abortControllers,
         request,

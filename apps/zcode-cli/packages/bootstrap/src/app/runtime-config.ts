@@ -32,6 +32,18 @@ interface ResolvedInitialRegistrySelection extends ResolvedRegistrySelection {
   readonly selectionOptions?: ModelSelectionOptions;
 }
 
+/**
+ * 会话级注入的 subagent profile 在前、启动磁盘解析的在后的合并规则。启动装配与
+ * 设置热重载共用同一个函数（spec `subagent-settings-sync.md` D3）：热重载整份替换
+ * `config.subagents.profiles`，若不按同一规则重组，会话级 profile 会被静默丢掉。
+ */
+export function composeSubagentProfiles(
+  sessionProfiles: readonly AgentProfile[] | undefined,
+  resolvedProfiles: readonly AgentProfile[],
+): AgentProfile[] {
+  return [...(sessionProfiles ?? []), ...resolvedProfiles];
+}
+
 export function resolveAppRuntimeConfig(input: {
   cliStorageRoot: string;
   configResult: ConfigResult;
@@ -183,7 +195,10 @@ export function resolveAppRuntimeConfig(input: {
         ...(input.builtInSubagentModelSelectionOverrides ?? {}),
         ...runtimeBuiltInModelSelectionOverrides,
       },
-      profiles: [...(options.runtimeConfig?.subagents?.profiles ?? []), ...subagentProfiles],
+      profiles: composeSubagentProfiles(
+        options.runtimeConfig?.subagents?.profiles,
+        subagentProfiles,
+      ),
     },
     memory: {
       cliStorageRoot,

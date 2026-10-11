@@ -666,6 +666,12 @@ export interface ZCodeApp {
    * 只写用户可配置字段；窗口/输出预留由运行时按当前模型推导。
    */
   setCompactionPolicy?(policy: AgentRuntimeCompactionPolicyPatch): void;
+  /**
+   * 子代理配置热重载（workspace/reloadSubagents 逐个 session 调用）：按**当前磁盘**重新解析
+   * profile 清单（内置覆盖 / 插件覆盖 / 用户 agent 启用三项同源）并整份替换 runtime config；
+   * 端口每次派发迟读 runtime config，下一发即生效（spec subagent-settings-sync.md D3/D4）。
+   */
+  reloadSubagents?(): Promise<void>;
   setModel(
     modelId: string | ModelSelection,
     options?: {

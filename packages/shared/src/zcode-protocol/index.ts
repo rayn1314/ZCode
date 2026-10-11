@@ -2307,6 +2307,30 @@ export type ZCodeWorkspaceUpdateCompactionPreferencesResult = z.infer<
   typeof zcodeWorkspaceUpdateCompactionPreferencesResultSchema
 >;
 
+/**
+ * 子代理配置热重载（`subagent-settings-sync.md` D2/D4）：载荷只有 workspace ref。
+ * handler 让运行中会话按**当前磁盘**重新解析 profile（内置覆盖 / 插件覆盖 / 启用状态
+ * 三项同源），因此调用方必须先落盘再调用——协议层不需要传值，也不存在载荷过期问题。
+ */
+export const zcodeWorkspaceReloadSubagentsParamsSchema = z
+  .object({
+    workspace: zcodeWorkspaceRefSchema,
+  })
+  .strict();
+export type ZCodeWorkspaceReloadSubagentsParams = z.infer<
+  typeof zcodeWorkspaceReloadSubagentsParamsSchema
+>;
+
+export const zcodeWorkspaceReloadSubagentsResultSchema = z
+  .object({
+    workspace: zcodeWorkspaceRefSchema,
+    reloadedSessionCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ZCodeWorkspaceReloadSubagentsResult = z.infer<
+  typeof zcodeWorkspaceReloadSubagentsResultSchema
+>;
+
 export const zcodeWorkspaceUpdateOffPeakToolPolicyParamsSchema = z
   .object({
     workspace: zcodeWorkspaceRefSchema,
@@ -3692,6 +3716,10 @@ export const zcodeProtocolMethods = {
   workspaceUpdateModelIoPreferences: "workspace/updateModelIoPreferences",
   // 压缩偏好是 workspace 级事实：handler 缓存后立即热更新已有 session（无需重启会话）。
   workspaceUpdateCompactionPreferences: "workspace/updateCompactionPreferences",
+  // 子代理配置是数据根级事实：设置写盘后通知运行中会话按磁盘重读（内置覆盖 / 插件覆盖 /
+  // 启用状态三项同源）；未来会话每次构造重读磁盘，handler 不缓存第二份
+  // （spec subagent-settings-sync.md D2/D3）。
+  workspaceReloadSubagents: "workspace/reloadSubagents",
   // Off-Peak 工具面门禁是 workspace 级事实（灰度 + 本地/远程），由 host 在 agent 就绪时同步；
   // CLI 对 legacy create/resume 与 v4 冷恢复统一读取。旧 CLI method-not-found → host 降级忽略。
   workspaceUpdateOffPeakToolPolicy: "workspace/updateOffPeakToolPolicy",

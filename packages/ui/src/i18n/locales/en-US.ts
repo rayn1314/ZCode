@@ -4222,6 +4222,8 @@ const enUS: Record<string, string> = {
   "settings.subagents.form.validation.thoughtLevelUnavailable":
     "Select a reasoning effort supported by this model",
   "settings.subagents.reasoningUnavailable": "Reasoning effort unavailable",
+  "settings.subagents.syncFailed":
+    "Saved locally, but could not sync to every running session and remote environment; it will apply on new sessions or after reconnecting.",
   "settings.subagents.model.inherit": "Inherit",
   "settings.subagents.model.defaultMain": "Inherit default",
   "settings.subagents.model.select": "Select model",

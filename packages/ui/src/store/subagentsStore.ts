@@ -32,12 +32,6 @@ interface SubagentsStoreState {
     workspaceIdentity?: string,
   ) => Promise<void>;
   refresh: (subagentsService: ISubagentsService, workspaceIdentity?: string) => Promise<void>;
-  setEnabled: (
-    agentId: string,
-    enabled: boolean,
-    subagentsService: ISubagentsService,
-    workspaceIdentity?: string,
-  ) => Promise<void>;
   createAgent: (
     config: SubAgentConfig,
     provider: ZCodeProvider,
@@ -242,33 +236,6 @@ export const useSubagentsStore = create<SubagentsStoreState>((set, get) => ({
         loadedWorkspaceIdentity: workspaceIdentityFromState ?? null,
         loadedProvider: provider,
       });
-    }
-  },
-  async setEnabled(
-    agentId: string,
-    enabled: boolean,
-    subagentsService: ISubagentsService,
-    workspaceIdentity?: string,
-  ) {
-    const workspacePath = get().workspacePath;
-    if (!workspacePath) {
-      return;
-    }
-    const workspaceIdentityFromState =
-      workspaceIdentity?.trim() || get().workspaceIdentity || undefined;
-    set({ operatingAgentId: agentId });
-    try {
-      await subagentsService.setEnabled({
-        agentId,
-        enabled,
-      });
-      await get().refresh(subagentsService, workspaceIdentityFromState);
-    } catch (error) {
-      set({
-        error: error instanceof Error ? error.message : String(error),
-      });
-    } finally {
-      set({ operatingAgentId: null });
     }
   },
   async createAgent(

@@ -43,6 +43,17 @@ export interface AgentProfileParseDiagnostic {
   path?: string;
 }
 
+/**
+ * 子代理配置热更新补丁：profile 清单与内置覆盖**成对整份替换**。两者都由同一份磁盘状态
+ * （`agents-state.json` + agent markdown）重新解析得到，只更新一半会让运行中会话出现
+ * 半新半旧的派发面。缺项即删除（改回继承 / 重新启用），因此不接受键级合并。
+ * 见 spec `subagent-settings-sync.md` D3/D4。
+ */
+export interface SubagentConfigPatch {
+  profiles: readonly AgentProfile[];
+  builtInModelSelectionOverrides: BuiltInSubagentModelSelectionOverrides;
+}
+
 export interface AgentProfileLoadResult {
   diagnostics: AgentProfileParseDiagnostic[];
   profiles: AgentProfile[];

@@ -391,6 +391,8 @@ export interface AgentRuntime {
   ): void;
   /** 热更新会话压缩策略；下一次 turn-loop 迭代即生效（spec D3）。 */
   updateCompactionPolicy(patch: AgentRuntimeCompactionPolicyPatch): void;
+  /** 热更新子代理配置（profile 清单 + 内置模型覆盖，成对整份替换）；下一次派发即生效（spec subagent-settings-sync.md D3）。 */
+  updateSubagentsConfig(patch: import("../subagent/profile.js").SubagentConfigPatch): void;
   initializeSessionShellEnvironmentIfNeeded(
     selection: ExecutionShellSelection | (() => ExecutionShellSelection),
   ): boolean;

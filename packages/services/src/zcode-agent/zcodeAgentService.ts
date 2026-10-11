@@ -99,6 +99,7 @@ import {
   zcodeWorkspaceUpdateInteractionPreferencesResultSchema,
   zcodeWorkspaceUpdateModelIoPreferencesResultSchema,
   zcodeWorkspaceUpdateCompactionPreferencesResultSchema,
+  zcodeWorkspaceReloadSubagentsResultSchema,
   DEFAULT_ZCODE_COMPACTION_PREFERENCES,
   zcodeProviderUpdateAccountConfigResultSchema,
   type ZCodeSessionStateSnapshot,
@@ -1183,7 +1184,7 @@ export function createZCodeAgentService(
     PendingSessionRuntimePreferencesRequest
   >();
   const activeClientsByWorkspaceKey = new Map<string, ActiveWorkspaceClient>();
-  const interactionPreferenceSyncByWorkspaceKey = new Map<string, Promise<void>>();
+  const workspaceSyncQueueByWorkspaceKey = new Map<string, Promise<void>>();
   let latestAppRuntimePreferences: ZCodeAgentAppRuntimePreferences | undefined;
   /** 动态工作流灰度门的进程内单次判定；见 resolveDynamicWorkflowGate 的注释。 */
   let dynamicWorkflowGate: Promise<boolean> | undefined;
@@ -1247,7 +1248,7 @@ export function createZCodeAgentService(
     activeClientsByWorkspaceKey.delete(workspaceKey);
     // Interaction preference 是 CLI 进程内存态；runtime 换代后即使 app revision
     // 未变化也必须重新同步，不能沿用旧 client 的完成 Promise。
-    interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+    workspaceSyncQueueByWorkspaceKey.delete(workspaceKey);
   }
 
   const runtimeLifecycleDisposable = processManager.onRuntimeLifecycle((event) => {
@@ -1460,73 +1461,104 @@ export function createZCodeAgentService(
     );
   }
 
+  /**
+   * 每 workspace 一条串行队列：同 workspace 的先后同步不得乱序——内置子代理覆盖是
+   * 全量快照，后发先至会把旧值盖回新值。前一次失败不打断队列。
+   */
+  function enqueueWorkspaceSerialSync(
+    workspaceKey: string,
+    task: () => Promise<void>,
+  ): Promise<void> {
+    const previous = workspaceSyncQueueByWorkspaceKey.get(workspaceKey) ?? Promise.resolve();
+    const current = previous
+      .catch(() => {
+        // 前一次失败不能打乱之后提交的顺序；当前快照仍需继续尝试。
+      })
+      .then(task);
+    workspaceSyncQueueByWorkspaceKey.set(workspaceKey, current);
+    const cleanup = () => {
+      if (workspaceSyncQueueByWorkspaceKey.get(workspaceKey) === current) {
+        workspaceSyncQueueByWorkspaceKey.delete(workspaceKey);
+      }
+    };
+    void current.then(cleanup, cleanup);
+    return current;
+  }
+
   function enqueueInteractionPreferenceSync(params: {
     client: ZCodeProtocolClient;
     preferences: ZCodeAgentAppRuntimePreferences;
     workspace: ZCodeAgentWorkspaceTarget;
   }): Promise<void> {
-    const workspaceKey = resolveWorkspaceKey(params.workspace);
-    const previous = interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) ?? Promise.resolve();
-    const current = previous
-      .catch(() => {
-        // 前一次失败不能打乱之后开关提交的顺序；当前快照仍需继续尝试。
-      })
-      .then(async () => {
+    return enqueueWorkspaceSerialSync(resolveWorkspaceKey(params.workspace), async () => {
+      await params.client.request(
+        zcodeProtocolMethods.workspaceUpdateInteractionPreferences,
+        {
+          workspace: buildWorkspaceRef(params.workspace),
+          preferences: {
+            askUserQuestionAutoResolutionEnabled:
+              params.preferences.askUserQuestionAutoResolutionEnabled,
+            permissionRequestAutoDenyEnabled: params.preferences.permissionRequestAutoDenyEnabled,
+          },
+        },
+        zcodeWorkspaceUpdateInteractionPreferencesResultSchema,
+      );
+      try {
         await params.client.request(
-          zcodeProtocolMethods.workspaceUpdateInteractionPreferences,
+          zcodeProtocolMethods.workspaceUpdateModelIoPreferences,
           {
             workspace: buildWorkspaceRef(params.workspace),
             preferences: {
-              askUserQuestionAutoResolutionEnabled:
-                params.preferences.askUserQuestionAutoResolutionEnabled,
-              permissionRequestAutoDenyEnabled: params.preferences.permissionRequestAutoDenyEnabled,
+              fullRetentionEnabled: params.preferences.modelIoFullRetentionEnabled === true,
             },
           },
-          zcodeWorkspaceUpdateInteractionPreferencesResultSchema,
+          zcodeWorkspaceUpdateModelIoPreferencesResultSchema,
         );
-        try {
-          await params.client.request(
-            zcodeProtocolMethods.workspaceUpdateModelIoPreferences,
-            {
-              workspace: buildWorkspaceRef(params.workspace),
-              preferences: {
-                fullRetentionEnabled: params.preferences.modelIoFullRetentionEnabled === true,
-              },
-            },
-            zcodeWorkspaceUpdateModelIoPreferencesResultSchema,
-          );
-        } catch (error) {
-          // 新 Host 兼容尚未升级的 CLI：只有 method-not-found 可降级，其他同步失败仍需上抛。
-          if (!isProtocolMethodNotFoundError(error)) throw error;
-        }
-        try {
-          await params.client.request(
-            zcodeProtocolMethods.workspaceUpdateCompactionPreferences,
-            {
-              workspace: buildWorkspaceRef(params.workspace),
-              preferences: params.preferences.compaction ?? DEFAULT_ZCODE_COMPACTION_PREFERENCES,
-            },
-            zcodeWorkspaceUpdateCompactionPreferencesResultSchema,
-          );
-        } catch (error) {
-          // 同上：只有 method-not-found 可降级（旧 CLI 不认识压缩偏好方法）。
-          if (!isProtocolMethodNotFoundError(error)) throw error;
-        }
-      });
-    interactionPreferenceSyncByWorkspaceKey.set(workspaceKey, current);
-    void current.then(
-      () => {
-        if (interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) === current) {
-          interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
-        }
-      },
-      () => {
-        if (interactionPreferenceSyncByWorkspaceKey.get(workspaceKey) === current) {
-          interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
-        }
-      },
+      } catch (error) {
+        // 新 Host 兼容尚未升级的 CLI：只有 method-not-found 可降级，其他同步失败仍需上抛。
+        if (!isProtocolMethodNotFoundError(error)) throw error;
+      }
+      try {
+        await params.client.request(
+          zcodeProtocolMethods.workspaceUpdateCompactionPreferences,
+          {
+            workspace: buildWorkspaceRef(params.workspace),
+            preferences: params.preferences.compaction ?? DEFAULT_ZCODE_COMPACTION_PREFERENCES,
+          },
+          zcodeWorkspaceUpdateCompactionPreferencesResultSchema,
+        );
+      } catch (error) {
+        // 同上：只有 method-not-found 可降级（旧 CLI 不认识压缩偏好方法）。
+        if (!isProtocolMethodNotFoundError(error)) throw error;
+      }
+    });
+  }
+
+  /**
+   * 子代理配置热重载（spec `subagent-settings-sync.md` D3/D4）：推给该数据根全部已活动
+   * workspace 的 Agent（existing-only，不为推送拉起休眠 workspace），让每个运行中会话按
+   * 当前磁盘重读配置。调用方必须已落盘。
+   *
+   * 只推本 service 实例管理的 client：配置按数据根分片，跨根广播会用本根的值污染另一根。
+   */
+  async function reloadSubagentsOnActiveClients(): Promise<void> {
+    const entries = [...activeClientsByWorkspaceKey.entries()];
+    await Promise.all(
+      entries.map(([workspaceKey, entry]) =>
+        enqueueWorkspaceSerialSync(workspaceKey, async () => {
+          try {
+            await entry.client.request(
+              zcodeProtocolMethods.workspaceReloadSubagents,
+              { workspace: buildWorkspaceRef(entry.workspace) },
+              zcodeWorkspaceReloadSubagentsResultSchema,
+            );
+          } catch (error) {
+            // 旧 CLI 不认识方法：运行中会话保持旧行为直到新建会话，属正常降级（compaction 同款）。
+            if (!isProtocolMethodNotFoundError(error)) throw error;
+          }
+        }),
+      ),
     );
-    return current;
   }
 
   async function handleProviderReadinessChanged(event: {
@@ -2962,7 +2994,7 @@ export function createZCodeAgentService(
     }
     const workspaceKey = resolveWorkspaceKey(params);
     activeClientsByWorkspaceKey.delete(workspaceKey);
-    interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+    workspaceSyncQueueByWorkspaceKey.delete(workspaceKey);
     logger.warn(undefined, "复用的 ZCode Protocol client 已 disposed，清理 stale entry", {
       workspaceKey,
       workspacePath: params.workspacePath,
@@ -3281,7 +3313,7 @@ export function createZCodeAgentService(
     pendingSessionRuntimePreferences.clear();
     activeClientsByWorkspaceKey.clear();
     cancelAllWaitingWorkspaceStartups();
-    interactionPreferenceSyncByWorkspaceKey.clear();
+    workspaceSyncQueueByWorkspaceKey.clear();
     cuaOperationTurnTracker?.clearAll();
     clearV4SubscriptionRoutes();
     v4RouteRuntimeRestartDisposable.dispose();
@@ -3461,6 +3493,12 @@ export function createZCodeAgentService(
           }),
         ),
       );
+    },
+
+    async reloadSubagents(): Promise<void> {
+      // 不缓存快照：磁盘是唯一事实源，handler 让运行中会话重读磁盘；调用方已先落盘
+      // （本机写入或远端复制），这里只负责触发（spec subagent-settings-sync.md D3/D4）。
+      await reloadSubagentsOnActiveClients();
     },
 
     async getWorkspaceRuntimeIdentity(params: ZCodeAgentWorkspaceTarget) {
@@ -5684,7 +5722,7 @@ export function createZCodeAgentService(
       if (active) {
         invalidateWorkspaceClient(workspaceKey, active.client);
       } else {
-        interactionPreferenceSyncByWorkspaceKey.delete(workspaceKey);
+        workspaceSyncQueueByWorkspaceKey.delete(workspaceKey);
       }
       // 该入口被 restartWorkspaceProcess 用作 runtime invalidation，并非
       // workspace/service 真 teardown。销毁 workspace emitter 会让既有 UI/task-index

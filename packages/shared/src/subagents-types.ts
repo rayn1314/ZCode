@@ -26,6 +26,18 @@ export function parsePluginSubagentModelSelectionOverrides(
   );
 }
 
+/**
+ * 子代理配置的跨环境快照，与 `agents-state.json` 的同名三项同构：内置模型覆盖、
+ * 插件模型覆盖、用户 agent 的禁用集合。本机是唯一权威，远端环境按这份快照**整份替换**
+ * （缺键 = 继承父会话 / 未禁用），增量补丁表达不了「改回继承」「重新启用」的删除语义。
+ * 见 spec `subagent-settings-sync.md` D1/D2。
+ */
+export interface SubagentStateSnapshot {
+  builtInModelSelectionOverrides: BuiltInSubagentModelSelectionOverrides;
+  pluginAgentModelSelectionOverrides: PluginSubagentModelSelectionOverrides;
+  disabledAgentIds: string[];
+}
+
 export type AgentPermissionMode = "auto" | "plan";
 
 export type AgentColor =

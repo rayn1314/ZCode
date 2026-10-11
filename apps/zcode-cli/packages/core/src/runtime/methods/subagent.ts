@@ -78,8 +78,11 @@ export function createDefaultSubagentPort(
     autoBackgroundMs: this.config.subagents?.autoBackgroundMs,
     maxConcurrentSubagents: this.config.subagents?.maxConcurrent,
     outputRootDir: this.config.subagents?.outputRootDir,
-    profiles: this.config.subagents?.profiles,
-    builtInModelSelectionOverrides: this.config.subagents?.builtInModelSelectionOverrides,
+    // 迟绑定：设置页热重载只改 runtime config，端口每次派发现算（spec D3）。
+    // 覆盖内置模型覆盖、插件模型覆盖与用户 agent 启用状态——三者由同一份磁盘状态解析。
+    getProfiles: () => this.config.subagents?.profiles ?? [],
+    getBuiltInModelSelectionOverrides: () =>
+      this.config.subagents?.builtInModelSelectionOverrides ?? {},
     runtimeTaskRegistry: this.runtimeTaskRegistry,
     emitParentEvent: async (event, traceContext) => {
       if (isStaleBranchRuntimeTaskEvent(this, event)) return;

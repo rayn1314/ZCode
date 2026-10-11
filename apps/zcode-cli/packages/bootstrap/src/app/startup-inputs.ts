@@ -17,6 +17,7 @@
 
 import { createConfig, resolvePath, type ConfigResult } from "@zcode/adapters/config";
 import type { AgentProfile, AgentRuntimeConfig } from "@zcode/core";
+import type { BuiltInSubagentModelSelectionOverrides } from "@zcode/shared";
 import type { Logger, McpServerConfig, PluginLoadOutcome, SkillRoot } from "@zcode/contracts";
 import { resolveZCodeRuntimeEnv } from "@zcode/shared";
 
@@ -27,10 +28,8 @@ import { getCliStorageRoot, getModelIoDir } from "./paths.js";
 import { resolvePluginRuntimeFeatures } from "./plugin-runtime-features.js";
 import { resolveStartupPlugins } from "./startup-marks.js";
 import type { StartupTimer } from "../startup-logging.js";
-import { loadPluginAgentProfiles, loadZCodeAgentProfiles } from "../subagents.js";
+import { resolveSubagentProfiles } from "../subagents.js";
 import type { ZCodeAppOptions } from "./types.js";
-
-type ZCodeAgentProfileOutcome = Awaited<ReturnType<typeof loadZCodeAgentProfiles>>;
 
 export interface ZCodeAppStartupInputs {
   /** 已应用 CLI/会话级覆盖（mode / 工具面 / ui locale）的配置结果。 */
@@ -41,10 +40,10 @@ export interface ZCodeAppStartupInputs {
   cliStorageRoot: string;
   /** 调用轨迹（model IO）落盘目录。 */
   modelIoDir: string;
-  /** 用户 / 项目 agent profile 的加载结果（含 model selection override）。 */
-  zcodeSubagentProfileOutcome: ZCodeAgentProfileOutcome;
-  /** 用户 + 项目 + 插件 profile 的合并清单，进入 `runtimeConfig.subagents.profiles`。 */
+  /** 用户 / 项目 / 插件 profile 的合并清单，进入 `runtimeConfig.subagents.profiles`。 */
   subagentProfiles: readonly AgentProfile[];
+  /** 内置子代理的模型覆盖，进入 `runtimeConfig.subagents.builtInModelSelectionOverrides`。 */
+  subagentBuiltInModelSelectionOverrides: BuiltInSubagentModelSelectionOverrides;
   /** 插件发现结果（列表、hook、MCP、技能根、命令行根）。 */
   pluginOutcome: PluginLoadOutcome;
   /** 由插件清单推导的运行时能力位（browser-use / computer-use）。 */
@@ -89,12 +88,6 @@ export async function resolveStartupInputs(
     cliStorageRoot,
     resolveZCodeRuntimeEnv(options.env ?? process.env) === "development",
   );
-  const zcodeSubagentProfileOutcome = await loadZCodeAgentProfiles({
-    logger,
-    storageRoot,
-    workingDirectory,
-  });
-  const zcodeSubagentProfiles = zcodeSubagentProfileOutcome.profiles;
   const pluginOutcome = resolveStartupPlugins({
     cliStorageRoot,
     configResult,
@@ -105,12 +98,12 @@ export async function resolveStartupInputs(
     workingDirectory,
   });
   const bundledSkillRoots = await resolveBundledSkillRoots({ cliStorageRoot, logger });
-  const pluginSubagentProfiles = loadPluginAgentProfiles({
+  const subagentProfileOutcome = await resolveSubagentProfiles({
     logger,
+    storageRoot,
+    workingDirectory,
     plugins: pluginOutcome.plugins,
-    reservedProfileNames: zcodeSubagentProfiles.map((profile) => profile.name),
-    modelSelectionOverrides: zcodeSubagentProfileOutcome.pluginAgentModelSelectionOverrides,
-  }).profiles;
+  });
   const pluginRuntimeFeatures = resolvePluginRuntimeFeatures(pluginOutcome);
   const builtInMcpServers = resolveBuiltInNodeReplMcpServers({
     pluginOutcome,
@@ -122,9 +115,9 @@ export async function resolveStartupInputs(
     storageRoot,
     cliStorageRoot,
     modelIoDir,
-    zcodeSubagentProfileOutcome,
     // 用户目录已在 loader 前完成原地迁移；不能给项目/插件旧身份加内存兼容旁路。
-    subagentProfiles: [...zcodeSubagentProfiles, ...pluginSubagentProfiles],
+    subagentProfiles: subagentProfileOutcome.profiles,
+    subagentBuiltInModelSelectionOverrides: subagentProfileOutcome.builtInModelSelectionOverrides,
     pluginOutcome,
     pluginRuntimeFeatures,
     builtInMcpServers,

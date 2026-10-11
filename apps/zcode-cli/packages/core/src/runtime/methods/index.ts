@@ -4,6 +4,7 @@ import {
   initializeSessionShellEnvironmentIfNeeded,
   updateCompactionPolicy,
   updateConfig,
+  updateSubagentsConfig,
   setExecutionState,
 } from "./config.js";
 import { getMode, getPlanEnabled } from "./config.js";
@@ -213,6 +214,7 @@ export function installAgentRuntimeMethods(ctor: AgentRuntimeConstructor): void 
   const proto = ctor.prototype as Record<string, unknown>;
   proto.updateConfig = updateConfig;
   proto.updateCompactionPolicy = updateCompactionPolicy;
+  proto.updateSubagentsConfig = updateSubagentsConfig;
   proto.setExecutionState = setExecutionState;
   proto.grantPermissionFullAccess = grantPermissionFullAccess;
   proto.initializeSessionShellEnvironmentIfNeeded = initializeSessionShellEnvironmentIfNeeded;

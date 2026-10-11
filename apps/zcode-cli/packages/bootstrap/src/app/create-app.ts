@@ -64,7 +64,12 @@ import { createInputFacade } from "./input-facade.js";
 import { createPluginFacadeForApp } from "./plugin-facade.js";
 import { createSessionFacade } from "./session-facade.js";
 import { resolveStartupInputs } from "./startup-inputs.js";
-import { resolveAppRuntimeConfig, runtimeConfigLogContext } from "./runtime-config.js";
+import {
+  composeSubagentProfiles,
+  resolveAppRuntimeConfig,
+  runtimeConfigLogContext,
+} from "./runtime-config.js";
+import { resolveSubagentProfiles } from "../subagents.js";
 import { collectDynamicWorkflowDisabledSkillPaths } from "./dynamic-workflow-gate.js";
 import { createWorkspaceHookRuntimeSecurity } from "./workspace-hook-trust.js";
 import { createScriptWorkflowBridge } from "./script-workflow-methods.js";
@@ -197,8 +202,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     pluginOutcome,
     pluginRuntimeFeatures,
     storageRoot,
+    subagentBuiltInModelSelectionOverrides,
     subagentProfiles,
-    zcodeSubagentProfileOutcome,
   } = startupInputs;
   markConfigurationLoaded({
     configResult,
@@ -245,8 +250,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         pluginMcpServers: pluginOutcome.mcpServers,
         builtInMcpServers,
         pluginRuntimeFeatures,
-        builtInSubagentModelSelectionOverrides:
-          zcodeSubagentProfileOutcome.builtInModelSelectionOverrides,
+        builtInSubagentModelSelectionOverrides: subagentBuiltInModelSelectionOverrides,
         subagentOutputRootDir: join(cliStorageRoot, "agents"),
         subagentProfiles,
         storageRoot,
@@ -1128,6 +1132,26 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           }),
       // 压缩策略热更新：runtime 每次 turn-loop 迭代重读 config.compact，因此改完即生效。
       setCompactionPolicy: (policy) => getRuntime().updateCompactionPolicy(policy),
+      // 子代理配置热重载（spec subagent-settings-sync.md D3/D4）：调用方先落盘，这里按
+      // **当前磁盘**重新解析 profile 清单——内置覆盖、插件覆盖、用户 agent 启用三项同源，
+      // 再整份替换 runtime config；subagent 端口每次派发迟读，下一发即生效。
+      // 载荷不传值，因此不存在「协议值落后于磁盘」的窗口。
+      reloadSubagents: async () => {
+        const outcome = await resolveSubagentProfiles({
+          logger,
+          storageRoot,
+          workingDirectory,
+          // 插件清单沿用本次启动的发现结果：新装插件仍需重启（与「已有会话不热加载新插件」一致）。
+          plugins: pluginOutcome.plugins,
+        });
+        getRuntime().updateSubagentsConfig({
+          profiles: composeSubagentProfiles(
+            options.runtimeConfig?.subagents?.profiles,
+            outcome.profiles,
+          ),
+          builtInModelSelectionOverrides: outcome.builtInModelSelectionOverrides,
+        });
+      },
       readToolResultArtifact: (uri) =>
         artifactStore.readToolResultArtifact({ uri, trace: traceContext }),
       // wire/staging 全程是 decoded chunk；只有完整 checksum commit 后才在

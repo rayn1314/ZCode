@@ -4,7 +4,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AgentInputSchema } from "@zcode/contracts";
-import { createExploreSubagentPort, type ExploreSubagentRuntimeRequest } from "../src/subagent/runner.js";
+import {
+  createExploreSubagentPort,
+  type ExploreSubagentRuntimeRequest,
+} from "../src/subagent/runner.js";
 
 /**
  * Agent「派发即句柄」的核心契约（spec: core/spec/subagent-session-messaging.md D1 / 行为 1）：
@@ -17,7 +20,12 @@ import { createExploreSubagentPort, type ExploreSubagentRuntimeRequest } from ".
  * 数据源是 createExploreSubagentPort 的 launch 分叉——它是前台/后台的唯一判据，handler 只透传。
  */
 
-const TRACE = { traceId: "trace_test", spanId: "span_test", sessionId: "sess_parent", turnId: "turn_1" };
+const TRACE = {
+  traceId: "trace_test",
+  spanId: "span_test",
+  sessionId: "sess_parent",
+  turnId: "turn_1",
+};
 
 const CHILD_RESPONSE = "子代理完成正文";
 const DENIED_NOTICE_FRAGMENT = "ran in the foreground";
@@ -130,7 +138,7 @@ test("闲时轮 + profile 显式后台：保持 BACKGROUND_UNAVAILABLE 硬失败
   try {
     const port = createExploreSubagentPort({
       outputRootDir,
-      profiles: [
+      getProfiles: () => [
         {
           name: "always-background",
           background: true,

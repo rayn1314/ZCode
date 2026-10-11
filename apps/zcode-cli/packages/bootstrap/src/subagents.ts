@@ -46,6 +46,48 @@ interface ParsedPluginAgentProfile {
 
 const RESERVED_AGENT_NAMES = new Set(["general-purpose", "Explore"]);
 
+export interface ResolveSubagentProfilesInput {
+  logger?: Logger;
+  storageRoot: string;
+  workingDirectory: string;
+  plugins: readonly PluginMetadata[];
+}
+
+export interface ResolvedSubagentProfiles {
+  builtInModelSelectionOverrides: BuiltInSubagentModelSelectionOverrides;
+  pluginAgentModelSelectionOverrides: PluginSubagentModelSelectionOverrides;
+  diagnostics: AgentProfileParseDiagnostic[];
+  /** 用户 + 项目 + 插件 profile 的合并清单，进入 `runtimeConfig.subagents.profiles`。 */
+  profiles: AgentProfile[];
+}
+
+/**
+ * 子代理 profile 的**唯一**解析路径：启动装配与设置热重载共用（spec
+ * `subagent-settings-sync.md` D4）。热重载必须走同一条路径——内置覆盖优先级、插件覆盖
+ * 键、保留名冲突判定三者都只在磁盘状态里表达，复制一份实现必然漂移。
+ */
+export async function resolveSubagentProfiles(
+  input: ResolveSubagentProfilesInput,
+): Promise<ResolvedSubagentProfiles> {
+  const userOutcome = await loadZCodeAgentProfiles({
+    logger: input.logger,
+    storageRoot: input.storageRoot,
+    workingDirectory: input.workingDirectory,
+  });
+  const pluginProfiles = loadPluginAgentProfiles({
+    logger: input.logger,
+    plugins: input.plugins,
+    reservedProfileNames: userOutcome.profiles.map((profile) => profile.name),
+    modelSelectionOverrides: userOutcome.pluginAgentModelSelectionOverrides,
+  }).profiles;
+  return {
+    builtInModelSelectionOverrides: userOutcome.builtInModelSelectionOverrides,
+    pluginAgentModelSelectionOverrides: userOutcome.pluginAgentModelSelectionOverrides,
+    diagnostics: userOutcome.diagnostics,
+    profiles: [...userOutcome.profiles, ...pluginProfiles],
+  };
+}
+
 export async function loadZCodeAgentProfiles(
   input: LoadZCodeAgentProfilesInput,
 ): Promise<LoadZCodeAgentProfilesResult> {

@@ -87,6 +87,7 @@ import { updateInteractionPreferences } from "./interaction-preferences.js";
 import { updateAccountProviderConfig } from "./account-provider-config.js";
 import { updateModelIoPreferences } from "./model-io-preferences.js";
 import { updateCompactionPreferences } from "./compaction-preferences.js";
+import { reloadSubagents } from "./reload-subagents.js";
 import { updateOffPeakToolPolicy } from "./off-peak-tool-policy.js";
 import { updateDynamicWorkflowPolicy } from "./dynamic-workflow-policy.js";
 import { grantWorkspaceHookTrustForProtocol } from "./workspace-hook-trust.js";
@@ -656,6 +657,8 @@ export class ZCodeProtocolAgentServer {
         return await updateModelIoPreferences(this.context, request.params);
       case zcodeProtocolMethods.workspaceUpdateCompactionPreferences:
         return await updateCompactionPreferences(this.context, request.params);
+      case zcodeProtocolMethods.workspaceReloadSubagents:
+        return await reloadSubagents(this.context, request.params);
       case zcodeProtocolMethods.workspaceUpdateOffPeakToolPolicy:
         return await updateOffPeakToolPolicy(this.context, request.params);
       case zcodeProtocolMethods.workspaceUpdateDynamicWorkflowPolicy:

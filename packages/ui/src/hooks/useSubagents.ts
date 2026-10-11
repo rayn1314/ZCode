@@ -65,7 +65,6 @@ export function useSubagents(
   );
   const initialize = useSubagentsContextStore((state) => state.initialize);
   const refreshStore = useSubagentsContextStore((state) => state.refresh);
-  const setEnabledStore = useSubagentsContextStore((state) => state.setEnabled);
   const legacyContext = useSubagentsStore(
     useShallow((state) => ({
       workspacePath: state.loadedWorkspacePath,
@@ -116,31 +115,6 @@ export function useSubagents(
     workspaceRpcEnabled,
   ]);
 
-  const setEnabled = useCallback(
-    async (agentId: string, enabled: boolean) => {
-      if (!workspaceRpcEnabled) {
-        return;
-      }
-      if (!workspacePath) return;
-      await setEnabledStore(
-        workspacePath,
-        provider,
-        agentId,
-        enabled,
-        subagentsService,
-        workspaceIdentity,
-      );
-    },
-    [
-      provider,
-      setEnabledStore,
-      subagentsService,
-      workspaceIdentity,
-      workspacePath,
-      workspaceRpcEnabled,
-    ],
-  );
-
   return useMemo(
     () => ({
       agents: workspaceRpcEnabled
@@ -165,16 +139,7 @@ export function useSubagents(
           : (context?.error ?? null)
         : null,
       refresh,
-      setEnabled,
     }),
-    [
-      context,
-      legacyContext,
-      refresh,
-      setEnabled,
-      useLegacyContext,
-      workspacePath,
-      workspaceRpcEnabled,
-    ],
+    [context, legacyContext, refresh, useLegacyContext, workspacePath, workspaceRpcEnabled],
   );
 }

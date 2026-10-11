@@ -73,6 +73,8 @@ export interface AgentRuntimeCoreMethods {
     patch: Pick<AgentRuntimeConfig, "mode" | "planEnabled" | "language" | "outputStyle">,
   ): void;
   updateCompactionPolicy(patch: AgentRuntimeCompactionPolicyPatch): void;
+  /** 热更新子代理配置（profile 清单 + 内置模型覆盖，成对整份替换）；下一次派发即生效（spec subagent-settings-sync.md D3）。 */
+  updateSubagentsConfig(patch: import("../subagent/profile.js").SubagentConfigPatch): void;
   initializeSessionShellEnvironmentIfNeeded(
     selection: ExecutionShellSelection | (() => ExecutionShellSelection),
   ): boolean;
@@ -175,7 +177,9 @@ export interface AgentRuntimeCoreMethods {
     toolName?: string;
     traceContext: TraceContext;
   }): void;
-  enqueueSubagentMessage(input: EnqueueSubagentMessageInput): EnqueueSubagentMessageResult | undefined;
+  enqueueSubagentMessage(
+    input: EnqueueSubagentMessageInput,
+  ): EnqueueSubagentMessageResult | undefined;
   drainPendingRuntimeCommandsForActiveLoop(): Promise<{
     backgroundSubagentResultConsumed: boolean;
     workflowResultConsumed: boolean;

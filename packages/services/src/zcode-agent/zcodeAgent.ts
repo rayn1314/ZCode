@@ -600,6 +600,11 @@ export interface IZCodeAgentService {
    * 同步 App 全局运行时偏好到所有已活动 workspace；不得为此启动空闲 Agent。
    */
   syncAppRuntimePreferences(preferences: ZCodeAgentAppRuntimePreferences): Promise<void>;
+  /**
+   * 触发该数据根所有已活动 workspace 的 Agent 重读子代理配置（spec
+   * `subagent-settings-sync.md` D4）；调用方必须先落盘，不得为此启动空闲 Agent。
+   */
+  reloadSubagents(): Promise<void>;
   getWorkspaceRuntimeIdentity(
     params: ZCodeAgentWorkspaceTarget,
   ): Promise<ZCodeAgentWorkspaceRuntimeIdentity>;

@@ -16,6 +16,7 @@ import {
   type BuiltInSubagentName,
   type ModelSelection,
   type SubAgentConfig,
+  type SubagentStateSnapshot,
 } from "@zcode/shared";
 import type { ModelSelectionView } from "@zcode/services";
 import { Button } from "@/components/ui/button.js";
@@ -43,6 +44,8 @@ import { useConfirmDialog } from "@/hooks/useConfirmDialog.js";
 import { useModelSelectionServiceView } from "@/hooks/useModelSelectionView.js";
 import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { useRemoteWorkspaceSessionStore } from "@/store/remoteWorkspaceSessionStore.js";
+import { replicateSubagentState } from "@/lib/subagentStateReplication.js";
 import {
   buildRegistryModelSelectGroups,
   resolveModelDisplayName,
@@ -1308,7 +1311,7 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
   );
   const targetWorkspacePath = selectedWorkspace?.workspacePath ?? "";
   const targetWorkspaceIdentity = undefined;
-  const { pluginManagementService, subagentsService } = localHostServices;
+  const { pluginManagementService, subagentsService, zcodeAgentService } = localHostServices;
   const activeScope = selectedWorkspace ? "workspace" : "user";
   const latestRequestIdRef = useRef(0);
   const pluginInventoryWorkspacePath = targetWorkspacePath || workspaceTabs[0]?.workspacePath;
@@ -1407,6 +1410,17 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
     });
   }, [subagentsService, targetWorkspaceIdentity, targetWorkspacePath]);
 
+  // 用户 agent 的 md 文件增删改只发生在本机（设置页编辑的是本机 agent 目录），因此只让本机
+  // 运行中会话重读：远端环境维护各自的 agent 文件，不受本机文件变更影响。
+  // 只提示失败，不改变「文件已写入即提交点」的语义（spec subagent-settings-sync.md 迁移边界）。
+  const reloadLocalRunningSessions = useCallback(async () => {
+    try {
+      await zcodeAgentService.reloadSubagents();
+    } catch {
+      toast(intl.formatMessage({ id: "settings.subagents.syncFailed" }));
+    }
+  }, [intl, zcodeAgentService]);
+
   const handleSave = useCallback(
     async (config: SubAgentConfig) => {
       setSaving(true);
@@ -1432,6 +1446,7 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         }
         setShowForm(false);
         setEditingAgent(null);
+        await reloadLocalRunningSessions();
         await Promise.all([refresh(), refreshMentionStore()]);
       } catch (saveError) {
         toast(saveError instanceof Error ? saveError.message : String(saveError));
@@ -1444,6 +1459,7 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
       editingAgent,
       refresh,
       refreshMentionStore,
+      reloadLocalRunningSessions,
       subagentsService,
       targetWorkspaceIdentity,
       targetWorkspacePath,
@@ -1474,6 +1490,7 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         });
         setEditingAgent(null);
         setShowForm(false);
+        await reloadLocalRunningSessions();
         await Promise.all([refresh(), refreshMentionStore()]);
       } catch (deleteError) {
         toast(deleteError instanceof Error ? deleteError.message : String(deleteError));
@@ -1481,7 +1498,33 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         setOperatingAgentId(null);
       }
     },
-    [confirmDialog, intl, refresh, refreshMentionStore, subagentsService],
+    [
+      confirmDialog,
+      intl,
+      refresh,
+      refreshMentionStore,
+      reloadLocalRunningSessions,
+      subagentsService,
+    ],
+  );
+
+  // 本机热重载 + 向全部已注册远端环境复制（spec subagent-settings-sync.md D1/D2）。
+  // 快照来自写盘返回值（整份替换，幂等）；任一路失败只提示，不影响已落盘的本机设置。
+  // 三条写入路径（内置覆盖 / 插件覆盖 / 启用状态）共用它——三者同源同文件。
+  const syncSubagentState = useCallback(
+    async (state: SubagentStateSnapshot) => {
+      const remoteSessions = Object.values(useRemoteWorkspaceSessionStore.getState().sessionsById);
+      const results = await Promise.allSettled([
+        zcodeAgentService.reloadSubagents(),
+        ...remoteSessions.map((session) =>
+          replicateSubagentState({ services: session.services, state }),
+        ),
+      ]);
+      if (results.some((result) => result.status === "rejected")) {
+        toast(intl.formatMessage({ id: "settings.subagents.syncFailed" }));
+      }
+    },
+    [intl, zcodeAgentService],
   );
 
   const handleToggle = useCallback(
@@ -1490,19 +1533,30 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         return;
       }
       setOperatingAgentId(agent.id);
+      let writtenState: SubagentStateSnapshot | undefined;
       try {
-        await subagentsService.setEnabled({
+        // 启用状态与模型覆盖写同一份 agents-state.json，因此走同一套本机热重载 + 远端复制。
+        writtenState = await subagentsService.setEnabled({
           agentId: agent.id,
           enabled,
         });
-        await Promise.all([refresh(), refreshMentionStore()]);
       } catch (toggleError) {
         toast(toggleError instanceof Error ? toggleError.message : String(toggleError));
+        setOperatingAgentId(null);
+        return;
+      }
+      if (writtenState) {
+        await syncSubagentState(writtenState);
+      }
+      try {
+        await Promise.all([refresh(), refreshMentionStore()]);
+      } catch (refreshError) {
+        toast(refreshError instanceof Error ? refreshError.message : String(refreshError));
       } finally {
         setOperatingAgentId(null);
       }
     },
-    [refresh, refreshMentionStore, subagentsService],
+    [refresh, refreshMentionStore, subagentsService, syncSubagentState],
   );
 
   const handleModelOverrideChange = useCallback(
@@ -1512,18 +1566,30 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         return;
       }
       setOperatingAgentId(agent.id);
+      let writtenState: SubagentStateSnapshot | undefined;
       try {
         const modelSelection = toSubagentModelSelection(config.model, config.thoughtLevel);
         if (agentName) {
-          await subagentsService.setBuiltInModelOverride({ agentName, modelSelection });
+          writtenState = await subagentsService.setBuiltInModelOverride({
+            agentName,
+            modelSelection,
+          });
         } else {
           // 稳定 ID 不含插件版本；升级换目录后继续读取同一份用户 Selection 覆盖。
-          await subagentsService.setPluginAgentModelOverride({ agentId: agent.id, modelSelection });
+          writtenState = await subagentsService.setPluginAgentModelOverride({
+            agentId: agent.id,
+            modelSelection,
+          });
         }
       } catch (changeError) {
         toast(changeError instanceof Error ? changeError.message : String(changeError));
         setOperatingAgentId(null);
         throw changeError;
+      }
+      // 持久化成功即提交点：本机热重载与远端复制失败只提示，不回滚磁盘状态
+      // （spec subagent-settings-sync.md 失败语义）。
+      if (writtenState) {
+        await syncSubagentState(writtenState);
       }
       try {
         await Promise.all([refresh(), refreshMentionStore()]);
@@ -1534,7 +1600,7 @@ export function SubagentsSection({ onManageModels }: SubagentsSectionProps) {
         setOperatingAgentId(null);
       }
     },
-    [refresh, refreshMentionStore, subagentsService],
+    [refresh, refreshMentionStore, subagentsService, syncSubagentState],
   );
 
   const handleEdit = useCallback((agent: AgentSummary) => {

@@ -31,11 +31,13 @@ import type {
 import type { AgentRuntimeInternal } from "../internal.js";
 import { cloneModelSelection } from "../model-selection.js";
 import { applyRuntimeExecutionState } from "../execution-state.js";
+import { projectPersistentAgentMemoryTools } from "../../subagent/persistent-memory.js";
 
 import { orderProviderVisibleToolContracts } from "../../tool/provider-visible-order.js";
 import { projectToolModelContract } from "../../tool/model-contract.js";
 import { rebuildContextPrefix } from "./context-refresh.js";
 import { filterEmbeddedSearchRuntimeVisibleTools } from "./embedded-search-branch.js";
+import { refreshBranchAwareBuiltInTools } from "./embedded-search-branch.js";
 import {
   getSessionShellSelection as readSessionShellSelection,
   initializeSessionShellEnvironmentIfNeeded as initializeSessionShellEnvironment,
@@ -103,6 +105,28 @@ export function updateCompactionPolicy(
     next.modelDownshiftEnabled = patch.modelDownshiftEnabled;
   }
   this.config.compact = next;
+}
+
+export function updateSubagentsConfig(
+  this: AgentRuntimeInternal,
+  patch: import("../../subagent/profile.js").SubagentConfigPatch,
+): void {
+  // 整份替换：补丁是按当前磁盘重新解析的（spec subagent-settings-sync.md D3/D4），
+  // 「改回继承 / 重新启用」表现为列表与覆盖表里不再出现该项，键级合并会把删除留下。
+  // 构造期对 config 做过持久记忆工具投影，热更新必须重跑同一份投影，否则热重载后的
+  // profile 与新会话不一致。
+  this.config = projectPersistentAgentMemoryTools({
+    ...this.config,
+    subagents: {
+      ...this.config.subagents,
+      builtInModelSelectionOverrides: { ...patch.builtInModelSelectionOverrides },
+      profiles: [...patch.profiles],
+    },
+  });
+  // Agent / Task 的工具描述读的是同一份 profiles（第二处注册入口）。一并发散，
+  // 否则热重载后模型看到的可用 agent 清单与实际可派发的清单会分叉（禁用项仍被广告、
+  // 新增项看不到）。cachedTools 由该函数置空，下一轮重建。
+  refreshBranchAwareBuiltInTools(this);
 }
 
 export function initializeSessionShellEnvironmentIfNeeded(
