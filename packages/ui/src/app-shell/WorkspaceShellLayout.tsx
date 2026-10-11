@@ -50,6 +50,8 @@ import type {
   SavedWorkflowsOpenRunParams,
 } from "@/settings/saved-workflows/SavedWorkflowsSection.js";
 import { AutomationsMainBreadcrumbFrame } from "@/settings/AutomationsMainBreadcrumbFrame.js";
+import { GoalsMainBreadcrumbFrame } from "@/settings/GoalsMainBreadcrumbFrame.js";
+import { GoalsPanel } from "@/app-shell/GoalsPanel.js";
 import { PluginStorePage } from "@/settings/PluginStorePage.js";
 import { TaskFindDialog } from "@/quickpick/TaskFindDialog.js";
 import { WorkspaceHeader } from "@/WorkspaceHeader.js";
@@ -202,6 +204,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   onWorkspaceMainViewChange,
   onOpenAutomationConsumed,
   handleOpenAutomations,
+  handleOpenGoals,
   handleOpenPluginStore,
   handleManageInstalledPlugins,
   onConnectRemote,
@@ -760,6 +763,12 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
       )?.localWorkspacePath,
     [workspaceAbsPath, workspaceIdentity, workspaceTabs],
   );
+  // 「任务」面板只读判据：本地不可用目录沿用 workspace 级只读；远程 workspace 未建立连接时同样只读。
+  const goalsReadOnlyReason =
+    workspaceReadOnlyReason ??
+    (!workspaceRemoteSessionId && (workspaceIdentity || workspaceRemoteTarget)
+      ? intl.formatMessage({ id: "goals.remoteDisconnected" })
+      : undefined);
   const workspaceShellSplitStyle = useMemo(
     () =>
       ({
@@ -1544,7 +1553,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
   // 与 Task Header 分叉。桌面端统一复用 WorkspaceHeader，只由 variant 裁剪 task 专属内容；
   // 手机远控无 active task 时仍不渲染桌面 chrome，继续遵守 replayable overlay 边界。
   const shouldRenderMainViewHeader =
-    workspaceMainView !== "automations" && workspaceMainView !== "plugin-store";
+    workspaceMainView !== "automations" &&
+    workspaceMainView !== "goals" &&
+    workspaceMainView !== "plugin-store";
   const shouldRenderWorkspaceHeader =
     shouldRenderMainViewHeader && (activeTaskId !== null || isDesktop);
   // ErrorBoundary resetKeys 的数组如果每次 render 都重新创建，
@@ -1656,6 +1667,8 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                       onOpenCommandCenter={handleOpenCommandCenter}
                       onOpenAutomations={handleOpenAutomations}
                       automationsActive={workspaceMainView === "automations"}
+                      onOpenGoals={handleOpenGoals}
+                      goalsActive={workspaceMainView === "goals"}
                       onOpenPluginStore={handleOpenPluginStore}
                       pluginStoreActive={workspaceMainView === "plugin-store"}
                       onFileTreeOpenChange={setIsSidebarFileTreeOpen}
@@ -1856,6 +1869,48 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                             </div>
                           </AutomationsMainBreadcrumbFrame>
                         </main>
+                      ) : workspaceMainView === "goals" ? (
+                        <main className="flex h-full min-h-0 flex-1 flex-col bg-background">
+                          <GoalsMainBreadcrumbFrame
+                            isDesktop={Boolean(isDesktop)}
+                            sectionLabel={intl.formatMessage({ id: "goals.title" })}
+                            ariaLabel={intl.formatMessage({
+                              id: "goals.breadcrumbLabel",
+                            })}
+                          >
+                            <div
+                              // 与 Automations 同因：滚动条出现/消失会改变居中列的可用宽度，
+                              // 预留稳定槽位保持 mx-auto 基准不变。
+                              className="min-h-0 flex-1 overflow-y-auto [scrollbar-gutter:stable]"
+                            >
+                              <ScopedErrorBoundary
+                                scope="goals-main"
+                                resetKeys={workspaceOnlyResetKeys}
+                                variant="panel"
+                                className="min-h-full"
+                              >
+                                <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-4 md:px-6 md:py-6">
+                                  <GoalsPanel
+                                    workspacePath={workspaceAbsPath}
+                                    workspaceIdentity={workspaceIdentity}
+                                    readOnlyReason={goalsReadOnlyReason}
+                                    onOpenSession={({
+                                      sessionId,
+                                      workspacePath,
+                                      workspaceIdentity,
+                                    }) =>
+                                      handleSelectTaskInChat(
+                                        workspacePath,
+                                        sessionId,
+                                        workspaceIdentity,
+                                      )
+                                    }
+                                  />
+                                </div>
+                              </ScopedErrorBoundary>
+                            </div>
+                          </GoalsMainBreadcrumbFrame>
+                        </main>
                       ) : workspaceMainView === "plugin-store" ? (
                         <main className="flex h-full min-h-0 flex-1 flex-col bg-background">
                           <AutomationsMainBreadcrumbFrame
@@ -1958,7 +2013,9 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                     </div>
                   </section>
                 </ResizablePanel>
-                {workspaceMainView !== "automations" && workspaceMainView !== "plugin-store" ? (
+                {workspaceMainView !== "automations" &&
+                workspaceMainView !== "goals" &&
+                workspaceMainView !== "plugin-store" ? (
                   <AnimatedTerminalPanel
                     frameClassName={cn(
                       isSidePaneVisible

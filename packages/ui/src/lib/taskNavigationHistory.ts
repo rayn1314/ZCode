@@ -24,6 +24,13 @@ export type OpenAutomationsMain = (
   automationTab?: AutomationsNavigationTab,
 ) => void;
 
+/** 「任务」主视图没有详情参数，打开即入栈。 */
+export type OpenGoalsMain = () => void;
+
+export interface GoalsNavEntry extends WorkspaceNavEntryBase {
+  kind: "goals";
+}
+
 export interface AutomationsNavEntry extends WorkspaceNavEntryBase {
   kind: "automations";
   automationId?: string;
@@ -34,7 +41,11 @@ export interface PluginStoreNavEntry extends WorkspaceNavEntryBase {
   kind: "plugin-store";
 }
 
-export type WorkspaceNavEntry = TaskNavEntry | AutomationsNavEntry | PluginStoreNavEntry;
+export type WorkspaceNavEntry =
+  | TaskNavEntry
+  | AutomationsNavEntry
+  | GoalsNavEntry
+  | PluginStoreNavEntry;
 
 export interface TaskNavigationHistory {
   entries: WorkspaceNavEntry[];
@@ -54,6 +65,10 @@ function isTaskNavEntry(entry: WorkspaceNavEntry): entry is TaskNavEntry {
 
 export function isAutomationsNavEntry(entry: WorkspaceNavEntry): entry is AutomationsNavEntry {
   return entry.kind === "automations";
+}
+
+export function isGoalsNavEntry(entry: WorkspaceNavEntry): entry is GoalsNavEntry {
+  return entry.kind === "goals";
 }
 
 export function isPluginStoreNavEntry(entry: WorkspaceNavEntry): entry is PluginStoreNavEntry {
@@ -77,6 +92,7 @@ function isSameNavEntry(left: WorkspaceNavEntry, right: WorkspaceNavEntry): bool
       left.automationTab === rightAutomations.automationTab
     );
   }
+  // goals / plugin-store 只带 workspace 身份，kind + path + identity 相同即视为同一目标。
   return true;
 }
 
@@ -135,6 +151,19 @@ export function pushAutomationsNavEntry(
     ...(workspaceIdentity ? { workspaceIdentity } : {}),
     ...(automationId ? { automationId } : {}),
     ...(automationTab ? { automationTab } : {}),
+  });
+}
+
+/** 用户主动打开「任务」主视图时调用。 */
+export function pushGoalsNavEntry(
+  history: TaskNavigationHistory,
+  workspacePath: string,
+  workspaceIdentity?: string,
+): TaskNavigationHistory {
+  return pushEntry(history, {
+    kind: "goals",
+    workspacePath,
+    ...(workspaceIdentity ? { workspaceIdentity } : {}),
   });
 }
 
