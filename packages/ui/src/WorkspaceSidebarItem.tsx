@@ -60,6 +60,7 @@ import { ReconnectingRemoteWorkspaceLogTooltip } from "@/WorkspaceSidebar/Reconn
 import { cn } from "@/components/lib/utils.js";
 import {
   TID_WORKSPACE_CLOSE,
+  TID_WORKSPACE_COPY_PATH,
   TID_WORKSPACE_FILE_TREE_BUTTON,
   TID_WORKSPACE_ITEM,
   TID_WORKSPACE_MARK_READ,
@@ -781,6 +782,34 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
       }, 1500);
     });
   }, [remoteWorkspaceError]);
+
+  // 项目行「复制路径」：只把 workspacePath 写进剪贴板，不属于写操作，
+  // 因此不像「全部标为已读」那样受 readOnlyReason 限制——本地目录不可用时，
+  // 这条路径反而是用户找回项目的唯一线索。
+  // 手机 Web 经 http 访问是非安全上下文，navigator.clipboard 可能整个不存在，
+  // 必须显式判空，否则会同步抛错、连失败提示都发不出来。
+  const handleCopyWorkspacePath = useCallback(() => {
+    const workspacePath = tab.workspacePath;
+    if (!workspacePath) {
+      return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+      toast(intl.formatMessage({ id: "workspaceSidebar.copyPathFailed" }));
+      logger.warn("[WorkspaceSidebar] 复制路径失败：剪贴板不可用", { workspacePath });
+      return;
+    }
+
+    void navigator.clipboard.writeText(workspacePath).then(
+      () => {
+        toast(intl.formatMessage({ id: "workspaceSidebar.copyPathDone" }));
+      },
+      (error: unknown) => {
+        toast(intl.formatMessage({ id: "workspaceSidebar.copyPathFailed" }));
+        logger.warn("[WorkspaceSidebar] 复制路径失败", { workspacePath }, error);
+      },
+    );
+  }, [intl, tab.workspacePath]);
   const renderWorkspaceIcon = () => {
     // workspace 行之前在 hover/展开时会把目录图标切成箭头，
     // 视觉上会多出一层“树形展开控件”的暗示；当前交互只需要保留项目图标本身，
@@ -996,6 +1025,23 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
                             onOpenMcpSync={() => setRemoteMcpSyncOpen(true)}
                             onOpenPluginSync={() => setRemotePluginSyncOpen(true)}
                           />
+                          {/* 以下三项都不在 onSelect 里 preventDefault：Radix 用 defaultPrevented 决定
+                              是否关菜单，preventDefault 会把菜单钉住不收。防点击穿透由各自的
+                              onMouseDown 和 DropdownMenuContent 的 stopPropagation 负责，不靠它。 */}
+                          <DropdownMenuItem
+                            data-testid={testId(TID_WORKSPACE_COPY_PATH, tab.workspacePath)}
+                            disabled={!tab.workspacePath}
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                            }}
+                            onSelect={() => {
+                              handleCopyWorkspacePath();
+                            }}
+                          >
+                            <CopyIcon className="h-3.5 w-3.5" />
+                            {intl.formatMessage({ id: "appHeader.copyPath" })}
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             data-testid={testId(TID_WORKSPACE_MARK_READ, tab.workspacePath)}
                             disabled={
@@ -1010,8 +1056,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
                               event.preventDefault();
                               event.stopPropagation();
                             }}
-                            onSelect={(event) => {
-                              event.preventDefault();
+                            onSelect={() => {
                               void handleMarkWorkspaceRead();
                             }}
                           >
@@ -1024,8 +1069,7 @@ export const WorkspaceSidebarItem = memo(function WorkspaceSidebarItem({
                               event.preventDefault();
                               event.stopPropagation();
                             }}
-                            onSelect={(event) => {
-                              event.preventDefault();
+                            onSelect={() => {
                               void handleRemoveWorkspace();
                             }}
                           >

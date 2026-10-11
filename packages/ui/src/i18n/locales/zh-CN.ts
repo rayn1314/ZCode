@@ -1540,6 +1540,8 @@ const zhCN: Record<string, string> = {
   "workspaceSidebar.markAllAsRead": "全部标为已读",
   "workspaceSidebar.markAllAsReadEmpty": "没有未读会话",
   "workspaceSidebar.markAllAsReadFailed": "标记已读失败",
+  "workspaceSidebar.copyPathDone": "已复制路径",
+  "workspaceSidebar.copyPathFailed": "复制路径失败",
   "workspaceSidebar.remove": "移除",
   "workspaceSidebar.removeRunningWorkspace.title": "移除运行中的项目？",
   "workspaceSidebar.removeRunningWorkspace.description":

@@ -1657,6 +1657,8 @@ const enUS: Record<string, string> = {
   "workspaceSidebar.markAllAsRead": "Mark all as read",
   "workspaceSidebar.markAllAsReadEmpty": "No unread conversations",
   "workspaceSidebar.markAllAsReadFailed": "Could not mark as read",
+  "workspaceSidebar.copyPathDone": "Path copied",
+  "workspaceSidebar.copyPathFailed": "Could not copy path",
   "workspaceSidebar.remove": "Remove",
   "workspaceSidebar.removeRunningWorkspace.title": "Remove a running project?",
   "workspaceSidebar.removeRunningWorkspace.description":
