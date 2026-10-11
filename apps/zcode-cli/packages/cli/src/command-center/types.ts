@@ -113,7 +113,12 @@ export type CommandCenterSession = {
   updatedAt: Date | number | string;
 };
 
-export type CommandCenterTargetStatus = "active" | "paused" | "budget_limited" | "complete";
+export type CommandCenterTargetStatus =
+  | "active"
+  | "paused"
+  | "budget_limited"
+  | "deadline_reached"
+  | "complete";
 
 export type CommandCenterTarget = {
   objective: string;
@@ -124,6 +129,8 @@ export type CommandCenterTarget = {
   tokenBudget?: number | null;
   tokensUsed?: number;
   timeUsedSeconds?: number;
+  /** 墙钟截止时间（epoch ms）；null/缺失表示无时间退出条件。 */
+  endAtMs?: number | null;
   time: {
     created: number;
     updated: number;
@@ -201,6 +208,7 @@ export type CommandCenterApp = {
     objective: string;
     status?: CommandCenterTargetStatus;
     tokenBudget?: number | null;
+    endAtMs?: number | null;
   }): Promise<CommandCenterTarget>;
   updateTargetStatus?(status: CommandCenterTargetStatus): Promise<CommandCenterTarget | null>;
   clearTarget?(): Promise<boolean>;

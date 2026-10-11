@@ -10,6 +10,8 @@ export const GoalStatus = {
   Active: "active",
   Paused: "paused",
   BudgetLimited: "budget_limited",
+  /** 墙钟截止时间已到且收尾轮已用完，由运行时自动停止。 */
+  DeadlineReached: "deadline_reached",
   Complete: "complete",
 } as const;
 
@@ -20,11 +22,18 @@ export const GOAL_COMPLETION_VERIFICATION_QUERY_SOURCE =
   "target_completion_verification";
 export const GOAL_COMPLETION_VERIFICATION_FALLBACK_REASON =
   "The completion verifier could not confirm that every goal requirement is complete.";
+/**
+ * 到点硬停的一次性提醒文案。运行时（core）在结算 deadline_reached 时直接注入，
+ * 与 paused/resumed/cleared 文案同族；放在 contracts 是因为 core 拿不到 facade 内的私有函数。
+ */
+export const GOAL_DEADLINE_REACHED_REMINDER_TEXT =
+  "The active session goal reached its configured deadline and has stopped. Do not continue pursuing it unless the user resumes with a new deadline or replaces the goal.";
 
 export const GoalStatusSchema = z.enum([
   "active",
   "paused",
   "budget_limited",
+  "deadline_reached",
   "complete",
 ]);
 
@@ -33,6 +42,28 @@ export const GoalTokenBudgetSchema = z
   .int()
   .positive("goal token budget must be positive")
   .nullable();
+
+export const GoalDeadlineSchema = z
+  .number()
+  .int()
+  .nonnegative("goal deadline must be an epoch millisecond timestamp")
+  .nullable();
+
+/** 到点后的两段式裁决结果：继续跑 / 放行一轮收尾 / 结算停止。 */
+export type GoalDeadlineDecision = "continue" | "wrap-up" | "settle";
+
+/**
+ * 到点的唯一裁决点，被 core 的续跑候选检查调用。
+ * 纯函数：只由调用方传入的时间与标志位决定结果，便于单测覆盖「只给一次收尾」。
+ */
+export function decideGoalDeadline(input: {
+  endAtMs: number | null;
+  deadlineGraceUsed: boolean;
+  nowMs: number;
+}): GoalDeadlineDecision {
+  if (input.endAtMs === null || input.nowMs < input.endAtMs) return "continue";
+  return input.deadlineGraceUsed ? "settle" : "wrap-up";
+}
 
 export const GoalObjectiveSchema = z
   .string()
@@ -53,6 +84,10 @@ export interface SessionGoal {
   tokenBudget: number | null;
   tokensUsed: number;
   timeUsedSeconds: number;
+  /** 墙钟截止时间（epoch ms）；null 表示目标不带时间退出条件。 */
+  endAtMs: number | null;
+  /** 本次目标生命周期内是否已经把「收尾轮」发给过模型；到点第二段据此结算。 */
+  deadlineGraceUsed: boolean;
   activeInputId?: string | null;
   activeRunStartedAtMs?: number | null;
   activeRunLastSeenAtMs?: number | null;
@@ -60,6 +95,16 @@ export interface SessionGoal {
     created: number;
     updated: number;
   };
+}
+
+/** goalList 查询的一行：目标 + 承载会话的可展示身份（面板用）。 */
+export interface SessionGoalListEntry {
+  goal: SessionGoal;
+  sessionID: SessionId;
+  sessionTitle: string;
+  workspacePath: string;
+  workspaceIdentity?: string;
+  archived: boolean;
 }
 
 export const SessionGoalSchema = z
@@ -72,6 +117,9 @@ export const SessionGoalSchema = z
     tokenBudget: GoalTokenBudgetSchema,
     tokensUsed: z.number().int().nonnegative(),
     timeUsedSeconds: z.number().int().nonnegative(),
+    // 旧持久化快照没有这两列；default 让历史 snapshot 仍能解析。
+    endAtMs: GoalDeadlineSchema.default(null),
+    deadlineGraceUsed: z.boolean().default(false),
     activeInputId: z.string().min(1).nullable().optional(),
     activeRunStartedAtMs: z.number().int().nonnegative().nullable().optional(),
     activeRunLastSeenAtMs: z.number().int().nonnegative().nullable().optional(),
@@ -134,12 +182,49 @@ export function formatGoalStateForModel(goal: SessionGoal | null): string {
   ].join("\n");
 }
 
+/** 把 epoch ms 渲染成 `YYYY-MM-DD HH:mm`（本地时区），仅用于给模型看的提示文案。 */
+function formatGoalDeadlineInstant(endAtMs: number): string {
+  const date = new Date(endAtMs);
+  const pad = (value: number) => value.toString().padStart(2, "0");
+  return (
+    `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ` +
+    `${pad(date.getHours())}:${pad(date.getMinutes())}`
+  );
+}
+
+function formatGoalDeadlineRemaining(remainingMs: number): string {
+  const totalMinutes = Math.max(0, Math.ceil(remainingMs / 60_000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+}
+
+/**
+ * 续跑提示里的截止时间段落。到点后同一段落自动变成收尾指令——这就是「收尾轮」的
+ * 全部信息来源，不需要另外的提醒注入通道。
+ */
+function goalDeadlineContinuationLines(goal: SessionGoal, nowMs: number): string[] {
+  if (goal.endAtMs === null) return [];
+  const instant = formatGoalDeadlineInstant(goal.endAtMs);
+  if (nowMs >= goal.endAtMs) {
+    return [
+      "Deadline:",
+      `- The deadline (${instant}) has passed. This is the final wrap-up turn. Summarize what is complete, what remains, and what the user should do next, then stop. Do not start work that cannot finish in this turn.`,
+    ];
+  }
+  return [
+    "Deadline:",
+    `- Hard deadline: ${instant} (in ${formatGoalDeadlineRemaining(goal.endAtMs - nowMs)}). The runtime stops this goal at the deadline, after one final wrap-up turn.`,
+  ];
+}
+
 export function formatGoalContinuationPrompt(
   goal: SessionGoal,
   verification?: Pick<
     GoalCompletionVerificationOutput,
     "nextAction" | "reason"
   > | null,
+  nowMs: number = Date.now(),
 ): string {
   const tokenBudget =
     goal.tokenBudget === null ? "none" : goal.tokenBudget.toString();
@@ -175,6 +260,7 @@ export function formatGoalContinuationPrompt(
     `- Tokens used: ${goal.tokensUsed}`,
     `- Token budget: ${tokenBudget}`,
     `- Tokens remaining: ${remainingTokens}`,
+    ...goalDeadlineContinuationLines(goal, nowMs),
     "",
     "Avoid repeating work that is already done. Choose the next concrete action toward the objective.",
     "",
@@ -195,9 +281,20 @@ export function formatGoalContinuationPrompt(
 
 export function formatGoalCompletionVerificationPrompt(
   goal: SessionGoal,
+  nowMs: number = Date.now(),
 ): string {
   const tokenBudget =
     goal.tokenBudget === null ? "none" : goal.tokenBudget.toString();
+  const deadlineLines =
+    goal.endAtMs === null
+      ? []
+      : [
+          `- Hard deadline: ${formatGoalDeadlineInstant(goal.endAtMs)} (${
+            nowMs >= goal.endAtMs
+              ? "already passed"
+              : `in ${formatGoalDeadlineRemaining(goal.endAtMs - nowMs)}`
+          })`,
+        ];
 
   return [
     "Verify whether the active session goal is actually complete.",
@@ -234,6 +331,7 @@ export function formatGoalCompletionVerificationPrompt(
     `- Tokens used: ${goal.tokensUsed}`,
     `- Token budget: ${tokenBudget}`,
     `- Time used: ${goal.timeUsedSeconds} seconds`,
+    ...deadlineLines,
     "",
     "Use the conversation context before this verification request as the evidence source.",
     "Pass only if the conversation and current known state show that every explicit requirement, named file, command, test, gate, and deliverable in the objective is complete.",

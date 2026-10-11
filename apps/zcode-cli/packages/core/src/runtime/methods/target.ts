@@ -1,8 +1,10 @@
 import {
   CoreErrorType,
+  GOAL_DEADLINE_REACHED_REMINDER_TEXT,
   SessionEventType,
   createChildTraceContext,
   createCoreError,
+  decideGoalDeadline,
   formatGoalContinuationPrompt,
   traceContextToLogContext,
 } from "../deps.js";
@@ -79,6 +81,9 @@ export async function executeTargetContinuationCommand(
   options: TargetContinuationRuntimeCommandOptions,
 ): Promise<TurnResult | null> {
   const traceContext = options.traceContext;
+  // 到点裁决与续跑提示必须用同一个时刻：否则截止时间恰好落在校验器调用期间时，
+  // 会出现「没收尾标志却写了收尾文案」的双重收尾窗口。
+  const nowMs = Date.now();
   const target = await targetContinuationCandidateForCommand.call(this, traceContext);
   if (!target) return null;
 
@@ -95,6 +100,12 @@ export async function executeTargetContinuationCommand(
     });
     return null;
   }
+
+  // 到点后的这一轮是「收尾轮」：先把「已给过收尾轮」落库，再走校验与续跑。
+  // 放在背景任务延后之后：被延后的续跑不该白白吃掉唯一一次收尾机会。
+  // 放在校验器之前：校验器若判定已达成，目标直接置 complete（不消耗收尾语义）；
+  // 若校验器自身失败（保守停止），收尾标志也已落地，下一轮检查会正常结算 deadline_reached，不会永久停在 active。
+  await releaseDeadlineWrapUpTurnIfNeeded.call(this, target, traceContext, nowMs);
 
   const verificationResult = options.verifyBeforeContinue
     ? await verifyActiveTargetCompletionForContinuation.call(this, {
@@ -146,7 +157,7 @@ export async function executeTargetContinuationCommand(
   const continuationTarget = latestTarget;
   const prompt = wrapSystemReminderForSource(
     "target_continuation",
-    formatGoalContinuationPrompt(continuationTarget, verificationResult?.verification),
+    formatGoalContinuationPrompt(continuationTarget, verificationResult?.verification, nowMs),
   );
   const continuationTrace = createChildTraceContext(traceContext, {
     sessionId: this.sessionId,
@@ -197,7 +208,138 @@ async function targetContinuationCandidateForCommand(
 
   const target = await this.readSessionTargetForContext(traceContext);
   if (!target || target.status !== "active") return null;
+
+  // 到点裁决点之一。这里只做「不进候选」的判定与收尾后的结算；收尾轮的放行
+  // 放在 executeTargetContinuationCommand（背景任务延后之后），以免被延后的一轮白白吃掉收尾机会。
+  if (
+    decideGoalDeadline({
+      endAtMs: target.endAtMs,
+      deadlineGraceUsed: target.deadlineGraceUsed,
+      nowMs: Date.now(),
+    }) === "settle"
+  ) {
+    await settleTargetDeadlineReached.call(this, target, traceContext);
+    return null;
+  }
   return target;
+}
+
+/**
+ * 到点第一段：在真正放行这一轮之前，把「已给过收尾轮」持久化。
+ * 落库失败只记日志：标记本身是幂等的一次写入，下一轮检查看到未标记会再试一次，
+ * 最坏情况是多给一轮收尾，好过因为写库失败直接跳过硬停。
+ */
+async function releaseDeadlineWrapUpTurnIfNeeded(
+  this: AgentRuntimeInternal,
+  target: SessionGoal,
+  traceContext: TraceContext,
+  nowMs: number,
+): Promise<void> {
+  if (
+    decideGoalDeadline({
+      endAtMs: target.endAtMs,
+      deadlineGraceUsed: target.deadlineGraceUsed,
+      nowMs,
+    }) !== "wrap-up"
+  ) {
+    return;
+  }
+  if (!this.sessionStore?.markTargetDeadlineGraceUsed) return;
+  try {
+    await this.sessionStore.markTargetDeadlineGraceUsed({
+      sessionID: this.sessionId,
+      targetID: target.targetID,
+    });
+    this.logger?.info("Goal deadline reached; releasing the final wrap-up turn", {
+      ...traceContextToLogContext(traceContext),
+      event: "target.deadline.wrap_up_released",
+      module: "core.runtime",
+      status: "started",
+      targetId: target.targetID,
+    });
+  } catch (error) {
+    this.logger?.warn("Failed to persist goal deadline wrap-up flag", {
+      ...traceContextToLogContext(traceContext),
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "target.deadline.wrap_up_mark_failed",
+      module: "core.runtime",
+      status: "failed",
+      targetId: target.targetID,
+    });
+  }
+}
+
+/**
+ * 结算到点硬停。记账 SQL 也会在同一条 update 里翻这个状态（兜底），
+ * 两处都以「active → deadline_reached 的一次跃迁」为准，因此提醒只会发出一次。
+ */
+async function settleTargetDeadlineReached(
+  this: AgentRuntimeInternal,
+  target: SessionGoal,
+  traceContext: TraceContext,
+): Promise<void> {
+  if (!this.sessionStore) return;
+  try {
+    const settled = await this.sessionStore.updateTargetStatus({
+      sessionID: this.sessionId,
+      status: "deadline_reached",
+    });
+    if (!settled || settled.status !== "deadline_reached") return;
+    await this.recordTargetChanged({
+      action: "status_updated",
+      previousTarget: target,
+      source: "runtime",
+      target: settled,
+      traceContext,
+    });
+    await this.recordGoalStateChangeReminder({
+      text: GOAL_DEADLINE_REACHED_REMINDER_TEXT,
+      traceContext,
+    });
+    this.logger?.info("Goal stopped at its configured deadline", {
+      ...traceContextToLogContext(traceContext),
+      event: "target.deadline.reached",
+      module: "core.runtime",
+      status: "completed",
+      targetId: settled.targetID,
+    });
+  } catch (error) {
+    // 权威状态写库失败不能阻塞 turn 收尾；下一次运行时活动会重试结算。
+    this.logger?.warn("Failed to settle goal deadline", {
+      ...traceContextToLogContext(traceContext),
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "target.deadline.settle_failed",
+      module: "core.runtime",
+      status: "failed",
+      targetId: target.targetID,
+    });
+  }
+}
+
+/**
+ * 记账 SQL 兜底翻到 deadline_reached 时补发一次性提醒。
+ * 只有从 active 跃迁的那一次调用会命中，因此与候选检查路径不会重复发。
+ */
+async function emitDeadlineReachedReminderIfFlipped(
+  this: AgentRuntimeInternal,
+  previousTarget: SessionGoal | null,
+  accountedTarget: SessionGoal | null,
+  traceContext: TraceContext,
+): Promise<void> {
+  if (previousTarget?.status !== "active" || accountedTarget?.status !== "deadline_reached") {
+    return;
+  }
+  await this.recordGoalStateChangeReminder({
+    text: GOAL_DEADLINE_REACHED_REMINDER_TEXT,
+    traceContext,
+  });
+  this.logger?.info("Goal stopped at its configured deadline during turn accounting", {
+    ...traceContextToLogContext(traceContext),
+    event: "target.deadline.reached",
+    module: "core.runtime",
+    status: "completed",
+    targetId: accountedTarget.targetID,
+  });
 }
 
 async function hasRunningBackgroundTaskForGoalContinuation(
@@ -247,6 +389,12 @@ export async function accountTargetTurnCompletion(
         target: accountedTarget,
         traceContext: input.traceContext,
       });
+      await emitDeadlineReachedReminderIfFlipped.call(
+        this,
+        previousTarget,
+        accountedTarget,
+        input.traceContext,
+      );
     }
   } catch (error) {
     this.logger?.warn("Failed to account goal turn completion", {
@@ -366,6 +514,12 @@ export async function finishTargetTurnAccounting(
         target: finishedTarget,
         traceContext: input.traceContext,
       });
+      await emitDeadlineReachedReminderIfFlipped.call(
+        this,
+        previousTarget,
+        finishedTarget,
+        input.traceContext,
+      );
       return finishedTarget;
     }
     return target;

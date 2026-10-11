@@ -417,9 +417,14 @@ export interface ZCodeApp {
     displayText?: string;
     status?: GoalStatus;
     tokenBudget?: number | null;
+    /** 墙钟截止时间（epoch ms）；省略/null 表示不带时间退出条件。 */
+    endAtMs?: number | null;
     intent?: TurnInputIntentMetadata;
   }): Promise<SessionGoal>;
-  updateTargetStatus(status: GoalStatus): Promise<SessionGoal | null>;
+  updateTargetStatus(
+    status: GoalStatus,
+    options?: { endAtMs?: number | null },
+  ): Promise<SessionGoal | null>;
   clearTarget(): Promise<boolean>;
   continueActiveTarget(options?: SubmitPromptOptions): Promise<TurnResult | null>;
   recordInputHistory(

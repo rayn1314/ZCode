@@ -38,6 +38,7 @@ import type {
   ScriptWorkflowRunStatus,
   ScriptWorkflowStorePort,
   SessionGoal,
+  SessionGoalListEntry,
   SessionId,
   SessionInfo,
   SessionInputDelivery,
@@ -68,6 +69,8 @@ import {
   createSessionTarget,
   finishSessionTargetRun,
   heartbeatSessionTargetRun,
+  listSessionTargets,
+  markSessionTargetDeadlineGraceUsed,
   readSessionTarget,
   recoverInterruptedSessionTargetRun,
   setSessionTarget,
@@ -745,17 +748,29 @@ export class SqliteSessionStore
     return readSessionTarget(this.db, input);
   }
 
+  async listTargets(
+    input: {
+      directory?: string;
+      includeArchived?: boolean;
+      limit?: number;
+    } = {},
+  ): Promise<SessionGoalListEntry[]> {
+    return listSessionTargets(this.db, input);
+  }
+
   async setTarget(input: {
     objective: string;
     sessionID: SessionId;
     status?: GoalStatus;
     tokenBudget?: number | null;
+    endAtMs?: number | null;
   }): Promise<SessionGoal> {
     return setSessionTarget(this.db, {
       objective: input.objective,
       sessionID: input.sessionID,
       status: input.status ?? "active",
       tokenBudget: input.tokenBudget,
+      endAtMs: input.endAtMs,
     });
   }
 
@@ -776,6 +791,7 @@ export class SqliteSessionStore
     objective: string;
     sessionID: SessionId;
     tokenBudget?: number | null;
+    endAtMs?: number | null;
   }): Promise<SessionGoal | null> {
     return createSessionTarget(this.db, input);
   }
@@ -783,8 +799,16 @@ export class SqliteSessionStore
   async updateTargetStatus(input: {
     sessionID: SessionId;
     status: GoalStatus;
+    endAtMs?: number | null;
   }): Promise<SessionGoal | null> {
     return updateSessionTargetStatus(this.db, input);
+  }
+
+  async markTargetDeadlineGraceUsed(input: {
+    sessionID: SessionId;
+    targetID: string;
+  }): Promise<SessionGoal | null> {
+    return markSessionTargetDeadlineGraceUsed(this.db, input);
   }
 
   async startTargetRun(input: {

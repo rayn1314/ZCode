@@ -168,6 +168,7 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
       displayText?: string;
       status?: GoalStatus;
       tokenBudget?: number | null;
+      endAtMs?: number | null;
       intent?: TurnInputIntentMetadata;
     },
   ) => {
@@ -194,11 +195,13 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
             sessionID: deps.sessionId,
             status: input.status,
             tokenBudget: input.tokenBudget,
+            endAtMs: input.endAtMs,
           })
         : action === "status_updated"
           ? await deps.sessionStore.updateTargetStatus({
               sessionID: deps.sessionId,
               status: input.status ?? "active",
+              endAtMs: input.endAtMs,
             })
           : null;
 
@@ -335,10 +338,11 @@ export function createSessionFacade(deps: CreateSessionFacadeDeps): SessionFacad
       }),
     setTarget: async (input) =>
       (await setTargetStatus("set", input)) as Awaited<ReturnType<ZCodeApp["setTarget"]>>,
-    updateTargetStatus: async (status) =>
-      (await setTargetStatus("status_updated", { status })) as Awaited<
-        ReturnType<ZCodeApp["updateTargetStatus"]>
-      >,
+    updateTargetStatus: async (status, options) =>
+      (await setTargetStatus("status_updated", {
+        status,
+        endAtMs: options?.endAtMs,
+      })) as Awaited<ReturnType<ZCodeApp["updateTargetStatus"]>>,
     clearTarget: async () => (await setTargetStatus("cleared", {})) as boolean,
     listModels: () => {
       return listRegistryBackedModels(deps.providerRegistry);

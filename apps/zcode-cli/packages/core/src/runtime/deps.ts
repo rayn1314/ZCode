@@ -86,6 +86,8 @@ export {
   formatTodoStateForModel,
   formatGoalStateForModel,
   formatGoalContinuationPrompt,
+  decideGoalDeadline,
+  GOAL_DEADLINE_REACHED_REMINDER_TEXT,
   failOpenGoalCompletionVerification,
   failedGoalCompletionVerification,
   formatGoalCompletionVerificationFailurePrompt,

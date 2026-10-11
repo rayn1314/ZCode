@@ -97,10 +97,13 @@ export const zcodeSessionGoalSchema = z
     // 旧版持久化 session target 不包含 summaryTitle。
     // 协议读取历史 snapshot 时补 null，避免老会话恢复失败。
     summaryTitle: z.string().min(1).nullable().default(null),
-    status: z.enum(["active", "paused", "budget_limited", "complete"]),
+    status: z.enum(["active", "paused", "budget_limited", "deadline_reached", "complete"]),
     tokenBudget: z.number().int().positive().nullable(),
     tokensUsed: z.number().int().nonnegative(),
     timeUsedSeconds: z.number().int().nonnegative(),
+    // 旧版持久化 session target 没有截止时间列；default 让历史 snapshot 仍能解析。
+    endAtMs: timestampMsSchema.nullable().default(null),
+    deadlineGraceUsed: z.boolean().default(false),
     activeInputId: nonEmptyString.nullable().optional(),
     activeRunStartedAtMs: timestampMsSchema.nullable().optional(),
     activeRunLastSeenAtMs: timestampMsSchema.nullable().optional(),

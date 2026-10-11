@@ -59,7 +59,12 @@ export interface ZCodeGlmAgentModelStateUpdatePayload {
 }
 /** 外部历史迁移来源。当前只落 Claude Code，后续其它来源继续在这里扩展。 */
 export type ZCodeTaskMigrationSource = "claudeCode";
-export type ZCodeTaskGoalStatus = "active" | "paused" | "budget_limited" | "complete";
+export type ZCodeTaskGoalStatus =
+  | "active"
+  | "paused"
+  | "budget_limited"
+  | "deadline_reached"
+  | "complete";
 export type ZCodeTaskTargetChangedAction =
   | "set"
   | "status_updated"
@@ -78,6 +83,10 @@ export interface ZCodeTaskGoal {
   tokenBudget: number | null;
   tokensUsed: number;
   timeUsedSeconds: number;
+  /** 墙钟截止时间（epoch ms）；null/缺失表示无时间退出条件。 */
+  endAtMs?: number | null;
+  /** 本次目标生命周期内是否已把收尾轮发给模型。 */
+  deadlineGraceUsed?: boolean;
   activeInputId?: string | null;
   activeRunStartedAtMs?: number | null;
   activeRunLastSeenAtMs?: number | null;

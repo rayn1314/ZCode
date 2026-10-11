@@ -240,6 +240,8 @@ function fromZCodeGoal(goal: unknown): ZCodeTaskGoal {
     tokenBudget: typeof record.tokenBudget === "number" ? record.tokenBudget : null,
     tokensUsed: numberValue(record.tokensUsed) ?? 0,
     timeUsedSeconds: numberValue(record.timeUsedSeconds) ?? 0,
+    endAtMs: numberValue(record.endAtMs) ?? null,
+    deadlineGraceUsed: record.deadlineGraceUsed === true,
     activeInputId: stringValue(record.activeInputId) ?? null,
     activeRunStartedAtMs: numberValue(record.activeRunStartedAtMs) ?? null,
     activeRunLastSeenAtMs: numberValue(record.activeRunLastSeenAtMs) ?? null,
@@ -255,6 +257,7 @@ function isZCodeTaskGoalStatus(status: string | undefined): status is ZCodeTaskG
     status === "active" ||
     status === "paused" ||
     status === "budget_limited" ||
+    status === "deadline_reached" ||
     status === "complete"
   );
 }

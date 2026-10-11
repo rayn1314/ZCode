@@ -1040,7 +1040,9 @@ function normalizeText(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
-function mapSessionGoal(goal: SessionGoal | null | undefined): ZCodeSessionGoal | null | undefined {
+export function mapSessionGoal(
+  goal: SessionGoal | null | undefined,
+): ZCodeSessionGoal | null | undefined {
   if (goal === undefined) return undefined;
   if (goal === null) return null;
   return {
@@ -1053,6 +1055,8 @@ function mapSessionGoal(goal: SessionGoal | null | undefined): ZCodeSessionGoal 
     timeUsedSeconds: goal.timeUsedSeconds ?? 0,
     tokenBudget: goal.tokenBudget ?? null,
     tokensUsed: goal.tokensUsed ?? 0,
+    endAtMs: goal.endAtMs ?? null,
+    deadlineGraceUsed: goal.deadlineGraceUsed ?? false,
     activeInputId: goal.activeInputId ?? null,
     activeRunStartedAtMs: goal.activeRunStartedAtMs ?? null,
     activeRunLastSeenAtMs: goal.activeRunLastSeenAtMs ?? null,

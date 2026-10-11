@@ -138,5 +138,8 @@ function formatTargetChanged(title: string, target: CommandCenterTarget): string
   if (target.timeUsedSeconds !== undefined) {
     lines.push(`Time: ${target.timeUsedSeconds} seconds`);
   }
+  if (target.endAtMs !== undefined && target.endAtMs !== null) {
+    lines.push(`Deadline: ${new Date(target.endAtMs).toISOString()}`);
+  }
   return lines.join("\n");
 }

@@ -925,6 +925,69 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
     id: "0022_backfilled_session_reasoning",
     sql: BACKFILLED_SESSION_REASONING_MIGRATION_SQL,
   },
+  {
+    appVersion: "0.16.9",
+    id: "0023_session_target_deadline",
+    // status 有 check 约束（加 deadline_reached 必须重建表），end_at_ms /
+    // deadline_grace_used 两列随重建一次落库，避免 alter 再重建的两次全表写。
+    sql: `
+      create table if not exists session_target_next (
+        session_id text primary key references session(id) on delete cascade,
+        target_id text not null,
+        objective text not null,
+        summary_title text,
+        status text not null check(status in ('active', 'paused', 'budget_limited', 'deadline_reached', 'complete')),
+        token_budget integer,
+        tokens_used integer not null default 0,
+        time_used_seconds integer not null default 0,
+        active_input_id text,
+        active_run_started_at integer,
+        active_run_last_seen_at integer,
+        end_at_ms integer,
+        deadline_grace_used integer not null default 0,
+        time_created integer not null,
+        time_updated integer not null
+      );
+
+      insert into session_target_next (
+        session_id,
+        target_id,
+        objective,
+        summary_title,
+        status,
+        token_budget,
+        tokens_used,
+        time_used_seconds,
+        active_input_id,
+        active_run_started_at,
+        active_run_last_seen_at,
+        end_at_ms,
+        deadline_grace_used,
+        time_created,
+        time_updated
+      )
+      select
+        session_id,
+        target_id,
+        objective,
+        summary_title,
+        status,
+        token_budget,
+        tokens_used,
+        time_used_seconds,
+        active_input_id,
+        active_run_started_at,
+        active_run_last_seen_at,
+        null,
+        0,
+        time_created,
+        time_updated
+      from session_target;
+
+      drop table session_target;
+      alter table session_target_next rename to session_target;
+    `,
+  },
 ];
 import { OFFICIAL_GLM_SELECTION_MIGRATION_SQL } from "./migrations/0021-official-glm-selection.js";
 import { BACKFILLED_SESSION_REASONING_MIGRATION_SQL } from "./migrations/0022-backfilled-session-reasoning.js";

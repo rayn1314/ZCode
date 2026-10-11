@@ -1174,7 +1174,13 @@ export const zcodePersistedMessageSchema = z.object({
     .optional(),
 });
 
-export const zcodeTaskGoalStatusSchema = z.enum(["active", "paused", "budget_limited", "complete"]);
+export const zcodeTaskGoalStatusSchema = z.enum([
+  "active",
+  "paused",
+  "budget_limited",
+  "deadline_reached",
+  "complete",
+]);
 
 export const zcodeTaskTargetChangedActionSchema = z.enum([
   "set",

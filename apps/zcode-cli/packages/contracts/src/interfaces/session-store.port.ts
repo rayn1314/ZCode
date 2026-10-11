@@ -26,7 +26,7 @@ import type {
   ModelToolSideEffectScope,
 } from "../model/index.js";
 import type { TodoItem } from "../tools/todo.js";
-import type { SessionGoal, GoalStatus } from "../tools/target.js";
+import type { SessionGoal, SessionGoalListEntry, GoalStatus } from "../tools/target.js";
 import type { PermissionRuleset } from "./permission.port.js";
 import type { CollaborationMode } from "./session.port.js";
 import type { EnvInfo } from "./context-source.port.js";
@@ -1261,7 +1261,15 @@ export interface SessionStorePort {
     sessionID: SessionId;
     status?: GoalStatus;
     tokenBudget?: number | null;
+    /** 墙钟截止时间（epoch ms）；省略/null 表示不带时间退出条件。set/replace 会重置收尾标志。 */
+    endAtMs?: number | null;
   }): Promise<SessionGoal>;
+  /** 面板数据源：按工作区列出全部目标与承载会话（只读）。 */
+  listTargets?(input?: {
+    directory?: string;
+    includeArchived?: boolean;
+    limit?: number;
+  }): Promise<SessionGoalListEntry[]>;
   cloneTargetForFork?(input: {
     source: SessionGoal;
     sessionID: SessionId;
@@ -1271,10 +1279,18 @@ export interface SessionStorePort {
     objective: string;
     sessionID: SessionId;
     tokenBudget?: number | null;
+    endAtMs?: number | null;
   }): Promise<SessionGoal | null>;
   updateTargetStatus(input: {
     sessionID: SessionId;
     status: GoalStatus;
+    /** 显式重设截止时间；undefined 保持原值，null 清除。激活(active)会重置收尾标志。 */
+    endAtMs?: number | null;
+  }): Promise<SessionGoal | null>;
+  /** 到点第一段：落库「已给过收尾轮」，随后由调用方放行这一轮。 */
+  markTargetDeadlineGraceUsed?(input: {
+    sessionID: SessionId;
+    targetID: string;
   }): Promise<SessionGoal | null>;
   startTargetRun?(input: {
     sessionID: SessionId;

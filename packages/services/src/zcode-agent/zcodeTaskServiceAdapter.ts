@@ -4158,6 +4158,8 @@ function fromZCodeGoal(goal: unknown): ZCodeTaskGoal {
     tokenBudget: typeof record.tokenBudget === "number" ? record.tokenBudget : null,
     tokensUsed: numberValue(record.tokensUsed) ?? 0,
     timeUsedSeconds: numberValue(record.timeUsedSeconds) ?? 0,
+    endAtMs: numberValue(record.endAtMs) ?? null,
+    deadlineGraceUsed: record.deadlineGraceUsed === true,
     time: {
       created: numberValue(time.created) ?? numberValue(record.createdAt) ?? 0,
       updated: numberValue(time.updated) ?? numberValue(record.updatedAt) ?? 0,
@@ -4170,6 +4172,7 @@ function isZCodeTaskGoalStatus(status: string | undefined): status is ZCodeTaskG
     status === "active" ||
     status === "paused" ||
     status === "budget_limited" ||
+    status === "deadline_reached" ||
     status === "complete"
   );
 }

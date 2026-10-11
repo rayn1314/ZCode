@@ -1948,6 +1948,8 @@ function fromZCodeGoal(
     tokenBudget: goal.tokenBudget,
     tokensUsed: goal.tokensUsed,
     timeUsedSeconds: goal.timeUsedSeconds,
+    endAtMs: goal.endAtMs,
+    deadlineGraceUsed: goal.deadlineGraceUsed,
     time: {
       created: goal.createdAt,
       updated: goal.updatedAt,

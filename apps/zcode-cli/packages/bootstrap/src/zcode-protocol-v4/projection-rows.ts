@@ -144,7 +144,7 @@ export function mapCompactMarkerOrigin(
 }
 
 // 旧 GoalStatus → v4 GoalState.status。
-// budget_limited 归 paused：预算耗尽与被 stop 一样等待用户显式 resume；
+// budget_limited / deadline_reached 归 paused：自动停止与被 stop 一样等待用户显式 resume；
 // complete 归 verified：旧词表没有 verifying/notSatisfied 细分，终态语义等价。
 export function mapGoalStatus(status: GoalStatus): GoalState["status"] {
   switch (status) {
