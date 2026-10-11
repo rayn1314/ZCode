@@ -1917,6 +1917,9 @@ export const zcodeSessionGoalParamsSchema = z
     inputId: nonEmptyString.optional(),
     action: zcodeSessionGoalActionSchema,
     objective: z.string().optional(),
+    /** 墙钟截止时间（epoch ms）。set/replace 直接写入；resume 传它表示同时重设截止。 */
+    endAtMs: z.number().int().nonnegative().nullable().optional(),
+    tokenBudget: z.number().int().positive().nullable().optional(),
     expectedRevision: z.number().int().nonnegative().optional(),
   })
   .strict();
@@ -1930,6 +1933,32 @@ export const zcodeSessionGoalResultSchema = z
   })
   .strict();
 export type ZCodeSessionGoalResult = z.infer<typeof zcodeSessionGoalResultSchema>;
+
+export const zcodeSessionGoalListParamsSchema = z
+  .object({
+    workspace: zcodeWorkspaceRefSchema.optional(),
+    includeArchived: z.boolean().default(false),
+    limit: z.number().int().positive().optional(),
+  })
+  .strict();
+export type ZCodeSessionGoalListParams = z.infer<typeof zcodeSessionGoalListParamsSchema>;
+
+export const zcodeSessionGoalListEntrySchema = z
+  .object({
+    sessionId: nonEmptyString,
+    sessionTitle: nonEmptyString,
+    workspacePath: nonEmptyString,
+    workspaceIdentity: nonEmptyString.optional(),
+    archived: z.boolean(),
+    goal: zcodeSessionGoalSchema,
+  })
+  .strict();
+export type ZCodeSessionGoalListEntry = z.infer<typeof zcodeSessionGoalListEntrySchema>;
+
+export const zcodeSessionGoalListResultSchema = z
+  .object({ goals: z.array(zcodeSessionGoalListEntrySchema) })
+  .strict();
+export type ZCodeSessionGoalListResult = z.infer<typeof zcodeSessionGoalListResultSchema>;
 
 export const zcodeSessionStopParamsSchema = z
   .object({
@@ -3699,6 +3728,7 @@ export const zcodeProtocolMethods = {
   sessionFork: "session/fork",
   sessionCompact: "session/compact",
   sessionGoal: "session/goal",
+  sessionGoalList: "session/goalList",
   sessionClose: "session/close",
   // setModel 仍被 zcodeSessionService 的 desktop 旧链路消费；replayable
   // switchModelConfig 已直接由目标 Environment Registry 解析 Selection。

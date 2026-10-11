@@ -71,6 +71,7 @@ import {
   zcodeSessionEventsParamsSchema,
   zcodeSessionForkParamsSchema,
   zcodeSessionGoalParamsSchema,
+  zcodeSessionGoalListParamsSchema,
   zcodeSessionListParamsSchema,
   zcodeSessionMessagesParamsSchema,
   zcodeSessionReadParamsSchema,
@@ -116,6 +117,7 @@ import {
   shouldExposeSessionEventToProtocol,
 } from "./mapper.js";
 import { optionalModelSelectionFromString } from "./model-mapper.js";
+import { mapSessionGoal } from "./session-mapper.js";
 import {
   ProtocolRequestError,
   assertExpectedRevision,
@@ -1915,6 +1917,8 @@ export async function readSessionContextUsage(
  */
 export const SESSION_MESSAGES_DEFAULT_LIMIT = 2000;
 export const SESSION_MESSAGES_MAX_LIMIT = 10_000;
+// 面板一次展示的工作区目标上限；目标数量天然远小于会话数，取一个足够宽的上限即可。
+export const GOAL_LIST_DEFAULT_LIMIT = 500;
 
 export async function readMessages(context: ZCodeProtocolAgentServerContext, rawParams: unknown) {
   const params = parseParams(zcodeSessionMessagesParamsSchema, rawParams);
@@ -2249,7 +2253,25 @@ export async function goalSession(context: ZCodeProtocolAgentServerContext, rawP
   }
 
   if (params.action === "resume") {
-    const target = await record.app.updateTargetStatus("active");
+    const current = await record.app.readTarget();
+    if (!current) {
+      return {
+        response: "No goal to resume.",
+        snapshot: await snapshot(context, record),
+        startedTurn: false,
+      };
+    }
+    // 到点停止的目标若不带新截止时间就恢复，下个检查点会立刻再次到点停下。
+    // 必须由用户显式给出新的 endAtMs（或传 null 明确表示不再设截止）。
+    if (current.status === "deadline_reached" && params.endAtMs === undefined) {
+      return {
+        response:
+          "This goal stopped at its deadline. Provide a new deadline (or clear it) before resuming.",
+        snapshot: await snapshot(context, record),
+        startedTurn: false,
+      };
+    }
+    const target = await record.app.updateTargetStatus("active", { endAtMs: params.endAtMs });
     if (!target) {
       return {
         response: "No goal to resume.",
@@ -2292,13 +2314,61 @@ export async function goalSession(context: ZCodeProtocolAgentServerContext, rawP
   const replacesExistingGoal =
     params.action === "replace" || Boolean(await record.app.readTarget());
 
-  const target = await record.app.setTarget({ objective, status: "active" });
+  const target = await record.app.setTarget({
+    objective,
+    status: "active",
+    tokenBudget: params.tokenBudget,
+    endAtMs: params.endAtMs,
+  });
   return await continueGoalAfterChange(context, record, {
     inputId: params.inputId,
     reason: replacesExistingGoal ? "goal_replaced" : "goal_set",
     target,
     title: "Goal active",
   });
+}
+
+/**
+ * 面板数据源：按工作区列出全部目标（含承载会话的展示身份）。
+ * 与 listSessions 同为 workspace 级只读查询；工作区隔离沿用同一判据
+ * （workspaceIdentity?.trim() || workspacePath），不做路径近似。
+ */
+export async function goalListSessions(
+  context: ZCodeProtocolAgentServerContext,
+  rawParams: unknown,
+) {
+  const params = parseParams(zcodeSessionGoalListParamsSchema, rawParams ?? {});
+  const store = context.deps.sessionStore;
+  const entries = store?.listTargets
+    ? await store.listTargets({
+        directory: params.workspace?.workspacePath,
+        includeArchived: params.includeArchived,
+        limit: params.limit ?? GOAL_LIST_DEFAULT_LIMIT,
+      })
+    : [];
+  const expectedWorkspaceKey = params.workspace
+    ? params.workspace.workspaceIdentity?.trim() || params.workspace.workspacePath
+    : undefined;
+  const goals = entries
+    .filter((entry) => params.includeArchived || !entry.archived)
+    .filter((entry) => {
+      if (!expectedWorkspaceKey) return true;
+      return (entry.workspaceIdentity?.trim() || entry.workspacePath) === expectedWorkspaceKey;
+    })
+    .map((entry) => {
+      const goal = mapSessionGoal(entry.goal);
+      if (!goal) return null;
+      return {
+        sessionId: entry.sessionID,
+        sessionTitle: entry.sessionTitle,
+        workspacePath: entry.workspacePath,
+        ...(entry.workspaceIdentity ? { workspaceIdentity: entry.workspaceIdentity } : {}),
+        archived: entry.archived,
+        goal,
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+  return { goals };
 }
 
 export async function forkSession(context: ZCodeProtocolAgentServerContext, rawParams: unknown) {

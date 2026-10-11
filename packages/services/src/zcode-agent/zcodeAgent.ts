@@ -13,6 +13,7 @@ import type {
   TraceId,
   ZCodeSessionCompactResult,
   ZCodeSessionGoalAction,
+  ZCodeSessionGoalListResult,
   ZCodeSessionGoalResult,
   ZCodeMessageWithParts,
   ModelSelection,
@@ -301,8 +302,19 @@ export interface ZCodeAgentGoalParams extends ZCodeAgentSessionTarget {
   inputId?: string;
   action: ZCodeSessionGoalAction;
   objective?: string;
+  /** 墙钟截止时间（epoch ms）；set/replace 直接写入，resume 传它表示同时重设截止。 */
+  endAtMs?: number | null;
+  tokenBudget?: number | null;
   expectedRevision?: number;
 }
+
+// 面板数据源是「本工作区全部目标」，查询不落在某个会话上，
+// 因此继承 workspace target（workspacePath + workspaceIdentity），**不带** sessionId。
+export type ZCodeAgentGoalListParams = ZCodeAgentWorkspaceTarget & {
+  inputId?: string;
+  includeArchived?: boolean;
+  limit?: number;
+};
 
 export interface ZCodeAgentSetModelParams extends ZCodeAgentSessionTarget {
   model: ModelSelection;
@@ -723,6 +735,8 @@ export interface IZCodeAgentService {
   sendPrompt(params: ZCodeAgentSendPromptParams): Promise<ZCodeSessionSendResult>;
   compactSession(params: ZCodeAgentCompactParams): Promise<ZCodeSessionCompactResult>;
   goalSession(params: ZCodeAgentGoalParams): Promise<ZCodeSessionGoalResult>;
+  /** 任务面板数据源：按工作区列出全部会话目标。 */
+  listSessionGoals(params: ZCodeAgentGoalListParams): Promise<ZCodeSessionGoalListResult>;
   closeSession(
     params: ZCodeAgentSessionTarget & { expectedPersistence?: "deferred" | "immediate" },
   ): Promise<boolean>;

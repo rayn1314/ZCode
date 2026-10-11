@@ -31,6 +31,7 @@ import {
   createSession,
   forkSession,
   generateWorkspaceText,
+  goalListSessions,
   goalSession,
   getTaskTokenUsage,
   getUsageStats,
@@ -620,6 +621,8 @@ export class ZCodeProtocolAgentServer {
         return await compactSession(this.context, request.params);
       case zcodeProtocolMethods.sessionGoal:
         return await goalSession(this.context, request.params);
+      case zcodeProtocolMethods.sessionGoalList:
+        return await goalListSessions(this.context, request.params);
       case zcodeProtocolMethods.sessionSetModel:
         return await setModel(this.context, request.params);
       case zcodeProtocolMethods.sessionSetThoughtLevel:

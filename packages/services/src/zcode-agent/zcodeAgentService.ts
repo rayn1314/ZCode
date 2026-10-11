@@ -81,6 +81,7 @@ import {
   zcodeSessionCompactResultSchema,
   zcodeSessionEventsResultSchema,
   zcodeSessionGoalResultSchema,
+  zcodeSessionGoalListResultSchema,
   zcodeSessionListResultSchema,
   zcodeSessionSubagentsResultSchema,
   zcodeSessionMessagesResultSchema,
@@ -156,6 +157,7 @@ import type {
   ZCodeAgentGenerateWorkspaceTextParams,
   ZCodeAgentTestModelConnectivityParams,
   ZCodeAgentGoalParams,
+  ZCodeAgentGoalListParams,
   ZCodeAgentGrantWorkspaceHookTrustParams,
   ZCodeAgentInitializeResult,
   ZCodeAgentListSessionsParams,
@@ -4650,6 +4652,8 @@ export function createZCodeAgentService(
             inputId: params.inputId,
             action: params.action,
             objective: params.objective,
+            endAtMs: params.endAtMs,
+            tokenBudget: params.tokenBudget,
             expectedRevision: params.expectedRevision,
           },
           zcodeSessionGoalResultSchema,
@@ -4672,6 +4676,42 @@ export function createZCodeAgentService(
           durationMs: Date.now() - startedAt,
           message: error instanceof Error ? error.message : String(error),
           sessionId: params.sessionId,
+          workspaceKey: resolveWorkspaceKey(params),
+          workspacePath: params.workspacePath,
+        });
+        throw error;
+      }
+    },
+
+    async listSessionGoals(params: ZCodeAgentGoalListParams) {
+      const startedAt = Date.now();
+      const client = await getClient(params);
+      try {
+        const result = await client.request(
+          zcodeProtocolMethods.sessionGoalList,
+          {
+            workspace: {
+              workspacePath: params.workspacePath,
+              ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
+            },
+            ...(params.includeArchived === undefined
+              ? {}
+              : { includeArchived: params.includeArchived }),
+            ...(params.limit === undefined ? {} : { limit: params.limit }),
+          },
+          zcodeSessionGoalListResultSchema,
+        );
+        logger.info(params.inputId, "ZCode Protocol session/goalList 完成", {
+          count: result.goals.length,
+          durationMs: Date.now() - startedAt,
+          workspaceKey: resolveWorkspaceKey(params),
+          workspacePath: params.workspacePath,
+        });
+        return result;
+      } catch (error) {
+        logger.warn(params.inputId, "ZCode Protocol session/goalList 失败", {
+          durationMs: Date.now() - startedAt,
+          message: error instanceof Error ? error.message : String(error),
           workspaceKey: resolveWorkspaceKey(params),
           workspacePath: params.workspacePath,
         });
