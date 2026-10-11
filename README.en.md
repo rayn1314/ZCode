@@ -29,6 +29,7 @@ This repository builds on upstream [zai-org/ZCode](https://github.com/zai-org/ZC
 - **Usage ledger**: usage statistics page integrates the ledger, with manual price-basis sync and a paginated model × provider breakdown.
 - **Per-provider rate limiting**: configure a per-minute request cap per provider to avoid quota-type 429s at the source.
 - **Identity-scoped data**: client data roots and app identity are isolated per product identity (including remote injection and remote identity merging), with per-domain migration from another identity, so two clients no longer share and corrupt one data root.
+- **Task panel and goal deadlines**: a new workspace-level Tasks view for listing, creating, editing, pausing, resuming, and clearing the persistent goals attached to sessions; goals accept a wall-clock deadline — the runtime grants one final wrap-up turn when it is reached and then stops hard, and the stop reason (deadline vs. budget) is visible in the goal state.
 - **Workflow and task enhancements**: manual workflow start supports pre-selecting the session and subagent model; settings gain an "archive old tasks now" button; the resource manager gains a session-mailbox cleanup category with per-category size display and one-click cleanup.
 
 ### Refactoring and engineering governance
