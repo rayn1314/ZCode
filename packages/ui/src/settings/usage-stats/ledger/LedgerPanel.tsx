@@ -17,7 +17,8 @@ import {
 import { formatLedgerClock, formatLedgerDuration } from "./ledgerFormat.js";
 import { LedgerToolbar } from "./LedgerToolbar.js";
 import { LedgerFixedKpiStrip, LedgerHourlyStrip, LedgerKpiCards } from "./LedgerKpiCards.js";
-import { LedgerSessionsTable, LedgerRecentTable, LedgerErrorSummary } from "./LedgerTables.js";
+import { LedgerRecentTable, LedgerErrorSummary } from "./LedgerTables.js";
+import { LedgerSessionsTable } from "./LedgerSessionsTable.js";
 import { LedgerModelsTable } from "./LedgerModelsTable.js";
 
 // Recharts 初始化会在 Linux 容器阻断 renderer 启动（与 App Usage 相同的按需加载边界）。

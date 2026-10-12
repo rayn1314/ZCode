@@ -93,11 +93,21 @@ export const ledgerSessionRowSchema = z.object({
   sessionId: z.string(),
   title: z.string().nullable(),
   directory: z.string().nullable(),
+  // 数值字段语义 = 该会话「自身 + 全部后代」的子树合计（见 spec/usage-ledger.md「会话层级」）。
+  // 因此顶层行（parentSessionId 为 null）的合计相加 = 全集合计，不双计。
   calls: z.number(),
   inputTokens: z.number(),
   outputTokens: z.number(),
+  /** 子树内最大值。 */
   lastActiveMs: z.number().nullable(),
+  /** 只累加非 null（自身与所有后代都没价时保持 null）。 */
   cost: z.number().nullable(),
+  /** 层级父会话 id；fork 会话恒为 null（fork 不属于层级）。 */
+  parentSessionId: z.string().nullish(),
+  /** 会话类型（interactive / subagent_child / selection_side_chat / fork / workflow_child），供 UI 打标签。 */
+  taskType: z.string().nullish(),
+  /** 直接子会话数（已断 fork 边）。 */
+  childCount: z.number(),
   /** 多源合并时标注该行来自哪个来源（单源时省略）。 */
   src: z.string().optional(),
 });

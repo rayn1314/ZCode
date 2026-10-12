@@ -1,19 +1,17 @@
 // 内嵌 WSL dump 脚本：桌面 host 不能跨文件系统直读 WSL 的 SQLite（UNC 上 WAL 会撞
 // database is locked），把这份 Python 脚本和最终价格表写进临时目录，由 wsl.exe 送进
 // 发行版用其自带 python3 执行，stdout 只回传单数据源的聚合 JSON。
-// 口径与 ledgerReader.ts 的本机聚合逐行对齐，改动任一侧必须同步另一侧并跑对拍。
+// 口径与 ledgerAggregate.ts 的本机聚合逐行对齐，改动任一侧必须同步另一侧并跑对拍。
+// 行数约束：本文件受根 oxlint max-lines: 400 约束，且模板串内的 Python 行全部算代码行；
+// 脚本内的多行 dict / 多行 SQL 已按此压缩，动这里之前先量一遍行数（勿随手展开）。
 // 注意：脚本内不能新增变量赋值式的 sh 调用之外的东西——本文件只是 Python 源码模板。
 
-export const LEDGER_DUMP_SCRIPT_VERSION = 2;
+export const LEDGER_DUMP_SCRIPT_VERSION = 3;
 
 /** String.raw 保证 Python 源码里的 \n、\' 等转义按字面输出。 */
 export const LEDGER_DUMP_SCRIPT_PY = String.raw`#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""ZCode 用量账本 --dump 模式（内部产物，勿单独修改）。
-
-由 Windows 侧 ZCode 桌面端送进 WSL 执行：用自己的 python3 读自己的账本库，
-只把聚合结果写回 stdout（bytes + utf-8，避免终端编码不一致）。
-"""
+"""ZCode 用量账本 --dump 模式（内部产物，勿单独修改）：由 Windows 侧送进 WSL，用其自带 python3 读自己的账本库，只把聚合 JSON 写回 stdout（bytes + utf-8，避免终端编码不一致）。"""
 import argparse, base64, datetime as dt, json, re, sqlite3, sys, time, urllib.parse
 
 UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
@@ -28,8 +26,7 @@ def open_readonly(db_path):
 
 
 def load_provider_names(path):
-    """ZCode 把自定义供应商的用户命名存在 provider_config.json 里，只取 providerId/providerName
-    两个展示字段，绝不读取或回传任何凭据字段。文件缺失/损坏时返回空表，显示名退回 id 短名。"""
+    """只取 provider_config.json 的 providerId/providerName 两个展示字段，绝不读取或回传任何凭据字段；文件缺失/损坏返回空表，显示名退回 id 短名。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             rules = json.load(f)["config"]["providerConfigRules"]["providerRules"]
@@ -62,12 +59,10 @@ def calc_cost(prices, model_id, input_tokens, output_tokens, cache_read):
     p = prices.get(str(model_id).lower())
     if not p:
         return None
-    # input_tokens 本就含 cacheRead，命中部分先从输入扣掉再乘输入价（与 ledgerPrices.ts calcLedgerCost 同口径，防双重计费）
-    return (
-        max(0, input_tokens - cache_read) / 1e6 * float(p.get("input", 0))
-        + output_tokens / 1e6 * float(p.get("output", 0))
-        + cache_read / 1e6 * float(p.get("cacheRead", 0))
-    )
+    # input_tokens 本就含 cacheRead，命中部分先扣掉再乘输入价（与 ledgerPrices.ts calcLedgerCost 同口径，防双重计费）
+    return (max(0, input_tokens - cache_read) / 1e6 * float(p.get("input", 0))
+            + output_tokens / 1e6 * float(p.get("output", 0))
+            + cache_read / 1e6 * float(p.get("cacheRead", 0)))
 
 
 def day_start_ms(offset_minutes, day):
@@ -77,10 +72,7 @@ def day_start_ms(offset_minutes, day):
 
 
 def day_idx_to_date(day_idx):
-    """分桶日序号（(started_at + 偏移) // 86400000）转 YYYY-MM-DD。
-
-    按天/按小时分桶全部用整数算术完成，不把任何修饰符字符串拼进 SQL；
-    与 Windows 侧 ledgerReader.ts 的分桶算术逐行对齐。"""
+    """分桶日序号（(started_at + 偏移) // 86400000）转 YYYY-MM-DD；按天/按小时分桶全部用整数算术，不把修饰符字符串拼进 SQL。"""
     shifted = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc) + dt.timedelta(days=day_idx)
     return shifted.strftime("%Y-%m-%d")
 
@@ -103,8 +95,7 @@ def build_filters(scoped, from_ms, to_ms, provider_ids, model_id, alias=""):
         conds.append(f"{col}started_at >= ? AND {col}started_at <= ?")
         args += [from_ms, to_ms]
     if provider_ids:
-        placeholders = ",".join("?" * len(provider_ids))
-        conds.append(f"{col}provider_id IN ({placeholders})")
+        conds.append(f"{col}provider_id IN ({','.join('?' * len(provider_ids))})")
         args += list(provider_ids)
     if model_id:
         conds.append(f"{col}model_id = ?")
@@ -115,6 +106,54 @@ def build_filters(scoped, from_ms, to_ms, provider_ids, model_id, alias=""):
 def where_sql(conds, extra=()):
     all_conds = list(conds) + list(extra)
     return ("WHERE " + " AND ".join(all_conds)) if all_conds else ""
+
+
+def session_tree(facts, quota):
+    """会话层级：与 ledgerSessionTree.ts 同一套口径（fork 断边、自身快照沿父链向上累加、按顶层会话配额保父链截断）。"""
+    # fork 断边：fork 是从某会话复制出的独立分支，其用量不算回来源会话
+    facts = [dict(f, parentSessionId=None) if f["taskType"] == "fork" else f for f in facts]
+    ids = {f["sessionId"] for f in facts}
+    self_use = {f["sessionId"]: f for f in facts}
+    acc = {f["sessionId"]: dict(f, childCount=0) for f in facts}
+    for f in facts:  # childCount 按断边后的直接父计；自引用不计入
+        p = f["parentSessionId"]
+        if p in ids and p != f["sessionId"]:
+            acc[p]["childCount"] += 1
+    for f in facts:  # 自身快照沿父链累加到每一级祖先；父不在集合内或自引用即停，64 步上限防脏数据死循环
+        sid, p, hops = f["sessionId"], f["parentSessionId"], 0
+        while p and p != sid and p in self_use and hops < 64:
+            s, a = self_use[sid], acc[p]
+            a["calls"] += s["calls"]
+            a["inputTokens"] += s["inputTokens"]
+            a["outputTokens"] += s["outputTokens"]
+            if s["cost"] is not None:
+                a["cost"] = (a["cost"] or 0.0) + s["cost"]
+            if s["lastActiveMs"] is not None:
+                a["lastActiveMs"] = s["lastActiveMs"] if a["lastActiveMs"] is None else max(a["lastActiveMs"], s["lastActiveMs"])
+            p, hops = self_use[p]["parentSessionId"], hops + 1
+
+    def depth(f):  # 沿父链算深度（带环保护），只用于排序稳定性
+        d, p, seen = 0, f["parentSessionId"], {f["sessionId"]}
+        while p and p in ids and p not in seen and d < 64:
+            seen.add(p)
+            d, p = d + 1, self_use[p]["parentSessionId"]
+        return d
+
+    # 父的子树 tokens ≥ 任何后代 + depth 升序 tie-break ⇒ 父必先于子被处理，单遍扫描即可保住整棵子树
+    kept, roots, out = set(), 0, []
+    rolled = [acc[f["sessionId"]] for f in facts]
+    for f in sorted(rolled, key=lambda x: (-(x["inputTokens"] + x["outputTokens"]), depth(x), x["sessionId"])):
+        p = f["parentSessionId"]
+        if p in ids:
+            if p not in kept:  # 父在集合里却没被保留：子行不能孤立出现
+                continue
+        elif roots < quota:
+            roots += 1
+        else:
+            continue
+        kept.add(f["sessionId"])
+        out.append(f)
+    return out
 
 
 def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to_ms,
@@ -133,16 +172,14 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
     provider_names = load_provider_names(provider_config_path)
     offset_ms = tz_offset_minutes * 60_000
     shifted = dt.datetime.fromtimestamp(now_ms / 1000, dt.timezone.utc) + dt.timedelta(minutes=tz_offset_minutes)
-    today = shifted.date()
-    today0 = day_start_ms(tz_offset_minutes, today)
-    month0 = day_start_ms(tz_offset_minutes, today.replace(day=1))
+    today0 = day_start_ms(tz_offset_minutes, shifted.date())
+    month0 = day_start_ms(tz_offset_minutes, shifted.date().replace(day=1))
 
     conds_date, args_date = build_filters(scoped, from_ms, to_ms, None, None)
 
     con = open_readonly(db_path)
     try:
         cur = con.cursor()
-
         # 先拿时间范围内的供应商清单：既做下拉选项，也用来把筛选用的显示名解析成本地 id
         facet_providers = cur.execute(
             f"SELECT provider_id, COUNT(*) FROM model_usage {where_sql(conds_date)} "
@@ -158,40 +195,25 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
         conds_m, args_m = build_filters(scoped, from_ms, to_ms, provider_ids, model_id, alias="m")
 
         row = cur.execute(
-            f"""
-            SELECT COUNT(*),
-                   SUM(status = 'completed'), SUM(status = 'error'), SUM(status = 'cancelled'),
-                   SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens),
-                   SUM(cache_read_input_tokens),
-                   CAST(ROUND(AVG(duration_ms)) AS INTEGER),
-                   CAST(ROUND(AVG(time_to_first_token_ms)) AS INTEGER)
-            FROM model_usage {where_sql(conds)}
-            """,
+            "SELECT COUNT(*), SUM(status = 'completed'), SUM(status = 'error'), SUM(status = 'cancelled'), "
+            "SUM(input_tokens), SUM(output_tokens), SUM(reasoning_tokens), SUM(cache_read_input_tokens), "
+            "CAST(ROUND(AVG(duration_ms)) AS INTEGER), CAST(ROUND(AVG(time_to_first_token_ms)) AS INTEGER) "
+            f"FROM model_usage {where_sql(conds)}",
             args,
         ).fetchone()
         overview = {
-            "calls": row[0] or 0,
-            "completed": row[1] or 0,
-            "errors": row[2] or 0,
-            "cancelled": row[3] or 0,
-            "inputTokens": row[4] or 0,
-            "outputTokens": row[5] or 0,
-            "reasoningTokens": row[6] or 0,
-            "cacheReadTokens": row[7] or 0,
-            "avgDurationMs": row[8],
-            "avgTtftMs": row[9],
+            "calls": row[0] or 0, "completed": row[1] or 0, "errors": row[2] or 0,
+            "cancelled": row[3] or 0, "inputTokens": row[4] or 0, "outputTokens": row[5] or 0,
+            "reasoningTokens": row[6] or 0, "cacheReadTokens": row[7] or 0,
+            "avgDurationMs": row[8], "avgTtftMs": row[9],
         }
 
         # 今天/本月是固定口径的 KPI，不随所选范围变化
         def window_totals(start_ms):
             wc, wa = build_filters(True, start_ms, now_ms, provider_ids, model_id)
-            # 缓存读是输入的子集，只计输入+输出，否则缓存量会被算两遍
-            r = cur.execute(
-                "SELECT COUNT(*), SUM(input_tokens + output_tokens) "
-                f"FROM model_usage {where_sql(wc)}",
-                wa,
-            ).fetchone()
-            # 费用要按模型分组算（每个模型单价不同），不能对总量直接乘一个价
+            # 缓存读是输入的子集，只计输入+输出；费用必须按模型分组算（每个模型单价不同），不能对总量直接乘一个价
+            r = cur.execute("SELECT COUNT(*), SUM(input_tokens + output_tokens) "
+                            f"FROM model_usage {where_sql(wc)}", wa).fetchone()
             cost = None
             if prices:
                 cost = 0.0
@@ -206,42 +228,29 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
         overview["todayCalls"], overview["todayTokens"], overview["todayCost"] = window_totals(today0)
         overview["monthCalls"], overview["monthTokens"], overview["monthCost"] = window_totals(month0)
 
-        # 今日各小时密度条：横轴固定 0–23 时，未来小时留空，与「今日」KPI 同一口径。
-        # 分桶用整数算术（(started_at + 偏移) 落在当日内，模一天的小时数），不经字符串修饰符
+        # 今日各小时密度条：横轴固定 0–23 时，未来小时留空；分桶用整数算术（当日内模一天的小时数），不经字符串修饰符
         hc, ha = build_filters(True, today0, now_ms, provider_ids, model_id)
-        ha = [offset_ms] + list(ha)
-        counts = dict(
-            cur.execute(
-                "SELECT CAST((COALESCE(started_at, 0) + ?) % 86400000 / 3600000 AS INTEGER) AS bucket, "
-                f"COUNT(*) FROM model_usage {where_sql(hc)} GROUP BY bucket",
-                ha,
-            ).fetchall()
-        )
-        hourly_today = [
-            {"hour": hour, "calls": counts.get(hour, 0)}
-            for hour in range(24)
-        ]
+        counts = dict(cur.execute(
+            "SELECT CAST((COALESCE(started_at, 0) + ?) % 86400000 / 3600000 AS INTEGER) AS bucket, "
+            f"COUNT(*) FROM model_usage {where_sql(hc)} GROUP BY bucket",
+            [offset_ms] + list(ha),
+        ).fetchall())
+        hourly_today = [{"hour": hour, "calls": counts.get(hour, 0)} for hour in range(24)]
 
         # 每日趋势按 (日期, 模型) 分组取出，再折叠成每天一行：费用依赖模型单价，
         # 必须先按模型算清再按天汇总（按模型拆费用的视图由模型表和饼图承担）
         daily_map = {}
-        d_args = [offset_ms] + list(args)
         for d, mid, calls, errors, it, ot, cr, rt, dur in cur.execute(
-            f"""
-            SELECT CAST((COALESCE(started_at, 0) + ?) / 86400000 AS INTEGER) AS d,
-                   model_id, COUNT(*),
-                   SUM(status = 'error'), SUM(input_tokens), SUM(output_tokens),
-                   SUM(cache_read_input_tokens), SUM(reasoning_tokens),
-                   CAST(ROUND(AVG(duration_ms)) AS INTEGER)
-            FROM model_usage {where_sql(conds)} GROUP BY d, model_id ORDER BY d ASC
-            """,
-            d_args,
+            f"SELECT CAST((COALESCE(started_at, 0) + ?) / 86400000 AS INTEGER) AS d, model_id, COUNT(*), "
+            "SUM(status = 'error'), SUM(input_tokens), SUM(output_tokens), SUM(cache_read_input_tokens), "
+            "SUM(reasoning_tokens), CAST(ROUND(AVG(duration_ms)) AS INTEGER) "
+            f"FROM model_usage {where_sql(conds)} GROUP BY d, model_id ORDER BY d ASC",
+            [offset_ms] + list(args),
         ).fetchall():
             date = day_idx_to_date(d)
             row = daily_map.setdefault(date, {
                 "date": date, "calls": 0, "errors": 0, "inputTokens": 0, "outputTokens": 0,
-                "cacheReadTokens": 0, "reasoningTokens": 0, "cost": None,
-                "durSum": 0, "durWeight": 0,
+                "cacheReadTokens": 0, "reasoningTokens": 0, "cost": None, "durSum": 0, "durWeight": 0,
             })
             row["calls"] += calls
             row["errors"] += errors or 0
@@ -255,47 +264,32 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
             c = calc_cost(prices, mid, it or 0, ot or 0, cr or 0)
             if c is not None:
                 row["cost"] = (row["cost"] or 0.0) + c
-        daily = []
-        for d in sorted(daily_map.values(), key=lambda x: x["date"]):
-            daily.append({
-                "date": d["date"], "calls": d["calls"], "errors": d["errors"],
-                "inputTokens": d["inputTokens"], "outputTokens": d["outputTokens"],
-                "cacheReadTokens": d["cacheReadTokens"], "reasoningTokens": d["reasoningTokens"],
-                "avgDurationMs": round(d["durSum"] / d["durWeight"]) if d["durWeight"] else None,
-                "cost": d["cost"],
-            })
+        daily = [{
+            "date": d["date"], "calls": d["calls"], "errors": d["errors"], "inputTokens": d["inputTokens"],
+            "outputTokens": d["outputTokens"], "cacheReadTokens": d["cacheReadTokens"],
+            "reasoningTokens": d["reasoningTokens"], "cost": d["cost"],
+            "avgDurationMs": round(d["durSum"] / d["durWeight"]) if d["durWeight"] else None,
+        } for d in sorted(daily_map.values(), key=lambda x: x["date"])]
 
-        models = []
-        total_cost = 0.0
-        unpriced_calls = 0
-        unpriced_models = set()
-        for r in cur.execute(
-            f"""
-            SELECT model_id, provider_id, COUNT(*), SUM(input_tokens), SUM(output_tokens),
-                   SUM(cache_read_input_tokens), CAST(ROUND(AVG(duration_ms)) AS INTEGER)
-            FROM model_usage {where_sql(conds)} GROUP BY model_id, provider_id ORDER BY COUNT(*) DESC
-            """,
+        models, total_cost, unpriced_calls, unpriced_models = [], 0.0, 0, set()
+        for mid, pid, calls, it, ot, cr, dur in cur.execute(
+            f"SELECT model_id, provider_id, COUNT(*), SUM(input_tokens), SUM(output_tokens), "
+            "SUM(cache_read_input_tokens), CAST(ROUND(AVG(duration_ms)) AS INTEGER) "
+            f"FROM model_usage {where_sql(conds)} GROUP BY model_id, provider_id ORDER BY COUNT(*) DESC",
             args,
         ).fetchall():
-            cost = calc_cost(prices, r[0], r[3] or 0, r[4] or 0, r[5] or 0)
+            cost = calc_cost(prices, mid, it or 0, ot or 0, cr or 0)
             if cost is not None:
                 total_cost += cost
             else:
                 # 没定价的模型不计费，但要记账：否则总数会被静默少算而无人知道
-                unpriced_calls += r[2]
-                unpriced_models.add(r[0])
-            models.append(
-                {
-                    "model": r[0],
-                    "provider": provider_label(r[1], provider_names),
-                    "calls": r[2],
-                    "inputTokens": r[3] or 0,
-                    "outputTokens": r[4] or 0,
-                    "cacheReadTokens": r[5] or 0,
-                    "avgDurationMs": r[6],
-                    "cost": cost,
-                }
-            )
+                unpriced_calls += calls
+                unpriced_models.add(mid)
+            models.append({
+                "model": mid, "provider": provider_label(pid, provider_names), "calls": calls,
+                "inputTokens": it or 0, "outputTokens": ot or 0, "cacheReadTokens": cr or 0,
+                "avgDurationMs": dur, "cost": cost,
+            })
         if prices:
             overview["cost"] = total_cost
             overview["unpricedCalls"] = unpriced_calls
@@ -304,16 +298,14 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
         # Agent 分布同样按 (agent, 模型) 分组再折叠，费用才能按 agent 汇总
         agents_map = {}
         for agent, mid, calls, it, ot, cr in cur.execute(
-            f"""
-            SELECT COALESCE(agent, 'unknown'), model_id, COUNT(*), SUM(input_tokens),
-                   SUM(output_tokens), SUM(cache_read_input_tokens)
-            FROM model_usage {where_sql(conds)} GROUP BY agent, model_id ORDER BY COUNT(*) DESC
-            """,
+            f"SELECT COALESCE(agent, 'unknown'), model_id, COUNT(*), SUM(input_tokens), "
+            "SUM(output_tokens), SUM(cache_read_input_tokens) "
+            f"FROM model_usage {where_sql(conds)} GROUP BY agent, model_id ORDER BY COUNT(*) DESC",
             args,
         ).fetchall():
             row = agents_map.setdefault(agent, {
-                "agent": agent, "calls": 0, "inputTokens": 0,
-                "outputTokens": 0, "cacheReadTokens": 0, "cost": None,
+                "agent": agent, "calls": 0, "inputTokens": 0, "outputTokens": 0,
+                "cacheReadTokens": 0, "cost": None,
             })
             row["calls"] += calls
             row["inputTokens"] += it or 0
@@ -324,21 +316,19 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
                 row["cost"] = (row["cost"] or 0.0) + c
         agents = sorted(agents_map.values(), key=lambda x: -x["calls"])
 
-        # 会话表按 (会话, 模型) 分组再折叠：一个会话里通常混用多个模型，费用要按模型分开算
+        # 会话表按 (会话, 模型) 分组再折叠：一个会话里通常混用多个模型，费用要按模型分开算；
+        # 折叠出的只是每个会话的「自身」用量，子树合计与截断交给 session_tree
         sessions_map = {}
-        for sid, title, directory, mid, calls, it, ot, cr, last in cur.execute(
-            f"""
-            SELECT m.session_id, s.title, s.directory, m.model_id, COUNT(*),
-                   SUM(m.input_tokens), SUM(m.output_tokens),
-                   SUM(m.cache_read_input_tokens), MAX(m.started_at)
-            FROM model_usage m JOIN session s ON s.id = m.session_id {where_sql(conds_m)}
-            GROUP BY m.session_id, m.model_id
-            """,
+        for sid, title, directory, parent, task_type, mid, calls, it, ot, cr, last in cur.execute(
+            f"SELECT m.session_id, s.title, s.directory, s.parent_id, s.task_type, m.model_id, COUNT(*), "
+            "SUM(m.input_tokens), SUM(m.output_tokens), SUM(m.cache_read_input_tokens), MAX(m.started_at) "
+            f"FROM model_usage m JOIN session s ON s.id = m.session_id {where_sql(conds_m)} "
+            "GROUP BY m.session_id, m.model_id",
             args_m,
         ).fetchall():
             row = sessions_map.setdefault(sid, {
-                "sessionId": sid, "title": title, "directory": directory,
-                "calls": 0, "inputTokens": 0, "outputTokens": 0,
+                "sessionId": sid, "title": title, "directory": directory, "taskType": task_type,
+                "parentSessionId": parent, "calls": 0, "inputTokens": 0, "outputTokens": 0,
                 "lastActiveMs": last, "cost": None,
             })
             row["calls"] += calls
@@ -349,84 +339,49 @@ def build_source_payload(db_path, provider_config_path, prices_path, from_ms, to
             c = calc_cost(prices, mid, it or 0, ot or 0, cr or 0)
             if c is not None:
                 row["cost"] = (row["cost"] or 0.0) + c
-        sessions = sorted(sessions_map.values(),
-                          key=lambda s: -(s["inputTokens"] + s["outputTokens"]))[:200]
+        sessions = session_tree(list(sessions_map.values()), 200)
 
-        recent = []
-        for r in cur.execute(
-            f"""
-            SELECT started_at, model_id, provider_id, agent, status, error_type,
-                   input_tokens, output_tokens, cache_read_input_tokens,
-                   duration_ms, time_to_first_token_ms
-            FROM model_usage {where_sql(conds)} ORDER BY started_at DESC LIMIT 500
-            """,
+        recent = [{
+            "timeMs": r[0], "model": r[1], "provider": provider_label(r[2], provider_names),
+            "agent": r[3], "status": r[4], "errorType": r[5], "inputTokens": r[6] or 0,
+            "outputTokens": r[7] or 0, "cacheReadTokens": r[8] or 0, "durationMs": r[9], "ttftMs": r[10],
+            "cost": calc_cost(prices, r[1], r[6] or 0, r[7] or 0, r[8] or 0),
+        } for r in cur.execute(
+            f"SELECT started_at, model_id, provider_id, agent, status, error_type, input_tokens, "
+            "output_tokens, cache_read_input_tokens, duration_ms, time_to_first_token_ms "
+            f"FROM model_usage {where_sql(conds)} ORDER BY started_at DESC LIMIT 500",
             args,
-        ).fetchall():
-            recent.append(
-                {
-                    "timeMs": r[0],
-                    "model": r[1],
-                    "provider": provider_label(r[2], provider_names),
-                    "agent": r[3],
-                    "status": r[4],
-                    "errorType": r[5],
-                    "inputTokens": r[6] or 0,
-                    "outputTokens": r[7] or 0,
-                    "cacheReadTokens": r[8] or 0,
-                    "durationMs": r[9],
-                    "ttftMs": r[10],
-                    "cost": calc_cost(prices, r[1], r[6] or 0, r[7] or 0, r[8] or 0),
-                }
-            )
+        ).fetchall()]
 
-        errors = [
-            {"type": r[0], "count": r[1]}
-            for r in cur.execute(
-                f"""
-                SELECT COALESCE(error_type, 'unknown') AS t, COUNT(*)
-                FROM model_usage {where_sql(conds, ("status = 'error'",))} GROUP BY t ORDER BY COUNT(*) DESC
-                """,
-                args,
-            ).fetchall()
-        ]
+        errors = [{"type": t, "count": c} for t, c in cur.execute(
+            f"""SELECT COALESCE(error_type, 'unknown') AS t, COUNT(*)
+            FROM model_usage {where_sql(conds, ("status = 'error'",))} GROUP BY t ORDER BY COUNT(*) DESC""",
+            args,
+        ).fetchall()]
 
         facets = {
-            "providers": [
-                {"id": pid, "label": provider_label(pid, provider_names), "calls": cnt}
-                for pid, cnt in facet_providers
-            ],
-            "models": [
-                {"id": r[0], "calls": r[1]}
-                for r in cur.execute(
-                    f"SELECT model_id, COUNT(*) FROM model_usage {where_sql(conds_date)} "
-                    "GROUP BY model_id ORDER BY COUNT(*) DESC",
-                    args_date,
-                ).fetchall()
-            ],
+            "providers": [{"id": pid, "label": provider_label(pid, provider_names), "calls": cnt}
+                          for pid, cnt in facet_providers],
+            "models": [{"id": r[0], "calls": r[1]} for r in cur.execute(
+                f"SELECT model_id, COUNT(*) FROM model_usage {where_sql(conds_date)} "
+                "GROUP BY model_id ORDER BY COUNT(*) DESC",
+                args_date,
+            ).fetchall()],
         }
     finally:
         con.close()
 
     return {
-        "overview": overview,
-        "hourlyToday": hourly_today,
-        "daily": daily,
-        "models": models,
-        "agents": agents,
-        "sessions": sessions,
-        "recent": recent,
-        "errors": errors,
-        "facets": facets,
-        "pricesLoaded": bool(prices),
-        "priceMeta": price_meta if prices else None,
+        "overview": overview, "hourlyToday": hourly_today, "daily": daily, "models": models,
+        "agents": agents, "sessions": sessions, "recent": recent, "errors": errors,
+        "facets": facets, "pricesLoaded": bool(prices), "priceMeta": price_meta if prices else None,
     }
 
 
 def main():
     parser = argparse.ArgumentParser(description="ZCode 用量账本 WSL dump（内部）")
-    parser.add_argument("--db", required=True)
-    parser.add_argument("--provider-config", required=True)
-    parser.add_argument("--prices", required=True)
+    for name in ("--db", "--provider-config", "--prices"):
+        parser.add_argument(name, required=True)
     parser.add_argument("--from-ms", default="")
     parser.add_argument("--to-ms", default="")
     parser.add_argument("--tz-offset", type=int, required=True)

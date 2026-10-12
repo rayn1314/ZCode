@@ -1,4 +1,5 @@
 import type { LedgerDailyRow, LedgerRangeInfo, LedgerSnapshot, LedgerSource } from "@zcode/shared";
+import { selectLedgerSessionRows } from "./ledgerSessionTree.js";
 
 // 多源合并口径（与 WSL dump 脚本、单机聚合逐行对齐）：
 //   计数求和；均值（耗时/首字延迟）按调用数加权；费用只累加「有定价」的源，
@@ -285,11 +286,21 @@ export function mergeLedgerPayloads(
   }
 
   // 合并后重排截断并打 src 标，让用户知道每行来自哪个数据源。
-  // 上限按 UI 翻页的数据池定（每页最多 200 × 多页），不再是一屏即止的小截断。
-  const sessions = usable
-    .flatMap((p) => p.sessions.map((s) => ({ ...s, src: p.sourceLabel })))
-    .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
-    .slice(0, 500);
+  // 上限按 UI 翻页的数据池定（每页最多 200 × 多页）；配额计的是顶层会话数，且必须保父链完整
+  // ——跨源不存在父子关系，但重排后仍可能把父行切掉（见 spec/usage-ledger.md「会话层级」）。
+  // taskType / parentSessionId 由可选归一到显式 null：树算法要求这两个字段在场。
+  // childCount 不补默认值——缺失即生产侧（含 WSL Python）与协议脱节，让它在快照 zod 解析处硬失败，不静默按 0 算。
+  const sessions = selectLedgerSessionRows(
+    usable.flatMap((p) =>
+      p.sessions.map((s) => ({
+        ...s,
+        src: p.sourceLabel,
+        taskType: s.taskType ?? null,
+        parentSessionId: s.parentSessionId ?? null,
+      })),
+    ),
+    500,
+  );
   const recent = usable
     .flatMap((p) => p.recent.map((r) => ({ ...r, src: p.sourceLabel })))
     .sort((a, b) => (b.timeMs ?? 0) - (a.timeMs ?? 0))

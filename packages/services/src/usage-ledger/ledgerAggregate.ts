@@ -10,6 +10,11 @@ import {
   type AggregateContext,
 } from "./ledgerAggregateSql.js";
 import { dayIdxToDateString, MS_PER_DAY } from "./ledgerRange.js";
+import {
+  rollupSubtrees,
+  selectLedgerSessionRows,
+  type LedgerSessionFact,
+} from "./ledgerSessionTree.js";
 
 export interface DbAdapter {
   queryAll(sql: string, args: (string | number)[]): Record<string, unknown>[];
@@ -281,10 +286,12 @@ export function aggregateFromDb(
     agentsMap.set(agent, row);
   }
 
-  // 会话表按 (会话, 模型) 分组再折叠：一个会话里通常混用多个模型，费用要按模型分开算
-  const sessionsMap = new Map<string, LedgerSourcePayload["sessions"][number]>();
+  // 会话表按 (会话, 模型) 分组再折叠：一个会话里通常混用多个模型，费用要按模型分开算。
+  // 折叠出的是每个会话的「自身」用量；随后按层级边合计子树并保父链截断（见 spec「会话层级」）。
+  const sessionsMap = new Map<string, LedgerSessionFact>();
   for (const r of db.queryAll(
-    `SELECT m.session_id AS sid, s.title AS title, s.directory AS directory, m.model_id AS mid,
+    `SELECT m.session_id AS sid, s.title AS title, s.directory AS directory,
+            s.parent_id AS parent, s.task_type AS taskType, m.model_id AS mid,
             COUNT(*) AS calls, SUM(m.input_tokens) AS it, SUM(m.output_tokens) AS ot,
             SUM(m.cache_read_input_tokens) AS cr, MAX(m.started_at) AS last
      FROM model_usage m JOIN session s ON s.id = m.session_id ${whereSql(condsM)}
@@ -299,6 +306,8 @@ export function aggregateFromDb(
       sessionId: sid,
       title: (r.title as string | null) ?? null,
       directory: (r.directory as string | null) ?? null,
+      taskType: (r.taskType as string | null) ?? null,
+      parentSessionId: (r.parent as string | null) ?? null,
       calls: 0,
       inputTokens: 0,
       outputTokens: 0,
@@ -324,9 +333,8 @@ export function aggregateFromDb(
     }
     sessionsMap.set(sid, row);
   }
-  const sessions = [...sessionsMap.values()]
-    .sort((a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens))
-    .slice(0, 200);
+  // 自行 + 全部后代合计，再按顶层会话配额截断（rollup 内部会断 fork 边，这里不再单独断）
+  const sessions = selectLedgerSessionRows(rollupSubtrees([...sessionsMap.values()]), 200);
 
   const recent: LedgerSourcePayload["recent"] = [];
   for (const r of db.queryAll(

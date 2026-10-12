@@ -1,208 +1,21 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowDown, ArrowUp } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { LedgerSnapshot } from "@zcode/shared";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import {
-  UsageEmptyState,
   formatCompactNumber,
   formatCompactTokenUsage,
   resolveModelLabel,
 } from "@/settings/usage-stats/usageStatsUiParts.js";
-import {
-  formatLedgerCost,
-  formatLedgerRelativeTime,
-  shortenLedgerDirectory,
-} from "./ledgerFormat.js";
+import { formatLedgerCost, formatLedgerRelativeTime } from "./ledgerFormat.js";
 import { LedgerTablePagination } from "./LedgerTablePagination.js";
 
-// 三个明细视图：会话表（可排序）、错误分布、最近调用表。
+// 两个明细视图：错误分布、最近调用表；会话表（可排序 + 父子层级展开）见 LedgerSessionsTable.tsx。
 // 表格遵守 DESIGN.md：text-ui-base、右对齐数值列、窄屏面板内横向滚动（不撑破页面）。
-// 两个明细表统一分页（每页条数可调、偏好记忆），滚动容器固定限高 + 内部滚动、表头吸顶——
+// 分页统一（每页条数可调、偏好记忆），滚动容器固定限高 + 内部滚动、表头吸顶——
 // 行数再多也不把整页撑长，翻页与页内滚动各管一层。
-
-type SortKey = "title" | "calls" | "tokens" | "cost" | "lastActiveMs";
 
 const TABLE_SCROLL_CLASS = "mt-3 max-h-[32rem] overflow-auto";
 const TH_STICKY_CLASS = "sticky top-0 z-1 bg-surface";
-
-export function LedgerSessionsTable({
-  snapshot,
-  locale,
-  currency,
-  nowTick,
-  pageSize,
-  onPageSizeChange,
-}: {
-  snapshot: LedgerSnapshot;
-  locale: string;
-  currency: string;
-  nowTick: number;
-  pageSize: number;
-  onPageSizeChange: (size: number) => void;
-}) {
-  const { intl } = useZCodeIntl();
-  const [sortKey, setSortKey] = useState<SortKey>("tokens");
-  const [sortDesc, setSortDesc] = useState(true);
-  const [page, setPage] = useState(1);
-
-  const sorted = useMemo(() => {
-    const sessions = [...snapshot.sessions];
-    const value = (s: LedgerSnapshot["sessions"][number]): number | string => {
-      switch (sortKey) {
-        case "title":
-          return (s.title ?? "").toLowerCase();
-        case "calls":
-          return s.calls;
-        case "tokens":
-          return s.inputTokens + s.outputTokens;
-        case "cost":
-          return s.cost ?? -1;
-        case "lastActiveMs":
-          return s.lastActiveMs ?? 0;
-      }
-    };
-    sessions.sort((a, b) => {
-      const va = value(a);
-      const vb = value(b);
-      const result =
-        typeof va === "string" || typeof vb === "string"
-          ? String(va).localeCompare(String(vb))
-          : va - vb;
-      return sortDesc ? -result : result;
-    });
-    return sessions;
-    // nowTick 变化触发相对时间重渲染
-  }, [snapshot.sessions, sortKey, sortDesc, nowTick]);
-
-  // 快照、排序或页大小变化都回到第一页，避免停留在越界页
-  useEffect(() => {
-    setPage(1);
-  }, [snapshot.generatedAt, sortKey, sortDesc, pageSize]);
-
-  const pageCount = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const current = Math.min(page, pageCount);
-  const rows = sorted.slice((current - 1) * pageSize, current * pageSize);
-
-  const toggleSort = (key: SortKey) => {
-    if (sortKey === key) {
-      setSortDesc((d) => !d);
-      return;
-    }
-    setSortKey(key);
-    setSortDesc(true);
-  };
-
-  const header = (key: SortKey, labelId: string, align: "left" | "right" = "right") => (
-    <th
-      scope="col"
-      className={`whitespace-nowrap px-3 py-2 font-medium text-foreground-subtle ${TH_STICKY_CLASS} ${
-        align === "right" ? "text-right" : "text-left"
-      }`}
-    >
-      <button
-        type="button"
-        className="inline-flex items-center gap-1 hover:text-foreground"
-        onClick={() => toggleSort(key)}
-      >
-        {intl.formatMessage({ id: labelId })}
-        {sortKey === key ? (
-          sortDesc ? (
-            <ArrowDown className="size-3" />
-          ) : (
-            <ArrowUp className="size-3" />
-          )
-        ) : null}
-      </button>
-    </th>
-  );
-
-  return (
-    <section className="rounded-xl bg-surface p-4">
-      <h3 className="text-ui-base font-medium text-foreground">
-        {intl.formatMessage({ id: "settings.usage.ledger.sessionsTitle" })}
-      </h3>
-      {sorted.length === 0 ? (
-        <div className="mt-3">
-          <UsageEmptyState
-            title={intl.formatMessage({ id: "settings.usage.emptyTitle" })}
-            description={intl.formatMessage({ id: "settings.usage.ledger.tableEmptyDescription" })}
-          />
-        </div>
-      ) : (
-        <div className={TABLE_SCROLL_CLASS}>
-          <table className="w-full min-w-156 border-collapse text-ui-base">
-            <thead>
-              <tr className="border-b border-border">
-                {header("title", "settings.usage.ledger.sessions.title", "left")}
-                <th
-                  className={`whitespace-nowrap px-3 py-2 text-left font-medium text-foreground-subtle ${TH_STICKY_CLASS}`}
-                >
-                  {intl.formatMessage({ id: "settings.usage.ledger.sessions.project" })}
-                </th>
-                {header("calls", "settings.usage.ledger.sessions.calls")}
-                {header("tokens", "settings.usage.ledger.sessions.tokens")}
-                {header("cost", "settings.usage.ledger.sessions.cost")}
-                {header("lastActiveMs", "settings.usage.ledger.sessions.lastActive")}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((session) => (
-                <tr
-                  key={`${session.src ?? ""}:${session.sessionId}`}
-                  className="border-b border-border/60 last:border-0"
-                >
-                  <td
-                    className="max-w-72 truncate px-3 py-2"
-                    title={session.title ?? session.sessionId}
-                  >
-                    {session.title ||
-                      intl.formatMessage({ id: "settings.usage.ledger.sessions.untitled" })}
-                  </td>
-                  <td
-                    className="max-w-52 truncate px-3 py-2 text-foreground-subtle"
-                    title={session.directory ?? ""}
-                  >
-                    {shortenLedgerDirectory(session.directory)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-                    {formatCompactNumber(locale, session.calls)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-                    {formatCompactTokenUsage(locale, session.inputTokens + session.outputTokens)}
-                  </td>
-                  <td className="whitespace-nowrap px-3 py-2 text-right tabular-nums">
-                    {session.cost !== null
-                      ? formatLedgerCost(locale, session.cost, currency)
-                      : "--"}
-                  </td>
-                  <td
-                    className="whitespace-nowrap px-3 py-2 text-right text-foreground-subtle"
-                    title={
-                      session.lastActiveMs !== null
-                        ? new Date(session.lastActiveMs).toLocaleString(locale)
-                        : undefined
-                    }
-                  >
-                    {formatLedgerRelativeTime(locale, session.lastActiveMs)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {sorted.length > 0 ? (
-        <LedgerTablePagination
-          total={sorted.length}
-          page={current}
-          pageSize={pageSize}
-          onPage={setPage}
-          onPageSize={onPageSizeChange}
-        />
-      ) : null}
-    </section>
-  );
-}
 
 export function LedgerErrorSummary({ snapshot }: { snapshot: LedgerSnapshot }) {
   const { intl, locale } = useZCodeIntl();

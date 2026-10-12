@@ -44,10 +44,32 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 
 1. **token 包含关系**：cacheRead ⊂ input、reasoning ⊂ output；任何 token 合计只用 `input + output`。
 2. **费用**：逐模型计价再汇总 `(input − cacheRead)/1e6*pIn + output/1e6*pOut + cacheRead/1e6*pCache`——`input_tokens` 本就含 cacheRead（AI SDK 归一化口径），必须先从输入扣掉命中部分再乘输入价；否则命中部分按未命中价计一遍、再按缓存价计一遍，高命中率（98%）场景费用虚高数十倍（2026-10-09 修复：xin × deepseek-v4-1-flash 曾从 ~$104 显示成 $7,069）。今天/本月/每日/模型/Agent/会话各视图都按 (维度, 模型) 分组取出后折叠，费用才能按维度归并。未定价模型显式记入 `unpricedCalls/unpricedModelIds`，不静默归零。
-3. **合并**（ledgerMerge.ts）：计数求和；均值（耗时/TTFT）按调用数加权；sessions/recent 重排后各截 **500 条**——这是 UI 翻页的数据池上限（单源 recent SQL 500、单源 sessions 200），明细表分页展示（每页 20/50/100/200 可调、偏好记忆），不再一屏平铺硬滚；**费用只累加非 null**——某源没有价格表时混入 0 会让总数凭空少一截。
+3. **合并**（ledgerMerge.ts）：计数求和；均值（耗时/TTFT）按调用数加权；recent 重排后截 **500 条**；sessions 重排后再截 **500 个顶层会话**（单源 200）——这是 UI 翻页的数据池上限（单源 recent SQL 500），明细表分页展示（每页 20/50/100/200 可调、偏好记忆），不再一屏平铺硬滚；sessions 的配额按**顶层会话数**计且**必须保父链完整**（不允许子行孤立出现，见「会话层级」）；**费用只累加非 null**——某源没有价格表时混入 0 会让总数凭空少一截。
 4. **时间分桶**：全部参数化整数算术 `(COALESCE(started_at,0)+tzOffsetMs)/86400000`，不用 strftime/date 修饰符；WSL 侧 Python 用同一偏移（host 下发 `tzOffsetMinutes`），跨环境同一条时间轴。
 5. **范围**：today=本地今日 0 点起；7d/30d 含今日；all 上界取 now（`started_at <= NULL` 恒假，不能留 null）；custom 起止可交换，止日为次日 0 点 -1。
-6. **模型 × 供应商明细**：models 按 (model_id, provider_id) 分组聚合，UI「模型与供应商」表整表分页展示（费用占比 = 单行费用 / 已计价费用合计，未定价行显示「--」），还原原 zcode-usage 工具页脚 tabs 区的模型表。
+6. **模型 × 供应商明细**：models 按 (model_id, provider_id) 分组聚合，UI「模型与供应商」表整表分页展示（费用占比 = 单行费用 / 已计价费用合计，未定价行显示「--」），还原原 zcode-usage 工具页脚 tabs 区的模型表。**会话层级只改会话视图**：models / agents / daily / recent / overview / facets 一律仍按「每一次调用自身」的用量统计，不做子树合计（否则同一笔调用会在总览里被重复计入）。
+
+## 会话层级
+
+`session` 表自带 `parent_id` / `task_type` 两列，`parent_id` 是层级父边的唯一来源（不另建关系表，也不在读取层推导）。账本据此把会话表从平铺列表升级成可折叠的树。
+
+**口径（不变式）**
+
+1. **每行数值 = 该会话自身 + 它的全部后代（沿层级边）**：calls / inputTokens / outputTokens / cost 按子树求和，`lastActiveMs` 取子树内最大值。**顶层行（无层级父）的合计相加 = 全集合计**，不双计。
+2. **fork 不参与层级**：会话自身 `task_type === "fork"` ⇒ 报送的 `parentSessionId` 恒为 `null`（断边）。fork 是「从某会话复制出来的独立分支」，把它的用量算回来源会话会让来源行的成本凭空翻倍。其余类型（interactive / subagent_child / selection_side_chat / workflow_child）都挂父边；**fork 里派出的子代理仍挂在 fork 下**（断的只是 fork → 来源那一条边）。
+3. **`childCount` = 直接子会话数**，按**断 fork 边之后**的边计数；自引用脏数据不计入。
+4. **层级边只可能存在于同一数据源内，关系键是「来源 + 会话 id」而不是裸会话 id**：`parent_id` 是库内本地 id，跨数据根（不同 `.zcode-*` 身份、WSL 与 Windows）不存在父子关系。所以子树合计在**单源聚合内**一次算完，多源合并只做拼接、重排与再截断。之所以不能只按 id 认父：身份迁移会让同一会话在两个数据根各留一份（本机实测 342 个会话同 id 双份，含那个挂了 89 个子代理的父会话），裸 id 认父会让 A 根的子行认到 B 根的同 id 行——那个父行凭空多出不属于自己的子行，而它自己那棵子树的子行反被合并层连带丢弃。TS 侧键在 `ledgerSessionTree.ts` 的 `factKey`，UI 建树同理（`sessionTree.ts` 的 `sessionRowKey` 含 src），WSL Python 一次 dump 只含单一来源，键退化为会话 id。
+5. **截断按顶层会话数计，且必须保父链完整**：单源配额 200、合并后 500，计的是顶层会话（整棵子树跟随父一起进入结果）。父在集合里而子被保留、或子被保留而父被丢掉（悬浮行）都不允许。实现（`ledgerSessionTree.ts selectLedgerSessionRows`）：按**子树 tokens 降序 → depth 升序 → sessionId 升序**排序后单遍扫描，`父在集合里但未被保留 ⇒ 丢弃该行`。因为父的子树 tokens ≥ 任何后代的子树 tokens，加上 depth 升序 tie-break，父必然先于子被处理，所以这个单遍规则就能保住整棵子树。
+6. **孤儿、自引用与环（脏数据）**：`parent_id` 指向集合内不存在的会话时按顶层行处理并保留（本机实测 `model_usage.session_id` 100% 能 JOIN 上 `session`、无孤儿，此路只为健壮性）；向上累加遇到父不在集合内即停止；自引用（parent === 自身）边视为已断；父链遍历有 64 步上限，环必然终止。全程静默降级，不挂起不抛错。自引用行在保父链规则下会被整体丢弃（真实数据不可能出现）。
+
+**实现分工**（语义只有一份，两侧必须逐条对齐；改动任一侧同步另一侧）
+
+| 位置                                 | 职责                                                                                                                       |
+| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
+| `ledgerSessionTree.ts`               | 纯函数 domain 层：`breakForkEdges` / `rollupSubtrees` / `selectLedgerSessionRows`，无 IO、无 await                         |
+| `ledgerAggregate.ts`（Windows 直读） | 会话聚合 SQL 补 `s.parent_id` / `s.task_type`，折叠出「自身」用量后调 `selectLedgerSessionRows(rollupSubtrees(rows), 200)` |
+| `ledgerDumpScript.ts`（WSL Python）  | 同一套算法用 Python 重写，输出字段名与 TS 侧一致（`parentSessionId` / `taskType` / `childCount`）                          |
+| `ledgerMerge.ts`                     | 合并后对 sessions 再跑一次 `selectLedgerSessionRows(rows, 500)`（跨源无父子关系，但重排后仍可能切掉父行）                  |
 
 ## 只读不变式（硬约束）
 
