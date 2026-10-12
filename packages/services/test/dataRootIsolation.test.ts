@@ -3,12 +3,12 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import type { ISettingService } from "../src/setting/setting.js";
 
 // ZCODE_DATA_ROOT 是宿主进程按 env 注入的身份数据根（见 paths.ts），必须在模块加载前写入，
-// 因此这里先设 env 再动态导入。node --test 每个测试文件单独起进程，不影响其它文件。
+// 因此这里先设 env 再动态导入。vitest 按测试文件隔离运行（模块与 env 各自独立），不影响其它文件。
 const envDataRoot = join(tmpdir(), "zcode-data-root-env-fixture");
 process.env.ZCODE_DATA_ROOT = envDataRoot;
 const paths = await import("../src/paths.js");

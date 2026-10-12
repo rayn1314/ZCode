@@ -1,7 +1,7 @@
 // 会话层级树契约：层级判定范围限于本批快照、排序只作用于同层兄弟、拍平跟随展开集合。
 // 对应需求：用量账本「会话明细表」从平铺改为父子层级渲染。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { LedgerSessionRow } from "@zcode/shared";
 import {
   buildSessionForest,

@@ -7,7 +7,7 @@
 //   * Host → CLI 的命令字段必须是 optional——新 CLI 要能吃下旧 Host 发来的命令，
 //     否则旧 Host 一握手就报 Invalid params，整个会话起不来。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { appRuntimePreferencesChangedBroadcastPayloadSchema } from "../src/app-runtime-preferences.js";
 import { appSettingsPatchSchema, appSettingsSchema } from "../src/validationAppSettings.js";
 import {

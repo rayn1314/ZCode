@@ -4,7 +4,7 @@
 // 这张表是"哪个形态能做什么"的单一真相源，所以测试逐格断言 spec 的原表而不是抽查几项：
 // 少一格就说明某个能力又被某处的布尔黑名单悄悄关掉了。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { resolveInputRejectionMessageId } from "../src/v4/inputRejectionMessage.js";
 import {
   resolveSessionPaneCapabilities,

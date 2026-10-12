@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button.js";
  * 退回 pill 标题会让屏读用户听到「删掉 3 条代码评论」这种并不存在的动作。
  * 只读 pill（如会话消息信封）没有删除入口，因此两者一起缺席。
  */
-type ContextAttachmentPillProps = {
+export type ContextAttachmentPillProps = {
   children: ReactNode;
   contentAlign?: AttachmentHoverCardContentProps["align"];
   icon: ReactNode;

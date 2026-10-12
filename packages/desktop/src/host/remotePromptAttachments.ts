@@ -6,17 +6,17 @@ import { randomUUID } from "node:crypto";
 // 远端附件暂存根跟随产品身份的远端数据根：与身份后缀同源，官方空后缀时与历史路径逐字节一致。
 // 写死共享 `~/.zcode` 会让自建版把含会话内容的附件落到官方远端根，且官方 server 的清理任务
 // 会扫到不属于它的文件。
-const REMOTE_PROMPT_ATTACHMENT_ROOT = `~/.zcode${ZCODE_DATA_ROOT_SUFFIX}/tmp/prompt-attachments`;
+export const REMOTE_PROMPT_ATTACHMENT_ROOT = `~/.zcode${ZCODE_DATA_ROOT_SUFFIX}/tmp/prompt-attachments`;
 const REMOTE_PROMPT_ATTACHMENT_RELATIVE_ROOT = `.zcode${ZCODE_DATA_ROOT_SUFFIX}/tmp/prompt-attachments`;
 
-interface RemotePromptAttachmentMaterializeInput {
+export interface RemotePromptAttachmentMaterializeInput {
   taskId?: string;
   content: string;
   traceId: TraceId | string;
   attachments?: ZCodePromptAttachment[];
 }
 
-interface RemotePromptAttachmentMaterializeResult {
+export interface RemotePromptAttachmentMaterializeResult {
   content: string;
   attachments?: ZCodePromptAttachment[];
   uploadedCount: number;
@@ -130,7 +130,7 @@ export async function cleanupStaleRemotePromptAttachments(
   );
 }
 
-function buildRemotePromptAttachmentPath(params: {
+export function buildRemotePromptAttachmentPath(params: {
   filename: string;
   index: number;
   nonce?: string;

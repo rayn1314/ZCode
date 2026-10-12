@@ -8,7 +8,7 @@
 //   2. options 的元素仍受 string|number|boolean 约束，不是把 strict 放宽成 passthrough；
 //   3. userConfig 里仍然拒绝未知键（避免用「允许一切」的方式糊过去）。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   zcodePluginInfoSchema,
   zcodePluginsListResultSchema,

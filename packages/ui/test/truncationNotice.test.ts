@@ -12,7 +12,7 @@
 // | `<persisted-output>` | apps/zcode-cli/packages/core/src/tool/result-persistence-format.ts |
 // | `[Tool output truncated by resultBudget` | apps/zcode-cli/packages/core/src/tool/executor/result-serialization.ts |
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   detectTruncationNotice,
   formatReadRangeLabel,

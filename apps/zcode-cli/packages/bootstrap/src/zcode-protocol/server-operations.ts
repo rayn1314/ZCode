@@ -59,6 +59,7 @@ import {
 } from "@zcode/contracts";
 import {
   DEFAULT_ZCODE_COMPACTION_PREFERENCES,
+  subagentRuntimeConfigSchema,
   DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
   type ZCodeCompactionPreferences,
   ZCODE_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
@@ -75,6 +76,7 @@ import {
   zcodeSessionListParamsSchema,
   zcodeSessionMessagesParamsSchema,
   zcodeSessionReadParamsSchema,
+  elideSessionSnapshotForIndex,
   zcodeSessionRuntimePreferencesResultSchema,
   zcodeSessionResumeParamsSchema,
   zcodeSessionSendParamsSchema,
@@ -88,6 +90,7 @@ import {
   zcodeUsageStatsParamsSchema,
   zcodeWorkspaceGenerateTextParamsSchema,
   getConversationMessageProjectionPolicy,
+  isRemoteWorkspaceIdentity,
   parseRemoteWorkspaceIdentity,
   type ZCodeAutomationBotDeliveryTarget,
   type ZCodeSessionCreateParams,
@@ -101,8 +104,8 @@ import {
   type ZCodeSessionHistoryTarget,
   type ZCodeSessionResumeParams,
   type ZCodeSessionPersistence,
-  type ZCodeStateUpdatedNotification,
   type ZCodeWorkspaceRef,
+  type ZCodeStateUpdatedNotification,
 } from "@zcode/shared";
 // legacy session/send 与 V4 准入共用同一张角色策略表（S2），不出现第二条绕过路径。
 import { resolveInputCommandAdmission } from "@zcode/shared/zcode-protocol-v4";
@@ -121,7 +124,9 @@ import { mapSessionGoal } from "./session-mapper.js";
 import {
   ProtocolRequestError,
   assertExpectedRevision,
+  createProtocolLogger,
   createProtocolRootTraceContext,
+  protocolTraceFromTraceContext,
   parseParams,
   requireSession,
   type ZCodeProtocolAgentServerContext,
@@ -137,6 +142,7 @@ import {
 } from "./subagent-launch-spec.js";
 import { createProtocolAutomationPort } from "./automation-port.js";
 import { createProtocolOffPeakPort } from "./offpeak-port.js";
+import { createProtocolTopicResourcePort } from "./topic-resource-port.js";
 import { createProtocolBrowserControlBroker } from "./browser-control-broker.js";
 import { mapComputerUseOperationEvent } from "./computer-use-operation-event.js";
 import { protocolMcpServersToRuntimeMcpConfig } from "./protocol-mcp-config.js";
@@ -149,9 +155,17 @@ import {
 import { runSessionModelConfigMutation } from "../zcode-protocol-v4/model-config-mutation.js";
 import { runWithSessionResidencyFinalization } from "./session-residency.js";
 import { closeSessionTree } from "./session-tree.js";
+import { resolveDynamicWorkflowRuntimeGate } from "./dynamic-workflow-policy.js";
+import { abortMcpUiToolCallsForSession, clearMcpUiAppToolsForSession } from "./mcp-ui/index.js";
 
 const PLAN_MODE_GOAL_CONTINUATION_SKIPPED_MESSAGE = "Plan mode 下已记录 goal，但不会自动继续。";
 const SLOW_SNAPSHOT_LOG_THRESHOLD_MS = 1000;
+const REMOTE_AUTOMATION_TOOL_NAMES = [
+  "CronCreate",
+  "CronList",
+  "CronUpdate",
+  "CronDelete",
+] as const;
 
 type ProtocolGoalTarget = NonNullable<
   Awaited<ReturnType<NonNullable<ZCodeProtocolSessionRecord["app"]["readTarget"]>>>
@@ -171,6 +185,7 @@ type ZCodeSessionRecordParams = (
 ) & { taskType?: SessionTaskType };
 
 interface SessionStartupPreferences {
+  subagentRuntimeConfigEnabled?: boolean;
   memoryEnabled: boolean;
   modelContextBudgetStrategy: ZCodeModelContextBudgetStrategy;
   nativeSearchEnhancementsEnabled: boolean;
@@ -352,11 +367,14 @@ function readProtocolStreamingParentToolUseId(
   }
   const meta = asRecord(payload._meta);
   const zcode = asRecord(meta.zcode);
+  const claudeCode = asRecord(meta.claudeCode);
   return (
     stringValue(meta.parentToolUseId) ??
     stringValue(meta.parentToolCallId) ??
     stringValue(zcode.parentToolUseId) ??
-    stringValue(zcode.parentToolCallId)
+    stringValue(zcode.parentToolCallId) ??
+    stringValue(claudeCode.parentToolUseId) ??
+    stringValue(claudeCode.parentToolCallId)
   );
 }
 
@@ -598,8 +616,10 @@ function mapProtocolPromptAttachment(attachment: unknown): TurnAttachment | unde
     if (localPath) {
       return {
         path: localPath,
-        ...(kind === "file" && stringValue(record.sourceKind) === "clipboard-text"
-          ? { sourceKind: "clipboard-text" as const }
+        ...(kind === "file" &&
+        (stringValue(record.sourceKind) === "clipboard-text" ||
+          stringValue(record.sourceKind) === "topic-history")
+          ? { sourceKind: stringValue(record.sourceKind) as "clipboard-text" | "topic-history" }
           : {}),
         type: "file",
         ...displayMeta,
@@ -1425,7 +1445,7 @@ async function createSessionWithProjection<T>(
   }
 }
 
-interface ActivatedSessionForResume {
+export interface ActivatedSessionForResume {
   record: ZCodeProtocolSessionRecord;
   knownSession?: SessionInfo;
   /** 仅供启动本次 V4 hydration，不写入 record 或跨请求缓存。 */
@@ -1858,10 +1878,13 @@ export async function readSession(context: ZCodeProtocolAgentServerContext, rawP
     operation: "session_read",
   });
   record.deliveryKind = params.deliveryKind ?? record.deliveryKind;
-  return await snapshot(context, record, undefined, {
+  const result = await snapshot(context, record, undefined, {
     messageLimit: params.messageLimit,
     modelAvailability: "current",
   });
+  // task index resync 只需标题/搜索文本/可见性/状态，完整历史单行可达 ~15MB 会打满 host stdio；
+  // 先按 full 构建再裁剪大载荷，保证 index 派生字段与 full 同源一致。
+  return params.contentProfile === "index" ? elideSessionSnapshotForIndex(result) : result;
 }
 
 /**
@@ -2866,13 +2889,19 @@ export async function closeSession(context: ZCodeProtocolAgentServerContext, raw
     // immediate；条件关闭必须在 Agent record 上原子判断，不能依赖 renderer 的旧快照。
     return { closed: false };
   }
+// 会话关闭时 abort 仍在进行的插件 UI 工具调用，登记表不留孤儿。
+  abortMcpUiToolCallsForSession(params.sessionId);
+  // App-Provided Tools：结束本会话全部待执行的页面调用并丢弃登记。
+  clearMcpUiAppToolsForSession(context, params.sessionId);
+  // 清掉本会话全部资源订阅（refcount 归零的 uri 才真正向 server 退订）。
+  await record.app.unsubscribeMcpResourcesForUi?.(`${params.sessionId}|`).catch(() => 0);
   // 整棵子树关停（子先于父，借用不变式见 session-tree.ts）：删除即级联，
   // 子会话借的是父 App 的进程内适配器，父先关会把还在收尾的子会话资源撤走。
   await closeSessionTree(context, params.sessionId);
   return { closed: true };
 }
 
-function shouldCloseSessionForExpectedPersistence(
+export function shouldCloseSessionForExpectedPersistence(
   currentPersistence: ZCodeSessionPersistence,
   expectedPersistence?: ZCodeSessionPersistence,
 ): boolean {
@@ -3384,6 +3413,7 @@ async function resolveSessionStartupPreferences(
     const inheritedShellSelection = source.parent.app.runtime.getSessionShellSelection();
     return {
       memoryEnabled: source.parent.memoryEnabled,
+      subagentRuntimeConfigEnabled: source.parent.subagentRuntimeConfigEnabled,
       modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
       nativeSearchEnhancementsEnabled: source.parent.nativeSearchEnhancementsEnabled,
       // 子会话继承父会话创建时的压缩偏好，而不是重新问一次 Host：
@@ -3410,6 +3440,7 @@ async function resolveSessionStartupPreferences(
   context.appRuntimePreferences.permissionRequestAutoDenyEnabled =
     runtimePreferences.permissionRequestAutoDenyEnabled;
   return {
+    subagentRuntimeConfigEnabled: runtimePreferences.subagentRuntimeConfigEnabled,
     memoryEnabled: runtimePreferences.memoryEnabled,
     modelContextBudgetStrategy: DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY,
     nativeSearchEnhancementsEnabled: runtimePreferences.nativeSearchEnhancementsEnabled,
@@ -3557,18 +3588,22 @@ async function createRecord(
       modelSelection: "model" in params ? toRuntimeModelSelection(initialModel) : undefined,
       parentSessionId,
       taskType,
-      // 动态工作流灰度门：与 offPeakPort
-      // 同一套读法——本次 create/resume 参数优先，缺席时读 Host 同步到进程的 workspace 级
-      // 结论；两者都没有就是 false（fail-closed）。这里**必须写出显式布尔**，不能省成
-      // undefined：core 把「缺席」定义为「不参与灰度、保留全部工具」（TUI / headless /
-      // workflow_child 的语义），受信 Host 创建的会话不能落进那条豁免。
-      dynamicWorkflowEnabled:
-        ("dynamicWorkflowEnabled" in params && params.dynamicWorkflowEnabled === true) ||
-        context.appRuntimePreferences.dynamicWorkflowEnabled === true,
-      // 协议侧的工具允许/拒绝列表是 session 级安全边界，必须进入 runtimeConfig，
+      // 动态工作流灰度门（docs/dynamic-workflow/launch.md「Gray release」「On demand: activation」）：
+      // 与 offPeakPort 同一套读法——本次 create/resume 参数优先，缺席时读 Host 同步到进程的
+      // workspace 级结论。取值与「必须显式布尔」的理由收在 resolveDynamicWorkflowRuntimeGate。
+      ...resolveDynamicWorkflowRuntimeGate(
+        {
+          dynamicWorkflowEnabled:
+            "dynamicWorkflowEnabled" in params ? params.dynamicWorkflowEnabled : undefined,
+          dynamicWorkflowMode:
+            "dynamicWorkflowMode" in params ? params.dynamicWorkflowMode : undefined,
+        },
+        context.appRuntimePreferences,
+      ),
+      // 修复原因：协议侧的工具允许/拒绝列表是 session 级安全边界，必须进入 runtimeConfig，
       // 不能只依赖 prompt 文本约束，否则内置工具和动态 MCP 工具仍可能越过调用面。
       toolAllowlist: "toolAllowlist" in params ? params.toolAllowlist : undefined,
-      toolDisallowlist: "toolDenylist" in params ? params.toolDenylist : undefined,
+toolDisallowlist: resolveSessionToolDenylist(params, workspace),
       // 子会话覆盖上面两条会话级工具面：spawn 时冻结的快照才是真相。`enabled: false` 是无条件的，
       // 它同时是"子代理不得再派生子代理"的闸门（`Agent` 工具的注册门读 `Boolean(runtime.subagentPort)`，
       // 端口只在 `enabled === false` 时收回）——规格缺失也必须写，否则冷恢复的子会话重新拿到 `Agent`。
@@ -3611,6 +3646,7 @@ async function createRecord(
       subagentLaunchSpec,
     }),
     automationPort: createProtocolAutomationPort(context, () => ownSessionRecord),
+    topicResourcePort: createProtocolTopicResourcePort(context),
     // 只接入 Host 已开放的工具面；缺省不注入。复用现行异步工厂，
     // 不恢复旧 deferred ModelAdapter/Registry overlay，也不改变 Session Selection。
     ...(("offPeakToolEnabled" in params && params.offPeakToolEnabled === true) ||
@@ -3618,6 +3654,26 @@ async function createRecord(
       ? { offPeakPort: createProtocolOffPeakPort(context, () => ownSessionRecord) }
       : {}),
     resolveInitialBashShellSelection: startupPreferences.resolveInitialBashShellSelection,
+    ...(startupPreferences.subagentRuntimeConfigEnabled &&
+    !(workspace.workspaceIdentity && isRemoteWorkspaceIdentity(workspace.workspaceIdentity))
+      ? {
+          readSubagentRuntimeConfig: async ({ signal, traceContext }) => {
+            signal.throwIfAborted();
+            const result = await context.requestClient(
+              zcodeProtocolMethods.subagentsReadRuntimeConfig,
+              { sessionId },
+              subagentRuntimeConfigSchema,
+              {
+                signal,
+                timeoutMs: ZCODE_SESSION_RUNTIME_PREFERENCES_REQUEST_TIMEOUT_MS,
+                trace: { traceId: traceContext.traceId },
+              },
+            );
+            signal.throwIfAborted();
+            return result;
+          },
+        }
+      : {}),
     // browser-use：agent.browsers.* 经此把命令转成 interaction/browserExecute 反向请求。
     browserControlPort: createProtocolBrowserControlBroker(context),
     // Protocol server 是受信任的 Desktop/Web/Mobile Host；灰度开关由这里显式注入，
@@ -3690,6 +3746,7 @@ function createSessionRecordShell(
     createdAt: now,
     eventStore: input.eventStore,
     memoryEnabled: input.startupPreferences.memoryEnabled,
+    subagentRuntimeConfigEnabled: input.startupPreferences.subagentRuntimeConfigEnabled,
     modelContextBudgetStrategy: input.startupPreferences.modelContextBudgetStrategy,
     nativeSearchEnhancementsEnabled: input.startupPreferences.nativeSearchEnhancementsEnabled,
     compaction: input.startupPreferences.compaction,
@@ -3823,6 +3880,22 @@ async function createSubagentChildRecord(
   return record;
 }
 
+function resolveSessionToolDenylist(
+  params: Pick<ZCodeSessionCreateParams, "toolDenylist">,
+  workspace: ZCodeWorkspaceRef,
+): readonly string[] | undefined {
+  const tools = new Set(params.toolDenylist ?? []);
+  if (workspace.workspaceIdentity && isRemoteWorkspaceIdentity(workspace.workspaceIdentity)) {
+    // Bug 原因：SSH/WSL/Docker 等远程会话仍注入 automationPort，导致 Cron 工具在远端被注册；
+    // 远程 workspace 没有本地调度器的可靠触发边界，所以必须在 session 初始化时统一禁用，
+    // 不能只依赖 UI 或 prompt 文本约束。
+    for (const toolName of REMOTE_AUTOMATION_TOOL_NAMES) {
+      tools.add(toolName);
+    }
+  }
+  return tools.size > 0 ? [...tools] : undefined;
+}
+
 async function readPersistedSessionMessages(
   context: ZCodeProtocolAgentServerContext,
   sessionId: string,
@@ -3850,6 +3923,7 @@ function isZCodeSessionMode(
     value === "build" ||
     value === "edit" ||
     value === "yolo" ||
+    value === "guarded" ||
     value === "auto"
   );
 }

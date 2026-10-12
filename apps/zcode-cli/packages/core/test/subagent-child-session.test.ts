@@ -75,11 +75,21 @@ function createHarness(options: { withHost?: boolean } = {}): Harness {
   const registry = new InMemoryRuntimeTaskRegistry();
 
   class Store {
+    async messages(): Promise<{ id: string; sessionID: string; role: string }[]> {
+      // resume 走 resumeFromStore 重水化：没有 transcript 时上游会显式抛 SessionNotFound，
+      // 因此 resume 用例必须提供一个已落库的历史。
+      return [{ id: "msg_child_1", sessionID: "sess_child", role: "user" }];
+    }
     async saveSessionEntry(entry: SessionEntryInfo): Promise<void> {
       order.push(`entry:${entry.type}`);
       if (entry.type === SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC) entries.push(entry);
     }
+    async sessionEntries(): Promise<SessionEntryInfo[]> {
+      return [];
+    }
   }
+  // resume 分支从父 runtime 的 `this.sessionStore` 读历史，deps 里也放同一份实例。
+  const store = new Store();
 
   const childRuntime = {
     async cancelRunningRuntimeBackgroundTasks(): Promise<void> {},
@@ -88,6 +98,9 @@ function createHarness(options: { withHost?: boolean } = {}): Harness {
     },
     async ensureSessionPersistedForExternalActivity(): Promise<void> {
       order.push("persist");
+    },
+    async resumeFromStore(): Promise<void> {
+      order.push("resumeFromStore");
     },
     async executeTurn(
       _prompt: string,
@@ -169,6 +182,7 @@ function createHarness(options: { withHost?: boolean } = {}): Harness {
     runtimeTaskRegistry: registry,
     sessionId: PARENT,
     sessionMessageChainReader: { current: () => CHAIN_SNAPSHOT },
+    sessionStore: store,
   } as unknown as AgentRuntimeInternal;
 
   const host: SubagentChildSessionHost = {
@@ -180,7 +194,7 @@ function createHarness(options: { withHost?: boolean } = {}): Harness {
 
   const deps = {
     modelFactory: runtime.modelFactory,
-    sessionStore: new Store() as unknown as SessionStorePort,
+    sessionStore: store as unknown as SessionStorePort,
     ...(options.withHost === false ? {} : { subagentChildHost: host }),
   } as unknown as AgentRuntimeDeps;
 
@@ -359,5 +373,6 @@ test("resume 不重写启动规格、不重发模型选型，且以 resume 标�
   assert.equal(resumed.resume, true);
   // 规格不可变（spec D2）：只在首次 spawn 写一次，resume 不覆写。
   assert.equal(harness.entries.length, 1);
-  assert.deepEqual(harness.order, ["executeTurn:subagent", "seal"]);
+  // resume 先重水化已有 transcript，再执行本轮；模型选型与首轮一致时不重发（无 pendingModel/modelSelected）。
+  assert.deepEqual(harness.order, ["resumeFromStore", "executeTurn:subagent", "seal"]);
 });

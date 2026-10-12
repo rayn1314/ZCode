@@ -1,6 +1,6 @@
 // 任务面板 store 契约：列表落库、失败保留旧列表、resume 透传截止时间、createGoal 先建会话再设定目标。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { ZCodeSessionGoalListEntry } from "@zcode/shared";
 import type { IZCodeAgentService } from "@zcode/services";
 import { useGoalManagementStore } from "../src/store/goalManagementStore.js";

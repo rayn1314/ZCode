@@ -1,7 +1,7 @@
 // v4 时间线滚动补偿契约：测高补偿谓词与前插锚定恢复。
 // 对应修复：会话切换后首次上滑「跳到很上面」+ 前插平移把同帧测高增量重复计入。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   prependVirtualAnchorAdjustment,
   shouldAdjustVirtualizerForItemSizeChange,

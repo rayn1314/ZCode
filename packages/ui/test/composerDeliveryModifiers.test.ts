@@ -1,7 +1,7 @@
 // composer per-send 投递契约：修饰键固定映射（⌘/Ctrl=立即、⌥=插队引导）与三态 tooltip。
 // spec: packages/ui/spec/composer-per-send-delivery.md
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   resolveDeliveryForModifiers,
   resolveFollowupModifierTooltip,

@@ -2,7 +2,7 @@
 // model_unavailable 进拒绝词表、未知字段被剥离（fail-open，迁移边界见
 // packages/ui/spec/saved-workflow-launch-model-selection.md）。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   parseCommandEnvelope,
   savedWorkflowStartRejectionReasonSchema,

@@ -2,7 +2,7 @@
 // 接受全部合法事件名（数量随 HOOK_EVENT_NAMES 增长）、拒绝非法事件名。CLI 侧
 // contracts/adapters 的副本由其它代理覆盖，本文件只覆盖 shared 包内副本。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { HOOK_EVENT_NAMES } from "../src/hooks.js";
 import { workspaceHookTrustRecordSchema } from "../src/workspace-hook-trust-store-file.js";
 import { workspaceHooksConfigSchema } from "../src/workspace-hook-config.js";

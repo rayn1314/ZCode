@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { LedgerRootRef } from "../src/usage-ledger/ledgerRoots.js";
 import {
   gateWslAggregation,

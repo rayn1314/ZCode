@@ -4,7 +4,7 @@ import { ZCODE_PRODUCT_NAME, type CuaPermissionKind, type Locale } from "@zcode/
 // 未经 tsup/vite 注入的构建路径（例如直接跑单测）拿不到常量，回退到上游默认名。
 const PANEL_APP_NAME = ZCODE_PRODUCT_NAME || "ZCode";
 
-interface CuaPermissionPanelMessages {
+export interface CuaPermissionPanelMessages {
   documentTitle: string;
   dragTitle: string;
   hintPrefix: string;

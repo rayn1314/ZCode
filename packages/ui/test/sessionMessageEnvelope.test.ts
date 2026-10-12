@@ -1,7 +1,7 @@
 // 会话消息信封：解析/展示投影/编辑回写 round-trip。
 // spec: packages/ui/spec/session-message-envelope-rendering.md
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { buildPromptWithConversationSelections } from "../src/lib/conversationSelectionReference.js";
 import {
   buildPromptWithSessionMessageEnvelopes,

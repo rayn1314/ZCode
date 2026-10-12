@@ -8,6 +8,9 @@ export type ArmsRumEnv = "local" | "prod";
 // 非构建环境（如 e2e 测试的 mocha）下 define 不存在，用 typeof 检查 + fallback 避免 ReferenceError
 declare const __ZCODE_ENV__: string;
 declare const __ZCODE_PRODUCT_FLAVOR__: string;
+declare const __ZCODE_ARMS_RUM_ENDPOINT__: string;
+declare const __ZCODE_TELEMETRY_REPORT_ENDPOINT__: string;
+declare const __ZCODE_AUTO_UPDATE_ENABLED__: boolean;
 
 export function normalizeZCodeEnv(value: string | undefined): ZCodeEnv {
   return value?.trim().toLowerCase() === "production" ? "production" : "test";
@@ -86,17 +89,20 @@ export const ZCODE_DATA_BASE_DIR_ENV = "ZCODE_DATA_BASE_DIR" as const;
 export const RUNTIME_ZCODE_DEBUG =
   typeof process !== "undefined" ? process.env.ZCODE_DEBUG : undefined;
 
-// 恢复原因：写死 false 会让运行时已配置的数仓/ARMS 永远空转。
-// 功能保持可用；实际出网由各出口的运行时端点检查决定，未配置不上报。
+// ── 构建期可选能力（见 docs/desktop/build-time-optional-capabilities.md），未注入时一律关闭 ──
+/** 遥测总开关（桌面构建默认开启；ARMS RUM 与事件上报的最终生效还依赖各自端点已配置）。 */
 export const ZCODE_TELEMETRY_ENABLED: boolean = true;
-
-/** 数仓事件上报端点：由运行时环境变量提供，未配置即停用，构建产物不内嵌。 */
-export const ZCODE_TELEMETRY_REPORT_ENDPOINT =
-  typeof process !== "undefined" ? (process.env.ZCODE_TELEMETRY_REPORT_ENDPOINT ?? "") : "";
-
-/** ARMS RUM 接入端点：由运行时环境变量提供，未配置即停用，构建产物不内嵌。 */
-export const ZCODE_ARMS_RUM_ENDPOINT =
-  typeof process !== "undefined" ? (process.env.ZCODE_ARMS_RUM_ENDPOINT ?? "") : "";
+/** ARMS RUM 上报地址；为空时 SDK 以 enable=false 初始化，不产生上报。 */
+export const ZCODE_ARMS_RUM_ENDPOINT: string =
+  typeof __ZCODE_ARMS_RUM_ENDPOINT__ !== "undefined" ? __ZCODE_ARMS_RUM_ENDPOINT__ : "";
+/** 事件上报（数仓）地址；为空时不上报。 */
+export const ZCODE_TELEMETRY_REPORT_ENDPOINT: string =
+  typeof __ZCODE_TELEMETRY_REPORT_ENDPOINT__ !== "undefined"
+    ? __ZCODE_TELEMETRY_REPORT_ENDPOINT__
+    : "";
+/** 桌面自动更新是否启用。 */
+export const ZCODE_AUTO_UPDATE_ENABLED: boolean =
+  typeof __ZCODE_AUTO_UPDATE_ENABLED__ !== "undefined" ? __ZCODE_AUTO_UPDATE_ENABLED__ : false;
 
 /**
  * 「ARMS RUM 将初始化」的唯一闸门：遥测总开关 + 端点已配置。

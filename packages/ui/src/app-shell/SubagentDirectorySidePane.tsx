@@ -19,7 +19,7 @@ type DirectoryItem = RunningSubagentSummary | ZCodeSessionEndedSubagent;
 
 const EMPTY_RUNNING: readonly RunningSubagentSummary[] = [];
 
-function buildSubagentDirectoryOpenRequest(
+export function buildSubagentDirectoryOpenRequest(
   tab: SubagentDirectorySidePaneTab,
   item: DirectoryItem,
 ): OpenScopedSubagentSideTabRequest {

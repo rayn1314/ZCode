@@ -5,7 +5,7 @@
 //   * 响应兼容 OpenAI/Anthropic 的 data[] 与智谱 models[].slug，按 ID 排序去重。
 //   * 失败按分类抛出 ProviderModelFetchError（missing-config/auth/not-found/timeout/parse/http/network）。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   ProviderModelFetchError,
   buildModelFetchHeaders,

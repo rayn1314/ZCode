@@ -9,7 +9,7 @@
 // 本文件只断言 shared 侧当前预期行为；contracts 侧对比由 CLI workspace 的
 // hook-schema-divergence 测试覆盖。runtime 判定语义不在 P0 改动范围。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { workspaceHookProcessConfigSchema } from "../src/workspace-hook-config.js";
 
 test("未知字段被 passthrough 保留", () => {

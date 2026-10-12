@@ -3,7 +3,7 @@ import type { StartPlanPreviewConfig, StartPlanPreviewEntitlement } from "@zcode
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { formatCompactTokenNumber } from "@/lib/tokenNumberFormat.js";
 
-interface StartPlanEntitlementSummary {
+export interface StartPlanEntitlementSummary {
   grantUnitsLabel: string;
   detailsDescription: string;
   unitLabel: string;

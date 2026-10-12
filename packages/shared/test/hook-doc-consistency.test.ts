@@ -1,7 +1,7 @@
 // 文档事件清单一致性：apps/zcode-cli/README.md 的 "Supported hook events:" bullet
 // 与根 NOTICE.md 的"生命周期 Hooks"表格行，抽取出的事件名集合必须等于 HOOK_EVENT_NAMES。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { readFile } from "node:fs/promises";
 import { HOOK_EVENT_NAMES } from "../src/hooks.js";
 

@@ -125,6 +125,15 @@ export const TID_BROWSER_OPEN_EXTERNAL_ITEM = "browser-open-external-item";
 export const TID_BROWSER_DEVTOOLS_BUTTON = "browser-devtools-button";
 /** 浏览器网页视图 */
 export const TID_BROWSER_WEBVIEW = "browser-webview";
+/** 内置浏览器权限确认条容器 */
+export const TID_BROWSER_PERMISSION_PROMPTS = "browser-permission-prompts";
+/** 权限确认条「仅本次允许」按钮 */
+export const TID_BROWSER_PERMISSION_ALLOW_ONCE = "browser-permission-allow-once";
+/** 权限确认条「访问此网站时允许」按钮 */
+export const TID_BROWSER_PERMISSION_ALLOW_ALWAYS = "browser-permission-allow-always";
+/** 权限确认条「不允许」按钮（本次拒绝，不记忆） */
+export const TID_BROWSER_PERMISSION_DENY = "browser-permission-deny";
+export const TID_BROWSER_PERMISSION_DISMISS = "browser-permission-dismiss";
 /** 浏览器页面加载失败的可读错误态 */
 export const TID_BROWSER_LOAD_ERROR = "browser-load-error";
 /** 浏览器加载失败错误态里的证书放行指引 */
@@ -153,6 +162,8 @@ export const TID_SSH_CONNECT_TRIGGER = "ssh-connect-trigger";
 export const TID_SSH_DIALOG = "ssh-dialog";
 /** 远程连接方式切换到 SSH */
 export const TID_REMOTE_KIND_SSH = "remote-kind-ssh";
+/** 远程连接方式切换到 Server */
+export const TID_REMOTE_KIND_SERVER = "remote-kind-server";
 /** 远程连接方式切换到 WSL */
 export const TID_REMOTE_KIND_WSL = "remote-kind-wsl";
 /** 远程连接方式切换到 Docker */
@@ -181,6 +192,14 @@ export const TID_WSL_USER_INPUT = "wsl-user-input";
 export const TID_DOCKER_CONTAINER_SELECT = "docker-container-select";
 /** Docker 容器名称/ID 输入框 */
 export const TID_DOCKER_CONTAINER_INPUT = "docker-container-input";
+/** Server 远程服务 URL 输入框 */
+export const TID_SERVER_URL_INPUT = "server-url-input";
+/** Server 远程服务名称输入框 */
+export const TID_SERVER_NAME_INPUT = "server-name-input";
+/** Server 远程服务 token 输入框 */
+export const TID_SERVER_TOKEN_INPUT = "server-token-input";
+/** Server 远程默认工作区路径输入框 */
+export const TID_SERVER_WORKSPACE_PATH_INPUT = "server-workspace-path-input";
 /** SSH 连接确认按钮 */
 export const TID_SSH_CONNECT_BUTTON = "ssh-connect-button";
 /** SSH 弹窗取消按钮 */
@@ -693,57 +712,6 @@ export const TID_V4_ROW_ATTACHMENTS = "v4-row-attachments";
 /** Plugin 设置页里进入插件商店的入口按钮（商店是 WorkspaceShell 主视图，不是设置页分区） */
 export const TID_PLUGIN_STORE_BROWSE = "plugin-store-browse";
 
-// Automations / 定时任务
-export const TID_AUTOMATIONS_OPEN = "automations-open";
-export const TID_AUTOMATIONS_LIST = "automations-list";
-/** 定时 / 闲时列表共用的状态筛选胶囊行（全部 / 进行中 / 已完成 / 失败） */
-export const TID_AUTOMATIONS_STATUS_FILTER = "automations-status-filter";
-export const TID_AUTOMATION_CREATE_MENU = "automation-create-menu";
-export const TID_AUTOMATION_CREATE_MANUALLY = "automation-create-manually";
-export const TID_AUTOMATION_CARD = "automation-card";
-// 闲时任务（off-peak，独立面）
-export const TID_OFFPEAK_CREATE_BUTTON = "offpeak-create-button";
-export const TID_OFFPEAK_CARD = "offpeak-card";
-/** 闲时卡片脚注：绑定会话标题（会话内创建）。 */
-export const TID_OFFPEAK_CARD_SESSION = "offpeak-card-session";
-export const TID_OFFPEAK_CARD_MENU = "offpeak-card-menu";
-export const TID_OFFPEAK_EDIT_VIEW = "offpeak-edit-view";
-export const TID_OFFPEAK_EDIT_SUBMIT = "offpeak-edit-submit";
-export const TID_OFFPEAK_FORM_TITLE = "offpeak-form-title";
-export const TID_OFFPEAK_FORM_INSTRUCTIONS = "offpeak-form-instructions";
-export const TID_OFFPEAK_ACTION_PAUSE = "offpeak-action-pause";
-export const TID_OFFPEAK_ACTION_CONTINUE = "offpeak-action-continue";
-export const TID_OFFPEAK_ACTION_DELETE = "offpeak-action-delete";
-export const TID_OFFPEAK_TAB = "offpeak-tab";
-export const TID_AUTOMATION_CARD_MENU = "automation-card-menu";
-export const TID_AUTOMATION_ACTION_TOGGLE = "automation-action-toggle";
-export const TID_AUTOMATION_ACTION_DELETE = "automation-action-delete";
-export const TID_AUTOMATION_FORM_TITLE = "automation-form-title";
-export const TID_AUTOMATION_FORM_PROMPT = "automation-form-prompt";
-export const TID_AUTOMATION_FORM_SUBMIT = "automation-form-submit";
-export const TID_AUTOMATION_RUN_NOW = "automation-run-now";
-export const TID_AUTOMATION_EDIT_BACK = "automation-edit-back";
-// 调度 builder / 自定义重复 / 年度月日选择器（e2e 稳定锚点）
-export const TID_AUTOMATION_FREQUENCY_SELECT = "automation-frequency-select";
-export const TID_AUTOMATION_FREQUENCY_OPTION = "automation-frequency-option";
-export const TID_AUTOMATION_CUSTOM_UNIT_SELECT = "automation-custom-unit-select";
-export const TID_AUTOMATION_CUSTOM_UNIT_OPTION = "automation-custom-unit-option";
-export const TID_AUTOMATION_CUSTOM_INTERVAL_SELECT = "automation-custom-interval-select";
-export const TID_AUTOMATION_CUSTOM_INTERVAL_INCREMENT = "automation-custom-interval-increment";
-export const TID_AUTOMATION_CUSTOM_INTERVAL_DECREMENT = "automation-custom-interval-decrement";
-export const TID_AUTOMATION_CUSTOM_INTERVAL_OPTION = "automation-custom-interval-option";
-export const TID_AUTOMATION_CUSTOM_REPEAT_EDIT = "automation-custom-repeat-edit";
-export const TID_AUTOMATION_CUSTOM_CONFIRM = "automation-custom-confirm";
-export const TID_AUTOMATION_YEAR_MONTHDAY = "automation-year-monthday";
-export const TID_AUTOMATION_YEAR_MONTH_OPTION = "automation-year-month-option";
-export const TID_AUTOMATION_YEAR_DAY_OPTION = "automation-year-day-option";
-export const TID_AUTOMATION_SCHEDULE_PREVIEW = "automation-schedule-preview";
-export const TID_AUTOMATION_SCHEDULE_ADD = "automation-schedule-add";
-export const TID_AUTOMATION_SCHEDULE_DELETE = "automation-schedule-delete";
-export const TID_CRON_CREATE_CARD = "cron-create-card";
-export const TID_CRON_CREATE_OPEN = "cron-create-open";
-export const TID_OFFPEAK_CREATE_CARD = "offpeak-create-card";
-export const TID_OFFPEAK_CREATE_OPEN = "offpeak-create-open";
 export const TID_CONFIRM_DIALOG_CONFIRM = "confirm-dialog-confirm";
 
 /** 为动态元素生成带后缀的 testid，如 file-tree-item-/home/user */
@@ -751,6 +719,13 @@ export function testId(base: string, suffix: string): string {
   return `${base}-${suffix}`;
 }
 
+/** 左侧栏头像上方的可手动领取 Start Plan banner。 */
+export const TID_MANUAL_CLAIM_PLAN_BANNER = "manual-claim-plan-banner";
+
+/** 插件 UI 沙箱卡片容器与其中的 webview。 */
+export const TID_PLUGIN_UI_CARD = "plugin-ui-card";
+export const TID_PLUGIN_UI_OPEN_SIDE_PANE = "plugin-ui-open-side-pane";
+export const TID_PLUGIN_UI_WEBVIEW = "plugin-ui-webview";
 export const TID_START_PLAN_RECOMMENDATION_DIALOG = "start-plan-recommendation-dialog";
 
 /** 用户反馈的诊断日志授权开关 */

@@ -24,7 +24,6 @@ import type {
   ToolInputResolutionResult,
 } from "../types.js";
 import { parseSubagentModelSelection, resolveModelReference } from "./model-reference.js";
-import { formatAgentProfilesForPrompt, type AgentProfile } from "../../subagent/profile.js";
 
 const MAX_AGENT_MODEL_BYTES = 120_000;
 
@@ -110,19 +109,13 @@ const AGENT_TOOL_OUTPUT_SCHEMA = {
  */
 function buildAgentProviderDescription(
   options: {
-    embeddedSearchEnabled?: boolean;
-    profiles?: readonly AgentProfile[];
     dynamicWorkflowEnabled?: boolean;
   } = {},
 ): string {
-  const agentList = formatAgentProfilesForPrompt(options.profiles ?? [], {
-    embeddedSearchEnabled: options.embeddedSearchEnabled,
-  });
-
   return [
     "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.",
     "",
-    agentList,
+    "Available agent types are listed in <system-reminder> messages in the conversation.",
     "",
     "When using the Agent tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.",
     "",
@@ -130,7 +123,7 @@ function buildAgentProviderDescription(
     "",
     "Reach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.",
     "",
-    "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
+"- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
     "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
     // 调用级 model 的口径照 ListModels / CreateWorkflow：只在用户要求时设，且只动这个子代理。
     // 最后那句不对称必须留着——后台路径当前不携带调用级选型，不说穿等于让模型向用户复述一个
@@ -400,9 +393,7 @@ function createTaskToolEntryFromAgent(entry: ToolEntry): ToolEntry {
 }
 
 export function createAgentToolEntry(
-  _options: {
-    embeddedSearchEnabled?: boolean;
-    profiles?: readonly AgentProfile[];
+  options: {
     /** 见 buildAgentProviderDescription：缺省 true，只有灰度显式关闭时才去掉工作流那一行。 */
     dynamicWorkflowEnabled?: boolean;
   } = {},
@@ -411,15 +402,13 @@ export function createAgentToolEntry(
     ...agentToolEntry,
     metadata: {
       ...agentToolEntry.metadata,
-      description: buildAgentProviderDescription(_options),
+      description: buildAgentProviderDescription(options),
     },
   };
 }
 
 export function createTaskToolEntry(
   options: {
-    embeddedSearchEnabled?: boolean;
-    profiles?: readonly AgentProfile[];
     /** Task 是 Agent 的兼容别名，描述整段内嵌 Agent 的，因此同一道门一起传下去。 */
     dynamicWorkflowEnabled?: boolean;
   } = {},

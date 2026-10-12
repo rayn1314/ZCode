@@ -1,3 +1,4 @@
+import { requestVerificationDiagnostics } from "@zcode/shared";
 import { CoreErrorType, ModelErrorCode, createCoreError, isCoreError } from "../deps.js";
 import { isPlainRecord, stringProperty } from "./data.js";
 import {
@@ -80,7 +81,7 @@ export function isSuspiciousEmptyModelResult(
 const SUSPICIOUS_EMPTY_MODEL_RESULT_MESSAGE =
   "Model returned no text and no tool calls before completing the turn.";
 
-function createSuspiciousEmptyModelResultError(
+export function createSuspiciousEmptyModelResultError(
   finishReason: string | undefined,
   rawFinishReason: string | undefined,
   model?: { modelId: string; providerId: string },
@@ -102,17 +103,20 @@ function createSuspiciousEmptyModelResultError(
 }
 
 /** 空流终态诊断：供 core/adapters 日志与 UI 错误归因对照。 */
-export function buildSuspiciousEmptyDiagnostics(input: {
-  finishReason: string | undefined;
-  providerMetadata: Record<string, unknown> | undefined;
-  rawFinishReason: string | undefined;
-  outboundHeaderKeys?: string[];
-}): Record<string, unknown> {
+export function buildSuspiciousEmptyDiagnostics(
+  input: {
+    finishReason: string | undefined;
+    providerMetadata: Record<string, unknown> | undefined;
+    rawFinishReason: string | undefined;
+    outboundHeaderKeys?: string[];
+  } & Record<string, unknown>,
+): Record<string, unknown> {
   const businessFailure = findProviderBusinessFailureInMetadata(input.providerMetadata);
   return {
     finishReason: input.finishReason ?? null,
     rawFinishReason: input.rawFinishReason ?? null,
     outboundHeaderKeys: input.outboundHeaderKeys ?? [],
+    ...requestVerificationDiagnostics(input),
     providerMetadataKeys: input.providerMetadata
       ? Object.keys(input.providerMetadata).slice(0, 20)
       : [],
@@ -143,7 +147,7 @@ export function finalizeSuspiciousEmptyModelResult(input: {
   );
 }
 
-function tryCreateProviderBusinessModelErrorFromMetadata(
+export function tryCreateProviderBusinessModelErrorFromMetadata(
   providerMetadata: Record<string, unknown> | undefined,
   model?: { modelId: string; providerId: string },
 ): ReturnType<typeof createCoreError> | undefined {
@@ -244,7 +248,7 @@ export function isModelContextExceededError(error: unknown): boolean {
   return false;
 }
 
-function isModelContextExceededMarker(value: string | undefined): boolean {
+export function isModelContextExceededMarker(value: string | undefined): boolean {
   return value !== undefined && MODEL_CONTEXT_EXCEEDED_MARKERS.has(value.trim().toLowerCase());
 }
 

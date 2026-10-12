@@ -6,7 +6,7 @@
 //     不允许配置覆盖（spec 不变式 I3）；
 //   * 删除旧的 thresholdPercent 不能让旧持久化数据解析失败（schema 非 strict，未知键静默剥掉）。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { appSettingsPatchSchema, appSettingsSchema } from "../src/validationAppSettings.js";
 import {
   DEFAULT_ZCODE_COMPACTION_PREFERENCES,

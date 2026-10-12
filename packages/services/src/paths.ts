@@ -8,6 +8,7 @@ import {
   DATA_BASE_DIR_FORBIDDEN_WINDOWS_INSTALL_DIR_ERROR_CODE,
   ZCODE_DATA_ROOT_ENV,
   ZCODE_DATA_ROOT_SUFFIX,
+  ZCODE_AGENT_RUNTIME,
 } from "@zcode/shared";
 import { getIdentityDataRootForBaseDir } from "@zcode/shared/identity-paths-node";
 
@@ -20,13 +21,13 @@ const envDataBaseDir = process.env.ZCODE_DATA_BASE_DIR?.trim() || null;
 const envDataRootDir = process.env[ZCODE_DATA_ROOT_ENV]?.trim() || null;
 const defaultDataBaseDir = process.env.HOME?.trim() || homedir();
 
-interface DataBaseDirTargetValidationOptions {
+export interface DataBaseDirTargetValidationOptions {
   platform?: NodeJS.Platform | string;
   env?: Record<string, string | undefined>;
   appInstallDir?: string | null;
 }
 
-type DataBaseDirTargetValidationResult =
+export type DataBaseDirTargetValidationResult =
   | { ok: true }
   | {
       ok: false;
@@ -330,6 +331,17 @@ export function getLegacyDeletedTaskSessionSnapshotPath(
   workspaceIdentity?: string,
 ): string {
   return join(getTaskSessionDir(workspacePath, workspaceIdentity), `${taskId}.deleted.json`);
+}
+
+/**
+ * GLM（唯一 agent provider）的配置目录：~/.zcode/cli。
+ * Bugfix：GLM 配置改为直接读写新版 zcode-cli 的全局配置目录，不做 workspace 隔离，
+ * 避免同机不同工作区配置漂移。
+ */
+export function getProviderWorkspaceConfigDir(): string {
+  return ZCODE_AGENT_RUNTIME.nativeConfigDir
+    ? join(getDataBaseDir(), ZCODE_AGENT_RUNTIME.nativeConfigDir)
+    : join(getDataBaseDir(), ".zcode", "cli");
 }
 
 /**

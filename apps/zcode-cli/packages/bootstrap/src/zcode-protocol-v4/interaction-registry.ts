@@ -31,8 +31,8 @@ export type V4InteractionAnswer = {
   autoResolved?: "timeout";
 };
 
-const ASK_USER_QUESTION_HIDDEN_GRACE_MS = 60_000;
-const ASK_USER_QUESTION_AUTO_RESOLUTION_MS = 300_000;
+export const ASK_USER_QUESTION_HIDDEN_GRACE_MS = 60_000;
+export const ASK_USER_QUESTION_AUTO_RESOLUTION_MS = 300_000;
 
 /**
  * 未应答的授权请求（permission / ExitPlanMode）默认时限：5 分钟。
@@ -41,7 +41,7 @@ const ASK_USER_QUESTION_AUTO_RESOLUTION_MS = 300_000;
  * "没人就收场"，走的是本表的通用 `deadline`（语义由注册方定，见 V4InteractionDeadline）。
  */
 export const PERMISSION_REQUEST_AUTO_DENY_TIMEOUT_MS = 300_000;
-interface V4InteractionRegistryOptions {
+export interface V4InteractionRegistryOptions {
   hiddenGraceMs?: number;
   autoResolutionMs?: number;
   now?: () => number;

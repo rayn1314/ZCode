@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import type { SubagentStateSnapshot } from "@zcode/shared";
 import type { IServiceAccessor } from "@zcode/services";
 import {

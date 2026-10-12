@@ -30,6 +30,7 @@ export type SubagentChildRuntimeConfigOverrides = Pick<
   | "bashTimeoutPolicy"
   | "currentDate"
   | "dynamicWorkflowEnabled"
+  | "dynamicWorkflowToolsOnDemand"
   | "embeddedSearchBackend"
   | "envInfo"
   | "maxTurns"
@@ -73,6 +74,11 @@ export interface SubagentChildCoreDeps {
   permissionBroker: AgentRuntimeDeps["permissionBroker"];
   /** 同上，provider runtime headers 也必须按父 session 取派生实例。 */
   providerRuntimeHeadersPort: AgentRuntimeDeps["providerRuntimeHeadersPort"];
+  /**
+   * Browser Use 控制端口：父按 `forChildSession` 登记到父 tab owner 后的实例，子代理与父
+   * 对话共用 tab；父侧无此端口（CLI headless）时为 undefined，子会话退回自身 scope。
+   */
+  browserControlPort: AgentRuntimeDeps["browserControlPort"];
   /** 子会话向父会话回话的端口（`enqueue` 绑父的 enqueueSubagentMessage）。 */
   coordinatorResponsePort: AgentRuntimeDeps["coordinatorResponsePort"];
   /** 父 skillPort 的 profile 过滤包装；重建会绕过白名单与 CUA 策略。 */

@@ -1,6 +1,6 @@
 // 身份数据迁移面板的体积展示契约：二进制单位、非负回退与两位以内小数。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { formatBytes } from "../src/settings/identity/formatBytes.js";
 
 test("formatBytes 使用二进制单位并保留可读精度", () => {

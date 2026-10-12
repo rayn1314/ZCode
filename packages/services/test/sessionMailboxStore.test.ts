@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { SESSION_MAILBOX_DIR_NAME, ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 import {
   createNodeSessionMessageMailbox,

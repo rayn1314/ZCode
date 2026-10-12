@@ -32,6 +32,7 @@
         "!dist/**",
         "!.turbo/**",
         "$TURBO_ROOT$/../../config/provider/zcode-builtin.json",
+        "$TURBO_ROOT$/../../config/provider/zcode-builtin.test.json",
         "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
         "$TURBO_ROOT$/../../scripts/product-identity.mjs",
         "$TURBO_ROOT$/../../scripts/load-endpoint-env.mjs",
@@ -59,6 +60,16 @@
       "cache": false,
       "persistent": true
     },
+    "test": {
+      "dependsOn": ["build"],
+      "inputs": ["**"],
+      "outputs": []
+    },
+    "coverage": {
+      "dependsOn": ["build"],
+      "inputs": ["**"],
+      "outputs": ["coverage/**"]
+    },
     "lint": {},
     "lint:fix": {},
     "typecheck": {
@@ -74,6 +85,7 @@
         "!dist/**",
         "!.turbo/**",
         "$TURBO_ROOT$/../../config/provider/zcode-builtin.json",
+        "$TURBO_ROOT$/../../config/provider/zcode-builtin.test.json",
         "$TURBO_ROOT$/../../scripts/builtin-provider-config.mjs",
         "$TURBO_ROOT$/../../scripts/product-identity.mjs",
         "$TURBO_ROOT$/../../scripts/load-endpoint-env.mjs",

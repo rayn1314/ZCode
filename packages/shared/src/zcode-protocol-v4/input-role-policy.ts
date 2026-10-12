@@ -67,6 +67,7 @@ export const INPUT_COMMAND_ROLE_POLICY = {
     conversationInput: true,
   },
   setAssistantFeedback: {},
+  setHighspeedMetrics: {},
   sendQueuedNow: {},
   guideQueueItem: {},
   editQueueItem: {},

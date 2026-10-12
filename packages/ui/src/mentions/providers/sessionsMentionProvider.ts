@@ -82,7 +82,7 @@ function mapTaskToMentionItem(task: ZCodeTaskMeta, provider: ZCodeProvider): Ses
   };
 }
 
-function collectSessionMentionItems(
+export function collectSessionMentionItems(
   tasks: ZCodeTaskMeta[],
   provider: ZCodeProvider,
   options: {

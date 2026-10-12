@@ -3,7 +3,7 @@
 //
 // 只断言区块的排序与「还有 N 个」口径：这两条是 spec 明文要求、且算错会让用户看到错的层级信息。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { buildSubagentSubBlockRows } from "../src/v4/subagentSubBlockModel.js";
 
 type Running = Parameters<typeof buildSubagentSubBlockRows>[0]["running"][number];

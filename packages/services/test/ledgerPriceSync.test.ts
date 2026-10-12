@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { syncLedgerPriceBaseline } from "../src/usage-ledger/ledgerPriceSync.js";
 
 // 契约：同名模型多渠道报价不一致（众数平票）时，同步层不写入该模型，

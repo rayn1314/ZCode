@@ -82,6 +82,7 @@ export async function createWorkspaceZCodeApp(
   // 会漏掉冷恢复路径（没有覆盖包），见 `isSubagentChildSession` 的注释。
   return context.deps.createZCodeApp({
     ...options,
+    includeVisualize: true,
     platform: context.deps.platform,
     providerRuntimeHeadersPort,
     // 跨会话消息能力：进程级 mailbox 收件箱与投递端口在此注入（与 sessionMailboxPort 同处）。

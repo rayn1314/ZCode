@@ -28,6 +28,7 @@ export function WorkspaceArchivedTasksFlatSection({
   activeWorkspaceIdentity,
   activeTaskId,
   sortBy,
+  mobileActiveTaskKey,
   actionsContainer,
   onSelectTask,
 }: {
@@ -36,6 +37,7 @@ export function WorkspaceArchivedTasksFlatSection({
   activeWorkspaceIdentity?: string;
   activeTaskId: string | null;
   sortBy: "created" | "updated";
+  mobileActiveTaskKey?: string | null;
   actionsContainer?: HTMLElement | null;
   onSelectTask: (
     targetWorkspacePath: string,
@@ -142,7 +144,7 @@ export function WorkspaceArchivedTasksFlatSection({
           const deleteLabel = intl.formatMessage({ id: "taskList.delete" });
           // archived 平铺列表同样是跨 workspace 视图，选中态要按 workspaceKey 隔离。
           const isActive = workspaceKey === activeWorkspaceKey && task.taskId === activeTaskId;
-          const isMobileActive = false;
+          const isMobileActive = mobileActiveTaskKey === `${workspaceKey}:${task.taskId}`;
           const taskKey = `${workspaceKey}:${task.taskId}`;
           const isDeleting = deletingTaskKeys.has(taskKey);
 

@@ -1,3 +1,5 @@
+#!/usr/bin/env sh
+
 # 推送前门禁：lint、架构边界、格式化、类型检查。
 #
 # 命令集合集中在 package.json 的 verify:pre-push，钩子只做转发，
@@ -6,4 +8,17 @@
 # 注意 apps/zcode-cli 不在这些脚本的覆盖范围内（oxlint 的 ignorePatterns 与 .prettierignore
 # 都排除了它），它有自己的 lint / format:check / typecheck；改动 CLI 代码时另跑
 # `pnpm typecheck:cli`。
-pnpm verify:pre-push
+#
+# Git 会通过 stdin 传入本次 push 的 local/remote ref 与 sha；先缓存下来，后续
+# affected-test 脚本才能用远端当前 sha 作为 base，而不是误退回到默认分支。
+# 手工执行 hook 时 stdin 可能是终端，避免直接 cat 卡住调试。
+pre_push_stdin=""
+if [ ! -t 0 ]; then
+  pre_push_stdin=$(cat)
+fi
+# Bugfix: Git hook 会注入 GIT_DIR/GIT_WORK_TREE 等 local env。
+# 不清理会让单测里的临时仓库 Git 命令误命中当前仓库（例如把功能分支改名为 main）。
+# shellcheck disable=SC2046
+unset $(git rev-parse --local-env-vars)
+# 修复原因：强制 mise 会阻止已用其他方式准备好 Node/pnpm 的开发者推送；沿用当前环境。
+ZCODE_PRE_PUSH_STDIN="$pre_push_stdin" pnpm run verify:pre-push

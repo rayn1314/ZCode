@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { calcLedgerCost, LedgerPriceLoader } from "../src/usage-ledger/ledgerPrices.js";
 
 // 契约：input_tokens 本就含 cacheRead（AI SDK 归一化为 total，spec 口径 cacheRead ⊂ input），

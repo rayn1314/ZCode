@@ -11,10 +11,10 @@ import {
 import { NATIVE_HANDLERS } from "./handlers/index.js";
 import type { V4CommandCoreHost } from "./types.js";
 
-class V4SelectionSideChatRestrictedCommandError extends Error {
+export class V4SelectionSideChatRestrictedCommandError extends Error {
   constructor(
     command: CommandEnvelope["type"],
-    readonly reasonCode: string,
+    readonly reasonCode: string = "guard.selectionSideChatRestrictedCommand",
   ) {
     super(`selection_side_chat 不允许执行 ${command}`);
     this.name = "V4SelectionSideChatRestrictedCommandError";
@@ -61,18 +61,18 @@ export class V4CommandExecutor {
   }
 }
 
-interface V4CommandAdmission {
+export interface V4CommandAdmission {
   admissionSeq: number;
   admittedAt: number;
   queueItemId: string;
 }
 
-interface V4CommandExecutionContext {
+export interface V4CommandExecutionContext {
   /** 内部 auto-drain 必须在 reserve 前由 handler 原子校验 Core idle。 */
   autoDrainPromotion?: true;
 }
 
-type V4AdmittedCommandEnvelope = CommandEnvelope & {
+export type V4AdmittedCommandEnvelope = CommandEnvelope & {
   __v4Admission?: V4CommandAdmission;
   __v4ExecutionContext?: V4CommandExecutionContext;
 };

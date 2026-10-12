@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createMemoryService } from "../src/memory/memoryService.js";
 import { getZCodeDataRootDir } from "../src/paths.js";
 import { sealDataRoot } from "./helpers/sealedDataRoot.js";

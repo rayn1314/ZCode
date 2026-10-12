@@ -1,9 +1,24 @@
-// 远程 workspace 身份归并契约：target 被 canonical 化（WSL 探测出默认用户写回）后，
+// 远程 workspace 身份归并契约（本地增强）+ 上游 helper 测试合并。
+// 本地套件：target 被 canonical 化（WSL 探测出默认用户写回）后，
 // 历史条目必须归并命中并沿用存量身份，不得分裂出重复条目（2026-10-02 实测事故）。
-import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, expect, it } from "vitest";
 import type { RemoteTarget, RemoteWorkspaceSessionEntry } from "@zcode/shared";
-import { buildRemoteWorkspaceSessionMutation } from "../src/lib/remoteWorkspaceHistory.js";
+import {
+  buildRemoteWorkspaceIdentity,
+  buildRemoteWorkspaceSessionMutation,
+  buildPersistedWorkspaceSessionEntries,
+  buildRemoteWorkspaceSessionEntryMap,
+  createRemoteTargetFromSnapshot,
+  createRemoteTargetSnapshot,
+  findMatchingRemoteWorkspaceSessionEntry,
+  formatRemoteWorkspaceDisplayLabel,
+  formatRemoteWorkspaceHeaderHostLabel,
+  formatRemoteWorkspaceTargetSubtitle,
+  hasRemoteWorkspaceIdentity,
+  readPersistedWorkspaceSessionEntries,
+  removeRemoteWorkspaceSessionEntries,
+  upsertRemoteWorkspaceSessionEntries,
+} from "@/lib/remoteWorkspaceHistory.js";
 
 const WSL_PATH = "/home/rayn/proj";
 const LEGACY_IDENTITY = "remote:wsl:Ubuntu:/home/rayn/proj";
@@ -39,171 +54,749 @@ function buildMutation(params: {
   });
 }
 
-test("条目 target 被 canonical 化后，现算身份与存量 identity 不再逐字相等，仍必须归并命中且不新增条目", () => {
-  // 还原事故形态：条目 target 已带 user（早前连接写回），identity 还是探测前的旧格式。
-  const entries = [
-    buildEntry({
+describe("remoteWorkspaceHistory 身份归并契约", () => {
+  it("条目 target 被 canonical 化后，现算身份与存量 identity 不再逐字相等，仍必须归并命中且不新增条目", () => {
+    // 还原事故形态：条目 target 已带 user（早前连接写回），identity 还是探测前的旧格式。
+    const entries = [
+      buildEntry({
+        workspacePath: WSL_PATH,
+        target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+        workspaceIdentity: LEGACY_IDENTITY,
+      }),
+    ];
+    const mutation = buildMutation({
+      remoteSessions: entries,
       workspacePath: WSL_PATH,
       target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-      workspaceIdentity: LEGACY_IDENTITY,
-    }),
-  ];
-  const mutation = buildMutation({
-    remoteSessions: entries,
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    });
+    expect(mutation.entry.workspaceIdentity).toBe(LEGACY_IDENTITY);
+    expect(mutation.nextRemoteSessions).toHaveLength(1);
   });
-  assert.equal(mutation.entry.workspaceIdentity, LEGACY_IDENTITY);
-  assert.equal(mutation.nextRemoteSessions.length, 1);
+
+  it("反向同样归并：条目 target 无 user、连接 target 带 canonical user", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: WSL_PATH,
+          target: { kind: "wsl", distro: "Ubuntu" },
+          workspaceIdentity: LEGACY_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    });
+    expect(mutation.entry.workspaceIdentity).toBe(LEGACY_IDENTITY);
+    expect(mutation.nextRemoteSessions).toHaveLength(1);
+  });
+
+  it("双方都显式填写 user 且不同：是两个环境，不得归并", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: WSL_PATH,
+          target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+          workspaceIdentity: CANONICAL_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "root" },
+    });
+    expect(mutation.entry.workspaceIdentity).toBe("remote:wsl:Ubuntu:root:/home/rayn/proj");
+    expect(mutation.nextRemoteSessions).toHaveLength(2);
+  });
+
+  it("不同 distro 不归并", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: WSL_PATH,
+          target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+          workspaceIdentity: CANONICAL_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Debian", user: "rayn" },
+    });
+    expect(mutation.nextRemoteSessions).toHaveLength(2);
+  });
+
+  it("调用方显式传入的身份不得压过归并命中的条目身份（Bot 重连场景）", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: WSL_PATH,
+          target: { kind: "wsl", distro: "Ubuntu" },
+          workspaceIdentity: LEGACY_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+      workspaceIdentity: CANONICAL_IDENTITY,
+    });
+    expect(mutation.entry.workspaceIdentity).toBe(LEGACY_IDENTITY);
+    expect(mutation.nextRemoteSessions).toHaveLength(1);
+  });
+
+  it("失败回写沿用条目 target 快照，不被 canonical 化版本覆盖", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: WSL_PATH,
+          target: { kind: "wsl", distro: "Ubuntu" },
+          workspaceIdentity: LEGACY_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+      lastConnectionStatus: "failed",
+    });
+    expect(mutation.entry.target).toEqual({ kind: "wsl", distro: "Ubuntu" });
+    expect(mutation.entry.workspaceIdentity).toBe(LEGACY_IDENTITY);
+  });
+
+  it("归并按归一化路径比对，尾斜杠噪声不导致分裂", () => {
+    const mutation = buildMutation({
+      remoteSessions: [
+        buildEntry({
+          workspacePath: `${WSL_PATH}/`,
+          target: { kind: "wsl", distro: "Ubuntu" },
+          workspaceIdentity: LEGACY_IDENTITY,
+        }),
+      ],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    });
+    expect(mutation.entry.workspaceIdentity).toBe(LEGACY_IDENTITY);
+    expect(mutation.nextRemoteSessions).toHaveLength(1);
+  });
+
+  it("ssh authority 完整（host/port/username 全等）才归并，docker 全等才归并", () => {
+    const sshEntry = buildEntry({
+      workspacePath: "/srv/app",
+      target: { kind: "ssh", host: "Build.EU.example", port: 2222, username: "deploy" },
+      workspaceIdentity: "remote:ssh:build.eu.example:2222:deploy:/srv/app",
+    });
+    const sameSsh = buildMutation({
+      remoteSessions: [sshEntry],
+      workspacePath: "/srv/app",
+      target: { kind: "ssh", host: "build.eu.example", port: 2222, username: "deploy" },
+    });
+    expect(sameSsh.nextRemoteSessions).toHaveLength(1);
+    const differentSsh = buildMutation({
+      remoteSessions: [sshEntry],
+      workspacePath: "/srv/app",
+      target: { kind: "ssh", host: "build.eu.example", port: 2222, username: "other" },
+    });
+    expect(differentSsh.nextRemoteSessions).toHaveLength(2);
+
+    const dockerEntry = buildEntry({
+      workspacePath: "/srv/app",
+      target: { kind: "docker", container: "builder" },
+      workspaceIdentity: "remote:docker:builder:/srv/app",
+    });
+    const sameDocker = buildMutation({
+      remoteSessions: [dockerEntry],
+      workspacePath: "/srv/app",
+      target: { kind: "docker", container: "builder" },
+    });
+    expect(sameDocker.nextRemoteSessions).toHaveLength(1);
+    const differentDocker = buildMutation({
+      remoteSessions: [dockerEntry],
+      workspacePath: "/srv/app",
+      target: { kind: "docker", container: "runner" },
+    });
+    expect(differentDocker.nextRemoteSessions).toHaveLength(2);
+  });
+
+  it("无既有条目时维持原语义：显式身份优先，缺省用现算", () => {
+    const withExplicit = buildMutation({
+      remoteSessions: [],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+      workspaceIdentity: CANONICAL_IDENTITY,
+    });
+    expect(withExplicit.entry.workspaceIdentity).toBe(CANONICAL_IDENTITY);
+    const derived = buildMutation({
+      remoteSessions: [],
+      workspacePath: WSL_PATH,
+      target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    });
+    expect(derived.entry.workspaceIdentity).toBe(CANONICAL_IDENTITY);
+  });
 });
 
-test("反向同样归并：条目 target 无 user、连接 target 带 canonical user", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: WSL_PATH,
-        target: { kind: "wsl", distro: "Ubuntu" },
-        workspaceIdentity: LEGACY_IDENTITY,
+describe("remoteWorkspaceHistory helpers", () => {
+  it("reads combined session snapshots directly", () => {
+    expect(
+      readPersistedWorkspaceSessionEntries({
+        lastWorkspaceSession: [
+          {
+            kind: "local",
+            workspacePath: "/tmp/local-a",
+          },
+          {
+            kind: "remote",
+            workspacePath: "/workspace/demo",
+            target: {
+              kind: "docker",
+              container: "demo",
+            },
+            lastOpenedAt: 1,
+            lastConnectionStatus: "failed",
+          },
+        ],
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    ).toHaveLength(2);
   });
-  assert.equal(mutation.entry.workspaceIdentity, LEGACY_IDENTITY);
-  assert.equal(mutation.nextRemoteSessions.length, 1);
-});
 
-test("双方都显式填写 user 且不同：是两个环境，不得归并", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: WSL_PATH,
-        target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-        workspaceIdentity: CANONICAL_IDENTITY,
+  it("serializes local and remote tabs into a combined session snapshot", () => {
+    const remoteEntryMap = buildRemoteWorkspaceSessionEntryMap([
+      {
+        kind: "remote",
+        workspacePath: "/workspace/demo",
+        workspaceIdentity: "remote:docker:demo:/workspace/demo",
+        target: {
+          kind: "docker",
+          container: "demo",
+        },
+        lastOpenedAt: 1,
+        lastConnectionStatus: "failed",
+      },
+    ]);
+
+    expect(
+      buildPersistedWorkspaceSessionEntries(
+        [
+          {
+            id: "local-1",
+            kind: "workspace",
+            workspacePath: "/tmp/local-a",
+            label: "local-a",
+            workspacePurpose: "conversation",
+          },
+          {
+            id: "remote-1",
+            kind: "workspace",
+            workspacePath: "/workspace/demo",
+            label: "demo",
+            remoteTarget: {
+              kind: "docker",
+              container: "demo",
+            },
+            workspaceIdentity: "remote:docker:demo:/workspace/demo",
+          },
+        ],
+        remoteEntryMap,
+      ),
+    ).toEqual([
+      {
+        kind: "local",
+        workspacePath: "/tmp/local-a",
+        workspacePurpose: "conversation",
+      },
+      {
+        kind: "remote",
+        workspacePath: "/workspace/demo",
+        workspaceIdentity: "remote:docker:demo:/workspace/demo",
+        target: {
+          kind: "docker",
+          container: "demo",
+        },
+        lastOpenedAt: 1,
+        lastConnectionStatus: "failed",
+      },
+    ]);
+  });
+
+  it("reuses the existing SSH password credential key when updating a remote session", () => {
+    const snapshot = createRemoteTargetSnapshot(
+      "remote:ssh:demo.internal:22:root:/workspace/demo",
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+        password: "secret",
+      },
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+        passwordCredentialKey:
+          "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+      },
+    );
+
+    expect(snapshot).toMatchObject({
+      kind: "ssh",
+      passwordCredentialKey:
+        "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+    });
+  });
+
+  it("hydrates an SSH target from a persisted snapshot", () => {
+    const target = createRemoteTargetFromSnapshot(
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        port: 2222,
+        username: "root",
+        privateKeyPath: "~/.ssh/id_ed25519",
+        passwordCredentialKey:
+          "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+        privateKeyPassphraseCredentialKey:
+          "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:private-key-passphrase",
+      },
+      {
+        password: "secret",
+        privateKeyPassphrase: "key-secret",
+      },
+    );
+
+    expect(target).toEqual({
+      kind: "ssh",
+      host: "demo.internal",
+      port: 2222,
+      username: "root",
+      privateKeyPath: "~/.ssh/id_ed25519",
+      password: "secret",
+      privateKeyPassphrase: "key-secret",
+    });
+  });
+
+  it("persists SSH asset install mode and drops historical resource packages", () => {
+    const snapshot = createRemoteTargetSnapshot(
+      "remote:ssh:demo.internal:22:root:/workspace/demo",
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+        assetInstallMode: "remote-download",
+        resourcePackages: {
+          selectedPackageIds: ["server-bundle", "node-runtime", "glm"],
+        },
+      },
+    );
+
+    expect(snapshot).toMatchObject({
+      kind: "ssh",
+      assetInstallMode: "remote-download",
+    });
+    expect(snapshot).not.toHaveProperty("resourcePackages");
+
+    expect(
+      createRemoteTargetFromSnapshot(snapshot, {
+        password: null,
+        privateKeyPassphrase: null,
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "root" },
-  });
-  assert.equal(mutation.entry.workspaceIdentity, "remote:wsl:Ubuntu:root:/home/rayn/proj");
-  assert.equal(mutation.nextRemoteSessions.length, 2);
-});
-
-test("不同 distro 不归并", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: WSL_PATH,
-        target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-        workspaceIdentity: CANONICAL_IDENTITY,
+    ).toMatchObject({
+      kind: "ssh",
+      assetInstallMode: "remote-download",
+    });
+    expect(
+      createRemoteTargetFromSnapshot(snapshot, {
+        password: null,
+        privateKeyPassphrase: null,
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Debian", user: "rayn" },
+    ).not.toHaveProperty("resourcePackages");
   });
-  assert.equal(mutation.nextRemoteSessions.length, 2);
-});
 
-test("调用方显式传入的身份不得压过归并命中的条目身份（Bot 重连场景）", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: WSL_PATH,
-        target: { kind: "wsl", distro: "Ubuntu" },
-        workspaceIdentity: LEGACY_IDENTITY,
+  it("persists and hydrates SSH config alias metadata", () => {
+    const snapshot = createRemoteTargetSnapshot("remote:ssh:localhost:2223:root:/root", {
+      kind: "ssh",
+      host: "localhost",
+      port: 2223,
+      username: "root",
+      password: "secret",
+      sshConfigAlias: "linux-arm64",
+    });
+
+    expect(snapshot).toMatchObject({
+      kind: "ssh",
+      sshConfigAlias: "linux-arm64",
+    });
+
+    expect(
+      createRemoteTargetFromSnapshot(snapshot, {
+        password: "secret",
+        privateKeyPassphrase: null,
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-    workspaceIdentity: CANONICAL_IDENTITY,
+    ).toMatchObject({
+      kind: "ssh",
+      sshConfigAlias: "linux-arm64",
+    });
   });
-  assert.equal(mutation.entry.workspaceIdentity, LEGACY_IDENTITY);
-  assert.equal(mutation.nextRemoteSessions.length, 1);
-});
 
-test("失败回写沿用条目 target 快照，不被 canonical 化版本覆盖", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: WSL_PATH,
-        target: { kind: "wsl", distro: "Ubuntu" },
-        workspaceIdentity: LEGACY_IDENTITY,
+  it("stores a separate credential key for SSH private key passphrase", () => {
+    const snapshot = createRemoteTargetSnapshot(
+      "remote:ssh:demo.internal:22:root:/workspace/demo",
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+        privateKeyPath: "~/.ssh/id_ed25519",
+        privateKeyPassphrase: "key-secret",
+      },
+      {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+        privateKeyPath: "~/.ssh/id_ed25519",
+        privateKeyPassphraseCredentialKey:
+          "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:private-key-passphrase",
+      },
+    );
+
+    expect(snapshot).toMatchObject({
+      kind: "ssh",
+      privateKeyPassphraseCredentialKey:
+        "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:private-key-passphrase",
+    });
+  });
+
+  it("matches an existing remote session by workspace path and target identity", () => {
+    const target: RemoteTarget = {
+      kind: "docker",
+      container: "demo-container",
+    };
+    const sessions = [
+      {
+        kind: "remote" as const,
+        workspacePath: "/workspace/demo",
+        target: {
+          kind: "docker" as const,
+          container: "demo-container",
+        },
+        lastOpenedAt: 10,
+        lastConnectionStatus: "connected" as const,
+      },
+    ];
+
+    expect(
+      findMatchingRemoteWorkspaceSessionEntry(sessions, "/workspace/demo", target)?.workspacePath,
+    ).toBe("/workspace/demo");
+  });
+
+  it("keeps the newest remote session at the top when upserting", () => {
+    const updated = upsertRemoteWorkspaceSessionEntries(
+      [
+        {
+          kind: "remote",
+          workspacePath: "/workspace/older",
+          target: {
+            kind: "wsl",
+            distro: "Ubuntu",
+          },
+          lastOpenedAt: 1,
+          lastConnectionStatus: "connected",
+        },
+      ],
+      {
+        kind: "remote",
+        workspacePath: "/workspace/newer",
+        target: {
+          kind: "docker",
+          container: "demo",
+        },
+        lastOpenedAt: 2,
+        lastConnectionStatus: "failed",
+        lastConnectionError: "refused",
+      },
+    );
+
+    expect(updated.map((entry) => entry.workspacePath)).toEqual([
+      "/workspace/newer",
+      "/workspace/older",
+    ]);
+  });
+
+  it("formats a readable remote target subtitle", () => {
+    expect(
+      formatRemoteWorkspaceTargetSubtitle({
+        kind: "wsl",
+        distro: "Ubuntu-24.04",
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-    lastConnectionStatus: "failed",
-  });
-  assert.deepEqual(mutation.entry.target, { kind: "wsl", distro: "Ubuntu" });
-  assert.equal(mutation.entry.workspaceIdentity, LEGACY_IDENTITY);
-});
+    ).toBe("WSL · Ubuntu-24.04");
 
-test("归并按归一化路径比对，尾斜杠噪声不导致分裂", () => {
-  const mutation = buildMutation({
-    remoteSessions: [
-      buildEntry({
-        workspacePath: `${WSL_PATH}/`,
-        target: { kind: "wsl", distro: "Ubuntu" },
-        workspaceIdentity: LEGACY_IDENTITY,
+    expect(
+      formatRemoteWorkspaceTargetSubtitle({
+        kind: "wsl",
+        distro: "Ubuntu-24.04",
+        user: "root",
       }),
-    ],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+    ).toBe("WSL · Ubuntu-24.04 · root");
   });
-  assert.equal(mutation.entry.workspaceIdentity, LEGACY_IDENTITY);
-  assert.equal(mutation.nextRemoteSessions.length, 1);
-});
 
-test("ssh authority 完整（host/port/username 全等）才归并，docker 全等才归并", () => {
-  const sshEntry = buildEntry({
-    workspacePath: "/srv/app",
-    target: { kind: "ssh", host: "Build.EU.example", port: 2222, username: "deploy" },
-    workspaceIdentity: "remote:ssh:build.eu.example:2222:deploy:/srv/app",
-  });
-  const sameSsh = buildMutation({
-    remoteSessions: [sshEntry],
-    workspacePath: "/srv/app",
-    target: { kind: "ssh", host: "build.eu.example", port: 2222, username: "deploy" },
-  });
-  assert.equal(sameSsh.nextRemoteSessions.length, 1);
-  const differentSsh = buildMutation({
-    remoteSessions: [sshEntry],
-    workspacePath: "/srv/app",
-    target: { kind: "ssh", host: "build.eu.example", port: 2222, username: "other" },
-  });
-  assert.equal(differentSsh.nextRemoteSessions.length, 2);
+  it("uses explicit WSL user in workspace identity and snapshot roundtrip", () => {
+    const target: RemoteTarget = {
+      kind: "wsl",
+      distro: "Ubuntu-24.04",
+      user: " root ",
+    };
+    const snapshot = createRemoteTargetSnapshot(
+      "remote:wsl:Ubuntu-24.04:root:/workspace/demo",
+      target,
+    );
 
-  const dockerEntry = buildEntry({
-    workspacePath: "/srv/app",
-    target: { kind: "docker", container: "builder" },
-    workspaceIdentity: "remote:docker:builder:/srv/app",
+    expect(buildRemoteWorkspaceIdentity("/workspace/demo", target)).toBe(
+      "remote:wsl:Ubuntu-24.04:root:/workspace/demo",
+    );
+    expect(snapshot).toEqual({
+      kind: "wsl",
+      distro: "Ubuntu-24.04",
+      user: "root",
+    });
+    expect(
+      createRemoteTargetFromSnapshot(snapshot, {
+        password: null,
+        privateKeyPassphrase: null,
+      }),
+    ).toEqual({
+      kind: "wsl",
+      distro: "Ubuntu-24.04",
+      user: "root",
+    });
+    expect(formatRemoteWorkspaceHeaderHostLabel(snapshot)).toBe("wsl:Ubuntu-24.04:root");
   });
-  const sameDocker = buildMutation({
-    remoteSessions: [dockerEntry],
-    workspacePath: "/srv/app",
-    target: { kind: "docker", container: "builder" },
-  });
-  assert.equal(sameDocker.nextRemoteSessions.length, 1);
-  const differentDocker = buildMutation({
-    remoteSessions: [dockerEntry],
-    workspacePath: "/srv/app",
-    target: { kind: "docker", container: "runner" },
-  });
-  assert.equal(differentDocker.nextRemoteSessions.length, 2);
-});
 
-test("无既有条目时维持原语义：显式身份优先，缺省用现算", () => {
-  const withExplicit = buildMutation({
-    remoteSessions: [],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
-    workspaceIdentity: CANONICAL_IDENTITY,
+  it("persists and hydrates server remote target credentials", () => {
+    const workspaceKey = "remote:server:studio-server-01:/srv/project";
+    const target: RemoteTarget = {
+      kind: "server",
+      url: "https://studio.example.com/zcode/",
+      name: "Studio Server",
+      serverId: "Studio Server 01",
+      workspacePath: "/srv/project",
+      token: "server-secret",
+    };
+    const snapshot = createRemoteTargetSnapshot(workspaceKey, target);
+
+    expect(buildRemoteWorkspaceIdentity("\\srv\\project\\", target)).toBe(workspaceKey);
+    expect(snapshot).toEqual({
+      kind: "server",
+      url: "https://studio.example.com/zcode/",
+      name: "Studio Server",
+      serverId: "Studio Server 01",
+      workspacePath: "/srv/project",
+      tokenCredentialKey:
+        "remote-workspace:remote:server:studio-server-01:/srv/project:server-token",
+    });
+    expect(
+      createRemoteTargetFromSnapshot(snapshot, {
+        password: null,
+        privateKeyPassphrase: null,
+        token: "server-secret",
+      }),
+    ).toEqual(target);
+    expect(formatRemoteWorkspaceTargetSubtitle(snapshot)).toBe("Server · Studio Server");
+    expect(formatRemoteWorkspaceHeaderHostLabel(snapshot)).toBe("studio.example.com");
   });
-  assert.equal(withExplicit.entry.workspaceIdentity, CANONICAL_IDENTITY);
-  const derived = buildMutation({
-    remoteSessions: [],
-    workspacePath: WSL_PATH,
-    target: { kind: "wsl", distro: "Ubuntu", user: "rayn" },
+
+  it("keeps the legacy WSL identity when no user is specified", () => {
+    expect(
+      buildRemoteWorkspaceIdentity("/workspace/demo", {
+        kind: "wsl",
+        distro: "Ubuntu-24.04",
+      }),
+    ).toBe("remote:wsl:Ubuntu-24.04:/workspace/demo");
   });
-  assert.equal(derived.entry.workspaceIdentity, CANONICAL_IDENTITY);
+  it("keeps omitted WSL user compatible with legacy history（本地增强：缺失一侧视为该 distro 默认用户）", () => {
+    const sessions = [
+      {
+        kind: "remote" as const,
+        workspacePath: "/workspace/demo",
+        workspaceIdentity: "remote:wsl:Ubuntu-24.04:/workspace/demo",
+        target: {
+          kind: "wsl" as const,
+          distro: "Ubuntu-24.04",
+        },
+        lastOpenedAt: 10,
+        lastConnectionStatus: "connected" as const,
+      },
+    ];
+
+    expect(
+      findMatchingRemoteWorkspaceSessionEntry(sessions, "/workspace/demo", {
+        kind: "wsl",
+        distro: "Ubuntu-24.04",
+        user: " ",
+      })?.workspaceIdentity,
+    ).toBe("remote:wsl:Ubuntu-24.04:/workspace/demo");
+    // 本地归并契约（packages/ui/spec/remote-workspace-identity-merge.md）：user 只放宽「一方缺失」
+    // 这一种形态，缺失一侧视为该 distro 的默认用户。canonical 化写回的探测值就是默认用户，
+    // 而它可能就是 root（distro 未配置 default user 时），所以这里必须归并命中并沿用存量身份，
+    // 否则 2026-10-02 的「条目匹配不到自己、同环境分裂出重复条目」会再次发生。
+    // 只有「双方都显式填写且不同」才代表两个环境（如 root 与普通用户的权限边界）。
+    expect(
+      findMatchingRemoteWorkspaceSessionEntry(sessions, "/workspace/demo", {
+        kind: "wsl",
+        distro: "Ubuntu-24.04",
+        user: "root",
+      })?.workspaceIdentity,
+    ).toBe("remote:wsl:Ubuntu-24.04:/workspace/demo");
+  });
+
+  it("formats a compact remote host label for workspace header", () => {
+    expect(
+      formatRemoteWorkspaceHeaderHostLabel({
+        kind: "ssh",
+        host: "10.0.0.8",
+        port: 22,
+        username: "dev",
+      }),
+    ).toBe("10.0.0.8");
+
+    expect(
+      formatRemoteWorkspaceHeaderHostLabel({
+        kind: "ssh",
+        host: "dev.internal",
+        port: 2222,
+        username: "dev",
+      }),
+    ).toBe("dev.internal:2222");
+  });
+
+  it("formats SSH alias as a workspace display suffix", () => {
+    expect(
+      formatRemoteWorkspaceDisplayLabel("root", {
+        kind: "ssh",
+        host: "localhost",
+        port: 2223,
+        username: "root",
+        sshConfigAlias: " linux-arm64 ",
+      }),
+    ).toBe("root [SSH: linux-arm64]");
+
+    expect(
+      formatRemoteWorkspaceDisplayLabel("root", {
+        kind: "ssh",
+        host: "localhost",
+        port: 2223,
+        username: "root",
+      }),
+    ).toBe("root");
+  });
+
+  it("treats disconnected remote tabs as remote identities", () => {
+    expect(
+      hasRemoteWorkspaceIdentity({
+        workspaceIdentity: "remote:docker:demo:/workspace/demo",
+      }),
+    ).toBe(true);
+    expect(
+      hasRemoteWorkspaceIdentity({
+        workspacePath: "/tmp/demo",
+      } as never),
+    ).toBe(false);
+  });
+
+  it("keeps the previous SSH credential key when a reconnect failure is recorded", () => {
+    const mutation = buildRemoteWorkspaceSessionMutation({
+      remoteSessions: [
+        {
+          kind: "remote",
+          workspacePath: "/workspace/demo",
+          target: {
+            kind: "ssh",
+            host: "demo.internal",
+            username: "root",
+            passwordCredentialKey:
+              "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+          },
+          lastOpenedAt: 10,
+          lastConnectionStatus: "connected",
+        },
+      ],
+      workspacePath: "/workspace/demo",
+      target: {
+        kind: "ssh",
+        host: "demo.internal",
+        username: "root",
+      },
+      lastConnectionStatus: "failed",
+      lastConnectionError: "connection refused",
+      touchOpenedAt: false,
+    });
+
+    expect(mutation.entry.target).toMatchObject({
+      kind: "ssh",
+      passwordCredentialKey:
+        "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+    });
+    expect(mutation.credentialKeysToDelete).toEqual([]);
+  });
+
+  it("stores the local workspace path used for remote MCP path rewriting", () => {
+    const mutation = buildRemoteWorkspaceSessionMutation({
+      remoteSessions: [],
+      workspacePath: "/srv/project",
+      workspaceIdentity: "remote:ssh:dev.example.com:22:alice:/srv/project",
+      target: {
+        kind: "ssh",
+        host: "dev.example.com",
+        username: "alice",
+      },
+      lastConnectionStatus: "connected",
+      touchOpenedAt: true,
+      localWorkspacePath: "/Users/alice/project",
+    } as Parameters<typeof buildRemoteWorkspaceSessionMutation>[0] & {
+      localWorkspacePath: string;
+    });
+
+    expect((mutation.entry as { localWorkspacePath?: string }).localWorkspacePath).toBe(
+      "/Users/alice/project",
+    );
+  });
+
+  it("removes remote workspace history entries and returns their SSH credential keys", () => {
+    const result = removeRemoteWorkspaceSessionEntries(
+      [
+        {
+          kind: "remote",
+          workspacePath: "/workspace/demo",
+          workspaceIdentity: "remote:ssh:demo.internal:22:root:/workspace/demo",
+          target: {
+            kind: "ssh",
+            host: "demo.internal",
+            username: "root",
+            passwordCredentialKey:
+              "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+            privateKeyPassphraseCredentialKey:
+              "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:private-key-passphrase",
+          },
+          lastOpenedAt: 10,
+          lastConnectionStatus: "connected",
+        },
+        {
+          kind: "remote",
+          workspacePath: "/workspace/other",
+          workspaceIdentity: "remote:docker:demo:/workspace/other",
+          target: {
+            kind: "docker",
+            container: "demo",
+          },
+          lastOpenedAt: 9,
+          lastConnectionStatus: "failed",
+        },
+      ],
+      ["remote:ssh:demo.internal:22:root:/workspace/demo"],
+    );
+
+    expect(result.nextRemoteSessions).toEqual([
+      {
+        kind: "remote",
+        workspacePath: "/workspace/other",
+        workspaceIdentity: "remote:docker:demo:/workspace/other",
+        target: {
+          kind: "docker",
+          container: "demo",
+        },
+        lastOpenedAt: 9,
+        lastConnectionStatus: "failed",
+      },
+    ]);
+    expect(result.credentialKeysToDelete).toEqual([
+      "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:password",
+      "remote-workspace:remote:ssh:demo.internal:22:root:/workspace/demo:private-key-passphrase",
+    ]);
+  });
 });

@@ -1,7 +1,7 @@
 // S2 输入准入单源表的契约测试（spec `subagent-session-as-first-class.md` S2）。
 // 覆盖：键集穷尽（运行时那一半）、各角色裁决矩阵、`conversationInput` 集合。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { commandPayloadSchemas, type CommandType } from "../src/zcode-protocol-v4/command.js";
 import {
   INPUT_COMMAND_ROLE_POLICY,

@@ -12,6 +12,7 @@ export * from "./workflow-observation-display.js";
 export * from "./snapshot.js";
 export * from "./workflow-runs.js";
 export * from "./workflow-runs-reducer.js";
+export * from "./workflow-runs-holes.js";
 // workflowRuns 的键级增量（diff / apply / 规范键序）；op 本身在 delta.js。
 export * from "./workflow-runs-delta.js";
 // 界留下的痕迹：被拒实例计数、条目预算、步数读法；表满时的腾位；以及给旧消费者的裁剪。
@@ -41,6 +42,8 @@ export * from "./sessions-index.js";
 export * from "./sessions-index-workflow-activity.js";
 export * from "./workspace-config.js";
 export * from "./command.js";
+// `commands/query` 方法族（幂等键 / 查询参数 / 条目 / 结果）；从 command.js 拆出以守 max-lines。
+export * from "./command-query.js";
 // 会话角色 × 命令的输入准入单源表（S2）；三处强制点与 UI 共用。
 export * from "./input-role-policy.js";
 export * from "./workflow-run-settings-command.js";

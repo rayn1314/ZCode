@@ -1,3 +1,4 @@
+import { subagentProfilesFromSnapshot } from "../subagent-runtime-config.js";
 import { isAbsolute, join, resolve } from "node:path";
 import {
   createInMemorySessionEventStore,
@@ -18,9 +19,11 @@ import { createMcpAdapter } from "@zcode/adapters/mcp";
 import type { AiSdkModelAdapter } from "@zcode/adapters/model";
 import {
   AgentRuntime,
+  normalizeAgentProfiles,
   PermissionService,
   buildPluginReferenceCatalog,
   type AgentRuntimeDeps,
+  writeWorkflowDraft,
   type AmendWorkflowRunSettingsInput,
   type ResumeSessionResult,
 } from "@zcode/core";
@@ -85,6 +88,10 @@ import { createModelCatalogPort } from "./model-catalog-port.js";
 import { createDynamicWorkflowRunProgressSink } from "./dynamic-workflow-run-progress-sink.js";
 import { createScriptWorkflowAgentRuntime } from "./script-workflow-child-runtime.js";
 import { workflowActorModelPolicy } from "./workflow-actor-model.js";
+import {
+  workflowActorInteractionDescription,
+  workflowActorPermissionPolicy,
+} from "./workflow-actor-permission.js";
 import { workflowActorToolPolicy } from "./workflow-actor-tools.js";
 import {
   createNodeReplBrowserBroker,
@@ -92,8 +99,10 @@ import {
   type NodeReplBrowserBroker,
 } from "./node-repl-browser-broker.js";
 import { resolveZCodeCustomCommandPrompt } from "../custom-command-prompt.js";
-import { resolveZCodeBuiltinPromptCommand } from "../builtin-prompt-command.js";
+import { resolveZCodeBuiltinPromptCommandInvocation } from "../builtin-prompt-command.js";
+import { BUILTIN_WORKFLOW_COMMAND_NAME } from "../builtin-workflow-command.js";
 import { collectDisabledPaths } from "../skill-command-overrides.js";
+import { loadPluginAgentTemplates, resolvePluginAgentProfiles } from "../subagents.js";
 import { createRuntimeAiSdkModelExecutionConfig } from "../model-config.js";
 import { ApiProviderModelRuntime } from "./provider-registry-model-runtime.js";
 import {
@@ -128,7 +137,12 @@ function decodePromptAttachmentDataUrl(
   if (
     !mediaType.startsWith("image/") &&
     !mediaType.startsWith("video/") &&
-    mediaType !== "application/pdf"
+    mediaType !== "application/pdf" &&
+    // 根因：文本材料复用上传 artifact，但原 data URL 解码器仅接受媒体，合法预览被二次拒绝。
+    !(
+      mediaType === "text/plain" &&
+      fallbackMime.split(";", 1)[0]?.trim().toLowerCase() === "text/plain"
+    )
   ) {
     throw new Error("fault.attachment.previewNotMedia");
   }
@@ -205,6 +219,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     subagentBuiltInModelSelectionOverrides,
     subagentProfiles,
   } = startupInputs;
+  // 供 v4 网关的 loadAgentDefinitions 复用：与上游语义一致，插件模板在启动时解析一次。
+  const pluginTemplates = loadPluginAgentTemplates({ logger, plugins: pluginOutcome.plugins });
   markConfigurationLoaded({
     configResult,
     startupTimer,
@@ -457,6 +473,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           noProxy: configResult.config.network.noProxy,
           caCertFile: configResult.config.network.caCertFile,
         }));
+    const providerEndpointRoutingPort = options.providerEndpointRoutingPort;
     markMcpAdapterInitialized({
       configuredMcpServers,
       // 子会话的 MCP 端口来自覆盖包，「是否注入」按它判（本 App 没建适配器）。
@@ -510,6 +527,18 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         });
       }
       const validation = selection && registry.validateSelection(selection);
+      if (selection && validation && !validation.ok) {
+        // 观测：校验失败只影响运行绑定、不影响保存意图；但一旦不绑定，之后若只发送 execution 作用域的
+        // 加速轮就没有机会重新绑定。曾在 Registry 刚就绪、账号权益未解析的 600ms 窗口内静默置空，
+        // 直到加速卡过期降级找不到退回目标才暴露，日志里却看不到这一步。
+        logger.warn("Session model selection restored but not bound to the runtime", {
+          event: "session.model_selection.restore_unbound",
+          modelId: selection.modelId,
+          providerId: selection.providerId,
+          sessionId,
+          validationCode: validation.code,
+        });
+      }
       // 只查模型是否存在会把缺档位/已删除的选择重新绑定进 Runtime，
       // 抵消了未绑定初始化。历史恢复不要求可执行模型，只有完整选择可以绑定。
       getRuntime().setSessionModelSelection(validation?.ok ? selection : undefined);
@@ -567,6 +596,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
 
     const modelExecutionConfig = createRuntimeAiSdkModelExecutionConfig(options.env, {
       appVersion,
+      endpointRoutingPort: providerEndpointRoutingPort,
       network: configResult.config.network,
       sourceTitle: options.sourceTitle,
     });
@@ -575,7 +605,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // 不排队、不看冷却，但计入在飞并喂信号。进程级单例——配额本就在账号上，不按会话分。
     // 不再经 adapter 级 addStatusSink 喂信号：同一事件只能沿 ticket 喂一次。
     const workflowConcurrencyGovernor = getWorkflowConcurrencyGovernor();
-    // per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
+// per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
     // 已解析策略的地方就是这个 Registry。限速器自己也是进程单例（配额在账号上，跨会话共享），
     // 每次请求重读配置——用户在设置里改完立刻生效。
     const providerRateLimit = getProviderRateLimiter({
@@ -631,6 +661,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           mcpPort,
           modelFactory,
           permissionService,
+          pluginSkillRoots: pluginOutcome.skillRoots,
           prepareUserExecutionBoundary,
           getRuntime,
           runtimeConfig,
@@ -657,9 +688,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
             concurrency: workflowConcurrencyGovernor,
             rateLimit: providerRateLimit,
             createActorRuntime: ({
+              actor,
               persona,
               pinnedModel,
               runSubagentModel,
+              actorModel,
+              subagentPermissionMode,
               sessionId: actorSessionId,
               submitPort,
               submitProfile,
@@ -675,9 +709,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                     ...(persona.name === undefined ? {} : { name: persona.name }),
                     ...(persona.system === undefined ? {} : { persona: persona.system }),
                   },
-                  // actor 的工具面是减法（全集减去会悬挂/越权的交互工具），只能经 configOverrides
+                  // actor 的工具面是减法（全集减去 plan 与越权的元工具），只能经 configOverrides
                   // 表达（request.opts.tools 只有 allowlist）。
                   ...workflowActorToolPolicy(),
+                  // 权限面：子代理跑发起会话的权限模式（plan 除外），未记录即 YOLO
+                  // （docs/dynamic-workflow/launch.md「Permissions inside a run」）。
+                  ...workflowActorPermissionPolicy(subagentPermissionMode),
                   // 模型面：`runSubagentModel` 是本 run 自己的选择（`subagent_model`），在场时整条
                   // 覆盖，排在 pin 之上——主代理不受它影响。没有它也没有 pin 就不覆盖——child runtime
                   // 的基线本就是父会话当前模型（工厂的基线，见 script-workflow-child-runtime.ts）。
@@ -688,6 +725,8 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                     {
                       parentSelection: getRuntime().getSessionModelSelection(),
                       ...(runSubagentModel === undefined ? {} : { runSelection: runSubagentModel }),
+                      // persona 点名的模型（脚本里的 `agent(…, { model })`）排在 run 选择之上。
+                      ...(actorModel === undefined ? {} : { actorSelection: actorModel }),
                     },
                     pinnedModel,
                   ).configOverrides,
@@ -707,6 +746,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                   // 不各自冻结一份。
                   modelFactory,
                   permissionService,
+                  pluginSkillRoots: pluginOutcome.skillRoots,
                   runtime: getRuntime(),
                   runtimeConfig,
                   sessionId,
@@ -718,6 +758,12 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                 // workflowActor 叠加到基座之上。
                 // request 在这里只是工厂签名的占位：opts 为空即「不覆盖任何东西」。
                 request: { opts: {} } as never,
+                // 权限窗的来源徽标点名这个子代理：`<persona 名> (<siteId>@<ordinal>)`。
+                interactionDescription: workflowActorInteractionDescription({ actor, persona }),
+                // 子代理的 Browser Use：父会话的端口，由工厂经 forChildSession 派生子端口（tab 归属是
+                // actor 自己的 sessionId）。actor runtime 在 run dispose 时 closeBrowserSession，
+                // 那一步连 tab 一起关并撤销登记（dynamic-workflow/docs/execution-engine.md「Subagent sessions」）。
+                ...(browserControlPort === undefined ? {} : { browserControlPort }),
                 traceContext,
                 // submit profile → submit_result 形态：
                 // `untyped` 不注入端口（core 的注册门是端口在场，于是没有这个工具——全 untyped 的子代理
@@ -759,7 +805,14 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
             // 孤儿收敛的作用域：本 app 的会话。构造时把**这个会话**留在 journal 里的非终态
             // run（死进程的遗物）收敛成 failed；兄弟会话的在飞 run 因此绝不会被误伤。
             parentSessionId: sessionId,
-            // 在飞的引擎把本会话钉成常驻。
+            // 补全落在没有草稿的 run 上时铸草稿（docs/dynamic-workflow/launch.md「The draft after a
+            // fill」）：内联规则只在工具层有一份实现，这里注入而不是让 run service 复制它。
+            writeWorkflowDraft,
+            // 建 run 那一刻会话的权限模式（记进 run-launched，子代理随之）。
+            // 惰性同 onRunEvent：启动只来自工具调用或 v4 命令，那时 runtime 必已就绪。
+            permissionMode: () => getRuntime().getMode(),
+            // 在飞的引擎把本会话钉成常驻。2026-09-15 的 bug：引擎不进 runtime task registry，
+            // 常驻池把带着在飞 run 的 App 按 idle（10 分钟）关掉，resume 又起了第二个引擎。
             // 惰性取 runtime 同 onRunEvent：run service 是 AgentRuntime 的依赖，构造更早；
             // 而启动只来自工具调用或 v4 命令，那时 runtime 必已就绪。
             registerResidencyBlockingWork: (work) => {
@@ -798,6 +851,41 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           currentSelection: () => getRuntime().getSessionModelSelection(),
         });
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
+...(options.readSubagentRuntimeConfig
+        ? {
+            loadAgentDefinitions: async (input) => {
+              const snapshot = await options.readSubagentRuntimeConfig!(input);
+              const parsed = subagentProfilesFromSnapshot(snapshot);
+              const pluginProfiles =
+                snapshot.kind === "built-in-fallback"
+                  ? []
+                  : resolvePluginAgentProfiles(
+                      {
+                        logger,
+                        plugins: pluginOutcome.plugins,
+                        reservedProfileNames: parsed.profiles.map((profile) => profile.name),
+                        modelSelectionOverrides: parsed.pluginAgentModelSelectionOverrides,
+                      },
+                      pluginTemplates,
+                    ).profiles;
+              return {
+                activeAgents: normalizeAgentProfiles(
+                  [
+                    ...(options.runtimeConfig?.subagents?.profiles ?? []),
+                    ...parsed.profiles,
+                    ...pluginProfiles,
+                  ],
+                  {
+                    builtInModelSelectionOverrides: {
+                      ...parsed.builtInModelSelectionOverrides,
+                      ...options.runtimeConfig?.subagents?.builtInModelSelectionOverrides,
+                    },
+                  },
+                ),
+              };
+            },
+          }
+        : {}),
       agentTelemetry: agentTelemetryPort,
       // 主代理的模型请求过治理器的 observer：立即放行，但让治理器看见它的 429 / 成功。
       // 并发上 observer 无条件放行（主代理的 turn 永不被 workflow 流量阻塞），**限速上不放行**：
@@ -873,9 +961,10 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       modelCatalogPort,
       automationPort: options.automationPort,
       offPeakPort: options.offPeakPort,
-      // 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走同一条构造入口创建子会话。
+// 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走同一条构造入口创建子会话。
       // 子会话的 App 不拿到它（D8 结构性防套娃），配置侧另写死 `subagents.enabled: false`。
       subagentChildHost: options.subagentChildHost,
+      topicResourcePort: options.topicResourcePort,
       appVersion,
       traceContext,
       // 覆盖包里的父作用域端口**最后**展开：键名与 AgentRuntimeDeps 同名，压过上面同名字面量
@@ -902,15 +991,24 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     const inputFacade = createInputFacade({
       artifactStore,
       customCommandPromptResolver: async (text, resolverOptions) => {
-        const builtinPrompt = resolveZCodeBuiltinPromptCommand(text, {
-          // 动态工作流关闭时内置 `/workflow` 不得展开。目录侧已经把它从 `/` 面板
-          // 剔除，但用户仍可手打命令名，两条路径必须给出同一个结论。TUI 缺席时不设门禁；
-          // headless 按 --enable-workflow 显式取值，见 runtimeConfig 字段注释。
+        const builtin = resolveZCodeBuiltinPromptCommandInvocation(text, {
+          // 动态工作流灰度关闭时内置 `/workflow` 不得展开（DWG-03）。目录侧已经把它从 `/` 面板
+          // 剔除，但用户仍可手打命令名，两条路径必须给出同一个结论。独立 CLI 的 TUI 与 headless
+          // 按 --workflow-mode 显式取值；缺席（进程内嵌入方）不设门禁，见 runtimeConfig 字段注释。
           dynamicWorkflowEnabled: runtimeConfig.dynamicWorkflowEnabled,
           workingDirectory,
         });
-        if (builtinPrompt !== undefined) {
-          return builtinPrompt;
+        if (builtin !== undefined) {
+          if (builtin.name === BUILTIN_WORKFLOW_COMMAND_NAME) {
+            // `/workflow` 的展开处就是 onDemand 会话的激活点（launch.md「On demand: activation」）：
+            // 它先于 executeTurn，本轮首个模型请求就带着十个工具。alwaysOn / 已激活会话里是 no-op。
+            // 问的是 runtime 而不是闭包里的 runtimeConfig——构造时 config 被拷贝，闭包看不到翻转。
+            await runtime?.activateDynamicWorkflowTools({
+              source: "command",
+              traceContext: resolverOptions?.traceContext ?? traceContext,
+            });
+          }
+          return builtin.prompt;
         }
         return await resolveZCodeCustomCommandPrompt(text, {
           env: options.env,
@@ -1283,12 +1381,14 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
               runId: string;
               afterSequence?: number;
               limit?: number;
+              maxBytes?: number;
             }) =>
               dynamicWorkflowRunPort.listEvents(input.runId, {
                 ...(input.afterSequence === undefined
                   ? {}
                   : { afterSequence: input.afterSequence }),
                 ...(input.limit === undefined ? {} : { limit: input.limit }),
+                ...(input.maxBytes === undefined ? {} : { maxBytes: input.maxBytes }),
               }),
           }),
       // workflow run 的**用户面产物**读面。三条一起注册、
@@ -1308,12 +1408,16 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
               artifactId: string;
               afterSequence?: number;
               limit: number;
+              maxBytes: number;
+              fields?: readonly string[];
             }) =>
               dynamicWorkflowRunPort.listArtifactItems!(input.runId, input.artifactId, {
                 ...(input.afterSequence === undefined
                   ? {}
                   : { afterSequence: input.afterSequence }),
                 limit: input.limit,
+                maxBytes: input.maxBytes,
+                ...(input.fields === undefined ? {} : { fields: input.fields }),
               }),
             readDynamicWorkflowRunArtifact: async (input: {
               runId: string;
@@ -1344,10 +1448,11 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
                 { maxBytes: input.maxBytes },
               ),
           }),
-      // workflow run 的会话级生命周期读面（在飞计数 + 结算订阅）。消费者是宿主的 provider registry
-      // 安全边界：子代理共用本会话的 live adapter，在飞 run 期间不能 replace registry。缺席条件同上。
+      // dwf run 的会话级生命周期读面（在飞计数 + 结算订阅）。消费者是宿主的 provider registry
+      // 安全边界：子代理共用本会话的 live adapter，在飞 run 期间 replace registry 会 dispose
+      // 它们绑定的请求资源。缺席条件同上。
       ...(dynamicWorkflowRunPort === undefined ? {} : {}),
-      // workflow run 的枚举面（重启后的发现查询）。能力缺席条件同上；端口的 listRunsForSession
+      // dwf run 的枚举面（重启后的发现查询）。能力缺席条件同上；端口的 listRunsForSession
       // 是可选成员，方法缺席时本能力同样不注册。
       ...(dynamicWorkflowRunPort === undefined ||
       typeof dynamicWorkflowRunPort.listRunsForSession !== "function"

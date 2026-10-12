@@ -9,7 +9,7 @@ import type {
   EnqueueSubagentMessageResult,
 } from "../runtime/types.js";
 
-interface CreateCoordinatorResponsePortOptions {
+export interface CreateCoordinatorResponsePortOptions {
   agentId: string;
   agentType: string;
   childSessionId: SessionId;

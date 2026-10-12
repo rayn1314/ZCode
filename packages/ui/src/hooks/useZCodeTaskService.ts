@@ -38,7 +38,7 @@ uiMemoryDiagnosticsRegistry.register("taskSnapshotCache", () => ({
   persisted: persistedSnapshotCache.size,
 }));
 
-function buildSnapshotDedupeKey(params: GetTaskSnapshotParams): string {
+export function buildSnapshotDedupeKey(params: GetTaskSnapshotParams): string {
   return [
     params.workspacePath,
     params.workspaceIdentity ?? "",

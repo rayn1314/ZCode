@@ -9,6 +9,8 @@ import type { RootsResolverPort } from "../app/ports.js";
 import type { StorageRootSpec } from "@zcode/shared";
 import { getDataRootDirForBaseDir } from "../../paths.js";
 
+export const ZCODE_DATA_DIR_NAME = ".zcode";
+
 export function resolveStorageRoots(params: {
   homeDir: string;
   dataBaseDir: string;

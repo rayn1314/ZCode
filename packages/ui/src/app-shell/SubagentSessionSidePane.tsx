@@ -137,6 +137,7 @@ const SubagentPaneTopStrip = memo(function SubagentPaneTopStrip({
 const SubagentSessionContent = memo(function SubagentSessionContent({
   tab,
   focused,
+  compactForRemoteControl = false,
   onOpenBrowserUrl,
   onOpenCodeViewer,
   onOpenFileLink,
@@ -146,6 +147,7 @@ const SubagentSessionContent = memo(function SubagentSessionContent({
 }: {
   tab: SubagentSessionSidePaneTab;
   focused: boolean;
+  compactForRemoteControl?: boolean;
   onOpenBrowserUrl?: (url: string) => void;
   onOpenCodeViewer?: (source: CodeViewerSource) => void;
   onOpenFileLink?: (target: MessageFileLinkTarget) => void;
@@ -159,6 +161,7 @@ const SubagentSessionContent = memo(function SubagentSessionContent({
       sessionId={tab.childSessionId}
       openTrigger="subagent"
       rootSessionId={tab.rootSessionId}
+      compactForRemoteControl={compactForRemoteControl}
       // 子会话面板一律 subagentChild，本地与远端 workspace 一视同仁：UI 输入走 v4 `sendText`
       // （按 scope 连到目标 workspace 的会话层），父子协作走进程内 `coordinatorResponsePort`，
       // 都不依赖跨机器共享的 mailbox。原「远端则 observe」的判据建立在"父↔子 mailbox 不跨机器
@@ -187,6 +190,7 @@ const SubagentSessionContent = memo(function SubagentSessionContent({
 export const SubagentSessionSidePane = memo(function SubagentSessionSidePane({
   tab,
   focused,
+  compactForRemoteControl = false,
   onOpenBrowserUrl,
   onOpenCodeViewer,
   onOpenFileLink,
@@ -196,6 +200,7 @@ export const SubagentSessionSidePane = memo(function SubagentSessionSidePane({
 }: {
   tab: SubagentSessionSidePaneTab;
   focused: boolean;
+  compactForRemoteControl?: boolean;
   onOpenBrowserUrl?: (url: string) => void;
   onOpenCodeViewer?: (source: CodeViewerSource) => void;
   onOpenFileLink?: (target: MessageFileLinkTarget) => void;
@@ -217,6 +222,7 @@ export const SubagentSessionSidePane = memo(function SubagentSessionSidePane({
       <SubagentSessionContent
         tab={tab}
         focused={focused}
+        compactForRemoteControl={compactForRemoteControl}
         onOpenBrowserUrl={onOpenBrowserUrl}
         onOpenCodeViewer={onOpenCodeViewer}
         onOpenFileLink={onOpenFileLink}

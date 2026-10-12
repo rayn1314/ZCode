@@ -10,7 +10,7 @@ import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js"
 import { escapeXml } from "../../runtime-task/notification.js";
 import { isTerminalRuntimeTask } from "../../runtime-task/registry.js";
 
-function formatSubagentMessage(input: {
+export function formatSubagentMessage(input: {
   agentId: string;
   agentType: string;
   summary: string;

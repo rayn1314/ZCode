@@ -1,6 +1,6 @@
 import type { GitRepositorySummary, SystemInfo } from "@zcode/shared";
 
-interface GitAutoRefreshWatchPath {
+export interface GitAutoRefreshWatchPath {
   path: string;
   recursive: boolean;
 }

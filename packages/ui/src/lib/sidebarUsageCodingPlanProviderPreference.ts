@@ -47,6 +47,13 @@ function getLocalStorage(): Storage | null {
   }
 }
 
+export function readSidebarUsageCodingPlanProviderPreference():
+  | SidebarUsageCodingPlanProviderId
+  | undefined {
+  const value = readSidebarUsageCodingPlanSourcePreference();
+  return isSidebarUsageCodingPlanProviderId(value) ? value : undefined;
+}
+
 export function readSidebarUsageCodingPlanSourcePreference():
   | SidebarUsageCodingPlanSourceId
   | undefined {

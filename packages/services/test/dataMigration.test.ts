@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import test from "node:test";
+import { test } from "vitest";
 import { createMigrationService } from "../src/migration/migrationService.js";
 import type { IMigrationService } from "../src/migration/migration.js";
 import { discoverMigrationSourceRoots } from "../src/data-roots/machineDataRoots.js";
@@ -18,7 +18,7 @@ import { setDataRootDir } from "../src/paths.js";
 
 // 注意：宿主可能已注入 ZCODE_DATA_ROOT，它会压过 baseDir 推导。测试一律用注入的 deps +
 // setDataRootDir 覆盖（显式 _dataRootDir 优先于 env），绝不触碰真实数据根。
-// node --test 每个文件独立进程，harness 的全局 setDataRootDir 不会串到其它测试文件。
+// vitest 按测试文件隔离运行（模块与 env 各自独立），harness 的全局 setDataRootDir 不会串到其它测试文件。
 
 const { DatabaseSync } = createRequire(import.meta.url)(
   "node:sqlite",

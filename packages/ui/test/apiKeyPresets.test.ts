@@ -5,7 +5,7 @@
 // 2. 模板层禁止携带预设（与「模板不得携带 Key」同一理由）；
 // 3. 手改 Key 的草稿补丁必须把预设列表原样带下去，不得顺手清空。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   ApiKeyAccessConfig,
   isApiKeyAccess,

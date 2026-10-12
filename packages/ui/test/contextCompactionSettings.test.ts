@@ -3,7 +3,7 @@
 // 用户调的是安全余量（tokens）：非法值绝不能落库（越界余量会被 core 按未配置处理，
 // 等于用户以为设了值实际没生效），所以在这里把边界钉死。
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import {
   parseBufferTokensInput,
   parseKeepRecentToolResultsInput,

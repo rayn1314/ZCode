@@ -49,11 +49,13 @@ export const MESSAGE_VISIBILITIES = ["user-visible", "model-only"] as const;
 export type MessageVisibility = (typeof MESSAGE_VISIBILITIES)[number];
 
 export const SYNTHETIC_USER_MESSAGE_SOURCES = [
+  "agent_listing_delta",
   "background_task",
   "fork",
   "goal_state_change",
   "goal-continuation",
   "plugin_reference",
+  "bot_topic_context",
   "rewind",
   "selection_side_chat",
   "subagent",
@@ -857,6 +859,10 @@ export interface SubagentLaunchSpecEntryData {
   background: boolean;
 }
 
+/** 动态工作流工具面已在本会话激活（docs/dynamic-workflow/launch.md「On demand: activation」）。 */
+export const SESSION_ENTRY_DYNAMIC_WORKFLOW_ACTIVATION =
+  "runtime/dynamic_workflow_activation" as const;
+
 export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
   SESSION_ENTRY_BASH_SHELL_SELECTION,
@@ -865,8 +871,9 @@ export const SESSION_ENTRY_TYPES = [
   SESSION_ENTRY_USER_INPUT_AUTO_RESOLUTION,
   SESSION_ENTRY_WORKSPACE_CHECKPOINT,
   SESSION_ENTRY_WORKSPACE_FILE_REWIND,
-  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   SESSION_ENTRY_SUBAGENT_LAUNCH_SPEC,
+  SESSION_ENTRY_DYNAMIC_WORKFLOW_ACTIVATION,
 ] as const;
 
 export type SessionEntryType = (typeof SESSION_ENTRY_TYPES)[number];
