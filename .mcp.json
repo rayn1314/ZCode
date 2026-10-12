@@ -3,6 +3,10 @@
     "open-computer-use": {
       "command": "cmd",
       "args": ["/c", "open-computer-use", "mcp"]
+    },
+    "s1-mcp": {
+      "command": "C:/Users/rayn/.zcode-rayn/mcp/s1-mcp.exe",
+      "args": ["--registry", "C:/Users/rayn/.zcode-rayn/mcp/s1-mcp-registry.json"]
     }
   }
 }
