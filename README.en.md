@@ -26,11 +26,14 @@ This repository builds on upstream [zai-org/ZCode](https://github.com/zai-org/ZC
 - **Multi-agent runtime governance**: background subagents get an activity watchdog (stuck agents auto-fail instead of pinning the parent session forever) and a process-level FIFO seat gate for the concurrency cap (default 10, configurable; excess dispatch queues without errors); command admission gains an execution-timeout fallback (hung commands settle within 60s), and WebSocket send paths honor backpressure so slow consumers no longer balloon server memory.
 - **Open-source Computer Use**: replaces the closed-source Computer Use with open-computer-use (bridging runtime + preset MCP config + a "computer control" skill).
 - **Multiple API Key presets**: store several keys per provider with custom names and switch via a dropdown in settings; switching reuses the same autosave path as editing the key manually.
-- **Usage ledger**: the usage statistics page now includes a more comprehensive usage ledger, displaying call counts, cache reads, outputs, estimated costs, and more, with various filtering methods, plus manual price-basis sync and a paginated model × provider breakdown.
+- **Usage ledger**: the usage statistics page now includes a more comprehensive usage ledger, displaying call counts, cache reads, outputs, estimated costs, and more, with various filtering methods; session details appear as a collapsible parent-child tree where each row rolls up its own usage plus all descendants, fork branches are detached so source sessions are never double-billed, and hierarchy keys combine source + session id across data roots; manual price-basis sync and a paginated model × provider breakdown are also available.
 - **Per-provider rate limiting**: configure a per-minute request cap per provider to avoid quota-type 429s at the source.
 - **Identity-scoped data**: client data roots and app identity are isolated per product identity (including remote injection and remote identity merging), with per-domain migration from another identity, so two clients no longer share and corrupt one data root.
 - **Task panel and goal deadlines**: a new workspace-level Tasks view for listing, creating, editing, pausing, resuming, and clearing the persistent goals attached to sessions; goals accept a wall-clock deadline — the runtime grants one final wrap-up turn when it is reached and then stops hard, and the stop reason (deadline vs. budget) is visible in the goal state.
 - **Workflow and task enhancements**: manual workflow start supports pre-selecting the session and subagent model; settings gain an "archive old tasks now" button; the resource manager gains a session-mailbox cleanup category with per-category size display and one-click cleanup.
+- **Model fetching**: provider cards in settings can pull available models from the provider API in bulk and add them to the model list with one click, avoiding manual model-name typos.
+- **Tool call observability**: tool call cards show read ranges (file line ranges, pagination) and truncation-kind badges, making partial reads obvious at a glance.
+- **Project row actions**: sidebar project rows support one-click path copy; the project overflow menu gains "mark all as read" so unread session counts no longer require expanding every entry.
 
 ### Refactoring and engineering governance
 
@@ -44,6 +47,7 @@ This repository builds on upstream [zai-org/ZCode](https://github.com/zai-org/ZC
 - Scroll jump on first upward scroll after session switch; false empty-completion detection; AskUserQuestion answers written back to the tool row.
 - Click-through when overlays overlap the title-bar drag region; side chats no longer continue the parent task and recognize quoted references.
 - Log export no longer bundles crash dumps and the task index database; uncaught main-process exceptions are recorded with a local fallback.
+- Subagent authorization aligned with the main agent and auto-rejected on timeout; remote-workspace subagent input surfaces unified; cross-session messaging failures become visible when the target session is missing; plugin marketplace parsing accepts `userConfig` `options`.
 
 ## Updates
 
