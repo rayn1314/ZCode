@@ -35,7 +35,9 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": resolve(REPO_ROOT, "packages/ui/src"),
-        "@zcode/shared": resolve(REPO_ROOT, "packages/shared/src/index.ts"),
+        // 只精确别名裸包名；子路径（如 @zcode/shared/mcp-apps）必须走 package exports 解析，
+        // 否则会被拼成 shared/src/index.ts/<subpath> 导致构建失败。
+        "@zcode/shared$": resolve(REPO_ROOT, "packages/shared/src/index.ts"),
         // Share 镜像不安装 @zcode/ui（它会带入 services/rpc 闭包），子路径导入必须显式指向源码。
         "@zcode/ui/useTheme": resolve(REPO_ROOT, "packages/ui/src/useTheme.ts"),
         "@zcode/ui/conversation-share-readonly": resolve(
