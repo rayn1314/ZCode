@@ -198,6 +198,39 @@ pnpm bundle:desktop -- --help
 sudo xattr -rd com.apple.quarantine /Applications/ZCode.app
 ```
 
+### 自建版（fork 产物，Windows）
+
+从本 fork 构建「ZCode Rayn」自建客户端：独立产品名 / AppId / 数据根 `~/.zcode-rayn`，与官方客户端并排共存、可同时打开。
+
+**照做版——全程就两条命令**
+
+第一次，构建：
+
+```bash
+pnpm package:desktop
+```
+
+构建结束会打印产物路径，并**自动建好**开始菜单和桌面的「ZCode Rayn」快捷方式。双击即用——本地会话和 WSL/SSH 远控都正常。
+
+以后改了代码要更新自建版：
+
+```bash
+# 1. 先退出正在运行的自建版：右键托盘图标 → 退出（注意：关窗口只是隐藏到托盘）
+# 2. 重新构建：
+pnpm package:desktop
+# 3. 再双击「ZCode Rayn」快捷方式
+```
+
+快捷方式指向仓库里的启动器、始终命中最新构建产物，重建后不需要重装快捷方式。
+
+**细节与开关**
+
+- 不想自动建快捷方式：设 `ZCODE_SKIP_SHORTCUTS=1`；之后手动建——把快捷方式指向 `wscript //nologo <仓库>\packages\desktop\scripts\launch-packaged-app.vbs`。
+- 为什么快捷方式不直接指 exe：自建版连接 WSL/SSH 时需要 `ZCODE_REMOTE_ASSET_LOCAL_DIR` 指向本仓库的 `packages/desktop/mock-cdn`，否则会回落官方 CDN——官方 bundle 不认 fork 的新协议字段，首次同步必然失败。启动器负责注入该变量。
+- `pnpm package:desktop` 依次执行：bootstrap（安装依赖 + 构建各包）→ 远端资产（WSL/SSH 部署用）→ electron-builder 打包 + exe 版本信息回填，产物在 `packages/desktop/dist/win-unpacked/`（解压即用，不写注册表）。打包前会自动重建 agent bundle 暂存并检查没有进程占用产物目录，步骤顺序不对也打得出完整的包。
+- 身份默认值（产品名 / AppId / preview 身份 / 后端环境）集中在 `scripts/fork-build-env.mjs`，均可用同名环境变量覆盖；身份后缀是构建期烧录的，所以整条构建链共用这一份默认值。
+- 开发模式（源码改动即时生效）需带同一套身份环境变量启动，默认值见 `scripts/fork-build-env.mjs`；开发模式与打包版共用数据根，避免同时打开。
+
 ### ZCode 命令行版
 
 构建入口为 `pnpm build:zcode`。脚本会依次构建 CLI/TUI、后端和 Web，收集 TUI 的原生库、worker 与运行时依赖，再组装发行包；运行发行包仍需要 Node.js，版本以 `mise.toml` 为准。

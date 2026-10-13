@@ -188,6 +188,40 @@ pnpm bundle:desktop -- --help
 
 The default target is macOS arm64, and the default output directory is `packages/desktop/dist/`. `--os` accepts `mac`, `win`, or `linux`; `--arch` accepts `x64` or `arm64`. Packaging and signing require the tools and configuration for the target platform.
 
+### Self-built app (fork artifact, Windows)
+
+Build the "ZCode Rayn" self-built client from this fork: a separate product name / AppId / data root (`~/.zcode-rayn`), installed and running side by side with the official client.
+
+**Follow-along version — two commands, that's all**
+
+First time, build:
+
+```bash
+pnpm package:desktop
+```
+
+When it finishes it prints the output path and **automatically creates** the "ZCode Rayn" shortcut in the Start Menu and on the Desktop. Double-click to launch — local sessions and WSL/SSH remote control both work.
+
+Later, to update the self-built app after code changes:
+
+```bash
+# 1. Quit the running self-built app first: right-click the tray icon → Exit
+#    (closing the window only hides it to the tray)
+# 2. Rebuild:
+pnpm package:desktop
+# 3. Double-click the "ZCode Rayn" shortcut again
+```
+
+The shortcut points at the repo-level launcher and always resolves to the latest build output, so shortcuts never need reinstalling after a rebuild.
+
+**Details and switches**
+
+- To skip automatic shortcut creation, set `ZCODE_SKIP_SHORTCUTS=1`; create them manually by pointing a shortcut at `wscript //nologo <repo>\packages\desktop\scripts\launch-packaged-app.vbs`.
+- Why not shortcut the exe directly: the self-built app needs `ZCODE_REMOTE_ASSET_LOCAL_DIR` pointing at this repo's `packages/desktop/mock-cdn` when connecting to WSL/SSH. Without it the app falls back to the official CDN, whose bundles do not recognize fork-only protocol fields, so the first remote sync fails. The launcher injects that variable.
+- `pnpm package:desktop` runs, in order: bootstrap (install dependencies + build packages) → remote assets (for WSL/SSH deployment) → electron-builder packaging + exe version-info backfill. Output lands in `packages/desktop/dist/win-unpacked/` (unpacked, no registry writes). Before packing it refreshes the agent-bundle staging and checks that no process is holding the output directory, so a complete package is produced regardless of step order.
+- Identity defaults (product name / AppId / preview flavor / backend environment) live in `scripts/fork-build-env.mjs` and can each be overridden by the same-named environment variable. The identity suffix is baked in at build time, so the whole chain shares this one set of defaults.
+- Dev mode (source changes apply immediately) must be started with the same identity environment variables; see the defaults in `scripts/fork-build-env.mjs`. Dev mode and the packaged app share one data root, so avoid running both at once.
+
 ### ZCode CLI distribution
 
 Run `pnpm build:zcode` to build the CLI/TUI, backend, and Web client, collect the TUI native libraries, workers, and runtime dependencies, then assemble the distribution. Running the distribution still requires Node.js; use the version specified in `mise.toml`.

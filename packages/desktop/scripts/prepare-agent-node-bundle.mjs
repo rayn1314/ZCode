@@ -469,8 +469,18 @@ function stageKoffiForCuaPlugin() {
 // 让 Electron Node 运行 zcode.cjs 时复用同一套 filesystem seed 逻辑。
 // browser-use runtime 的声明生成依赖 @zcode/core/dist。CI 干净检出没有该产物，
 // 必须先构建 CLI 依赖，再构建官方插件；开发机残留的 dist 曾掩盖这个顺序问题。
-buildCliBundle();
-buildOfficialPluginRuntimes();
+//
+// stage-only 模式（electron-builder beforePack 调用）：只重建 glm 暂存目录，不重新构建。
+// 打包入口自查暂存完整性，任何前置步骤顺序下 resources/glm 都新鲜完整——曾有事故：
+// prepare:remote-assets 的远端暂存复用 dev 链脚本，其 stageAgentBundle 会 rmSync
+// 清空整个 glm 目录，把这里暂存的官方插件和 CUA koffi 冲掉，直到 afterPack 校验
+// 才报 "CUA plugin koffi runtime is incomplete"。CLI bundle 缺失时 stageBundle 会
+// 抛出清晰错误，提示先跑完整构建。
+const stageOnly = process.env.ZCODE_AGENT_BUNDLE_STAGE_ONLY === "1";
+if (!stageOnly) {
+  buildCliBundle();
+  buildOfficialPluginRuntimes();
+}
 stageBundle();
 stageOfficialPlugins();
 stageBundledSkillPack();

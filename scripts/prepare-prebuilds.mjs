@@ -668,9 +668,12 @@ function stageRemoteBundledSkillPack(glmDir) {
 function stageRemoteAgentBundles() {
   console.log("==> Building zcode-cli bundle for remote agents");
   // 复用桌面同款构建脚本（turbo build:desktop-agent --filter=@zcode/cli），命中缓存时几乎瞬时。
+  // build-only：该脚本默认会把 bundle 暂存进桌面打包目录 bundled-agents/<platform>/glm，
+  // 其 stageAgentBundle 会 rmSync 清空整个目录——那会冲掉 bootstrap 已暂存的官方插件和
+  // CUA koffi，导致桌面打包缺资源。远端资产只需要 cli/dist 的构建产物，显式跳过桌面暂存。
   runCommand(process.execPath, [join(rootDir, "scripts/build-desktop-agent-cli.mjs")], {
     cwd: rootDir,
-    env: process.env,
+    env: { ...process.env, ZCODE_DESKTOP_AGENT_BUILD_ONLY: "1" },
   });
   // browser-use runtime 的 tsc 依赖 @zcode/core/dist。远端资产也必须先构建
   // agent CLI 依赖，避免 CI 干净检出时被开发机缓存掩盖的 TS2307。

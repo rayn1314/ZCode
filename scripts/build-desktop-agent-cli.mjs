@@ -101,6 +101,13 @@ async function verifyRequiredDevPluginRuntimeArtifacts() {
  * dev 只跑宿主平台，所以 platformKey 直接取 process；打包链的跨平台 target 由它自己解析。
  */
 function stageDevAgentBundle() {
+  // build-only 模式（prepare:remote-assets 等只要构建产物、不碰桌面暂存目录的调用方）：
+  // stageAgentBundle 会 rmSync 清空整个 bundled-agents/<platform>/glm，那是桌面打包的
+  // 暂存目录；远端资产准备复用本脚本构建 bundle 时不能把它清掉，否则打包缺插件/koffi。
+  if (process.env.ZCODE_DESKTOP_AGENT_BUILD_ONLY === "1") {
+    console.log("[build-desktop-agent-cli] build-only mode, skip desktop glm staging");
+    return;
+  }
   stageAgentBundle({
     repoRoot,
     platformKey: `${process.platform}-${process.arch}`,

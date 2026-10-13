@@ -615,6 +615,25 @@ export default {
     `node_modules/node-pty/prebuilds/${targetPlatform.key}/**`,
   ],
   beforePack: async (context) => {
+    // 打包前重建 agent bundle 暂存（幂等，秒级）。extraResources 整目录拷贝
+    // bundled-agents/<platform>/glm → resources/glm，而该暂存目录可能被任意前置
+    // 步骤清空或污染（历史上 prepare:remote-assets 的远端暂存就清过它，打包后
+    // afterPack 才报 koffi 缺失）。在打包入口自查，不依赖调用方记住步骤顺序。
+    runTimedSync("beforePack:ensureAgentBundleStaging", () =>
+      runCommand(
+        process.execPath,
+        [resolve(desktopPackageRoot, "scripts", "prepare-agent-node-bundle.mjs")],
+        {
+          cwd: desktopPackageRoot,
+          env: {
+            ...process.env,
+            ZCODE_AGENT_BUNDLE_STAGE_ONLY: "1",
+            ZCODE_TARGET_OS: targetPlatform.os,
+            ZCODE_TARGET_ARCH: targetPlatform.arch,
+          },
+        },
+      ),
+    );
     runTimedSync("beforePack:restoreTargetNodePtyPrebuild", () =>
       restoreTargetNodePtyPrebuild({ desktopPackageRoot, targetPlatform }),
     );
