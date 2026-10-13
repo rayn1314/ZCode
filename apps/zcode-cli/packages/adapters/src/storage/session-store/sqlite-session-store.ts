@@ -71,6 +71,7 @@ import {
   heartbeatSessionTargetRun,
   listSessionTargets,
   markSessionTargetDeadlineGraceUsed,
+  markSessionTargetDeadlineWarningSent,
   readSessionTarget,
   recoverInterruptedSessionTargetRun,
   setSessionTarget,
@@ -809,6 +810,13 @@ export class SqliteSessionStore
     targetID: string;
   }): Promise<SessionGoal | null> {
     return markSessionTargetDeadlineGraceUsed(this.db, input);
+  }
+
+  async markTargetDeadlineWarningSent(input: {
+    sessionID: SessionId;
+    targetID: string;
+  }): Promise<SessionGoal | null> {
+    return markSessionTargetDeadlineWarningSent(this.db, input);
   }
 
   async startTargetRun(input: {

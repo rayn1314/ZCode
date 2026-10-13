@@ -29,6 +29,31 @@ export const GOAL_COMPLETION_VERIFICATION_FALLBACK_REASON =
 export const GOAL_DEADLINE_REACHED_REMINDER_TEXT =
   "The active session goal reached its configured deadline and has stopped. Do not continue pursuing it unless the user resumes with a new deadline or replaces the goal.";
 
+/** 到点前多久开始预警（模型提示词 + 一次性提醒 + 面板徽标共用同一阈值）。 */
+export const GOAL_DEADLINE_WARNING_LEAD_MS = 10 * 60_000;
+
+/**
+ * 预警的一次性提醒文案。与到点提醒同族：阈值只在这里定义一次，
+ * UI 只读 SessionGoal.deadlineWarningSent 标志，不自己算阈值（避免阈值副本漂移）。
+ */
+export const GOAL_DEADLINE_APPROACHING_REMINDER_TEXT = `The active session goal is within ${Math.round(
+  GOAL_DEADLINE_WARNING_LEAD_MS / 60_000,
+)} minutes of its deadline. Start converging: finish and verify what is already in progress, and avoid starting work that cannot finish before the deadline.`;
+
+/**
+ * 是否应该发出截止时间预警：只由时间与标志位决定（纯函数，便于单测）。
+ * 已越过截止时间不属于预警（那是收尾轮 / 结算路径）。
+ */
+export function shouldSendGoalDeadlineWarning(input: {
+  endAtMs: number | null;
+  warningSent: boolean;
+  nowMs: number;
+}): boolean {
+  if (input.endAtMs === null || input.warningSent) return false;
+  if (input.nowMs >= input.endAtMs) return false;
+  return input.nowMs >= input.endAtMs - GOAL_DEADLINE_WARNING_LEAD_MS;
+}
+
 export const GoalStatusSchema = z.enum([
   "active",
   "paused",
@@ -88,6 +113,8 @@ export interface SessionGoal {
   endAtMs: number | null;
   /** 本次目标生命周期内是否已经把「收尾轮」发给过模型；到点第二段据此结算。 */
   deadlineGraceUsed: boolean;
+  /** 是否已经发过截止时间预警；与 deadlineGraceUsed 一样在设定/替换/激活时重置。 */
+  deadlineWarningSent: boolean;
   activeInputId?: string | null;
   activeRunStartedAtMs?: number | null;
   activeRunLastSeenAtMs?: number | null;
@@ -120,6 +147,7 @@ export const SessionGoalSchema = z
     // 旧持久化快照没有这两列；default 让历史 snapshot 仍能解析。
     endAtMs: GoalDeadlineSchema.default(null),
     deadlineGraceUsed: z.boolean().default(false),
+    deadlineWarningSent: z.boolean().default(false),
     activeInputId: z.string().min(1).nullable().optional(),
     activeRunStartedAtMs: z.number().int().nonnegative().nullable().optional(),
     activeRunLastSeenAtMs: z.number().int().nonnegative().nullable().optional(),
@@ -164,7 +192,10 @@ export function normalizeGoalObjective(value: string): string {
   return GoalObjectiveSchema.parse(value);
 }
 
-export function formatGoalStateForModel(goal: SessionGoal | null): string {
+export function formatGoalStateForModel(
+  goal: SessionGoal | null,
+  nowMs: number = Date.now(),
+): string {
   if (!goal) return "";
 
   const budget =
@@ -175,6 +206,7 @@ export function formatGoalStateForModel(goal: SessionGoal | null): string {
     `Tokens used: ${goal.tokensUsed}`,
     `Token budget: ${budget}`,
     `Time used: ${goal.timeUsedSeconds} seconds`,
+    ...goalDeadlineStateLines(goal, nowMs),
     "Objective (user-provided):",
     "<untrusted_objective>",
     escapeGoalPromptText(goal.objective),
@@ -200,8 +232,29 @@ function formatGoalDeadlineRemaining(remainingMs: number): string {
 }
 
 /**
+ * 截止时间的状态口径：已过点 / 即将到点 / 还剩多久。
+ * 状态块、续跑提示、校验提示三处共用，避免同一时间点在三处给出不一致的说法。
+ */
+function goalDeadlineStateSuffix(endAtMs: number, nowMs: number): string {
+  if (nowMs >= endAtMs) return "already passed";
+  const remaining = formatGoalDeadlineRemaining(endAtMs - nowMs);
+  return nowMs >= endAtMs - GOAL_DEADLINE_WARNING_LEAD_MS
+    ? `in ${remaining} — approaching, start converging`
+    : `in ${remaining}`;
+}
+
+function goalDeadlineStateLines(goal: SessionGoal, nowMs: number): string[] {
+  if (goal.endAtMs === null) return [];
+  return [
+    `Hard deadline: ${formatGoalDeadlineInstant(goal.endAtMs)} (${goalDeadlineStateSuffix(goal.endAtMs, nowMs)})`,
+    "The runtime stops this goal at the deadline, after one final wrap-up turn.",
+  ];
+}
+
+/**
  * 续跑提示里的截止时间段落。到点后同一段落自动变成收尾指令——这就是「收尾轮」的
- * 全部信息来源，不需要另外的提醒注入通道。
+ * 全部信息来源，不需要另外的提醒注入通道。进入预警窗口后再加上「开始收敛」的要求，
+ * 让模型在硬停之前就收口，而不是等到收尾轮才第一次知道时间不够。
  */
 function goalDeadlineContinuationLines(goal: SessionGoal, nowMs: number): string[] {
   if (goal.endAtMs === null) return [];
@@ -210,6 +263,12 @@ function goalDeadlineContinuationLines(goal: SessionGoal, nowMs: number): string
     return [
       "Deadline:",
       `- The deadline (${instant}) has passed. This is the final wrap-up turn. Summarize what is complete, what remains, and what the user should do next, then stop. Do not start work that cannot finish in this turn.`,
+    ];
+  }
+  if (nowMs >= goal.endAtMs - GOAL_DEADLINE_WARNING_LEAD_MS) {
+    return [
+      "Deadline approaching:",
+      `- Hard deadline: ${instant} (in ${formatGoalDeadlineRemaining(goal.endAtMs - nowMs)}). Converge on the objective now: finish and verify what is already in progress, and do not start work that cannot finish before the deadline.`,
     ];
   }
   return [
@@ -289,11 +348,10 @@ export function formatGoalCompletionVerificationPrompt(
     goal.endAtMs === null
       ? []
       : [
-          `- Hard deadline: ${formatGoalDeadlineInstant(goal.endAtMs)} (${
-            nowMs >= goal.endAtMs
-              ? "already passed"
-              : `in ${formatGoalDeadlineRemaining(goal.endAtMs - nowMs)}`
-          })`,
+          `- Hard deadline: ${formatGoalDeadlineInstant(goal.endAtMs)} (${goalDeadlineStateSuffix(
+            goal.endAtMs,
+            nowMs,
+          )})`,
         ];
 
   return [

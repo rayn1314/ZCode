@@ -988,6 +988,14 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
       alter table session_target_next rename to session_target;
     `,
   },
+  {
+    appVersion: "0.16.9",
+    id: "0024_session_target_deadline_warning",
+    // 只加一列，无 check 约束，不需要重建表（0023 已定型的历史迁移不可改动）。
+    sql: `
+      alter table session_target add column deadline_warning_sent integer not null default 0;
+    `,
+  },
 ];
 import { OFFICIAL_GLM_SELECTION_MIGRATION_SQL } from "./migrations/0021-official-glm-selection.js";
 import { BACKFILLED_SESSION_REASONING_MIGRATION_SQL } from "./migrations/0022-backfilled-session-reasoning.js";

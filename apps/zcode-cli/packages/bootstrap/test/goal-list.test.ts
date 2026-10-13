@@ -118,6 +118,21 @@ test("默认排除已归档会话；includeArchived 时带上", async () => {
   assert.equal(withArchived.goals.length, 2);
 });
 
+test("scope: all 时忽略 workspace 过滤，返回全部未归档目标（任务面板跨项目视图）", async () => {
+  const entries = [
+    entry("s1", WS_A, { workspaceIdentity: "remote-ws-a" }),
+    entry("s2", WS_B),
+  ];
+  const result = await goalListSessions(createContext(entries), {
+    workspace: { workspacePath: WS_A, workspaceKey: WS_A },
+    scope: "all",
+  });
+  assert.deepEqual(
+    result.goals.map((item) => item.sessionId).sort(),
+    ["s1", "s2"],
+  );
+});
+
 test("store 未提供 listTargets 时返回空列表，不抛错", async () => {
   const result = await goalListSessions(createContext(null), {});
   assert.deepEqual(result, { goals: [] });

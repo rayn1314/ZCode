@@ -1,11 +1,13 @@
 import {
   CoreErrorType,
+  GOAL_DEADLINE_APPROACHING_REMINDER_TEXT,
   GOAL_DEADLINE_REACHED_REMINDER_TEXT,
   SessionEventType,
   createChildTraceContext,
   createCoreError,
   decideGoalDeadline,
   formatGoalContinuationPrompt,
+  shouldSendGoalDeadlineWarning,
   traceContextToLogContext,
 } from "../deps.js";
 import type {
@@ -348,6 +350,62 @@ export async function hasRunningBackgroundTaskForGoalContinuation(
   return hasRunningBackgroundRuntimeTask(this.runtimeTaskRegistry);
 }
 
+/**
+ * 跨进预警窗口时补发一次性提醒。
+ * 「只发一次」由落库的 deadlineWarningSent 保证——落库是条件写入
+ * （where deadline_warning_sent = 0），并发下只有真正翻转到 1 的那次会拿到标记，
+ * 因此两条记账路径不会各发一条。续跑提示里的 approaching 文案是每轮都带的常规通道，
+ * 这条提醒专门覆盖「用户手动插话」这类不经过续跑提示词的情况。
+ */
+async function emitDeadlineApproachingReminderIfNeeded(
+  this: AgentRuntimeInternal,
+  accountedTarget: SessionGoal | null,
+  nowMs: number,
+  traceContext: TraceContext,
+): Promise<void> {
+  if (!accountedTarget || accountedTarget.status !== "active") return;
+  if (accountedTarget.deadlineWarningSent) return;
+  if (!this.sessionStore?.markTargetDeadlineWarningSent) return;
+  if (
+    !shouldSendGoalDeadlineWarning({
+      endAtMs: accountedTarget.endAtMs,
+      warningSent: false,
+      nowMs,
+    })
+  ) {
+    return;
+  }
+  try {
+    const marked = await this.sessionStore.markTargetDeadlineWarningSent({
+      sessionID: this.sessionId,
+      targetID: accountedTarget.targetID,
+    });
+    if (!marked?.deadlineWarningSent) return;
+    await this.recordGoalStateChangeReminder({
+      text: GOAL_DEADLINE_APPROACHING_REMINDER_TEXT,
+      traceContext,
+    });
+    this.logger?.info("Goal is approaching its configured deadline", {
+      ...traceContextToLogContext(traceContext),
+      endAtMs: accountedTarget.endAtMs,
+      event: "target.deadline.approaching",
+      module: "core.runtime",
+      status: "waiting",
+      targetId: accountedTarget.targetID,
+    });
+  } catch (error) {
+    // 预警是提示性能力，落库失败不能影响 turn 记账；下一轮会重新判定。
+    this.logger?.warn("Failed to mark goal deadline warning", {
+      ...traceContextToLogContext(traceContext),
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "target.deadline.warning_mark_failed",
+      module: "core.runtime",
+      status: "failed",
+      targetId: accountedTarget.targetID,
+    });
+  }
+}
+
 export async function accountTargetTurnCompletion(
   this: AgentRuntimeInternal,
   input: {
@@ -393,6 +451,12 @@ export async function accountTargetTurnCompletion(
         this,
         previousTarget,
         accountedTarget,
+        input.traceContext,
+      );
+      await emitDeadlineApproachingReminderIfNeeded.call(
+        this,
+        accountedTarget,
+        endedAtMs,
         input.traceContext,
       );
     }
@@ -518,6 +582,12 @@ export async function finishTargetTurnAccounting(
         this,
         previousTarget,
         finishedTarget,
+        input.traceContext,
+      );
+      await emitDeadlineApproachingReminderIfNeeded.call(
+        this,
+        finishedTarget,
+        input.endedAtMs,
         input.traceContext,
       );
       return finishedTarget;

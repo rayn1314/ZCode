@@ -101,38 +101,46 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 
 状态文案不放 `chat.target.status.*`。设计稿曾要求给该键族补 `deadline_reached`，实现时核实：**该键族全仓无任何消费点**（会话状态面板 `ConversationStatusPanel` 用的是另一套派生状态 `ConversationGoalStatus`，值域是 `active|verifying|notSatisfied|paused|verified`，与 DB 的 `GoalStatus` 不是一回事），补进去只会多一个没人读的键。任务面板改用自己的一套 `goals.status.*`（`active / paused / deadlineReached / deadlinePending / stopped / complete`，其中后两者之外的状态由 D5 派生口径决定）。
 
-### D5：面板的「已到截止」显示
+### D5：面板的「已到截止」与「未启动 / 即将到点」显示
 
-权威状态只认 DB。面板额外提供一层**派生显示**：当 `status === "active" && endAtMs != null && now >= endAtMs` 时，按 `deadlineGraceUsed` 显示「已到截止时间 · 收尾中」（标志未用，收尾轮还没跑）或「已到截止时间 · 待结算」（标志已用，等下一次结算），但**不把它写成状态**。
+权威状态只认 DB。面板额外提供**派生显示**，全部只读不落库：
 
-不变式：派生显示永不写库、不参与续跑判定；它只是让用户看到「这个任务已经过点了、接下来一定会停」。
+- 当 `status === "active" && endAtMs != null && now >= endAtMs` 时，按 `deadlineGraceUsed` 显示「已到截止时间 · 收尾中」（标志未用，收尾轮还没跑）或「已到截止时间 · 待结算」（标志已用，等下一次结算）。
+- 当 `status === "paused" && tokensUsed === 0 && timeUsedSeconds === 0` 时显示「未启动」；行内主操作显示「运行」（= `resume`，恢复即运行）。语义上「已暂停但跑过」与「从未启动」在只读投影里可区分，存储层面不加新状态。
+- 当 `status === "active" && deadlineWarningSent === true` 时显示「即将到点」（预警阈值在服务端，见 D7；UI 只读标志、不自己算阈值，避免阈值副本漂移）。
+
+不变式：派生显示永不写库、不参与续跑判定；它只是让用户看到「这个任务目前的时间处境」。
 
 ### D6：不做每轮系统提示注入（用户决定）
 
 任务内容**不**进入上下文前缀，因此不会每次请求都出现（上下文前缀每个 model step 都会由 `context/builder.ts` 重建，新增 section 就等于每请求注入）。模型侧可见的信息沿用既有三条路径，只做一处扩展：
 
 - 续跑提醒 `formatGoalContinuationPrompt`（`apps/zcode-cli/packages/contracts/src/tools/target.ts`）已输出 `Time spent` / `Tokens used` / `Token budget`，在其中补一段 `Deadline:`：
-  - 未到点：`- Hard deadline: <本地时间> (in <剩余>). The runtime stops this goal at the deadline, after one final wrap-up turn.`
+  - 未到点（剩余 > 10 分钟）：`- Hard deadline: <本地时间> (in <剩余>). The runtime stops this goal at the deadline, after one final wrap-up turn.`
+  - 预警窗口（0 < 剩余 ≤ 10 分钟）：段落标题改为 `Deadline approaching:`，追加 `Converge on the objective now: finish and verify what is already in progress, and do not start work that cannot finish before the deadline.` —— 让模型在硬停**之前**就开始收口。
   - 已到点：`- The deadline (<本地时间>) has passed. This is the final wrap-up turn. Summarize what is complete, what remains, and what the user should do next, then stop. ...`
   - `endAtMs === null` 时整段不输出。
-- 完成校验提示 `formatGoalCompletionVerificationPrompt` 在 `Goal state:` 里加同一行（未到点给剩余时间，已到点标 `already passed`），使校验器在「目标达成」与「时间将尽」冲突时能给出正确判断。
-- 到点结算提醒走 D7。
+- 完成校验提示 `formatGoalCompletionVerificationPrompt` 在 `Goal state:` 里加同一行（未到点给剩余时间，窗口内标 `approaching, start converging`，已到点标 `already passed`），使校验器在「目标达成」与「时间将尽」冲突时能给出正确判断。
+- 到点结算提醒走 D7；预警一次性提醒也走 D7。
+- `formatGoalStateForModel`（resume 附件注入）同样补 `Hard deadline:` 行，保证冷恢复会话也能看到截止处境。
 
-这三处都只在「续跑 / 校验 / 状态变更」这几个既有时刻发生，不新增频率。两个格式化函数都接受可选的 `nowMs`（默认 `Date.now()`）以便单测。
+这三处都只在「续跑 / 校验 / resume / 状态变更」这几个既有时刻发生，不新增频率。两个格式化函数都接受可选的 `nowMs`（默认 `Date.now()`）以便单测。
 
-### D7：截止提醒由 core 注入，文案放在 contracts
+### D7：截止提醒与预警由 core 注入，文案放在 contracts
 
-到点结算时注入一条 `model-only` 提醒（复用 `recordGoalStateChangeReminder`，`apps/zcode-cli/packages/core/src/runtime/methods/goal-state-reminder.ts`），文案是 contracts 里的 `GOAL_DEADLINE_REACHED_REMINDER_TEXT`。
+**到点结算提醒**：结算时注入一条 `model-only` 提醒（复用 `recordGoalStateChangeReminder`，`apps/zcode-cli/packages/core/src/runtime/methods/goal-state-reminder.ts`），文案是 contracts 里的 `GOAL_DEADLINE_REACHED_REMINDER_TEXT`。
+
+**到点前预警（一次性）**：新增持久化标志 `deadline_warning_sent`（迁移 `0024_session_target_deadline_warning`，只加一列、不重建表）。跨过「剩余 10 分钟」窗口（`GOAL_DEADLINE_WARNING_LEAD_MS`，contracts 常量）时，turn 记账路径调用 `markTargetDeadlineWarningSent`（条件写入 `where ... deadline_warning_sent = 0`，并发下只有真正翻到 1 的那次返回带标志的目标）并注入 `GOAL_DEADLINE_APPROACHING_REMINDER_TEXT`。**只发一次**由落库标志保证，两条记账路径不会各发一条。
 
 **为什么不扩 facade 私有的 `goalStateChangeReminderText`**：结算发生在 core，而那个函数是 `bootstrap/src/app/session-facade.ts` 的模块私有函数，core 取不到；把文案放 contracts 让两侧都能用，比在 facade 里加一个永不被调用的 `deadline_reached` 分支干净（避免死路径）。
 
 **「只发一次」由跃迁判定保证**：候选检查结算与记账 SQL 兜底两处，都只在**读到 `previousTarget.status === "active"` 而结算结果为 `deadline_reached`** 时才发提醒。谁先翻状态谁发，另一处看到已是 `deadline_reached` 便不再发。
 
-它是一次性事件提醒（顺带解决了「模型不知道任务为何停下」的问题），不是每轮注入。
+**阈值为什么放服务端**：`GOAL_DEADLINE_WARNING_LEAD_MS` 只定义在 contracts（服务端），UI 侧不 import contracts（跨 workspace 不可达），所以面板读 `deadlineWarningSent` 标志而不是自己算阈值——显示口径与服务端行为天然一致，没有阈值副本可漂移。`deadline_warning_sent` 与 `deadline_grace_used` 同规则重置（`set/replace` 与 `resume` 激活时归零）。
 
-### D8：面板数据源 = 新增 workspace 级查询 `session/goalList`
+### D8：面板数据源 = 新增 workspace 级查询 `session/goalList`（可跨项目全局列出）
 
-面板需要一次拿到「本工作区所有目标」。
+面板一次拿到「全部项目的目标」（与 automations 面板 `listAllAutomations` 的全局口径一致）。
 
 被否的替代方案：扩展 v4 sessions index 投影携带完整 goal（`sessions-index-projection.ts` 目前只带 `goalStatus`）。否掉的理由是通用列表投影会被迫为每一个消费方多背一份 goal 对象，而真正需要完整 goal 的只有本面板。
 
@@ -147,25 +155,34 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
    order by st.time_updated desc limit ?
    ```
 
+   `directory` 缺省时不加 `where s.directory = ?` 过滤——同一个数据根的会话库本来就装着全部项目的会话，所以**省略 directory = 列出全部项目**（远端工作区则自然限定到那台机器的数据根）。
    返回 `SessionGoalListEntry`（contracts）：`{ goal, sessionID, sessionTitle, workspacePath, workspaceIdentity?, archived }`。
-2. **协议**：新增 legacy 命令 `session/goalList`（`packages/shared/src/zcode-protocol/index.ts` 的 `zcodeProtocolMethods.sessionGoalList`），handler 在 `server-operations.ts` 的 `goalListSessions`，与 `session/goal` 同族、与 `listSessions` 同为 workspace 级只读查询。工作区隔离在 SQL 之后再做一次与 `listSessions` 同一判据的过滤：`workspaceIdentity?.trim() || workspacePath`。
-3. **services**：`zcodeAgentService.listSessionGoals(params)` 转发该命令。
+2. **协议**：新增 legacy 命令 `session/goalList`（`packages/shared/src/zcode-protocol/index.ts` 的 `zcodeProtocolMethods.sessionGoalList`），handler 在 `server-operations.ts` 的 `goalListSessions`，与 `session/goal` 同族、与 `listSessions` 同为 workspace 级只读查询。参数 `scope?: "workspace" | "all"`：缺省只列该工作区（`workspaceIdentity?.trim() || workspacePath` 隔离，与 `listSessions` 同一判据）；`scope: "all"` 时忽略目录/身份过滤，返回全量（面板跨项目视图）。`workspace` 字段仍必传作路由。
+3. **services**：`zcodeAgentService.listSessionGoals(params)` 转发该命令；`scope` 原样下推。面板进入/切换项目时用 `scope: "all"` 加载。
 
-### D9：面板命令走 legacy `session/goal` 命令族
+### D9：面板命令走 legacy `session/goal` 命令族（含「保存不运行」）
 
 面板的设定/编辑/暂停/恢复/清除全部经 services 层的 `goalSession`（`packages/services/src/zcode-agent/zcodeAgentService.ts`）下发，**不新增 v4 命令**。清除（`clear`）在 legacy handler 已实现，而 v4 命令表里没有 `clearGoal`——走 legacy 即可省掉一次协议扩展。
 
-参数扩展：`zcodeSessionGoalParamsSchema` 增加可选 `endAtMs`（与可选 `tokenBudget`），handler 的 `set/replace` 分支把它们传给 `record.app.setTarget`；`resume` 分支把 `endAtMs` 传给 `record.app.updateTargetStatus("active", { endAtMs })`。
+参数扩展（`zcodeSessionGoalParamsSchema` 均可选）：`endAtMs`、`tokenBudget`、**`start: boolean`**。
+
+**`start` 语义（2026-10-13 追加，用户口径「保存 ≠ 保存并运行」）**：
+- `start: false` = 「保存但运行」：建目标时落 `paused`；编辑已运行的目标时保持 `active`（不打断，也不触发新续跑）。由 handler 的纯函数 `resolveGoalStartStatus(start, existingStatus)` 统一裁决。
+- 缺省（含 `/goal <text>` 文本命令）= 「保存并运行」：置 `active` 并立即续跑，保持既有行为不变。
+- services 层：`start: false` 的 set/replace 走**只读客户端**（`getReadOnlyClient`）——保存不触发任何模型执行，**未配置模型供应商也能保存目标**（供应就绪后再「运行」即可）；其余动作仍走 `getClient`（要求供应商）。
 
 ## 行为
 
 ### 设定与编辑
 
-- 面板「新建任务」= 新建会话 + 设定目标（默认），或选定一个已有会话再设定目标。
-- 必填：任务描述（即 `objective`）。选填：截止时间 `endAtMs`、token 预算 `tokenBudget`。
-- 截止时间必须在未来；提交时**客户端**校验，过去时间由表单禁用提交（服务端不兜底，与仓库既有倾向一致）。
-- 编辑已存在的目标沿用 `replace` 语义（同一目标对象换 objective/截止/预算），不新建目标；`set/replace` 一律把 `deadlineGraceUsed` 重置为 `false`（新目标生命周期重新拥有一次收尾机会）。
-- 会话内 `/goal <文本>` 行为不变（不带截止时间，`endAtMs = null`，同时清掉旧截止）。
+- 面板「新建任务」= 新建会话 + 设定目标，或选定一个已有会话再设定目标。
+- 必填：任务描述（即 `objective`）。选填：截止时间 `endAtMs`、token 预算 `tokenBudget`、目标任务项目（见 UI 规格）。
+- **两个提交语义（2026-10-13 追加）**：
+  - 「保存」→ `start: false`：新建落 `paused`（未启动），编辑保持当前运行状态，不触发续跑，未配供应商也能保存。
+  - 「保存并运行」→ `start: true`（缺省）：置 `active` 并立即开始续跑。
+- **截止时间校验（2026-10-13 修订，改掉「编辑过期目标必须先动时间」的摩擦）**：表单只校验**用户新填/改过**的截止时间——与进入编辑时的原值相同则放行；只有新值在过去才禁用提交。「保存并运行」始终要求截止时间为「空或未来」（运行一个已过期的目标会立刻被硬停），「保存」不受此限。
+- 编辑已存在的目标沿用 `replace` 语义（同一目标对象换 objective/截止/预算），不新建目标；`set/replace` 一律把 `deadlineGraceUsed`、`deadlineWarningSent` 重置（新目标生命周期重新拥有收尾与预警机会）。
+- 会话内 `/goal <文本>` 行为不变（不带截止时间，`endAtMs = null`，同时清掉旧截止；缺省即「保存并运行」）。
 
 ### 状态机（权威状态，所有者 = `sessionStore` / `session_target` 表）
 
@@ -186,6 +203,7 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 - `deadline_reached` 与 `budget_limited` 都是**自动停止**：不再是续跑候选，不消耗算力。
 - `complete` 是终态，面板不再提供恢复；`paused` 可由用户恢复。
 - `deadlineGraceUsed` 的写者只有一个（`markTargetDeadlineGraceUsed`），重置只有两处（`setTarget` 的 upsert、`updateTargetStatus` 且目标状态为 `active`）。
+- `deadlineWarningSent` 的写者只有一个（`markTargetDeadlineWarningSent`），重置与收尾标志同规则。
 
 ### 事件顺序（面板操作 → 权威落库 → UI 投影）
 
@@ -228,24 +246,28 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 **列表行内容**（从左到右）：
 
 1. 标题：`summaryTitle?.trim() || objective` 单行截断，超出用 `title` 属性显示全文。
-2. 状态徽标（`text-ui-xs`）：进行中（绿）/ 已暂停（中性）/ 已到截止时间 · 收尾中（警示色，D5 派生态）/ 已到截止时间 · 待结算（D5 派生态）/ 已停止（`deadline_reached`、`budget_limited`）/ 已完成。
-3. 绑定会话：会话标题（灰字 `text-ui-sm`），点击整行或「打开会话」跳转到该会话主视图。
-4. 进度：
+2. 状态徽标（`text-ui-xs`）：进行中（绿）/ 未启动（中性，`paused && tokensUsed === 0 && timeUsedSeconds === 0`，D5 派生态）/ 已暂停（中性）/ 已到截止时间 · 收尾中（警示色，D5 派生态）/ 已到截止时间 · 待结算（D5 派生态）/ 已停止（`deadline_reached`、`budget_limited`）/ 已完成。进行中且 `deadlineWarningSent === true` 时加「即将到点」标记。
+3. 项目：`workspacePath` 的 basename 标签（`goalDisplay.ts` 内 `workspaceLabelFromPath` 纯函数），跨项目全局列表时用户据此辨认任务归属（2026-10-13 追加）。
+4. 绑定会话：会话标题（灰字 `text-ui-sm`），点击整行或「打开会话」跳转到该会话主视图。
+5. 进度：
    - 有 `endAtMs`：倒计时「剩余 3 小时 12 分」（每 30s 刷新一次）；过期显示「已到截止时间」。
    - 有 `tokenBudget`：`tokensUsed / tokenBudget`；无预算则显示已用 token。
-5. 行尾操作（`dropdown-menu` 收纳次要动作，该组件自带 `[app-region:no-drag]`）：暂停/恢复、编辑、清除（`destructive`，走 `ConfirmDialog` 二次确认）、打开会话。**恢复一个 `deadline_reached` 的目标时先弹「重新设定截止时间」小表单**（含「不再设截止时间」= 传 `endAtMs: null`），因为服务端会拒绝不带新截止时间的恢复。
+6. 行尾操作（`dropdown-menu` 收纳次要动作，该组件自带 `[app-region:no-drag]`）：暂停/恢复（未启动显示「运行」= `resume`）、编辑、清除（`destructive`，走 `ConfirmDialog` 二次确认）、打开会话。**恢复一个 `deadline_reached` 的目标时先弹「重新设定截止时间」小表单**（含「不再设截止时间」= 传 `endAtMs: null`），因为服务端会拒绝不带新截止时间的恢复。
 
 **新建 / 编辑表单**（整页表单，与 `AutomationEditView` 同形制）：
 
 | 字段 | 控件 | 校验与说明 |
 | --- | --- | --- |
 | 任务描述 | 多行文本域 | 必填、非空；提示语「写清目标与验收条件，例如：到明早 10 点前持续发现 AI 产品设计缺陷并改进」 |
-| 截止时间 | 日期 + 时间选择（本地时间） | 可空；填了必须晚于当前时间，否则提交按钮禁用并显示错误 |
+| 目标任务项目 | 下拉（`useAutomationProjectOptions`，仿 automations「目标项目」） | **仅新建时可改**，默认当前工作区（当前工作区不在选项里时并入）；编辑时锁定为该目标所属项目；选项的 `workspacePurpose === "conversation"` 显示为「无项目会话（default）」 |
+| 截止时间 | 日期 + 时间选择（本地时间） | 可空；**只校验用户新填/改过的值**：与原值相同放行，新值在过去则禁用提交并显示错误；「保存并运行」额外要求空或未来 |
 | Token 预算 | 数字输入 | 可空；正整数；辅助文案「到达上限会自动停止」 |
-| 承载会话 | 单选：新建会话（默认）/ 选择一个已有会话 | 选已有会话时用会话搜索下拉 |
+| 承载会话 | 单选：新建会话（默认）/ 选择一个已有会话 | 选已有会话时用会话搜索下拉（**限定在所选项目内**） |
 | 时间预算提示 | 只读文案 | 「到点后任务会停止，可在面板中重新设定截止时间继续」 |
 
-提交成功后：关闭表单、回到面板、新行以 `进行中` 出现、并**自动跳转到承载会话**（用户能立刻看到模型开始干活）。
+提交按钮两个（2026-10-13 追加，用户口径）：「保存」（`start: false`，不运行）与「保存并运行」（`start: true`）。新建默认聚焦「保存」。
+
+提交成功后：关闭表单、回到面板；新行以对应状态出现（保存 → 未启动；保存并运行 → 进行中），并**自动跳转到承载会话**（用户能立刻看到模型开始干活；保存不运行则只是打开该会话，不触发任何模型执行）。
 
 **动效与可达性**（遵循 `DESIGN.md`）：行状态变更用既有过渡时长，不做新动画；所有操作可键盘到达，焦点可见；状态不只用颜色表达，同时带文字徽标。
 
@@ -257,9 +279,10 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 - **收尾只给一次**：`deadlineGraceUsed` 在行上持久化，`markTargetDeadlineGraceUsed` 是唯一写点；重置只有 `setTarget`（set/replace）与「激活为 active」两处。标记必须在放行收尾轮**之前**落库（跨进程重启仍然只给一次）。
 - **提醒只发一次**：只有「读到 active、结算为 deadline_reached」的那一次跃迁发提醒。
 - **不引入每轮注入**：上下文前缀不新增 goal section；任务的持续可见性只依赖既有的会话历史与续跑提醒。
-- **工作区隔离**：所有列表查询用 `workspaceIdentity?.trim() || workspacePath`；不使用路径近似替代。
+- **工作区隔离**：`scope: "workspace"` 的所有列表查询用 `workspaceIdentity?.trim() || workspacePath`；不使用路径近似替代。`scope: "all"` 是显式的跨项目读取（面板默认），不做隔离过滤。
 - **远端语义**：面板的读取只读；`remote-waiting` 时禁用写操作，不回落到本地身份。
 - `endAtMs` 与 `tokenBudget` 相互独立，可同时存在；任一触发即停，`status` 记录先触发者（预算优先判定）。
+- **不再静默启动**：任何「保存不运行」（`start: false`）都不触发续跑、不消耗算力；只有「保存并运行」或恢复才进入续跑候选。
 
 ## 失败语义
 
@@ -276,21 +299,25 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 | 标记写库失败（DB 锁定等） | 记 `warn`（`target.deadline.wrap_up_mark_failed`），不放行该轮；下一轮检查重试，最坏多给一轮收尾，好过直接跳过硬停 |
 | 结算写库失败 | 记 `warn`（`target.deadline.settle_failed`），不阻塞 turn 收尾；下次活动重试结算 |
 | 预算与截止同时满足 | 预算分支在前，翻 `budget_limited`，不再翻 `deadline_reached` |
+| 未配供应商时「保存」（`start: false`） | 走只读客户端，目标正常落库为未启动/保持原状；后续「保存并运行」才需要供应商 |
+| 预警标志落库失败 | 记 `warn`（`target.deadline.warning_mark_failed`），不影响 turn 记账；下一轮重新判定 |
+| `scope: "all"` 查询 | 与 workspace 查询同一条只读链路；数据量过万可加分页（当前 `limit` 默认 500，未做游标） |
 
 ## 迁移边界
 
 1. **一个迁移 `0023_session_target_deadline`**：因为 `status` 有 check 约束，加 `deadline_reached` 必须重建表；`end_at_ms` 与 `deadline_grace_used` 两列随同一次重建落库（照抄 `0005` 的 `create new → insert select → drop → rename`），避免「alter 加列 + 再重建」的两次全表写。
 2. **重建保留全部既有列与行**：老行 `end_at_ms` 取 `NULL`、`deadline_grace_used` 取 `0`。
-3. **向后兼容**：老行 `end_at_ms = NULL` ⇒ 无截止，行为与今天完全一致。协议层新增字段一律可选（`zcodeSessionGoalSchema` 的新字段带 `.default(...)`），旧客户端不受影响；`GoalStatus` 多了个值，旧客户端只在真遇到该值时才需要更新。
-4. **不做数据回填**：不猜测历史目标的截止时间。
+3. **追加 `0024_session_target_deadline_warning`**（2026-10-13）：`alter table ... add column deadline_warning_sent integer not null default 0`。新列无 check 约束，不需要重建表；0023 已定型的历史迁移不可改动（sha256 校验）。
+4. **向后兼容**：老行 `end_at_ms = NULL` ⇒ 无截止，行为与今天完全一致。协议层新增字段一律可选（`zcodeSessionGoalSchema` 的新字段带 `.default(...)`），旧客户端不受影响；`GoalStatus` 多了个值，旧客户端只在真遇到该值时才需要更新。
+5. **不做数据回填**：不猜测历史目标的截止时间。
 5. **不迁移到 v4 协议**：`goalList` 走 legacy 命令族；若将来 v4 需要跨会话目标查询，另立任务，不在本文扩散。
 
 ## 验收场景
 
 | # | 场景 | 步骤 | 断言 | 证据要求 |
 | --- | --- | --- | --- | --- |
-| A1 | 面板新建任务（新建会话） | 面板 → 新建任务 → 填描述 + 截止时间 → 提交 | 新会话创建；`session_target` 行 `objective` 与 `end_at_ms` 正确；面板出现「进行中」行；跳转到该会话 | 面板截图 + DB 行 |
-| A2 | 面板新建任务（挂已有会话） | 选择已有会话 → 提交 | 目标写在所选会话上，不新建会话 | DB 行 `session_id` |
+| A1 | 面板新建任务（新建会话，保存并运行） | 面板 → 新建任务 → 填描述 + 截止时间 → 保存并运行 | 新会话创建；`session_target` 行 `objective` 与 `end_at_ms` 正确且 `status = active`；跳转到该会话并开始干活 | 面板截图 + DB 行 |
+| A2 | 面板新建任务（挂已有会话） | 选择已有会话 → 保存并运行 | 目标写在所选会话上，不新建会话 | DB 行 `session_id` |
 | A3 | 到点硬停 | 设 1 分钟后截止，让模型持续干活 | 到点后先有一轮收尾，之后不再出现新一轮续跑；`status = deadline_reached`；会话收到一次性截止提醒 | 事件流 + 状态值 + 提醒文本 |
 | A4 | 到点时正在跑 | 在 turn 执行中到点 | 该轮结束后走两段式，状态只翻一次（幂等） | `TargetChanged` 事件仅一次状态变更 |
 | A5 | 空闲会话过期 | 设短截止后不再交互 | 面板显示「已到截止时间（待结算）」，DB 仍为 `active` 直至下次活动 | 面板截图 + DB 值 |
@@ -299,13 +326,17 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 | A8 | 暂停/恢复/清除 | 面板行操作各执行一次 | `paused` / `active`（且 `deadline_grace_used` 归零）/ 行消失；清除走二次确认 | DB 状态序列 |
 | A9 | 过期目标恢复 | 恢复一个 `deadline_reached` 且不填新截止 | 被拒绝并提示 | UI 错误文案 |
 | A10 | 远程未连接 | 断连后打开面板 | 只读、按钮禁用、显示未连接提示、保留缓存 | 面板截图 |
-| A11 | 工作区隔离 | 两个 workspace 各有任务 | 面板只显示当前 workspace 的任务 | 两个 workspace 各截图 |
+| A11 | 跨项目全局列表 | 两个项目各有任务，面板以 `scope: "all"` 打开 | 两个项目的任务都在面板里，行上标出各自项目 | 面板截图 + 返回条目数 |
 | A12 | 老数据兼容 | 用无 `end_at_ms` 的历史库启动 | 列表与续跑行为不变 | 迁移前后行数一致 |
 | A13 | 收尾只给一轮 | 到点后连续观察多轮 | 只有第一轮带收尾文案；后续不再注入续跑 | 会话事件序列 |
 | A14 | 恢复重置收尾 | 到点停止后重新设截止并恢复 | `deadline_grace_used = 0`，且能再收尾一次 | DB 值 + 事件 |
 | A15 | 校验器通过优先 | 到点那一轮校验器判定达成 | 置 `complete`，不翻 `deadline_reached` | 状态终值 |
+| A16 | 保存不运行 | 新建 → 只点「保存」（不选「保存并运行」） | `status = paused`；未配供应商也能保存成功；不出现任何续跑；面板行显示「未启动」 | DB 值 + 事件流 |
+| A17 | 到点前预警 | 设 2 分钟内截止并保持活跃 | 进入剩余 10 分钟窗口后：续跑提示出现 `Deadline approaching`；会话收到一次预警提醒；面板行显示「即将到点」 | 事件流 + 提醒文本 + 面板截图 |
+| A18 | 表单项目选择 | 新建时把目标任务项目选为另一个项目 | 新会话与目标落在所选项目；保存后跳转到该项目 | DB 行 `s.directory` |
+| A19 | 编辑过期目标 | 编辑一个截止已过的目标，只改描述、不动截止时间 | 「保存」可用（只校验新改值）；「保存并运行」被禁用并要求先改/清空截止 | UI 状态 + DB 值 |
 
-自动化覆盖现状：迁移与 SQL 行为由 `apps/zcode-cli/packages/adapters/test/session-target-deadline.test.ts` 覆盖（9 例）；到点裁决与三处文案由 `apps/zcode-cli/packages/core/test/goal-deadline-decision.test.ts` 覆盖（8 例）；`goalList` 的工作区隔离与归档过滤由 `apps/zcode-cli/packages/bootstrap/test/goal-list.test.ts` 覆盖（4 例）；面板 store 由 `packages/ui/test/goalManagementStore.test.ts` 覆盖（5 例）。A1–A12 里依赖真实模型/真实 UI 的场景需要人工或 E2E 验证（本轮未在真实浏览器里跑过面板渲染，见遗留 ⑧）。
+自动化覆盖现状：迁移与 SQL 行为由 `apps/zcode-cli/packages/adapters/test/session-target-deadline.test.ts` 覆盖（12 例：含 0024、预警标志 mark/重置）；到点裁决、预警判定与三处文案由 `apps/zcode-cli/packages/core/test/goal-deadline-decision.test.ts` 覆盖（11 例）；`goalList` 的工作区隔离、归档过滤与 `scope: "all"` 由 `apps/zcode-cli/packages/bootstrap/test/goal-list.test.ts` 覆盖（5 例）；`start` 参数语义由 `apps/zcode-cli/packages/bootstrap/test/goal-start.test.ts` 覆盖（4 例）；服务层 wire 形状（listSessionGoals 的 workspaceKey、scope、start）由 `packages/services/test/zcodeAgentService.goals.test.ts` 覆盖（4 例，真实 stdio 假 agent）；面板 store 由 `packages/ui/test/goalManagementStore.test.ts` 覆盖。A1–A19 里依赖真实模型/真实 UI 的场景需要人工或 E2E 验证（本轮未在真实浏览器里跑过面板渲染，见遗留 ⑥）。
 
 ## 实施顺序（已按此完成）
 
@@ -316,6 +347,8 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 5. services `listSessionGoals` + UI store。
 6. UI 主视图面板 + shell 接线 + i18n。
 7. `CONTEXT.md` 新增「会话目标（goal）」「任务面板」词条。
+
+**2026-10-13 追加轮**（用户四项反馈）：① 表单截止校验只校验新改值；② 预警（contracts 阈值 + 迁移 0024 + core 一次性提醒 + 面板徽标）；③ 保存/保存并运行（协议 `start` + `resolveGoalStartStatus` + 只读客户端路由）；④ 面板改全局列表 + 表单项目选择器。修两项自修 bug：`listSessionGoals` workspace 手拼形状、编辑过期目标被禁提交。对应测试见「自动化覆盖现状」。
 
 ## 实现订正记录
 
@@ -332,23 +365,32 @@ decideGoalDeadline({ endAtMs, deadlineGraceUsed, nowMs }) → "continue" | "wrap
 6. CLI 命令中心的 `CommandCenterTargetStatus` 也补了 `deadline_reached`（否则从 DB 读到的该状态会违反类型）并展示截止时间；但**从 CLI 文本命令创建带截止时间的目标**仍未做（见遗留 ①）。
 7. 状态文案键族从设计稿的 `chat.target.status.*` 换成新面板自己的 `goals.status.*`（理由见 D4 末段）。
 
+**2026-10-13 追加（用户四项反馈 + 两项自修 bug）**
+
+8. **「保存」与「保存并运行」分开**（用户口径）：协议加 `start: boolean`，`start: false` 只落库不运行（新建落 `paused`、编辑保持原状），由纯函数 `resolveGoalStartStatus` 裁决；`/goal <text>` 缺省语义不变。同时发现并修掉一个连带问题——旧实现里 `set` 走 `getClient`（要求先配模型供应商），导致「保存一个不运行的目标」都被供应商卡住；`start: false` 改走 `getReadOnlyClient`。
+9. **到点前预警**（用户口径）：阈值常量 `GOAL_DEADLINE_WARNING_LEAD_MS = 10 分钟` 只放 contracts；服务端在首次跨过窗口时翻转持久化标志 `deadline_warning_sent`（迁移 0024）并发一次性提醒，UI 只读该标志显示「即将到点」。阈值不做 UI 副本，避免漂移。续跑/校验/resume 三条提示词通道同步输出 approaching 状态。
+10. **表单加「目标任务项目」选择器**（用户口径）：面板改为全局列表（`listSessionGoals` 加 `scope: "all"`），行上展示项目 basename；表单照 automations 先例用 `useAutomationProjectOptions`，仅新建可改、编辑锁定。
+11. **表单截止校验改为「只校验新改值」**（用户口径，修掉遗留 ③）：与原值相同的截止放行，「保存并运行」始终要求空或未来。
+12. **`listSessionGoals` 的 workspace 手拼 bug**（自修，用户报「点开就加载任务失败」）：服务层曾手拼 `{workspacePath, workspaceIdentity}`、漏掉 schema 必填的 `workspaceKey`，被服务端 parse reject。改为 `buildWorkspaceRef(params)` 统一构造，并新增真实 stdio 假 agent 回归测试钉死 wire 形状。
+
 ## 遗留（分类）
 
 **需你后续拍板（不影响本轮施工）**
 
 1. 是否要 CLI 文本命令中心也支持创建截止时间（例如 `/goal --until 10:00 ...`）。本轮只做面板入口；命令中心已能**展示**截止时间。
-2. 是否要「到点前预警」（例如剩 5 分钟时注入一次提醒让模型提前收尾）。当前设计是到点才给一轮收尾。
-3. **编辑一个截止时间已过的目标时，截止字段保持旧值会直接禁用保存**（必须先改时间或清空才能提交）。这是照「表单里的截止时间必须在未来」这条规则做的，但会产生「只想改描述文字，也被迫先改时间」的摩擦。建议改成：编辑时若截止字段未被改动就放行（只校验用户新填的值）。要不要放开请你定，改动很小。
-4. 面板固定 `includeArchived: true` 一次取全量（归档开关在客户端过滤，切换零延迟、不发新查询），代价是单次返回包含归档会话的目标。数据量大或需要分页时，可改为服务端过滤 + 分页。
+2. 面板固定 `includeArchived: true` 一次取全量（归档开关在客户端过滤，切换零延迟、不发新查询），代价是单次返回包含归档会话的目标。数据量大或需要分页时，可改为服务端过滤 + 分页（`limit` 默认 500，当前只取前 500 条，未做游标翻页）。
+3. 编辑一个 `active` 目标点「保存」会保持 active 不打断运行——这是既定语义（保存 ≠ 暂停），但若用户想「改完就停」需要先暂停再编辑，流程多一步。是否要「保存时顺带暂停」的第三个按钮，请你定。
+4. 「保存并运行」若持有**已过期**的截止时间会被表单禁用（必须先改/清空时间）——这是 ① 校验规则的直接结果，不是 bug。若觉得该字段可以更宽（例如允许带着旧过期值运行、让它立刻走收尾），请说。
 
 **已知代价，接受即可**
 
-5. 空闲会话的过期状态不即时落库（D5 的派生显示兜住）。要做到即时，需要常驻定时器，与仓库「不用超时掩盖」的取向冲突，成本不值当。派生态由面板本地时钟每 30 秒 tick 刷新，最多有 30 秒显示滞后。
+5. 空闲会话的过期状态不即时落库（D5 的派生显示兜住）。要做到即时，需要常驻定时器，与仓库「不用超时掩盖」的取向冲突，成本不值当。派生态由面板本地时钟每 30 秒 tick 刷新，最多有 30 秒显示滞后。预警标志同理：目标在窗口内 idle 时要到下一次记账才翻。
 6. 从 `deadline_reached` 恢复在**非面板入口**（v4 会话状态面板、CLI 命令中心）没有 A9 的友好拒绝：它们会恢复成功并立刻走一轮收尾再停。语义安全（不丢约束、不静默启动注定要停的任务），只是不如图板提示友好；要统一需要给 v4 resume 命令加参数，属协议扩展，不在本文范围。
 7. 校验器本身失败（无 `nextAction`）时目标会停在 `active` 直到下一次活动结算 `deadline_reached`（写了收尾标志之后）。这是既有保守停止语义 + 新增结算的叠加结果，不是新引入的问题。
-8. 面板的 React 渲染（下拉、恢复弹窗、i18n 取值、倒计时）本轮**未在真实浏览器里跑过**，只做到类型 / lint / store 单测这一层；仓库没有 goals 面板可用的组件渲染测试入口。人工验收路径见 A1–A11。
+8. 面板的 React 渲染（下拉、恢复弹窗、i18n 取值、倒计时）本轮**未在真实浏览器里跑过**，只做到类型 / lint / store 单测这一层；仓库没有 goals 面板可用的组件渲染测试入口。人工验收路径见 A1–A19。
+9. `scope: "all"` 在远端工作区只列出**那台远端机器**数据根里的项目（跨机器全局需要多连接 fan-out，不在本轮）。
 
 **不属于本功能、另立任务**
 
-9. 多目标任务（一个会话同时多个目标）：当前 `session_target` 以 `session_id` 为主键，天然单目标。面板按「一任务一会话」呈现，不触碰存储形状。
-10. v4 侧跨会话目标查询：本轮走 legacy 命令族。
+10. 多目标任务（一个会话同时多个目标）：当前 `session_target` 以 `session_id` 为主键，天然单目标。面板按「一任务一会话」呈现，不触碰存储形状。
+11. v4 侧跨会话目标查询：本轮走 legacy 命令族。

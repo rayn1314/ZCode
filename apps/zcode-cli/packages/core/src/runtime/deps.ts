@@ -88,6 +88,8 @@ export {
   formatGoalContinuationPrompt,
   decideGoalDeadline,
   GOAL_DEADLINE_REACHED_REMINDER_TEXT,
+  GOAL_DEADLINE_APPROACHING_REMINDER_TEXT,
+  shouldSendGoalDeadlineWarning,
   failOpenGoalCompletionVerification,
   failedGoalCompletionVerification,
   formatGoalCompletionVerificationFailurePrompt,

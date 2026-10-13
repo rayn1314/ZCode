@@ -248,6 +248,76 @@ test("createTarget 带上截止时间，且已存在目标时不覆盖", async (
   });
 });
 
+test("预警标志：迁移默认 0，mark 只在 active 未标记时翻一次，replace 重置", async () => {
+  await withStore(async (store) => {
+    const target = await store.setTarget({
+      objective: "warning flag",
+      sessionID: SESSION,
+      status: "active",
+      endAtMs: Date.now() + 3_600_000,
+    });
+    assert.equal(target.deadlineWarningSent, false);
+
+    await store.markTargetDeadlineWarningSent!({ sessionID: SESSION, targetID: target.targetID });
+    const marked = await store.readTarget({ sessionID: SESSION });
+    assert.equal(marked?.deadlineWarningSent, true);
+
+    // 重复 mark：flag 已置 1，不再有二次翻转让调用方重复发提醒。
+    const again = await store.markTargetDeadlineWarningSent!({
+      sessionID: SESSION,
+      targetID: target.targetID,
+    });
+    assert.equal(again?.deadlineWarningSent, true);
+
+    // replace 换 objective 视为新目标生命周期，预警机会重新给一次。
+    const replaced = await store.setTarget({
+      objective: "replaced objective",
+      sessionID: SESSION,
+      status: "active",
+      endAtMs: Date.now() + 3_600_000,
+    });
+    assert.equal(replaced.deadlineWarningSent, false);
+  });
+});
+
+test("预警标志：非 active 目标不会被 mark（暂停/停止后不再预警）", async () => {
+  await withStore(async (store) => {
+    const target = await store.setTarget({
+      objective: "paused warning",
+      sessionID: SESSION,
+      status: "active",
+    });
+    await store.updateTargetStatus({ sessionID: SESSION, status: "paused" });
+    const marked = await store.markTargetDeadlineWarningSent!({
+      sessionID: SESSION,
+      targetID: target.targetID,
+    });
+    assert.equal(marked?.deadlineWarningSent, false);
+  });
+});
+
+test("updateTargetStatus：激活重置预警标志，暂停保留（与收尾标志同规则）", async () => {
+  await withStore(async (store) => {
+    const deadline = Date.now() + 60_000;
+    const target = await store.setTarget({
+      objective: "warning reset on resume",
+      sessionID: SESSION,
+      status: "active",
+      endAtMs: deadline,
+    });
+    await store.markTargetDeadlineWarningSent!({ sessionID: SESSION, targetID: target.targetID });
+    assert.equal((await store.readTarget({ sessionID: SESSION }))?.deadlineWarningSent, true);
+
+    // 暂停不重置。
+    const paused = await store.updateTargetStatus({ sessionID: SESSION, status: "paused" });
+    assert.equal(paused?.deadlineWarningSent, true);
+
+    // 恢复（active）重置。
+    const resumed = await store.updateTargetStatus({ sessionID: SESSION, status: "active" });
+    assert.equal(resumed?.deadlineWarningSent, false);
+  });
+});
+
 test("listTargets 按工作区过滤并带上承载会话的展示身份", async () => {
   await withStore(async (store) => {
     const deadline = Date.now() + 120_000;

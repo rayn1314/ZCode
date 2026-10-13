@@ -1299,6 +1299,11 @@ export interface SessionStorePort {
     sessionID: SessionId;
     targetID: string;
   }): Promise<SessionGoal | null>;
+  /** 到点前预警只发一次：落库「已发过预警」。 */
+  markTargetDeadlineWarningSent?(input: {
+    sessionID: SessionId;
+    targetID: string;
+  }): Promise<SessionGoal | null>;
   startTargetRun?(input: {
     sessionID: SessionId;
     targetID: string;

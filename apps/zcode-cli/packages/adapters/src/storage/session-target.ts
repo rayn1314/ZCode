@@ -20,6 +20,7 @@ interface TargetRow {
   active_run_last_seen_at: number | null;
   end_at_ms: number | null;
   deadline_grace_used: number;
+  deadline_warning_sent: number;
   time_created: number;
   time_updated: number;
 }
@@ -57,8 +58,8 @@ export function setSessionTarget(
   db.prepare(
     `
     insert into session_target (
-      session_id, target_id, objective, summary_title, status, token_budget, tokens_used, time_used_seconds, end_at_ms, deadline_grace_used, time_created, time_updated
-    ) values (?, ?, ?, null, ?, ?, 0, 0, ?, 0, ?, ?)
+      session_id, target_id, objective, summary_title, status, token_budget, tokens_used, time_used_seconds, end_at_ms, deadline_grace_used, deadline_warning_sent, time_created, time_updated
+    ) values (?, ?, ?, null, ?, ?, 0, 0, ?, 0, 0, ?, ?)
     on conflict(session_id) do update set
       target_id = excluded.target_id,
       objective = excluded.objective,
@@ -69,6 +70,7 @@ export function setSessionTarget(
       time_used_seconds = excluded.time_used_seconds,
       end_at_ms = excluded.end_at_ms,
       deadline_grace_used = 0,
+      deadline_warning_sent = 0,
       active_input_id = null,
       active_run_started_at = null,
       active_run_last_seen_at = null,
@@ -119,9 +121,10 @@ export function cloneSessionTargetForFork(
       active_run_last_seen_at,
       end_at_ms,
       deadline_grace_used,
+      deadline_warning_sent,
       time_created,
       time_updated
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, null, ?, 0, ?, ?)
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, null, null, null, ?, 0, 0, ?, ?)
     on conflict(session_id) do update set
       target_id = excluded.target_id,
       objective = excluded.objective,
@@ -135,6 +138,7 @@ export function cloneSessionTargetForFork(
       active_run_last_seen_at = null,
       end_at_ms = excluded.end_at_ms,
       deadline_grace_used = 0,
+      deadline_warning_sent = 0,
       time_created = excluded.time_created,
       time_updated = excluded.time_updated
     `,
@@ -169,8 +173,8 @@ export function createSessionTarget(
   db.prepare(
     `
     insert or ignore into session_target (
-      session_id, target_id, objective, summary_title, status, token_budget, tokens_used, time_used_seconds, end_at_ms, deadline_grace_used, time_created, time_updated
-    ) values (?, ?, ?, null, 'active', ?, 0, 0, ?, 0, ?, ?)
+      session_id, target_id, objective, summary_title, status, token_budget, tokens_used, time_used_seconds, end_at_ms, deadline_grace_used, deadline_warning_sent, time_created, time_updated
+    ) values (?, ?, ?, null, 'active', ?, 0, 0, ?, 0, 0, ?, ?)
     `,
   ).run(
     input.sessionID,
@@ -199,9 +203,9 @@ export function updateSessionTargetStatus(
 ): SessionGoal | null {
   const now = Date.now();
   const overrideEndAt = input.endAtMs !== undefined;
-  // 激活（resume）视为开启新的目标生命周期：必须重置收尾轮标志，否则恢复后的目标
-  // 会在第一个检查点就被判成「已收尾」而立即停止。
-  const resetGrace = input.status === "active";
+  // 激活（resume）视为开启新的目标生命周期：必须重置收尾轮与预警标志，否则恢复后的目标
+  // 会在第一个检查点就被判成「已收尾」而立即停止，预警也不会重新发。
+  const resetLifecycleFlags = input.status === "active";
   const result = db
     .prepare(
       `
@@ -210,6 +214,7 @@ export function updateSessionTargetStatus(
         status = ?,
         end_at_ms = case when ? = 1 then ? else end_at_ms end,
         deadline_grace_used = case when ? = 1 then 0 else deadline_grace_used end,
+        deadline_warning_sent = case when ? = 1 then 0 else deadline_warning_sent end,
         time_updated = max(time_updated, ?)
       where session_id = ?
       `,
@@ -218,7 +223,8 @@ export function updateSessionTargetStatus(
       input.status,
       overrideEndAt ? 1 : 0,
       input.endAtMs ?? null,
-      resetGrace ? 1 : 0,
+      resetLifecycleFlags ? 1 : 0,
+      resetLifecycleFlags ? 1 : 0,
       now,
       input.sessionID,
     );
@@ -242,6 +248,29 @@ export function markSessionTargetDeadlineGraceUsed(
       update session_target
       set deadline_grace_used = 1, time_updated = max(time_updated, ?)
       where session_id = ? and target_id = ? and status = 'active'
+      `,
+    )
+    .run(now, input.sessionID, input.targetID);
+  if (result.changes === 0) return readSessionTarget(db, { sessionID: input.sessionID });
+  touchSessionForTarget(db, input.sessionID, now);
+  return mustReadTarget(db, input.sessionID);
+}
+
+/**
+ * 到点前的预警只发一次：把「已发过预警」落库，防止每一轮 turn 记账都重复注入提醒。
+ * 与收尾轮标志同源同理，同样在设定/替换/激活时重置。
+ */
+export function markSessionTargetDeadlineWarningSent(
+  db: DatabaseSync,
+  input: { sessionID: SessionId; targetID: string },
+): SessionGoal | null {
+  const now = Date.now();
+  const result = db
+    .prepare(
+      `
+      update session_target
+      set deadline_warning_sent = 1, time_updated = max(time_updated, ?)
+      where session_id = ? and target_id = ? and status = 'active' and deadline_warning_sent = 0
       `,
     )
     .run(now, input.sessionID, input.targetID);
@@ -535,6 +564,7 @@ export function listSessionTargets(
         st.active_run_last_seen_at,
         st.end_at_ms,
         st.deadline_grace_used,
+        st.deadline_warning_sent,
         st.time_created,
         st.time_updated,
         s.title as session_title,
@@ -591,6 +621,7 @@ function decodeTargetRow(row: TargetRow): SessionGoal {
     timeUsedSeconds: row.time_used_seconds,
     endAtMs: row.end_at_ms,
     deadlineGraceUsed: row.deadline_grace_used === 1,
+    deadlineWarningSent: row.deadline_warning_sent === 1,
     activeInputId: row.active_input_id,
     activeRunStartedAtMs: row.active_run_started_at,
     activeRunLastSeenAtMs: row.active_run_last_seen_at,

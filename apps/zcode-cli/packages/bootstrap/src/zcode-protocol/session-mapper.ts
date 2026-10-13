@@ -1069,6 +1069,7 @@ export function mapSessionGoal(
     tokensUsed: goal.tokensUsed ?? 0,
     endAtMs: goal.endAtMs ?? null,
     deadlineGraceUsed: goal.deadlineGraceUsed ?? false,
+    deadlineWarningSent: goal.deadlineWarningSent ?? false,
     activeInputId: goal.activeInputId ?? null,
     activeRunStartedAtMs: goal.activeRunStartedAtMs ?? null,
     activeRunLastSeenAtMs: goal.activeRunLastSeenAtMs ?? null,

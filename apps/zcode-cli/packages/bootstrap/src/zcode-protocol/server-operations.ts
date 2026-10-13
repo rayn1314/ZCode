@@ -727,6 +727,7 @@ async function readProtocolSessionEvents(
   deliveryKind?: ZCodeDeliveryKind,
   options: { afterSeq?: number; limit?: number } = {},
 ): Promise<ZCodeSessionEvent[]> {
+  const startedAt = Date.now();
   const events = await record.eventStore.getEvents(record.app.sessionId as SessionId);
   const visibleEvents: ZCodeSessionEvent[] = [];
   const toolInputTransmissions: ZCodeProtocolToolInputTransmissionState = {
@@ -798,7 +799,23 @@ async function readProtocolSessionEvents(
     pushMappedEvent(event);
   }
   flushPendingStreamingDeltaBatch();
-  return options.limit ? visibleEvents.slice(-options.limit) : visibleEvents;
+  const replayResult = options.limit ? visibleEvents.slice(-options.limit) : visibleEvents;
+  const replayDurationMs = Date.now() - startedAt;
+  if (replayDurationMs >= READ_PROTOCOL_REPLAY_SLOW_WARN_MS) {
+    context.logger?.warn(
+      "ZCode Protocol session event replay exceeded slow threshold",
+      {
+        event: "zcode_protocol.session.event_replay.slow",
+        sessionId: String(record.app.sessionId),
+        deliveryKind,
+        durationMs: replayDurationMs,
+        retainedEventRows: events.length,
+        replayEventCount: replayResult.length,
+        afterSeq: options.afterSeq,
+      },
+    );
+  }
+  return replayResult;
 }
 
 async function getProtocolEventSeq(
@@ -1942,6 +1959,12 @@ export const SESSION_MESSAGES_DEFAULT_LIMIT = 2000;
 export const SESSION_MESSAGES_MAX_LIMIT = 10_000;
 // 面板一次展示的工作区目标上限；目标数量天然远小于会话数，取一个足够宽的上限即可。
 export const GOAL_LIST_DEFAULT_LIMIT = 500;
+/**
+ * 会话事件重放慢阈值。事件重放大头在单 turn 长驻留（退避重试会让一个 turn 拖数小时、
+ * 内存事件表随之膨胀）；重放是全量映射，耗时随行数线性涨。超过阈值记 warn 可观测，
+ * 上线后据此拍死"重订阅/切对话卡顿"的重放开销量级。
+ */
+export const READ_PROTOCOL_REPLAY_SLOW_WARN_MS = 250;
 
 export async function readMessages(context: ZCodeProtocolAgentServerContext, rawParams: unknown) {
   const params = parseParams(zcodeSessionMessagesParamsSchema, rawParams);
@@ -2334,15 +2357,37 @@ export async function goalSession(context: ZCodeProtocolAgentServerContext, rawP
 
   // App 输入框里的 `/goal 新目标` 是用户显式提交的新目标；已有目标时继续要求
   // replace 会让用户以为目标已变更但数据库仍保留旧目标。这里把重复 set 收敛成 replace 语义。
-  const replacesExistingGoal =
-    params.action === "replace" || Boolean(await record.app.readTarget());
+  const existing = await record.app.readTarget();
+  const replacesExistingGoal = params.action === "replace" || Boolean(existing);
+
+  // `start: false` 是面板的「保存」语义：只落库不启动。新建落 paused；
+  // 编辑已运行的目标保持 active（不打断运行），只是不再触发新的一轮续跑。
+  // 缺省（含 `/goal <text>`）保持既有行为：置 active 并立即续跑。
+  const start = params.start ?? true;
+  const status = resolveGoalStartStatus(start, existing?.status ?? null);
 
   const target = await record.app.setTarget({
     objective,
-    status: "active",
+    status,
     tokenBudget: params.tokenBudget,
     endAtMs: params.endAtMs,
   });
+  if (!target) {
+    return {
+      response: "Failed to save goal.",
+      snapshot: await snapshot(context, record),
+      startedTurn: false,
+    };
+  }
+  if (!start) {
+    return {
+      response: replacesExistingGoal
+        ? "Goal updated (not started)."
+        : "Goal saved (not started).",
+      snapshot: await afterStateMutation(context, record, replacesExistingGoal ? "goal_replaced" : "goal_set"),
+      startedTurn: false,
+    };
+  }
   return await continueGoalAfterChange(context, record, {
     inputId: params.inputId,
     reason: replacesExistingGoal ? "goal_replaced" : "goal_set",
@@ -2352,9 +2397,22 @@ export async function goalSession(context: ZCodeProtocolAgentServerContext, rawP
 }
 
 /**
- * 面板数据源：按工作区列出全部目标（含承载会话的展示身份）。
- * 与 listSessions 同为 workspace 级只读查询；工作区隔离沿用同一判据
- * （workspaceIdentity?.trim() || workspacePath），不做路径近似。
+ * `session/goal` set/replace 的目标状态裁决（纯函数，便于单测）：
+ * `start === false` 表示「保存但不运行」——新建落 paused、编辑已运行的目标保持 active；
+ * 其余情况一律置 active（`/goal <text>` 的既有语义）。
+ */
+export function resolveGoalStartStatus(
+  start: boolean,
+  existingStatus: string | null,
+): "active" | "paused" {
+  if (start) return "active";
+  return existingStatus === "active" ? "active" : "paused";
+}
+
+/**
+ * 面板数据源：按工作区列出目标（含承载会话的展示身份）；`scope: "all"` 时列出
+ * 本机数据根里的全部目标（同一会话库天然支持），供「任务」面板跨项目查看。
+ * 工作区隔离沿用与 listSessions 同一判据（workspaceIdentity?.trim() || workspacePath）。
  */
 export async function goalListSessions(
   context: ZCodeProtocolAgentServerContext,
@@ -2362,16 +2420,18 @@ export async function goalListSessions(
 ) {
   const params = parseParams(zcodeSessionGoalListParamsSchema, rawParams ?? {});
   const store = context.deps.sessionStore;
+  const allWorkspaces = params.scope === "all";
   const entries = store?.listTargets
     ? await store.listTargets({
-        directory: params.workspace?.workspacePath,
+        directory: allWorkspaces ? undefined : params.workspace?.workspacePath,
         includeArchived: params.includeArchived,
         limit: params.limit ?? GOAL_LIST_DEFAULT_LIMIT,
       })
     : [];
-  const expectedWorkspaceKey = params.workspace
-    ? params.workspace.workspaceIdentity?.trim() || params.workspace.workspacePath
-    : undefined;
+  const expectedWorkspaceKey =
+    !allWorkspaces && params.workspace
+      ? params.workspace.workspaceIdentity?.trim() || params.workspace.workspacePath
+      : undefined;
   const goals = entries
     .filter((entry) => params.includeArchived || !entry.archived)
     .filter((entry) => {
