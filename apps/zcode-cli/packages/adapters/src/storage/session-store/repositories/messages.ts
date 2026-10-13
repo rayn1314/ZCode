@@ -6,6 +6,7 @@ import type {
   MessageWithParts,
   PartId,
   SessionId,
+  SessionMessageSlice,
   SessionStorePort,
 } from "@zcode/contracts";
 import { decodeMessageRow, decodePartRow, partCreatedAt } from "../codecs.js";
@@ -278,4 +279,146 @@ export async function messageWithParts(
     info: decodeMessageRow(messageRow),
     parts: partRows.map(decodePartRow),
   };
+}
+
+/**
+ * 尾部窗口 / 游标分页的统一读路径（`messageWindow` 与 `messagePageBefore` 共用）。
+ *
+ * 性能约束（spec: cold-open-window-first §1）：只读**尾部窗口**——元信息走
+ * `count/min/sum` 聚合，正文按 `(session_id, sequence)` 索引倒序取 `limit + 1` 条判 `hasOlder`，
+ * 不对全表排序、不读窗口之外的 `data`。`order by sequence desc, time_created desc, id desc`
+ * 与索引列序一致；`sequence` 在会话内由存储层维护为唯一递增（0014/0015），故这里的全序
+ * 与 `messages()` 的规范全序一致。
+ */
+export async function messageSlice(
+  db: DatabaseSync,
+  input: { sessionID: SessionId; beforeSequence?: number; limit: number },
+): Promise<SessionMessageSlice> {
+  const meta = db
+    .prepare(
+      `
+      select count(*) as total,
+             sum(case when sequence is null then 1 else 0 end) as null_count,
+             min(sequence) as first_sequence
+      from message
+      where session_id = ?
+      `,
+    )
+    .get(input.sessionID) as unknown as {
+    total: number;
+    null_count: number | null;
+    first_sequence: number | null;
+  };
+  const totalCount = Number(meta.total ?? 0);
+  const firstSequence = meta.first_sequence === null ? null : Number(meta.first_sequence);
+  // NULL sequence 旧行的规范顺序排在非空行之前，尾部窗口按 sequence 倒序无法表达它；
+  // 交给调用方回退既有全量路径，而不是在这里拼一个近似顺序。
+  if (Number(meta.null_count ?? 0) > 0) {
+    return { messages: [], sequences: [], totalCount, firstSequence, hasOlder: false, legacySequence: true };
+  }
+  if (totalCount === 0) {
+    return {
+      messages: [],
+      sequences: [],
+      totalCount: 0,
+      firstSequence: null,
+      hasOlder: false,
+      legacySequence: false,
+    };
+  }
+
+  const hasCursor = input.beforeSequence !== undefined;
+  const fetchLimit = input.limit + 1;
+  const tailRows = (
+    hasCursor
+      ? db
+          .prepare(
+            `
+            select * from message
+            where session_id = ? and sequence < ?
+            order by sequence desc, time_created desc, id desc
+            limit ?
+            `,
+          )
+          .all(input.sessionID, input.beforeSequence as number, fetchLimit)
+      : db
+          .prepare(
+            `
+            select * from message
+            where session_id = ?
+            order by sequence desc, time_created desc, id desc
+            limit ?
+            `,
+          )
+          .all(input.sessionID, fetchLimit)
+  ) as unknown as MessageRow[];
+  const hasOlder = tailRows.length > input.limit;
+  const page = hasOlder ? tailRows.slice(0, input.limit) : tailRows;
+  page.reverse();
+
+  // part 只读本页消息的：子查询与正文同一索引，避免 IN 列表拼 SQL（值仍全部参数绑定）。
+  const partRows = (
+    hasCursor
+      ? db
+          .prepare(
+            `
+            select * from part
+            where session_id = ? and message_id in (
+              select id from message
+              where session_id = ? and sequence < ?
+              order by sequence desc, time_created desc, id desc
+              limit ?
+            )
+            order by message_id, sequence is null, sequence, time_created, id
+            `,
+          )
+          .all(input.sessionID, input.sessionID, input.beforeSequence as number, fetchLimit)
+      : db
+          .prepare(
+            `
+            select * from part
+            where session_id = ? and message_id in (
+              select id from message
+              where session_id = ?
+              order by sequence desc, time_created desc, id desc
+              limit ?
+            )
+            order by message_id, sequence is null, sequence, time_created, id
+            `,
+          )
+          .all(input.sessionID, input.sessionID, fetchLimit)
+  ) as unknown as PartRow[];
+  const partsByMessage = new Map<string, MessagePart[]>();
+  for (const row of partRows) {
+    const part = decodePartRow(row);
+    const list = partsByMessage.get(row.message_id) ?? [];
+    list.push(part);
+    partsByMessage.set(row.message_id, list);
+  }
+
+  return {
+    messages: page.map((row) => ({
+      info: decodeMessageRow(row),
+      parts: partsByMessage.get(row.id) ?? [],
+    })),
+    sequences: page.map((row) => Number(row.sequence)),
+    totalCount,
+    firstSequence,
+    hasOlder,
+    legacySequence: false,
+  };
+}
+
+export async function messageWindow(
+  db: DatabaseSync,
+  input: { sessionID: SessionId; limit: number },
+): Promise<SessionMessageSlice> {
+  return messageSlice(db, input);
+}
+
+export async function messagePageBefore(
+  db: DatabaseSync,
+  input: { sessionID: SessionId; beforeSequence?: number; limit: number },
+): Promise<SessionMessageSlice> {
+  return messageSlice(db, input);
 }

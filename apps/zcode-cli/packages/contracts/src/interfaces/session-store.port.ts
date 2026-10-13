@@ -783,6 +783,29 @@ export interface MessageWithParts {
   parts: MessagePart[];
 }
 
+/**
+ * 冷打开窗口态的消息切片：该会话规范顺序的最后 `limit` 条 message 及其 part，
+ * 外加只靠索引聚合得到的会话级轻量元信息（不读 `data`）。
+ *
+ * 元信息的用途（`apps/zcode-cli/packages/bootstrap/spec/cold-open-window-first.md`）：
+ * - `totalCount` 供首帧 wire `rows.totalCount`（真实消息总数，不是窗口可见行数）；
+ * - `firstSequence` + 本片最早 sequence 供翻页游标与「窗口是否已到会话开头」判定；
+ * - `legacySequence=true` 表示会话存在 NULL sequence 旧行，排序口径已退化，调用方必须
+ *   回退既有全量路径，不能在这份切片上做任何序号推断。
+ */
+export interface SessionMessageSlice {
+  messages: MessageWithParts[];
+  /** 与 messages 对齐的会话内规范 sequence（单调递增）。 */
+  sequences: number[];
+  /** 会话消息总数。 */
+  totalCount: number;
+  /** 会话最小 sequence；空会话为 null。 */
+  firstSequence: number | null;
+  /** 本片之外还有更早消息。 */
+  hasOlder: boolean;
+  legacySequence: boolean;
+}
+
 /** 分享导入的单事务载荷：新 session、唯一 model-only 上下文和 provenance 全有或全无。 */
 export interface SharedContextImportCommitBundle {
   session: CreateSessionInput;
@@ -1183,6 +1206,24 @@ export interface SessionStorePort {
     messageID: MessageId;
   }): Promise<MessageWithParts | null>;
   messages(input: { sessionID: SessionId }): Promise<MessageWithParts[]>;
+  /**
+   * 冷打开首帧的尾部窗口读：只取最后 `limit` 条消息及其 part（走 `(session_id, sequence)`
+   * 索引，不读全表、不排序全表），并顺带返回会话级元信息。
+   *
+   * 与 `messages()` 的关系：`messages()` 是权威全量读（顺序、内容口径的基准），本方法只是它
+   * 的尾部子集 + 元信息；两者的行内容必须逐字节一致（测试钉住）。旧宿主可不实现
+   * （调用方回退 `messages()` 全量路径）。
+   */
+  messageWindow?(input: { sessionID: SessionId; limit: number }): Promise<SessionMessageSlice>;
+  /**
+   * 窗口态向上翻页：取 `sequence < beforeSequence`（缺省 = 整段尾部）的最后 `limit` 条消息。
+   * 与 `messageWindow` 同一读路径，只换游标；`hasOlder` 表示游标方向之外还有更早消息。
+   */
+  messagePageBefore?(input: {
+    sessionID: SessionId;
+    beforeSequence?: number;
+    limit: number;
+  }): Promise<SessionMessageSlice>;
   saveSessionEntry?(input: SessionEntryInfo): Promise<void>;
   sessionEntries?(input: {
     sessionID: SessionId;

@@ -3965,7 +3965,11 @@ async function readPersistedSessionMessages(
   }) ?? []);
 }
 
-function derivePersistedSessionMode(
+/**
+ * 从 transcript 反推会话协作模式（末条 assistant 的 mode）：冷恢复建 record 与首帧
+ * config 种子共用同一口径，避免两处各写一份「哪条消息代表模式」的规则。
+ */
+export function derivePersistedSessionMode(
   messages: readonly MessageWithParts[],
 ): ZCodeSessionCreateParams["mode"] | undefined {
   for (let index = messages.length - 1; index >= 0; index -= 1) {

@@ -44,6 +44,7 @@ import type {
   SessionInputDelivery,
   SessionInputRecord,
   SessionInputStatus,
+  SessionMessageSlice,
   SessionTaskLinkRecord,
   SessionRevert,
   SessionStorePort,
@@ -647,6 +648,18 @@ export class SqliteSessionStore
 
   async messages(input: { sessionID: SessionId }): Promise<MessageWithParts[]> {
     return messageRepository.messages(this.db, input);
+  }
+
+  async messageWindow(input: { sessionID: SessionId; limit: number }): Promise<SessionMessageSlice> {
+    return messageRepository.messageWindow(this.db, input);
+  }
+
+  async messagePageBefore(input: {
+    sessionID: SessionId;
+    beforeSequence?: number;
+    limit: number;
+  }): Promise<SessionMessageSlice> {
+    return messageRepository.messagePageBefore(this.db, input);
   }
 
   async saveSessionEntry(input: SessionEntryInfo): Promise<void> {

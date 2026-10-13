@@ -32,6 +32,7 @@ import {
   v4ConversationSubscribeResultSchema,
   v4ConversationRowsRangeResultSchema,
   v4SessionsIndexSubscribeResultSchema,
+  type ConversationSnapshot,
   type ConversationTopicFrame,
 } from "@zcode/shared/zcode-protocol-v4";
 import type {
@@ -2842,4 +2843,159 @@ describe("v4 冷恢复（集成：真 sqlite + server + binder）", () => {
       store.close();
     }
   });
+
+  // 冷打开「窗口优先 + 后台补全」的端到端契约（spec: spec/cold-open-window-first.md）。
+  // 走真 sqlite + server + binder：窗口读、store 分页、transcript 合成、补全原子替换
+  // 四条链路都必须与真实 sessionStore 对得上。
+  it("冷打开大会话：首帧尾部窗口 + store 分页 + 补全后换成完整投影", async () => {
+    const dbPath = join(tempRoot, "window-first.db");
+    const turnCount = 70; // 140 条消息 > 窗口 120 条，首帧必然进入窗口态
+    const store = createSqliteSessionStore({ dbPath });
+    await store.createSession({
+      id: SESSION_ID,
+      parentID: PARENT_SESSION_ID,
+      projectID: "project_cold_resume" as ProjectId,
+      slug: "window-first-session",
+      directory: WORKSPACE_PATH,
+      path: WORKSPACE_PATH,
+      title: "Window first session",
+      version: "test-version",
+      time: { created: 1, updated: 2 },
+    });
+    for (let index = 0; index < turnCount; index += 1) {
+      const userId = `msg_win_user_${index}`;
+      const assistantId = `msg_win_assistant_${index}`;
+      await saveUserTextMessage(
+        store,
+        SESSION_ID,
+        userId as MessageId,
+        `窗口问题${index}`,
+        10 + index * 10,
+      );
+      await saveAssistantTextMessage(
+        store,
+        SESSION_ID,
+        assistantId as MessageId,
+        userId as MessageId,
+        `窗口回答${index}`,
+        11 + index * 10,
+      );
+    }
+    // 首帧 config 的持久化来源：runtime 把常驻选型写在 `${sessionId}:runtime-model-selection`。
+    await store.saveSessionEntry({
+      id: `${SESSION_ID}:runtime-model-selection`,
+      sessionID: SESSION_ID,
+      type: SESSION_ENTRY_MODEL_SELECTION,
+      time: { created: 9, updated: 9 },
+      data: { providerId: "glm", modelId: "glm-4-air" },
+    });
+    store.close();
+
+    // 用真实 registry-backed app：A4 的「补全后 config 换成 runtime 真值」要靠真实 resume
+    // 从同一条持久化选型恢复，fake app 不复现这条接线。
+    const { server, close } = bootRealRestartedServer(dbPath);
+    // 补全 snapshot 是 subscribe 之后由 publisher flush 主动推的帧，不走请求的
+    // post-response outbox，只能在 notification sink 上观察。
+    const pushedFrames: unknown[] = [];
+    server.setNotificationSink((message) => {
+      if (message.method === V4_NOTIFICATIONS.conversationFrame) {
+        pushedFrames.push(message.params);
+        return;
+      }
+      // activation 会向 Host 要运行时偏好；不答这一手，冷恢复会一直挂在物化阶段。
+      if (
+        "id" in message &&
+        message.method === zcodeProtocolMethods.sessionRequestRuntimePreferences
+      ) {
+        void server.handleMessage({
+          id: message.id,
+          result: { nativeSearchEnhancementsEnabled: false, memoryEnabled: false },
+        });
+      }
+    });
+    try {
+      const subscribed = v4ConversationSubscribeResultSchema.parse(
+        await requestResult(server, {
+          id: "window-first",
+          method: V4_METHODS.conversationSubscribe,
+          params: {
+            topic: conversationTopic(SESSION_ID),
+            connectionId: "conn-window-first",
+            clientMode: "desktop-continuous",
+          },
+        }),
+      );
+      expect(subscribed.ack.mode).toBe("snapshot");
+      const frame = conversationTopicFrameSchema.parse(takeInitialFrameParams(server, "window-first"));
+      if (frame.payload.kind !== "snapshot") throw new Error("Expected snapshot initial frame");
+      const windowSnapshot = frame.payload.snapshot;
+      // 窗口态：firstRowId 是「还有更早行」哨兵，wire 只发尾部 60 行；
+      // totalCount 取 store 口径（消息总数）与窗口可见行数的较大者——只会小于真实全序行数，
+      // 但绝不会小于已可见行数（见 spec 的 totalCount 近似说明）。
+      expect(windowSnapshot.rows.totalCount).toBeGreaterThanOrEqual(turnCount * 2);
+      expect(windowSnapshot.rows.window).toHaveLength(60);
+      expect(windowSnapshot.rows.firstRowId).toBeLessThan(windowSnapshot.rows.window[0]!.rowId);
+      // 首帧 config 来自持久化选择（runtime 真值要等 activation 完成）。
+      expect(windowSnapshot.config).toMatchObject({ model: "glm-4-air", provider: "glm" });
+      // 补全完成前就能向上翻页：更早行由 store 分页供给（负行号空间，内容与 transcript 一致）。
+      const page = v4ConversationRowsRangeResultSchema.parse(
+        await requestResult(server, {
+          id: "window-first-page",
+          method: V4_METHODS.conversationRowsRange,
+          params: {
+            sessionId: SESSION_ID,
+            beforeRowId: windowSnapshot.rows.window[0]!.rowId,
+            limit: 60,
+            clientMode: "desktop-continuous",
+          },
+        }),
+      );
+      expect(page.rows.length).toBeGreaterThan(0);
+      expect(page.rows.every((row) => row.rowId < 0)).toBe(true);
+      expect(page.atLogEpoch).toBe(windowSnapshot.logEpoch);
+      // 窗口外只剩 20 条消息（140-120），一页即到底：hasMore=false，且已含会话最早一轮。
+      expect(page.hasMore).toBe(false);
+      const pageTexts = page.rows
+        .filter((row) => row.kind === "userInput" || row.kind === "assistantText")
+        .map((row) => ("text" in row ? row.text : ""));
+      expect(pageTexts[0]).toBe("窗口问题0");
+      expect(pageTexts).toEqual(
+        pageTexts.toSorted((left, right) => {
+          const indexOf = (text: string) => Number(text.replace(/[^0-9]/g, ""));
+          return indexOf(left) - indexOf(right);
+        }),
+      );
+
+      // 后台补全：同一 logEpoch 的完整 snapshot 稍后到达，行号回到全序口径。
+      const complete = await waitForCompleteSnapshot(pushedFrames, windowSnapshot.logEpoch);
+      expect(complete.rows.firstRowId).toBe(1);
+      expect(complete.config.model).toBe(windowSnapshot.config.model);
+    } finally {
+      await close();
+    }
+  });
 });
+
+/**
+ * 等补全 snapshot（同一 logEpoch、firstRowId 回到全序首行）出现在 publisher 主动推送的
+ * 帧里。activation + 全量 hydration 走真实 binder，耗时不确定，这里只轮询事实，
+ * 不用固定 sleep 断言时序。
+ */
+async function waitForCompleteSnapshot(
+  pushedFrames: readonly unknown[],
+  logEpoch: string,
+): Promise<ConversationSnapshot> {
+  const deadline = Date.now() + 15_000;
+  while (Date.now() < deadline) {
+    for (const params of pushedFrames) {
+      const wire = routedTopicWireFrameSchema.parse(params);
+      if (wire.kind !== "complete") continue;
+      const frame = conversationTopicFrameSchema.parse(wire.frame);
+      if (frame.payload.kind !== "snapshot") continue;
+      if (frame.payload.snapshot.logEpoch !== logEpoch) continue;
+      if (frame.payload.snapshot.rows.firstRowId === 1) return frame.payload.snapshot;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("timeout waiting for completion snapshot");
+}

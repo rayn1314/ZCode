@@ -407,10 +407,50 @@ export class ConversationTopicPublisher {
   }
 
   /**
+   * 窗口态行元信息（spec: cold-open-window-first §1）。投影只灌入尾部窗口时，
+   * wire rows 的全序口径（totalCount / firstRowId）必须由 store 的轻量元信息提供，
+   * 不能用「可见行数 / 可见首行」冒充全序。null = 投影含全序行（warm 默认）。
+   *
+   * 这是 publisher 内部状态，不外泄到 wire：客户端只看到正常的 rows 语义，
+   * 因此翻页判定（`window[0].rowId > firstRowId`）与完整态同规。
+   */
+  private rowsWindowMeta: { totalCount: number; firstRowId: number | null } | null = null;
+
+  /** 投影是否只含尾部窗口行（冷打开首帧阶段）。 */
+  isRowsIncomplete(): boolean {
+    return this.rowsWindowMeta !== null;
+  }
+
+  /**
+   * 标记窗口态：只灌入尾部窗口行后调用。必须早于任何 subscribe/测量，
+   * 否则首帧会以「可见行数」当总数下发。
+   */
+  markRowsIncomplete(meta: { totalCount: number; firstRowId: number | null }): void {
+    this.rowsWindowMeta = {
+      totalCount: Math.max(0, Math.floor(meta.totalCount)),
+      firstRowId: meta.firstRowId,
+    };
+    this.invalidateWireSnapshotMeasureMemo();
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
+  }
+
+  /** 后台补全（全量重放）完成后恢复全序口径；原子替换的一部分，与 rehydrate 同批生效。 */
+  markRowsComplete(): void {
+    if (this.rowsWindowMeta === null) return;
+    this.rowsWindowMeta = null;
+    this.invalidateWireSnapshotMeasureMemo();
+    this.wireSnapshotBytesUpperBound = this.measureCurrentWireSnapshotBytes();
+  }
+
+  /**
    * 下发用快照：rows 只带尾部窗口（snapshotTailWindowRows），
    * totalCount/firstRowId 保留全序口径——客户端以 `window[0].rowId === firstRowId`
    * 判定已到顶，更早历史经 rows/range 游标拉取。投影内部快照保持全量
    * （rows/range 数据源 + findRow/messageId 锚点都依赖它），只在打帧边界截断。
+   *
+   * 窗口态（`rowsWindowMeta` 非空）例外：投影本身就只是尾部窗口，全序口径取自
+   * store 元信息——总数是会话真实消息总数（可见行数只是子集），firstRowId 由调用方
+   * 给出的全序哨兵决定，保证「还有更早行」判定为真。
    */
   private getWireSnapshot(snapshot = this.projection.getSnapshot()): ConversationSnapshot {
     return this.getWireSnapshotForProfile(DELIVERY_PROFILES.continuous, snapshot);
@@ -421,13 +461,16 @@ export class ConversationTopicPublisher {
     snapshot = this.projection.getSnapshot(),
   ): ConversationSnapshot {
     const visibleRows = filterConversationRowsForProfile(snapshot.rows.window, profile);
+    const windowMeta = this.rowsWindowMeta;
     const visibleSnapshot: ConversationSnapshot = {
       ...snapshot,
       rows: {
         ...snapshot.rows,
         window: visibleRows,
-        totalCount: visibleRows.length,
-        firstRowId: visibleRows[0]?.rowId ?? null,
+        totalCount: windowMeta
+          ? Math.max(windowMeta.totalCount, visibleRows.length)
+          : visibleRows.length,
+        firstRowId: windowMeta ? windowMeta.firstRowId : (visibleRows[0]?.rowId ?? null),
       },
     };
     const limit = PROTOCOL_V4_LIMITS.snapshotTailWindowRows;
@@ -557,6 +600,35 @@ export class ConversationTopicPublisher {
       atLogEpoch: this.logEpoch,
       hasMore: eligible.length > rows.length,
     };
+  }
+
+  /**
+   * rows/range 的统一入口（spec: cold-open-window-first §4）。两条数据源：
+   * - 完整态（默认）：走 {@link getRowsRange} 的投影切片，与全量重放前缀一致；
+   * - 窗口态（`isRowsIncomplete()`）：投影只有尾部窗口行，更早行改由 store 分页供给
+   *   （宿主注入 `readOlderRows`，不得依赖「投影全量行」）。
+   *
+   * 两条路径的契约相同：取 `rowId < beforeRowId` 的最后 limit 行、rowId 升序返回、
+   * atLogEpoch 与当前 publisher 一致。窗口态的 rowId 空间由宿主按 store 序号生成，
+   * 与本投影的窗口行号在同一全序上可比（见 cold-window-rows.ts）。
+   */
+  async readRowsRange(
+    params: { beforeRowId?: number; limit: number },
+    deliveryProfile: DeliveryProfileName = "replayable",
+    readOlderRows?: (params: {
+      beforeRowId: number;
+      limit: number;
+    }) => Promise<V4ConversationRowsRangeResult>,
+  ): Promise<V4ConversationRowsRangeResult> {
+    if (
+      this.rowsWindowMeta !== null &&
+      readOlderRows !== undefined &&
+      params.beforeRowId !== undefined
+    ) {
+      const limit = Math.max(1, Math.min(params.limit, PROTOCOL_V4_LIMITS.rowsRangeMaxLimit));
+      return readOlderRows({ beforeRowId: params.beforeRowId, limit });
+    }
+    return this.getRowsRange(params, deliveryProfile);
   }
 
   /**

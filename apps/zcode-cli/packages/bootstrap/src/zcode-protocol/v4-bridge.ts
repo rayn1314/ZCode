@@ -94,6 +94,7 @@ import type {
 } from "@zcode/contracts";
 import { HYDRATION_TRACE_ID } from "../zcode-protocol-v4/projection-state.js";
 import { cloneModelSelection, derivedSessionModelSelection } from "./fork-model-selection.js";
+import { buildPersistedSessionConfigSeed } from "./cold-open-config-seed.js";
 import { resolveWorkspaceRefFromId } from "./mapper.js";
 import { buildLiveWorkspaceConfigStateV4 } from "./v4-workspace-config.js";
 import {
@@ -1918,6 +1919,46 @@ export function createConversationV4Gateway(
         throw new Error(`fault.fileRewindPreview.sessionNotFound: ${sessionId}`);
       }
       return previewConversationFileRewind(record, messageIds, targetTurnId);
+    },
+    // ── 冷打开窗口态（spec: zcode-protocol-v4/../spec/cold-open-window-first.md）──
+    // 首帧只读尾部窗口：这三条钩子都不激活 runtime，也不读全表 `data`。
+    readMessageWindow: async ({ sessionId, limit }) => {
+      const store = context.deps.sessionStore;
+      const window = await store?.messageWindow?.({ sessionID: sessionId as SessionId, limit });
+      if (!store || !window) return null;
+      // 回滚过的会话：活动分支 = kept 前缀 + cut 之后的消息，已经不是「规范尾部」的
+      // 连续子集（target 与 cut 之间的旧分支会被排除在中间）。窗口读只懂尾部，这里
+      // 直接失败关闭，让订阅回退既有全量路径（分支选择在那里做）。
+      const session = await store.getSession(sessionId as SessionId);
+      if (session?.revert) return null;
+      // 子智能体会话：publisher 必须等 record 就位后再建，`resolveSubagentLimitedMode`
+      // 在 record 缺席时只能读到 false，提前建会让受限模式（只读输入）短暂失效。
+      if (session?.taskType === "subagent_child") return null;
+      return window;
+    },
+    readMessagePageBefore: async ({ sessionId, beforeSequence, limit }) => {
+      const store = context.deps.sessionStore;
+      if (!store?.messagePageBefore) return null;
+      return store.messagePageBefore({
+        sessionID: sessionId as SessionId,
+        ...(beforeSequence === undefined ? {} : { beforeSequence }),
+        limit,
+      });
+    },
+    // transcript → 归约等价事件：与冷恢复的合成口径同一个函数，只是没有内存事件
+    // （冷打开时 runtime 还没激活，eventStore 里没有该会话的事实）。
+    synthesizeTranscriptEvents: async ({ sessionId, messages }) => {
+      return mergeColdConversationEvents({
+        memoryEvents: [],
+        messages,
+        sessionId,
+      }).events;
+    },
+    // 首帧 config：runtime 真值要等 activation，先给持久化选择的只读快照。
+    // thoughtLevels 依赖当前 provider registry（只有 app 实例能列举），这里不猜——
+    // 留空由补全后的 getSessionConfigSeed 补齐。
+    getPersistedSessionConfigSeed: (sessionId, messages) => {
+      return buildPersistedSessionConfigSeed(context, sessionId, messages ?? []);
     },
     // 冷订阅不再在 eventStore / transcript 之间 XOR。message/part
     // 是已完成正文权威，session_entry 只补 legacy goal，内存事件只补
