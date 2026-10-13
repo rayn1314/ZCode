@@ -2288,6 +2288,12 @@ export const zcodeSessionGoalParamsSchema = z
     /** 墙钟截止时间（epoch ms）。set/replace 直接写入；resume 传它表示同时重设截止。 */
     endAtMs: z.number().int().nonnegative().nullable().optional(),
     tokenBudget: z.number().int().positive().nullable().optional(),
+    /**
+     * set/replace 是否立即启动这个目标（置 active 并触发续跑）。缺省 true，保持
+     * `/goal <text>` 的既有语义；面板的「保存」传 false，表示只落库不运行：
+     * 新建落 paused，编辑保持原状态。
+     */
+    start: z.boolean().optional(),
     expectedRevision: z.number().int().nonnegative().optional(),
   })
   .strict();
@@ -2304,7 +2310,13 @@ export type ZCodeSessionGoalResult = z.infer<typeof zcodeSessionGoalResultSchema
 
 export const zcodeSessionGoalListParamsSchema = z
   .object({
+    /** 路由用工作区；`scope: "all"` 时不用它做过滤（面板默认全局列出）。 */
     workspace: zcodeWorkspaceRefSchema.optional(),
+    /**
+     * 过滤范围。`workspace`（缺省）只列该工作区的目标；`all` 列出本机数据根里的全部目标，
+     * 用于「任务」面板跨项目查看（目标数据在同一个会话库里，天然可全局列出）。
+     */
+    scope: z.enum(["workspace", "all"]).optional(),
     includeArchived: z.boolean().default(false),
     limit: z.number().int().positive().optional(),
   })

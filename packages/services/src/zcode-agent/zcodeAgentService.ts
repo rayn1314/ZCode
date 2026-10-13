@@ -5355,7 +5355,12 @@ export function createZCodeAgentService(
 
     async goalSession(params: ZCodeAgentGoalParams) {
       const startedAt = Date.now();
-      const client = await getClient(params);
+      // `start: false` 的 set/replace 是「保存不运行」：不触发任何模型执行，
+      // 因此走只读客户端，未配置供应商时也能把目标落库（供应商就绪后再运行）。
+      // 其余动作（resume / pause / 默认启动的 set/replace）需要模型执行能力，走 getClient。
+      const saveOnly =
+        (params.action === "set" || params.action === "replace") && params.start === false;
+      const client = saveOnly ? await getReadOnlyClient(params) : await getClient(params);
       logger.info(params.inputId, "开始请求 ZCode Protocol session/goal", {
         action: params.action,
         hasObjective: Boolean(params.objective?.trim()),
@@ -5373,6 +5378,7 @@ export function createZCodeAgentService(
             objective: params.objective,
             endAtMs: params.endAtMs,
             tokenBudget: params.tokenBudget,
+            ...(params.start === undefined ? {} : { start: params.start }),
             expectedRevision: params.expectedRevision,
           },
           zcodeSessionGoalResultSchema,
@@ -5404,15 +5410,16 @@ export function createZCodeAgentService(
 
     async listSessionGoals(params: ZCodeAgentGoalListParams) {
       const startedAt = Date.now();
-      const client = await getClient(params);
+      // 只读查询：与 listSessions 同路径，不因打开面板拉起 runtime。
+      const client = await getReadOnlyClient(params);
       try {
         const result = await client.request(
           zcodeProtocolMethods.sessionGoalList,
           {
-            workspace: {
-              workspacePath: params.workspacePath,
-              ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
-            },
+            // workspace 字段同时承担「路由」与「过滤」：`scope: "all"` 时服务端只用它路由、
+            // 不做目录过滤，返回本机数据根里的全部目标（任务面板的跨项目视图）。
+            workspace: buildWorkspaceRef(params),
+            ...(params.scope === undefined ? {} : { scope: params.scope }),
             ...(params.includeArchived === undefined
               ? {}
               : { includeArchived: params.includeArchived }),

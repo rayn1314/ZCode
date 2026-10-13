@@ -106,6 +106,7 @@ export const zcodeSessionGoalSchema = z
     // 旧版持久化 session target 没有截止时间列；default 让历史 snapshot 仍能解析。
     endAtMs: timestampMsSchema.nullable().default(null),
     deadlineGraceUsed: z.boolean().default(false),
+    deadlineWarningSent: z.boolean().default(false),
     activeInputId: nonEmptyString.nullable().optional(),
     activeRunStartedAtMs: timestampMsSchema.nullable().optional(),
     activeRunLastSeenAtMs: timestampMsSchema.nullable().optional(),

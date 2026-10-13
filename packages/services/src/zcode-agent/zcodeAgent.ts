@@ -338,13 +338,23 @@ export interface ZCodeAgentGoalParams extends ZCodeAgentSessionTarget {
   /** 墙钟截止时间（epoch ms）；set/replace 直接写入，resume 传它表示同时重设截止。 */
   endAtMs?: number | null;
   tokenBudget?: number | null;
+  /**
+   * set/replace 是否立即启动（置 active 并触发续跑）。缺省 true（`/goal <text>` 语义）；
+   * 面板「保存」传 false：新建落 paused、编辑保持原状态，不触发续跑。
+   */
+  start?: boolean;
   expectedRevision?: number;
 }
 
-// 面板数据源是「本工作区全部目标」，查询不落在某个会话上，
-// 因此继承 workspace target（workspacePath + workspaceIdentity），**不带** sessionId。
+// 面板数据源不落在某个会话上，因此继承 workspace target（workspacePath +
+// workspaceIdentity），**不带** sessionId。
 export type ZCodeAgentGoalListParams = ZCodeAgentWorkspaceTarget & {
   inputId?: string;
+  /**
+   * 查询范围。缺省 `workspace` 只列该工作区；`all` 列出本机数据根里的全部目标
+   * （任务面板的跨项目视图，此时 workspace 字段只用于路由）。
+   */
+  scope?: "workspace" | "all";
   includeArchived?: boolean;
   limit?: number;
 };

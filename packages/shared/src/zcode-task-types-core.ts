@@ -87,6 +87,8 @@ export interface ZCodeTaskGoal {
   endAtMs?: number | null;
   /** 本次目标生命周期内是否已把收尾轮发给模型。 */
   deadlineGraceUsed?: boolean;
+  /** 是否已发过到点前预警（面板「即将到点」徽标依据；阈值在服务端，UI 不自行计算）。 */
+  deadlineWarningSent?: boolean;
   activeInputId?: string | null;
   activeRunStartedAtMs?: number | null;
   activeRunLastSeenAtMs?: number | null;
