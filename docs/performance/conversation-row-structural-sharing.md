@@ -30,7 +30,7 @@ host frame ──► ConversationProjectionStore.handleFrame
                         部分相等 → 新壳 + 复用未变的子值（包括旧字符串引用）
 ```
 
-- **池放在 `SessionDataLayer`，不放在 store 里。** keep-warm（默认 30s）过期后 store 会被 close，冷打开会新建 store。但此时旧 snapshot 可能仍被闭包链留着，池必须跨 store 才能让冷打开的新行复用那些仍存活的旧行。
+- **池放在 `SessionDataLayer`，不放在 store 里。** keep-warm（默认 3min）过期后 store 会被 close，冷打开会新建 store。但此时旧 snapshot 可能仍被闭包链留着，池必须跨 store 才能让冷打开的新行复用那些仍存活的旧行。
 - **只用 `WeakRef`。** 池本身不延长任何行的寿命。行被 GC 后，由 `FinalizationRegistry` 删除对应条目；删除前要确认条目仍是同一个 `WeakRef`，防止误删后来登记的新行。
 - **key 为 `topic + rowId`。** 不同 session 之间不共享。rewind 之后 rowId 可能被复用、内容也可能不同，但共享只发生在值深相等的地方，所以语义是安全的。
 - **`shareStructure(prev, next)`：**

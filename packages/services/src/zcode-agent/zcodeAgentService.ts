@@ -6016,6 +6016,22 @@ export function createZCodeAgentService(
         result.ack.subscriptionId,
         connection.connectionId,
       );
+      logger.info(undefined, "V4 conversation subscribe timing", {
+        cliProcessState,
+        cliRequestMs,
+        event: "zcode_agent.conversation.subscribe.opened",
+        hostPrepareMs,
+        mode: result.ack.mode,
+        ...(cliBootstrapMs !== undefined ? { cliBootstrapMs } : {}),
+        ...result.ack.openTiming,
+        providerRegistrySyncMs,
+        sessionId: params.sessionId,
+        subscriptionId: result.ack.subscriptionId,
+        taskMetaReadMs,
+        topic,
+        ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
+        workspacePath: params.workspacePath,
+      });
       return {
         ...result,
         ack: {

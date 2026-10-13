@@ -12,7 +12,7 @@
 ```ts
 DEFAULT_SESSION_RESIDENT_TARGET_COUNT = 8;
 DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT = 16;
-DEFAULT_SESSION_RESIDENT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+DEFAULT_SESSION_RESIDENT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 ```
 
 eligible session 空闲超过 TTL 后无论 resident 数量多少都去激活；当
@@ -290,7 +290,7 @@ lease 自然衔接，互不持有对方的生命周期状态。
 
 ### Bootstrap pool
 
-- 默认 idle TTL 为 10 分钟、highWater 为 16、target 为 8；
+- 默认 idle TTL 为 30 分钟、highWater 为 16、target 为 8；
 - TTL 到期后 resident 少于 target 也会回收，touch/保护状态会重置 TTL；
 - highWater 4、target 2、resident 5 时按 LRU 回收到 2；
 - protected session 超过 highWater 时允许超额；

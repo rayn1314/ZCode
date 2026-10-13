@@ -10,7 +10,7 @@
 
 - 布局从单值 `splitPane` 升级为**二叉分割树**（VS Code editor groups 模型）：任意 pane 可向右/向下拆分，嵌套即得 2x2 等网格。叶子上限 `MAX_WORKBENCH_PANES = 4`（对齐 06-ui 性能验收基线「4 pane 同时流式不掉帧」；同时是 host 内 CLI 子进程数的软上限）。
 - pane 绑定升级为 `(workspaceScope, sessionId)`：pane 自带 workspace 归属，**不再限制同 workspace**；本地与远程（SSH/WSL/Docker）workspace 任意组合。
-- 连接层新增 `workspaceConnectionRegistry`：按 `endpointKey + workspaceKey` 引用计数复用 `transport + SessionDataLayer`（与 `sessionsIndexRegistry` 同构，多一层 30s keep-warm）。
+- 连接层新增 `workspaceConnectionRegistry`：按 `endpointKey + workspaceKey` 引用计数复用 `transport + SessionDataLayer`（与 `sessionsIndexRegistry` 同构，多一层 3min keep-warm）。
 - primary pane（`workspace-main`）保持 shell 驱动（绑 `activeTaskId`，随 workspace tab 切换）；其余 pane 归 `paneLayoutStore` 自管、**跨 tab 常驻**——tabStore 及其 ~46 个 `activeTabId` 消费者零改动。
 
 ## 连接拓扑
@@ -66,7 +66,7 @@ ratio = first 占比，clamp [0.25, 0.75]（沿用一期 splitRatio 语义，每
 ## 连接层：workspaceConnectionRegistry
 
 - 模块级注册表（与 `sessionsIndexRegistry` 同构）：key = `endpointKey(remoteSessionId ?? "__base__") + workspaceKey`。
-- `acquireWorkspaceConnection(scope, agentService)` → `{ layer, transport, release }`；首个引用创建 `createAgentConversationTransport + SessionDataLayer`，refCount 归零后 **30s keep-warm** 再 dispose（防 pane 关/开、布局拖拽抖动）。
+- `acquireWorkspaceConnection(scope, agentService)` → `{ layer, transport, release }`；首个引用创建 `createAgentConversationTransport + SessionDataLayer`，refCount 归零后 **3min keep-warm** 再 dispose（防 pane 关/开、布局拖拽抖动）。
 - 条目记住创建它的 `agentService` 引用：同 key 再次 acquire 时若 service 引用变化（远程断连→重连后 services 换新），旧条目立即失效移出注册表（存量租约继续持有直至 release），新条目用新 service 重建——重连恢复不需要手动刷新。
 - services 解析归 React 层（`V4PaneConversationProvider` 内 `useWorkspaceServices(path, remoteSessionId, identity)`）：远程目标断连时得到断连代理，订阅失败 → pane error 态 + 重试按钮；**不回落 base services**（避免远程 task 被本机 host 查询）。
 
@@ -126,7 +126,7 @@ V4PaneWorkbench ────┼─→ pane 渲染（先渲染，不阻塞）
 | --- | -------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1   | `packages/ui/src/v4/paneLayoutStore.ts`                                                                              | 重写为 v2：二叉分割树 + `panes: Record<paneId, PaneBinding>` + 持久化 v2（`zcode-v4-pane-layout:v2`）与 v1 迁移；删除 `splitPaneForWorkspace` 可见性规则。新 pane id 取树内 `pane-<n>` 最大序号 +1（v1 迁移保留 `split` id） |
 | 2   | `packages/ui/test/v4PaneLayoutStore.test.ts`                                                                         | 单测重写：树操作/上限/塌缩/v1 迁移/focus 退化/持久化闭环                                                                                                                                                                     |
-| 3   | `packages/ui/src/v4/workspaceConnectionRegistry.ts`（新建）                                                          | 引用计数 + 30s keep-warm + agentService 换代失效；模式对照 `sessionsIndexRegistry.ts`                                                                                                                                        |
+| 3   | `packages/ui/src/v4/workspaceConnectionRegistry.ts`（新建）                                                          | 引用计数 + 3min keep-warm + agentService 换代失效；模式对照 `sessionsIndexRegistry.ts`                                                                                                                                       |
 | 4   | `packages/ui/src/v4/V4ConversationContext.tsx`                                                                       | 新增 `V4PaneConversationProvider`（注册表租约 + pane 级 `ServiceProvider` 包裹 + `isShellWorkspace` 走上下文 services）；原 `V4ConversationProvider` 保留给手机 `V4ChatPane`                                                 |
 | 5   | `packages/ui/src/v4/V4WorkspaceChatArea.tsx`                                                                         | 重写为递归分割树渲染；`SplitPaneDivider` 泛化（direction 感知 + per-node CSS 变量 `--v4-split-<nodeId>`，拖动仍 rAF 直写零渲染）；per-pane 恢复守卫组件化（`PaneRestoredGuard`）                                             |
 | 6   | `packages/ui/src/v4/SessionPane.tsx`                                                                                 | Esc-stop 与 add-to-chat 监听从「仅 primary」改为「focused pane」（06-ui 分屏规则 4）；新增拆分/关闭/徽标 props 透传                                                                                                          |

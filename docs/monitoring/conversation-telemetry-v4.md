@@ -45,7 +45,7 @@ persisted hydration / initial / recovery
 ```
 
 不得复活旧 `zcodeTaskRuntimeMonitor`，也不得把 supervisor 放在 `SessionPane`、
-`SessionDataLayer` 或受 30 秒 keep-warm 控制的 connection 上。supervisor 归属于窗口的
+`SessionDataLayer` 或受 3 分钟 keep-warm 控制的 connection 上。supervisor 归属于窗口的
 workspace/service attachment，隔离 key 为：
 
 ```text

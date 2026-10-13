@@ -24,11 +24,11 @@ export interface SessionLease {
 
 export interface SessionDataLayerOptions {
   transport: ConversationTransport;
-  /** 引用归零后延迟退订窗口（ms），默认 30s。 */
+  /** 引用归零后延迟退订窗口（ms），默认 3min。 */
   keepWarmMs?: number;
 }
 
-export const SESSION_DATA_LAYER_KEEP_WARM_MS = 30_000;
+export const SESSION_DATA_LAYER_KEEP_WARM_MS = 180_000;
 export const E2E_SESSION_DATA_LAYER_KEEP_WARM_MS = 1_000;
 
 export function resolveSessionDataLayerKeepWarmMs(
