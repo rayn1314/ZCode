@@ -1921,7 +1921,8 @@ export function createConversationV4Gateway(
       return previewConversationFileRewind(record, messageIds, targetTurnId);
     },
     // ── 冷打开窗口态（spec: zcode-protocol-v4/../spec/cold-open-window-first.md）──
-    // 首帧只读尾部窗口：这三条钩子都不激活 runtime，也不读全表 `data`。
+    // 首帧只读尾部窗口：这两条钩子都不激活 runtime，也不读全表 `data`。
+    // 窗口态是纯预览，不提供更早历史，因此没有分页钩子。
     readMessageWindow: async ({ sessionId, limit }) => {
       const store = context.deps.sessionStore;
       const window = await store?.messageWindow?.({ sessionID: sessionId as SessionId, limit });
@@ -1935,15 +1936,6 @@ export function createConversationV4Gateway(
       // 在 record 缺席时只能读到 false，提前建会让受限模式（只读输入）短暂失效。
       if (session?.taskType === "subagent_child") return null;
       return window;
-    },
-    readMessagePageBefore: async ({ sessionId, beforeSequence, limit }) => {
-      const store = context.deps.sessionStore;
-      if (!store?.messagePageBefore) return null;
-      return store.messagePageBefore({
-        sessionID: sessionId as SessionId,
-        ...(beforeSequence === undefined ? {} : { beforeSequence }),
-        limit,
-      });
     },
     // transcript → 归约等价事件：与冷恢复的合成口径同一个函数，只是没有内存事件
     // （冷打开时 runtime 还没激活，eventStore 里没有该会话的事实）。

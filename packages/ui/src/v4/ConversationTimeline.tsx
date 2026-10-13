@@ -100,6 +100,12 @@ import {
   type TimelineUserScrollIntent,
 } from "@/v4/timelineScrollAnchor.js";
 import { useConversationTimelineFind } from "@/v4/useConversationTimelineFind.js";
+import {
+  didRowIdentitySpaceFlip,
+  isColdWindowRowSpace,
+  resolveRowSpaceFlipScrollTop,
+  type RowSpaceBaseline,
+} from "@/v4/conversationRowIdentitySpace.js";
 import { ConversationSelectionTooltip } from "@/v4/ConversationSelectionTooltip.js";
 import type { ConversationSelectionReference } from "@/lib/conversationSelectionReference.js";
 
@@ -536,6 +542,8 @@ function ConversationTimelineImpl({
   // prepend 锚定基线：上一 commit 末的窗口首 unit 及其视口偏移，见下方对账效应。
   const prependAnchorRef = useRef<PrependVirtualAnchor | null>(null);
   const pendingPrependVirtualAnchorRef = useRef<PrependVirtualAnchor | null>(null);
+  /** 行身份空间基线（见 RowSpaceBaseline）；会话切换与每 commit 末更新。 */
+  const rowSpaceBaselineRef = useRef<RowSpaceBaseline | null>(null);
   const heightCacheRef = useRef<TimelineRowHeightCache | null>(null);
   if (heightCacheRef.current === null) {
     heightCacheRef.current = new TimelineRowHeightCache();
@@ -1328,6 +1336,31 @@ function ConversationTimelineImpl({
     ],
   );
 
+  /**
+   * 记录「本 commit 的」行身份空间与视口顶部 unit 锚点。
+   *
+   * 翻转效应必须拿到翻转**之前**的锚点，而翻转 commit 上 virtualizer 的 measurement
+   * 已经换成新空间，所以两条效应一前一后：翻转效应读旧基线，本 recorder 写新基线。
+   * 用户可以在两次 rows 变化之间连续滚动（不触发 re-render），因此 scroll 事件里也
+   * 调一次，让基线跟着真实滚动位置走。
+   */
+  const captureRowSpaceBaseline = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) {
+      rowSpaceBaselineRef.current = null;
+      return;
+    }
+    const measurement = virtualizer.getVirtualItemForOffset(element.scrollTop);
+    const unit = measurement ? virtualizedUnitsRef.current[measurement.index] : undefined;
+    rowSpaceBaselineRef.current = {
+      coldWindow: isColdWindowRowSpace(rowsRef.current),
+      anchor:
+        measurement && unit !== undefined && unit.key === measurement.key
+          ? { key: unit.key, offsetTop: measurement.start - element.scrollTop }
+          : null,
+    };
+  }, [virtualizer]);
+
   const handleScroll = useCallback(() => {
     const element = scrollRef.current;
     if (!element) return;
@@ -1351,6 +1384,7 @@ function ConversationTimelineImpl({
       suppressVirtualizerAdjustmentDuringRestoreRef.current = false;
     }
     lastObservedScrollTopRef.current = element.scrollTop;
+    captureRowSpaceBaseline();
     syncTurnNavigatorViewport(element);
     const following = resolveFollowingAfterScroll({
       following: followingRef.current,
@@ -1400,6 +1434,7 @@ function ConversationTimelineImpl({
       loadOlder.onLoadOlder?.();
     }
   }, [
+    captureRowSpaceBaseline,
     commitFollowing,
     getActiveUserScrollIntent,
     saveCurrentScrollMemory,
@@ -1589,6 +1624,8 @@ function ConversationTimelineImpl({
     // prepend 锚定基线一并重置：unit key 跨会话可重复，禁止拿旧会话首 unit 比较。
     prependAnchorRef.current = null;
     pendingPrependVirtualAnchorRef.current = null;
+    // 行身份空间基线同理：切会话不算「行空间翻转」，旧会话的锚点禁止跨会话使用。
+    rowSpaceBaselineRef.current = null;
     // draft 默认吸底会留下旧 virtualizer.scrollOffset；在恢复写入派发 scroll 事件前，
     // 测高若继续按旧 offset 校正，会把刚恢复的历史位置重新推回 draft 的落点。
     suppressVirtualizerAdjustmentDuringRestoreRef.current = true;
@@ -1644,6 +1681,67 @@ function ConversationTimelineImpl({
     scrollMemoryKey,
     scrollToBottom,
     sessionKey,
+    virtualizer,
+  ]);
+
+  // 行身份空间翻转：冷打开窗口态（负数行号）⇄ 权威全序（spec: cold-open-window-first §A/B）。
+  // 同一个会话里行身份整体换了空间，行数、行号、高度口径全部作废——只清测高不够，
+  // prepend 锚点与 virtualizer measurements 都带着旧空间的量，继续用会按错误的行起点
+  // 算出平移，用户上翻几下后视口突然跳远。这里按切会话同规整份重置，再按「视口顶部所在
+  // unit 的 turnId」重锚定；该 unit 在权威尾窗里不存在时回到「打开会话」的贴底语义。
+  // 声明位置在 pendingRestore 效应之前：翻转 commit 上先做这里的重置与选择，
+  // 再让记忆恢复效应基于其结果决定是否落地。
+  useLayoutEffect(() => {
+    const baseline = rowSpaceBaselineRef.current;
+    if (baseline === null || !didRowIdentitySpaceFlip(baseline, rows)) return;
+    clearUserScrollIntent();
+    heightCacheRef.current?.clear();
+    prependAnchorRef.current = null;
+    pendingPrependVirtualAnchorRef.current = null;
+    virtualizer.measure();
+
+    const pendingRestore = pendingDetachedScrollRestoreRef.current;
+    const userOwnsPosition = userAdjustedScrollSinceRestoreRef.current || !followingRef.current;
+    if (pendingRestore?.key === scrollMemoryKey && userOwnsPosition) {
+      // 用户已在窗口态里滚出自己的阅读位置：翻转后以该位置为准。会话滚动记忆只服务
+      // 「打开即回到上次位置」的未调整路径，这里必须撤掉，否则会把用户拽回旧坐标。
+      pendingDetachedScrollRestoreRef.current = null;
+    }
+    const anchorKey = baseline.anchor?.key;
+    const anchorMeasurement =
+      anchorKey === undefined
+        ? undefined
+        : virtualizer.measurementsCache.find((measurement) => measurement.key === anchorKey);
+    const target = resolveRowSpaceFlipScrollTop(
+      baseline.anchor,
+      anchorMeasurement === undefined ? null : { start: anchorMeasurement.start },
+    );
+    const element = scrollRef.current;
+    if (target !== null && element) {
+      markLayoutScrollGuard();
+      element.scrollTop = target;
+      lastObservedScrollTopRef.current = element.scrollTop;
+      syncTurnNavigatorViewport(element);
+      cacheCurrentScrollMemoryState(element);
+      // 翻转与整表重测在同一 commit：Chromium 可能合并掉原生 scroll 通知，
+      // virtualizer 仍按旧 offset 挂载首屏，形成“滚动条在对的位置、正文却错位”。
+      notifyScrollObserversAfterCommit(element);
+      return;
+    }
+    if (userOwnsPosition && pendingDetachedScrollRestoreRef.current === null) {
+      commitFollowing(true);
+      scrollToBottom();
+    }
+  }, [
+    cacheCurrentScrollMemoryState,
+    clearUserScrollIntent,
+    commitFollowing,
+    markLayoutScrollGuard,
+    notifyScrollObserversAfterCommit,
+    rows,
+    scrollMemoryKey,
+    scrollToBottom,
+    syncTurnNavigatorViewport,
     virtualizer,
   ]);
 
@@ -1819,6 +1917,14 @@ function ConversationTimelineImpl({
     scrollToBottom,
     totalSize,
   ]);
+
+  // 行身份空间基线：每 commit 末记录一次（必须声明在翻转效应之后，见 captureRowSpaceBaseline）。
+  // 刻意不写依赖数组：只依赖 callback 身份会退化成「仅挂载时记录一次」，而窗口态快照到达时
+  // 若挂载发生在 rows 为空的首帧，基线会停在 coldWindow=false，补全翻转就检测不到（不进
+  // handleScroll 的用户滚动同理）。每 commit 一次的成本只是一次 measurement 二分。
+  useLayoutEffect(() => {
+    captureRowSpaceBaseline();
+  });
 
   useLayoutEffect(() => {
     if (scrollRef.current) {

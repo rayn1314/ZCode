@@ -654,14 +654,6 @@ export class SqliteSessionStore
     return messageRepository.messageWindow(this.db, input);
   }
 
-  async messagePageBefore(input: {
-    sessionID: SessionId;
-    beforeSequence?: number;
-    limit: number;
-  }): Promise<SessionMessageSlice> {
-    return messageRepository.messagePageBefore(this.db, input);
-  }
-
   async saveSessionEntry(input: SessionEntryInfo): Promise<void> {
     this.throwBeforeWrite();
     return sessionEntryRepository.saveSessionEntry(this.db, input);

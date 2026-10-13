@@ -282,17 +282,19 @@ export async function messageWithParts(
 }
 
 /**
- * 尾部窗口 / 游标分页的统一读路径（`messageWindow` 与 `messagePageBefore` 共用）。
+ * 冷打开窗口态的尾部窗口读（`SessionStorePort.messageWindow`）。
  *
  * 性能约束（spec: cold-open-window-first §1）：只读**尾部窗口**——元信息走
  * `count/min/sum` 聚合，正文按 `(session_id, sequence)` 索引倒序取 `limit + 1` 条判 `hasOlder`，
  * 不对全表排序、不读窗口之外的 `data`。`order by sequence desc, time_created desc, id desc`
  * 与索引列序一致；`sequence` 在会话内由存储层维护为唯一递增（0014/0015），故这里的全序
  * 与 `messages()` 的规范全序一致。
+ *
+ * 窗口态是纯预览，不提供更早历史，因此这里没有游标参数。
  */
-export async function messageSlice(
+export async function messageWindow(
   db: DatabaseSync,
-  input: { sessionID: SessionId; beforeSequence?: number; limit: number },
+  input: { sessionID: SessionId; limit: number },
 ): Promise<SessionMessageSlice> {
   const meta = db
     .prepare(
@@ -327,67 +329,36 @@ export async function messageSlice(
     };
   }
 
-  const hasCursor = input.beforeSequence !== undefined;
   const fetchLimit = input.limit + 1;
-  const tailRows = (
-    hasCursor
-      ? db
-          .prepare(
-            `
-            select * from message
-            where session_id = ? and sequence < ?
-            order by sequence desc, time_created desc, id desc
-            limit ?
-            `,
-          )
-          .all(input.sessionID, input.beforeSequence as number, fetchLimit)
-      : db
-          .prepare(
-            `
-            select * from message
-            where session_id = ?
-            order by sequence desc, time_created desc, id desc
-            limit ?
-            `,
-          )
-          .all(input.sessionID, fetchLimit)
-  ) as unknown as MessageRow[];
+  const tailRows = db
+    .prepare(
+      `
+      select * from message
+      where session_id = ?
+      order by sequence desc, time_created desc, id desc
+      limit ?
+      `,
+    )
+    .all(input.sessionID, fetchLimit) as unknown as MessageRow[];
   const hasOlder = tailRows.length > input.limit;
   const page = hasOlder ? tailRows.slice(0, input.limit) : tailRows;
   page.reverse();
 
   // part 只读本页消息的：子查询与正文同一索引，避免 IN 列表拼 SQL（值仍全部参数绑定）。
-  const partRows = (
-    hasCursor
-      ? db
-          .prepare(
-            `
-            select * from part
-            where session_id = ? and message_id in (
-              select id from message
-              where session_id = ? and sequence < ?
-              order by sequence desc, time_created desc, id desc
-              limit ?
-            )
-            order by message_id, sequence is null, sequence, time_created, id
-            `,
-          )
-          .all(input.sessionID, input.sessionID, input.beforeSequence as number, fetchLimit)
-      : db
-          .prepare(
-            `
-            select * from part
-            where session_id = ? and message_id in (
-              select id from message
-              where session_id = ?
-              order by sequence desc, time_created desc, id desc
-              limit ?
-            )
-            order by message_id, sequence is null, sequence, time_created, id
-            `,
-          )
-          .all(input.sessionID, input.sessionID, fetchLimit)
-  ) as unknown as PartRow[];
+  const partRows = db
+    .prepare(
+      `
+      select * from part
+      where session_id = ? and message_id in (
+        select id from message
+        where session_id = ?
+        order by sequence desc, time_created desc, id desc
+        limit ?
+      )
+      order by message_id, sequence is null, sequence, time_created, id
+      `,
+    )
+    .all(input.sessionID, input.sessionID, fetchLimit) as unknown as PartRow[];
   const partsByMessage = new Map<string, MessagePart[]>();
   for (const row of partRows) {
     const part = decodePartRow(row);
@@ -407,18 +378,4 @@ export async function messageSlice(
     hasOlder,
     legacySequence: false,
   };
-}
-
-export async function messageWindow(
-  db: DatabaseSync,
-  input: { sessionID: SessionId; limit: number },
-): Promise<SessionMessageSlice> {
-  return messageSlice(db, input);
-}
-
-export async function messagePageBefore(
-  db: DatabaseSync,
-  input: { sessionID: SessionId; beforeSequence?: number; limit: number },
-): Promise<SessionMessageSlice> {
-  return messageSlice(db, input);
 }

@@ -2845,9 +2845,9 @@ describe("v4 冷恢复（集成：真 sqlite + server + binder）", () => {
   });
 
   // 冷打开「窗口优先 + 后台补全」的端到端契约（spec: spec/cold-open-window-first.md）。
-  // 走真 sqlite + server + binder：窗口读、store 分页、transcript 合成、补全原子替换
-  // 四条链路都必须与真实 sessionStore 对得上。
-  it("冷打开大会话：首帧尾部窗口 + store 分页 + 补全后换成完整投影", async () => {
+  // 走真 sqlite + server + binder：窗口读、transcript 合成、补全原子替换
+  // 三条链路都必须与真实 sessionStore 对得上。
+  it("冷打开大会话：首帧尾部窗口（纯预览）+ 补全后换成完整投影", async () => {
     const dbPath = join(tempRoot, "window-first.db");
     const turnCount = 70; // 140 条消息 > 窗口 120 条，首帧必然进入窗口态
     const store = createSqliteSessionStore({ dbPath });
@@ -2929,16 +2929,18 @@ describe("v4 冷恢复（集成：真 sqlite + server + binder）", () => {
       const frame = conversationTopicFrameSchema.parse(takeInitialFrameParams(server, "window-first"));
       if (frame.payload.kind !== "snapshot") throw new Error("Expected snapshot initial frame");
       const windowSnapshot = frame.payload.snapshot;
-      // 窗口态：firstRowId 是「还有更早行」哨兵，wire 只发尾部 60 行；
-      // totalCount 取 store 口径（消息总数）与窗口可见行数的较大者——只会小于真实全序行数，
-      // 但绝不会小于已可见行数（见 spec 的 totalCount 近似说明）。
+      // 窗口态纯预览：wire 只发尾部 60 行，行号是负数空间；totalCount 取 store 口径
+      // （消息总数）与窗口可见行数的较大者——只会小于真实全序行数，但绝不小于已可见行数
+      // （见 spec 的 totalCount 近似说明）。firstRowId = 窗口首行 ⇒ 客户端 hasOlderRows=false。
       expect(windowSnapshot.rows.totalCount).toBeGreaterThanOrEqual(turnCount * 2);
       expect(windowSnapshot.rows.window).toHaveLength(60);
-      expect(windowSnapshot.rows.firstRowId).toBeLessThan(windowSnapshot.rows.window[0]!.rowId);
+      expect(windowSnapshot.rows.window.every((row) => row.rowId < 0)).toBe(true);
+      expect(windowSnapshot.rows.firstRowId).toBe(windowSnapshot.rows.window[0]!.rowId);
       // 首帧 config 来自持久化选择（runtime 真值要等 activation 完成）。
       expect(windowSnapshot.config).toMatchObject({ model: "glm-4-air", provider: "glm" });
-      // 补全完成前就能向上翻页：更早行由 store 分页供给（负行号空间，内容与 transcript 一致）。
-      const page = v4ConversationRowsRangeResultSchema.parse(
+      // 更早历史只由完整投影供给：窗口态没有分页数据源，这次查询会等完整 READY。
+      // 游标是窗口态负数行号，权威全序行都大于它 ⇒ 空页（失败关闭），不会混进临时行。
+      const windowCursorPage = v4ConversationRowsRangeResultSchema.parse(
         await requestResult(server, {
           id: "window-first-page",
           method: V4_METHODS.conversationRowsRange,
@@ -2950,26 +2952,52 @@ describe("v4 冷恢复（集成：真 sqlite + server + binder）", () => {
           },
         }),
       );
-      expect(page.rows.length).toBeGreaterThan(0);
-      expect(page.rows.every((row) => row.rowId < 0)).toBe(true);
-      expect(page.atLogEpoch).toBe(windowSnapshot.logEpoch);
-      // 窗口外只剩 20 条消息（140-120），一页即到底：hasMore=false，且已含会话最早一轮。
-      expect(page.hasMore).toBe(false);
-      const pageTexts = page.rows
-        .filter((row) => row.kind === "userInput" || row.kind === "assistantText")
-        .map((row) => ("text" in row ? row.text : ""));
-      expect(pageTexts[0]).toBe("窗口问题0");
-      expect(pageTexts).toEqual(
-        pageTexts.toSorted((left, right) => {
-          const indexOf = (text: string) => Number(text.replace(/[^0-9]/g, ""));
-          return indexOf(left) - indexOf(right);
-        }),
-      );
+      expect(windowCursorPage.rows).toEqual([]);
+      expect(windowCursorPage.hasMore).toBe(false);
+      expect(windowCursorPage.atLogEpoch).toBe(windowSnapshot.logEpoch);
 
       // 后台补全：同一 logEpoch 的完整 snapshot 稍后到达，行号回到全序口径。
       const complete = await waitForCompleteSnapshot(pushedFrames, windowSnapshot.logEpoch);
       expect(complete.rows.firstRowId).toBe(1);
       expect(complete.config.model).toBe(windowSnapshot.config.model);
+
+      // 补全后的 rows/range 走投影全序：从权威尾窗首行一路向上翻能得到正数行，
+      // 并最终到达会话开头（第一轮用户消息）。
+      const collectedTexts: string[] = [];
+      let cursor = complete.rows.window[0]!.rowId;
+      let reachedStart = false;
+      for (let pageIndex = 0; pageIndex < 12; pageIndex += 1) {
+        const page = v4ConversationRowsRangeResultSchema.parse(
+          await requestResult(server, {
+            id: `window-first-auth-page-${pageIndex}`,
+            method: V4_METHODS.conversationRowsRange,
+            params: {
+              sessionId: SESSION_ID,
+              beforeRowId: cursor,
+              limit: 200,
+              clientMode: "desktop-continuous",
+            },
+          }),
+        );
+        expect(page.rows.every((row) => row.rowId > 0)).toBe(true);
+        if (page.rows.length === 0) {
+          reachedStart = true;
+          break;
+        }
+        collectedTexts.unshift(
+          ...page.rows
+            .filter((row) => row.kind === "userInput" || row.kind === "assistantText")
+            .map((row) => ("text" in row ? row.text : "")),
+        );
+        cursor = page.rows[0]!.rowId;
+        if (!page.hasMore) {
+          reachedStart = true;
+          break;
+        }
+      }
+      expect(reachedStart).toBe(true);
+      expect(cursor).toBe(1);
+      expect(collectedTexts[0]).toBe("窗口问题0");
     } finally {
       await close();
     }

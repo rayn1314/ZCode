@@ -2,7 +2,8 @@
 //
 // 覆盖 acceptance A1–A6 的 gateway 侧契约：
 // - A1 首帧不再等完整 activation：窗口态 snapshot 先到，openTiming 仍是 cold；
-// - A2 窗口态 rows/range 从 store 分页返回更早行，且能一路翻到会话开头；
+// - A2 窗口态是纯预览：行号用负数空间、firstRowId = 窗口首行（客户端 hasOlderRows=false），
+//      更早历史一律等完整投影，窗口态不分页；
 // - A3 补全后 rows/range 走投影全序行，内容与「一直 warm」口径一致；
 // - A4 首帧 config 取持久化种子，补全后被 runtime 真值覆盖；
 // - A5 后台 activation 失败时首屏仍在，错误进 onError，重试可再激活；
@@ -11,13 +12,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   createMessageId,
   createPartId,
+  type MessageId,
   type MessageWithParts,
   type SessionId,
 } from "@zcode/contracts";
 import type { ConversationTopicFrame } from "@zcode/shared/zcode-protocol-v4";
 import { conversationTopic } from "@zcode/shared/zcode-protocol-v4";
 import { mergeColdConversationEvents } from "../src/zcode-protocol-v4/cold-event-merge.js";
-import { coldWindowFirstRowId } from "../src/zcode-protocol-v4/cold-window-rows.js";
 import { ConversationTopicPublisher } from "../src/zcode-protocol-v4/conversation-topic-publisher.js";
 import {
   ConversationV4Gateway,
@@ -41,7 +42,7 @@ interface WindowHostStub {
   synthesized: boolean;
   runtimeConfigSeed: SessionConfigSeed | null;
   persistedConfigSeed: SessionConfigSeed | null;
-  hooks: { window: boolean; page: boolean; synth: boolean };
+  hooks: { window: boolean; synth: boolean };
 }
 
 function userMessage(id: string, text: string, created: number): MessageWithParts {
@@ -129,7 +130,6 @@ interface Slice {
 /** 与 sqlite 实现同语义的内存切片：sequence 升序、尾部 limit 条、hasOlder 判据一致。 */
 function sliceMessages(
   messages: MessageWithParts[],
-  beforeSequence: number | undefined,
   limit: number,
   legacy = false,
 ): Slice {
@@ -144,21 +144,18 @@ function sliceMessages(
       legacySequence: true,
     };
   }
-  const eligible = messages
-    .map((message, index) => ({ message, sequence: sequences[index]! }))
-    .filter((entry) => beforeSequence === undefined || entry.sequence < beforeSequence);
-  const page = eligible.slice(-limit);
+  const page = messages.slice(-limit);
   return {
-    messages: page.map((entry) => entry.message),
-    sequences: page.map((entry) => entry.sequence),
+    messages: page,
+    sequences: sequences.slice(-limit),
     totalCount: messages.length,
     firstSequence: messages.length === 0 ? null : 0,
-    hasOlder: eligible.length > page.length,
+    hasOlder: messages.length > page.length,
     legacySequence: false,
   };
 }
 
-function makeHost(messages: MessageWithParts[], hooks = { window: true, page: true, synth: true }) {
+function makeHost(messages: MessageWithParts[], hooks = { window: true, synth: true }) {
   let releaseResume!: () => void;
   const resumeGate = new Promise<void>((resolve) => {
     releaseResume = resolve;
@@ -224,20 +221,8 @@ function makeGateway(host: WindowHostStub, options: { legacyWindow?: boolean } =
         ? {
             readMessageWindow: async ({ limit }: { sessionId: string; limit: number }) => {
               await Promise.resolve();
-              return sliceMessages(host.messages, undefined, limit, options.legacyWindow === true);
+              return sliceMessages(host.messages, limit, options.legacyWindow === true);
             },
-          }
-        : {}),
-      ...(host.hooks.page
-        ? {
-            readMessagePageBefore: async ({
-              beforeSequence,
-              limit,
-            }: {
-              sessionId: string;
-              beforeSequence?: number;
-              limit: number;
-            }) => sliceMessages(host.messages, beforeSequence, limit),
           }
         : {}),
       ...(host.hooks.synth
@@ -289,6 +274,13 @@ async function waitFor(
   throw new Error(`timeout waiting for ${message}`);
 }
 
+/** 客户端 `hasOlderRows` 判据（conversationProjectionStore）。 */
+function hasOlderRows(snapshot: ReturnType<typeof snapshotOf>): boolean {
+  const first = snapshot.rows.window[0];
+  if (!first || snapshot.rows.firstRowId === null) return false;
+  return first.rowId > snapshot.rows.firstRowId;
+}
+
 describe("冷打开窗口优先（gateway 单元）", () => {
   let gateway: ConversationV4Gateway | undefined;
 
@@ -308,14 +300,17 @@ describe("冷打开窗口优先（gateway 单元）", () => {
     expect(result.ack.openTiming).toMatchObject({ sessionRuntimeState: "cold" });
 
     const snapshot = snapshotOf(result.initialFrame ?? undefined);
+    // totalCount 取 store 口径（真实消息总数，不是窗口可见行数）。
     expect(snapshot.rows.totalCount).toBe(host.messages.length);
-    const firstRowId = snapshot.rows.firstRowId;
-    expect(firstRowId).not.toBeNull();
-    // 窗口态哨兵 < 窗口首行 ⇒ 客户端判定「还有更早行」。
-    expect(firstRowId as number).toBeLessThan(snapshot.rows.window[0]!.rowId);
-    expect(firstRowId).toBe(coldWindowFirstRowId(host.messages.length));
-    // wire 只发尾部窗口。
+    // 窗口态行号是负数空间：与权威全序 rowId 不撞号，也是客户端识别窗口态的标记。
     expect(snapshot.rows.window.length).toBe(60);
+    expect(snapshot.rows.window.every((row) => row.rowId < 0)).toBe(true);
+    expect(snapshot.rows.window.map((row) => row.rowId)).toEqual(
+      [...snapshot.rows.window.map((row) => row.rowId)].toSorted((a, b) => a - b),
+    );
+    // 纯预览不变式：firstRowId = 窗口首行 ⇒ 客户端 hasOlderRows 为 false。
+    expect(snapshot.rows.firstRowId).toBe(snapshot.rows.window[0]!.rowId);
+    expect(hasOlderRows(snapshot)).toBe(false);
     // 首帧 config 取持久化种子（runtime 真值还没就位）。
     expect(snapshot.config).toMatchObject({
       model: "glm-persisted",
@@ -326,6 +321,38 @@ describe("冷打开窗口优先（gateway 单元）", () => {
     host.releaseResume();
     await waitFor(() => host.frames.length > 0, "completion snapshot frame");
     expect(host.frames.at(-1)?.payload.kind).toBe("snapshot");
+  });
+
+  it("A2 窗口态不提供更早历史：rowsRange 等完整投影，窗口态行号在权威空间里取不到行", async () => {
+    const host = makeHost(transcript(100));
+    gateway = makeGateway(host);
+    const result = await gateway.subscribe(subscribeParams());
+    const windowSnapshot = snapshotOf(result.initialFrame ?? undefined);
+
+    let settled = false;
+    const pending = gateway
+      .rowsRange({
+        sessionId: SESSION_ID,
+        beforeRowId: windowSnapshot.rows.window[0]!.rowId,
+        limit: 60,
+        clientMode: "desktop-continuous",
+      })
+      .then((response) => {
+        settled = true;
+        return response;
+      });
+    // activation 未完成时窗口态没有更早历史可给：查询挂在完整 READY 上，绝不返回临时行。
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(settled).toBe(false);
+
+    host.releaseResume();
+    const response = await pending;
+    expect(response.atLogEpoch).toBe(windowSnapshot.logEpoch);
+    // 游标是窗口态负数行号，权威全序行都大于它 ⇒ 没有更早行：失败关闭为空页，
+    // 而不是把窗口态行或错位历史混进来。客户端在窗口态本就不会发起这次查询
+    // （hasOlderRows=false），翻转后也会按权威首行重新取。
+    expect(response.rows).toEqual([]);
+    expect(response.hasMore).toBe(false);
   });
 
   it("A3/A4 补全后原子替换为完整投影，config 换成 runtime 真值", async () => {
@@ -339,8 +366,9 @@ describe("冷打开窗口优先（gateway 单元）", () => {
     await waitFor(() => host.frames.length > 0, "completion snapshot frame");
     const complete = snapshotOf(host.frames.at(-1));
 
-    // 全序口径：firstRowId = 1（不再是窗口态哨兵），logEpoch 不变（同一 publisher 实例）。
+    // 全序口径：firstRowId = 1（不再是窗口态行号），logEpoch 不变（同一 publisher 实例）。
     expect(complete.rows.firstRowId).toBe(1);
+    expect(complete.rows.window.every((row) => row.rowId > 0)).toBe(true);
     expect(complete.logEpoch).toBe(logEpoch);
     expect(complete.config).toMatchObject({
       model: "glm-runtime",
@@ -378,52 +406,9 @@ describe("冷打开窗口优先（gateway 单元）", () => {
       }
     }
     expect(reachedStart).toBe(true);
-    // 全序首行的行号是 1（不是窗口态哨兵），也就是完整投影而不是窗口子集。
+    // 全序首行的行号是 1（不是窗口态行号），也就是完整投影而不是窗口子集。
     expect(cursor).toBe(1);
     expect(collectedTexts[0]).toBe("问题0");
-  });
-
-  it("A2 窗口态 rows/range 从 store 分页：逐页更早、无缝无重叠、翻到会话开头即到顶", async () => {
-    const host = makeHost(transcript(100));
-    gateway = makeGateway(host);
-    const result = await gateway.subscribe(subscribeParams());
-    const windowSnapshot = snapshotOf(result.initialFrame ?? undefined);
-    const totalCount = windowSnapshot.rows.totalCount;
-
-    let cursor = windowSnapshot.rows.window[0]!.rowId;
-    const pages: Array<{ ids: number[]; texts: string[] }> = [];
-    for (let page = 0; page < 4; page += 1) {
-      const response = await gateway.rowsRange({
-        sessionId: SESSION_ID,
-        beforeRowId: cursor,
-        limit: 60,
-        clientMode: "desktop-continuous",
-      });
-      // 窗口态翻页由 store 供给：全部行号都严格小于窗口首行。
-      expect(response.rows.every((row) => row.rowId < cursor)).toBe(true);
-      expect(response.rows.map((row) => row.rowId)).toEqual(
-        [...response.rows.map((row) => row.rowId)].toSorted((a, b) => a - b),
-      );
-      expect(response.atLogEpoch).toBe(windowSnapshot.logEpoch);
-      pages.push({
-        ids: response.rows.map((row) => row.rowId),
-        texts: response.rows
-          .filter((row) => row.kind === "userInput" || row.kind === "assistantText")
-          .map((row) => ("text" in row ? row.text : "")),
-      });
-      if (response.rows.length === 0) break;
-      cursor = response.rows[0]!.rowId;
-      if (!response.hasMore) break;
-    }
-    // 页是按「更早方向」取回的：拼装时倒序页序，而不是倒序每页内部的行。
-    const collected = pages.toReversed().flatMap((page) => page.ids);
-    const texts = pages.toReversed().flatMap((page) => page.texts);
-    // 会话开头那一段：最旧行的行号正是全序首行（哨兵），客户端据此停手。
-    expect(cursor).toBe(coldWindowFirstRowId(totalCount));
-    expect(collected).toEqual([...collected].toSorted((a, b) => a - b));
-    expect(texts[0]).toBe("问题0");
-    // 每行都落在窗口态行号空间内（负数，与窗口行 1..k 不冲突）。
-    expect(collected.every((rowId) => rowId < 0)).toBe(true);
   });
 
   it("A5 activation 失败：首屏保持可用，错误可见，重试可再次激活", async () => {
@@ -469,7 +454,7 @@ describe("冷打开窗口优先（gateway 单元）", () => {
     expect(legacy.config).toMatchObject({ model: "glm-runtime" });
 
     gateway.dispose();
-    const plainHost = makeHost(transcript(100), { window: false, page: false, synth: false });
+    const plainHost = makeHost(transcript(100), { window: false, synth: false });
     plainHost.releaseResume();
     gateway = makeGateway(plainHost);
     const plain = snapshotOf(
@@ -484,29 +469,14 @@ describe("冷打开窗口优先（gateway 单元）", () => {
     host.synthesized = false;
     gateway = makeGateway(host);
     const result = await gateway.subscribe(subscribeParams());
-    expect(snapshotOf(result.initialFrame ?? undefined).rows.firstRowId).not.toBe(1);
+    const windowSnapshot = snapshotOf(result.initialFrame ?? undefined);
+    expect(windowSnapshot.rows.firstRowId).toBe(windowSnapshot.rows.window[0]!.rowId);
+    expect(hasOlderRows(windowSnapshot)).toBe(false);
 
     host.releaseResume();
     await waitFor(() => host.frames.length > 0, "completion snapshot frame");
     // 早退分支必须被窗口态标记拦下：否则窗口投影会被当成健康 live publisher 永久保留。
     expect(snapshotOf(host.frames.at(-1)).rows.firstRowId).toBe(1);
-  });
-
-  it("窗口态 rows/range 在 store 分页钩子缺席时失败关闭为可诊断空页", async () => {
-    // 合成钩子在位（窗口态成立），但分页钩子缺席：翻页失败关闭，不偷偷回退全量。
-    const host = makeHost(transcript(100), { window: true, page: false, synth: true });
-    gateway = makeGateway(host);
-    const result = await gateway.subscribe(subscribeParams());
-    const snapshot = snapshotOf(result.initialFrame ?? undefined);
-    const response = await gateway.rowsRange({
-      sessionId: SESSION_ID,
-      beforeRowId: snapshot.rows.window[0]!.rowId,
-      limit: 60,
-      clientMode: "desktop-continuous",
-    });
-    expect(response.rows).toEqual([]);
-    expect(response.hasMore).toBe(false);
-    host.releaseResume();
   });
 });
 
@@ -521,64 +491,32 @@ describe("窗口态 publisher 契约", () => {
     return publisher;
   }
 
-  it("窗口态 wire snapshot 的 totalCount/firstRowId 取 store 口径，完整态回到全序行", () => {
-    const publisher = makePublisher(transcript(5));
-    const fullRowCount = publisher.getSnapshot().rows.window.length;
+  it("窗口态 wire snapshot：行取窗口元信息、firstRowId = 实际下发窗口首行，完整态回到全序行", () => {
+    const publisher = makePublisher(transcript(30));
+    const projectionRows = publisher.getSnapshot().rows.window;
     const totalCount = 900;
-    publisher.markRowsIncomplete({
-      totalCount,
-      firstRowId: coldWindowFirstRowId(totalCount),
-    });
+    // 模拟 gateway 的改写：负数空间、升序、与投影局部行号无关。
+    const windowRows = projectionRows.map((row, index) => ({
+      ...row,
+      rowId: -(projectionRows.length - index) * 100_000,
+    }));
+    publisher.markRowsIncomplete({ totalCount, rows: windowRows });
     expect(publisher.isRowsIncomplete()).toBe(true);
 
     const frame = publisher.subscribe({ connectionId: "c", deliveryProfile: "continuous" }).frame;
     if (frame?.payload.kind !== "snapshot") throw new Error("expected snapshot");
-    expect(frame.payload.snapshot.rows.totalCount).toBe(totalCount);
-    expect(frame.payload.snapshot.rows.firstRowId).toBe(coldWindowFirstRowId(totalCount));
-    // 窗口首行（局部行号）仍大于哨兵 ⇒ hasOlderRows 判定为真。
-    expect(frame.payload.snapshot.rows.window[0]!.rowId).toBeGreaterThan(
-      frame.payload.snapshot.rows.firstRowId as number,
-    );
+    const snapshot = frame.payload.snapshot;
+    expect(snapshot.rows.totalCount).toBe(totalCount);
+    expect(snapshot.rows.window.every((row) => row.rowId < 0)).toBe(true);
+    // wire 截到尾部 60 行后，firstRowId 必须与截断后的首行同源，否则 hasOlderRows 会错误为真。
+    const expectedFirst = snapshot.rows.window[0]!.rowId;
+    expect(snapshot.rows.firstRowId).toBe(expectedFirst);
+    expect(snapshot.rows.window[0]!.rowId > (snapshot.rows.firstRowId as number)).toBe(false);
 
     publisher.markRowsComplete();
     expect(publisher.isRowsIncomplete()).toBe(false);
     const complete = publisher.getSnapshot();
-    expect(complete.rows.totalCount).toBe(fullRowCount);
+    expect(complete.rows.totalCount).toBe(projectionRows.length);
     expect(complete.rows.firstRowId).toBe(1);
-  });
-
-  it("readRowsRange 窗口态委托 store 分页，完整态走投影切片且不调用注入回调", async () => {
-    const publisher = makePublisher(transcript(5));
-    let delegated = 0;
-    const readOlderRows = async (params: { beforeRowId: number; limit: number }) => {
-      delegated += 1;
-      return {
-        rows: [],
-        atSeq: 7,
-        atRevision: 0,
-        atLogEpoch: "epoch-window",
-        hasMore: params.limit > 0,
-      };
-    };
-
-    // 完整态：注入回调必须被忽略。
-    const projection = await publisher.readRowsRange(
-      { beforeRowId: 1_000, limit: 60 },
-      "continuous",
-      readOlderRows,
-    );
-    expect(delegated).toBe(0);
-    expect(projection.rows.length).toBeGreaterThan(0);
-    expect(projection.atLogEpoch).toBe("epoch-window");
-
-    publisher.markRowsIncomplete({ totalCount: 50, firstRowId: coldWindowFirstRowId(50) });
-    const delegatedResult = await publisher.readRowsRange(
-      { beforeRowId: publisher.getSnapshot().rows.window[0]!.rowId, limit: 60 },
-      "continuous",
-      readOlderRows,
-    );
-    expect(delegated).toBe(1);
-    expect(delegatedResult.atSeq).toBe(7);
-    expect(delegatedResult.hasMore).toBe(true);
   });
 });

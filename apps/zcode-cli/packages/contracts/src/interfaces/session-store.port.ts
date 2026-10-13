@@ -789,7 +789,8 @@ export interface MessageWithParts {
  *
  * 元信息的用途（`apps/zcode-cli/packages/bootstrap/spec/cold-open-window-first.md`）：
  * - `totalCount` 供首帧 wire `rows.totalCount`（真实消息总数，不是窗口可见行数）；
- * - `firstSequence` + 本片最早 sequence 供翻页游标与「窗口是否已到会话开头」判定；
+ * - `firstSequence` + 本片最早 sequence 供窗口态行号换算（见 cold-window-rows.ts）；
+ * - `hasOlder` 表示本片之外还有更早消息（调用方据此决定这份窗口是否值得做纯预览首帧）；
  * - `legacySequence=true` 表示会话存在 NULL sequence 旧行，排序口径已退化，调用方必须
  *   回退既有全量路径，不能在这份切片上做任何序号推断。
  */
@@ -1215,15 +1216,6 @@ export interface SessionStorePort {
    * （调用方回退 `messages()` 全量路径）。
    */
   messageWindow?(input: { sessionID: SessionId; limit: number }): Promise<SessionMessageSlice>;
-  /**
-   * 窗口态向上翻页：取 `sequence < beforeSequence`（缺省 = 整段尾部）的最后 `limit` 条消息。
-   * 与 `messageWindow` 同一读路径，只换游标；`hasOlder` 表示游标方向之外还有更早消息。
-   */
-  messagePageBefore?(input: {
-    sessionID: SessionId;
-    beforeSequence?: number;
-    limit: number;
-  }): Promise<SessionMessageSlice>;
   saveSessionEntry?(input: SessionEntryInfo): Promise<void>;
   sessionEntries?(input: {
     sessionID: SessionId;

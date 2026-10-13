@@ -29,9 +29,8 @@ import type {
   TurnId,
   FileSystemErrorCode,
 } from "@zcode/contracts";
-import type { ConversationRow, ConversationSnapshot } from "@zcode/shared/zcode-protocol-v4";
+import type { ConversationSnapshot } from "@zcode/shared/zcode-protocol-v4";
 import { SessionEventType, isFileSystemPortError } from "@zcode/contracts";
-import { isConversationRealUserTurnStarter } from "@zcode/shared";
 import type { ZCodeWorkspaceRef } from "@zcode/shared";
 import { extractMarkdownArtifactImageRefs } from "@zcode/shared";
 import type {
@@ -77,8 +76,6 @@ import type {
 import {
   DELIVERY_PROFILES,
   PROTOCOL_V4_LIMITS,
-  filterConversationRowsForProfile,
-  type DeliveryProfileName,
   ZCODE_ATTACHMENT_FAULT_CODES,
   ZCodeAttachmentFaultError,
   readZCodeAttachmentFaultCode,
@@ -152,10 +149,7 @@ import { ConversationTelemetryFactNormalizer } from "./conversation-telemetry-fa
 import { CuaPermissionObservationNormalizer } from "./cua-permission-observation.js";
 import {
   COLD_WINDOW_MESSAGE_LIMIT,
-  COLD_WINDOW_PAGE_MESSAGE_LIMIT,
   assignColdWindowRowIds,
-  coldWindowFirstRowId,
-  coldWindowOrdinalOfRow,
 } from "./cold-window-rows.js";
 import { V4CapabilityUnsupportedError } from "./commands/handlers/interaction-background.js";
 
@@ -163,6 +157,26 @@ function toRuntimeTurnId(turnId: string | null): TurnId | null {
   // conversation projection 为了 row 索引用 string 保存 product turnId；
   // 离开 gateway 调 runtime 文件摘要/回退能力时，需要恢复 contracts 的品牌类型。
   return turnId as TurnId | null;
+}
+
+/** 消息 sequence → 会话内 1-based 全局序号（窗口态行号换算的输入，见 cold-window-rows.ts）。 */
+function coldWindowOrdinalOfSequence(sequence: number | undefined, firstSequence: number): number {
+  return sequence === undefined ? 1 : sequence - firstSequence + 1;
+}
+
+function coldWindowOrdinalByMessageId(
+  messages: readonly MessageWithParts[],
+  sequences: readonly number[],
+  firstSequence: number,
+): ReadonlyMap<string, number> {
+  const ordinalByMessageId = new Map<string, number>();
+  messages.forEach((message, index) => {
+    const sequence = sequences[index];
+    if (sequence !== undefined) {
+      ordinalByMessageId.set(String(message.info.id), sequence - firstSequence + 1);
+    }
+  });
+  return ordinalByMessageId;
 }
 
 function rowTargetActionForCommand(
@@ -472,16 +486,7 @@ export interface V4GatewayHost {
     limit: number;
   }): Promise<SessionMessageSlice | null>;
   /**
-   * 窗口态向上翻页：取 `sequence < beforeSequence` 的最后 `limit` 条消息（同一读路径）。
-   * 与 `readMessageWindow` 一起在场/缺席；任一缺席则窗口态翻页不可用（回退完整 READY）。
-   */
-  readMessagePageBefore?(input: {
-    sessionId: string;
-    beforeSequence?: number;
-    limit: number;
-  }): Promise<SessionMessageSlice | null>;
-  /**
-   * 把一段消息合成为归约等价的会话事件（窗口态投影与翻页行共用同一合成口径）。
+   * 把一段消息合成为归约等价的会话事件（窗口态投影的合成口径）。
    * 与 `loadPersistedEvents` 的差别：不需要 runtime record（冷打开时 record 还没物化），
    * 因此只能拿 transcript 合成，不能混入内存事件。
    */
@@ -529,20 +534,6 @@ interface HydrationBuffer {
   rawEvents: SessionEvent[];
 }
 
-/**
- * 冷打开窗口态的会话级水位（spec: cold-open-window-first）。
- *
- * 只描述「首帧投影只含尾部窗口」这一临时状态：`totalCount` 是 store 口径的会话消息总数，
- * `windowFirstSequence` 是窗口最早消息的 sequence（翻页第一页的游标），
- * `firstSequence` 是会话最小 sequence（把分页消息换算成 1-based 全局序号）。
- * 完整重放完成后整条状态被清除（行号回到投影全序）。
- */
-interface ColdWindowState {
-  totalCount: number;
-  firstSequence: number;
-  windowFirstSequence: number | null;
-}
-
 interface RawSequenceState {
   /** 已经由 cold snapshot 或 live replay 消费的 runtime raw cursor。 */
   sourceEventSeq: number;
@@ -567,12 +558,6 @@ interface ProjectionEventCommitWaiter {
 
 const PROJECTION_EVENT_COMMIT_TIMEOUT_MS = 25_000;
 const MAX_TELEMETRY_EVENT_IDS = 2_000;
-/**
- * 窗口态翻页向上补齐「一轮起点」的最大页数：每页 COLD_WINDOW_PAGE_MESSAGE_LIMIT 条消息，
- * 8 页足够覆盖任何正常的单轮长度；仍补不到起点（畸形 transcript）就按现状返回，
- * 不为了对齐口径无限读盘。
- */
-const COLD_WINDOW_PAGE_READ_MAX_ATTEMPTS = 8;
 /** detached subagent child 终态后无订阅者时，publisher 由低频 tick 释放前的保留时长。 */
 export const DETACHED_CHILD_PUBLISHER_GRACE_MS = 120_000;
 
@@ -676,12 +661,11 @@ export class ConversationV4Gateway {
   /**
    * 冷打开「窗口态就绪」单飞（spec: cold-open-window-first §2/§3）：先产出尾部窗口投影，
    * 完整 activation 在后台继续。与 `readyFlights`（完整 READY）分工：
-   * - subscribe 首帧与 rowsRange 数据源选择走这里；
-   * - command/query 仍走 `readyFlights`，保证它们看到的水位与 completeness 一致。
+   * - subscribe 首帧走这里（窗口态是纯预览，不给更早历史）；
+   * - command/query 与 rowsRange 仍走 `readyFlights`，保证它们看到的水位与 completeness
+   *   一致——窗口态没有可翻的历史，rowsRange 只服务完整投影。
    */
   private readonly coldOpenFlights = new Map<string, Promise<ConversationTopicPublisher>>();
-  /** 窗口态水位；补全完成后清除。 */
-  private readonly coldWindowStates = new Map<string, ColdWindowState>();
   /**
    * 当前 publisher 的投影来自冷窗口读（不是完整 hydration）的会话。完整补全必须走
    * rehydrate 而不是「保留健康 live publisher」早退，否则窗口投影会永久停留。
@@ -1697,166 +1681,29 @@ export class ConversationV4Gateway {
 
   /**
    * v4/conversation/rowsRange：按 beforeRowId 游标向上取一窗
-   * 历史行。只读 query，不建订阅。
+   * 历史行。只读 query，不建订阅；数据源 = 该会话投影全量行——冷会话（重启后直开
+   * 历史）复用与 subscribe 相同的冷恢复 + hydration 管线先把投影建起来。
    *
-   * 数据源随水位切换（spec: cold-open-window-first §4）：窗口态 publisher 在位时由 store
-   * 分页供给更早行，不阻塞在 activation 上；完整态沿用投影全量行切片。完整 READY 仍会在
-   * 后台建立（打开会话即激活 runtime 的语义不变）。
+   * 冷打开窗口态（spec: cold-open-window-first §A）不在这里分流：窗口态是纯预览，
+   * snapshot 的 firstRowId = 窗口首行，客户端 `hasOlderRows` 恒为 false，不会发起本查询；
+   * 补全后投影已是全序，本方法直接给出权威切片。
    */
   async rowsRange(rawParams: unknown): Promise<V4ConversationRowsRangeResult> {
     const params = v4ConversationRowsRangeParamsSchema.parse(rawParams);
-    const profileName = params.clientMode === "desktop-continuous" ? "continuous" : "replayable";
-    const publisher = await this.rowsRangePublisher(params.sessionId);
-    return publisher.readRowsRange(
+    const existingReady = this.readyFlights.get(params.sessionId);
+    const publisher = existingReady
+      ? await existingReady
+      : !this.hasLiveConversation(params.sessionId)
+        ? await this.ensureColdReadyPublisher(params.sessionId)
+        : await this.hydratePublisher(params.sessionId);
+    return publisher.getRowsRange(
       {
         ...(params.beforeRowId !== undefined ? { beforeRowId: params.beforeRowId } : {}),
         limit: params.limit,
       },
-      profileName,
-      (page) => this.readColdWindowOlderRows(params.sessionId, page, profileName),
+      // clientMode 决定行可见性过滤档位：桌面 continuous（默认）/ 断线恢复 replayable。
+      params.clientMode === "desktop-continuous" ? "continuous" : "replayable",
     );
-  }
-
-  /**
-   * rowsRange 的 publisher 选择：窗口态优先（更早行走 store，不必等 activation），
-   * 其余情况保持既有「等完整 READY」语义（含 command/query 看到的水位一致性）。
-   */
-  private async rowsRangePublisher(sessionId: string): Promise<ConversationTopicPublisher> {
-    const current = this.publishers.get(sessionId);
-    if (current && this.coldWindowSessions.has(sessionId)) return current;
-    const existingReady = this.readyFlights.get(sessionId);
-    if (existingReady) return await existingReady;
-    return !this.hasLiveConversation(sessionId)
-      ? await this.ensureColdOpenPublisher(sessionId)
-      : await this.hydratePublisher(sessionId);
-  }
-
-  /**
-   * 窗口态的 rows/range 数据源：从 session store 分页取更早消息，合成行后按
-   * cold-window-rows.ts 的全序行号返回（与窗口行号同一全序，客户端按 rowId 合并安全）。
-   *
-   * 页语义按**消息**对齐（一页 COLD_WINDOW_PAGE_MESSAGE_LIMIT 条消息，行数随内容浮动），
-   * 而不是按行截断：按行截断会把同一条消息的行拆到两页，客户端按 rowId 合并时会出现空洞。
-   * 另外向更早方向补齐到「一轮的 real-user 起点」：合成口径按轮分组，页首落在轮中间会
-   * 产出与完整重放不同构的行。
-   */
-  private async readColdWindowOlderRows(
-    sessionId: string,
-    request: { beforeRowId: number; limit: number },
-    deliveryProfile: DeliveryProfileName,
-  ): Promise<V4ConversationRowsRangeResult> {
-    const publisher = this.publishers.get(sessionId);
-    const state = this.coldWindowStates.get(sessionId);
-    const readPage = this.host.readMessagePageBefore;
-    const synthesizeEvents = this.host.synthesizeTranscriptEvents;
-    const snapshot = publisher?.getSnapshot();
-    const empty = (): V4ConversationRowsRangeResult => ({
-      rows: [],
-      atSeq: snapshot?.seq ?? 0,
-      atRevision: snapshot?.revision ?? 0,
-      atLogEpoch: snapshot?.logEpoch ?? "",
-      hasMore: false,
-    });
-    if (!publisher || !snapshot || !state || !readPage || !synthesizeEvents) return empty();
-
-    // 游标 → store 边界：窗口行号（≥1）就是窗口首行，等价于「窗口最早消息之前」；
-    // 更早行的行号自带全局消息序号（cold-window-rows.ts §换算）。
-    const ordinal =
-      request.beforeRowId >= 1
-        ? undefined
-        : coldWindowOrdinalOfRow(request.beforeRowId, state.totalCount);
-    // 越界游标（畸形或已过期行号）返空页，宁可让客户端重取 snapshot 也不重复吐出窗口内容。
-    if (ordinal !== undefined && (ordinal < 1 || ordinal > state.totalCount)) return empty();
-    const beforeSequence =
-      ordinal === undefined
-        ? (state.windowFirstSequence ?? undefined)
-        : state.firstSequence + ordinal - 1;
-    if (beforeSequence === undefined || beforeSequence < state.firstSequence) return empty();
-
-    const collected: MessageWithParts[] = [];
-    const sequences: number[] = [];
-    let cursor: number | undefined = beforeSequence;
-    let hasMore = false;
-    for (let attempt = 0; attempt < COLD_WINDOW_PAGE_READ_MAX_ATTEMPTS; attempt += 1) {
-      const page: SessionMessageSlice | null = await readPage({
-        sessionId,
-        ...(cursor === undefined ? {} : { beforeSequence: cursor }),
-        limit: COLD_WINDOW_PAGE_MESSAGE_LIMIT,
-      }).catch((error) => {
-        this.host.onError?.("v4.coldOpen.page", error, {
-          phase: "readMessagePageBefore",
-          sessionId,
-        });
-        return null;
-      });
-      if (!page || page.legacySequence || page.messages.length === 0) break;
-      collected.unshift(...page.messages);
-      sequences.unshift(...page.sequences);
-      cursor = page.sequences[0];
-      hasMore = page.hasOlder;
-      const oldest = collected[0];
-      if (!hasMore || (oldest !== undefined && isConversationRealUserTurnStarter(oldest))) break;
-    }
-    if (collected.length === 0) return empty();
-
-    const rows = await this.projectColdWindowRows(
-      sessionId,
-      collected,
-      sequences,
-      state,
-      synthesizeEvents,
-    );
-    const eligible = filterConversationRowsForProfile(
-      rows,
-      DELIVERY_PROFILES[deliveryProfile],
-    ).filter((row) => row.rowId < request.beforeRowId);
-    return {
-      rows: eligible,
-      atSeq: snapshot.seq,
-      atRevision: snapshot.revision,
-      atLogEpoch: snapshot.logEpoch,
-      hasMore,
-    };
-  }
-
-  /**
-   * 把一段消息合成为行（翻页专用临时投影），并把行号改写成窗口态全序。
-   * 临时投影只服务本次读：不注册订阅、不污染权威 publisher 的 logEpoch/revision。
-   */
-  private async projectColdWindowRows(
-    sessionId: string,
-    messages: MessageWithParts[],
-    sequences: number[],
-    state: ColdWindowState,
-    synthesizeEvents: NonNullable<V4GatewayHost["synthesizeTranscriptEvents"]>,
-  ): Promise<ConversationRow[]> {
-    const events = await synthesizeEvents({ sessionId, messages });
-    const scratch = new ConversationTopicPublisher(
-      sessionId,
-      this.createLogEpoch(`cold-window-page/${sessionId}`),
-      { now: this.now },
-    );
-    scratch.rehydrate(events, {
-      onPayloadTooLarge: (error) =>
-        this.host.onError?.("v4.hydrate.payloadTooLarge", error, {
-          phase: "coldWindowPage.rehydrate",
-          sessionId,
-        }),
-    });
-    const ordinalByMessageId = new Map<string, number>();
-    messages.forEach((message, index) => {
-      const sequence = sequences[index];
-      if (sequence !== undefined) {
-        ordinalByMessageId.set(String(message.info.id), sequence - state.firstSequence + 1);
-      }
-    });
-    return assignColdWindowRowIds({
-      rows: scratch.getSnapshot().rows.window,
-      totalCount: state.totalCount,
-      ordinalByMessageId,
-      messageIdOf: (row) => scratch.getMessageIdForRow(row.rowId),
-      fallbackOrdinal: (sequences[0] ?? state.firstSequence) - state.firstSequence + 1,
-    });
   }
 
   /** 完整有效 projection 的终态计划目录；冷会话复用订阅 hydration。 */
@@ -3122,7 +2969,6 @@ export class ConversationV4Gateway {
     this.publishers.delete(sessionId);
     this.hydratedSessions.delete(sessionId);
     this.coldOpenFlights.delete(sessionId);
-    this.coldWindowStates.delete(sessionId);
     this.coldWindowSessions.delete(sessionId);
     const hydrationBuffer = this.hydrationBuffers.get(sessionId);
     if (hydrationBuffer) hydrationBuffer.cancelled = true;
@@ -3178,7 +3024,6 @@ export class ConversationV4Gateway {
     this.publishers.clear();
     this.hydratedSessions.clear();
     this.coldOpenFlights.clear();
-    this.coldWindowStates.clear();
     this.coldWindowSessions.clear();
     for (const buffer of this.hydrationBuffers.values()) buffer.cancelled = true;
     this.hydrationBuffers.clear();
@@ -3338,15 +3183,22 @@ export class ConversationV4Gateway {
       window.messages,
     );
     if (persistedSeed) publisher.seedConfig(persistedSeed);
-    this.coldWindowStates.set(sessionId, {
+    // 行号改写成窗口态负数空间（spec §A）：首帧行必须与权威全序 rowId 不撞号，
+    // 且成为客户端识别「窗口态」的标记（行窗口首行为负数）。纯预览语义下客户端不提供
+    // 更早历史，publisher 打帧时把 firstRowId 现算成窗口首行，`hasOlderRows` 恒为 false。
+    const firstSequence = window.firstSequence ?? 0;
+    const windowRows = assignColdWindowRowIds({
+      rows: publisher.getSnapshot().rows.window,
       totalCount: window.totalCount,
-      firstSequence: window.firstSequence ?? 0,
-      windowFirstSequence: window.sequences[0] ?? null,
+      ordinalByMessageId: coldWindowOrdinalByMessageId(
+        window.messages,
+        window.sequences,
+        firstSequence,
+      ),
+      messageIdOf: (row) => publisher.getMessageIdForRow(row.rowId),
+      fallbackOrdinal: coldWindowOrdinalOfSequence(window.sequences[0], firstSequence),
     });
-    publisher.markRowsIncomplete({
-      totalCount: window.totalCount,
-      firstRowId: coldWindowFirstRowId(window.totalCount),
-    });
+    publisher.markRowsIncomplete({ totalCount: window.totalCount, rows: windowRows });
     // 完整 activation 在后台推进：不 await 首帧，失败只记错误并保留窗口投影（spec A5）。
     // 错误入口交给下一次 subscribe/retry（会重新走这里并在 readyFlights 上重试）。
     void this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace).catch((error) => {
@@ -3603,9 +3455,8 @@ export class ConversationV4Gateway {
       await this.seedPublisherUsage(sessionId, publisher, persistedMessages);
     }
     // 冷打开窗口态补全：投影已换成全量重放结果，行号回到全序口径。必须在下面推 snapshot
-    // 之前完成——否则补全后的第一份 snapshot 仍会带窗口态的 totalCount/firstRowId。
+    // 之前完成——否则补全后的第一份 snapshot 仍是窗口态的负数行号与 totalCount。
     if (this.coldWindowSessions.delete(sessionId)) {
-      this.coldWindowStates.delete(sessionId);
       publisher.markRowsComplete();
     }
     for (const [routeKey, state] of this.flushStates) {

@@ -1,6 +1,6 @@
 // 冷打开窗口态读路径（spec: bootstrap/spec/cold-open-window-first.md §1）：
-// messageWindow / messagePageBefore 必须与 messages() 的规范全序前缀一致，
-// 并给出可支撑首帧 rows.totalCount / 翻页游标的轻量元信息。
+// messageWindow 必须与 messages() 的规范全序尾部一致，
+// 并给出可支撑首帧 rows.totalCount / 窗口态行号换算的轻量元信息。
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,7 +86,7 @@ describe("session store message window", () => {
       expect(window.legacySequence).toBe(false);
       expect(window.hasOlder).toBe(true);
       expect(window.messages).toEqual(all.slice(-10));
-      // sequences 与 messages 对齐且单调递增（游标换算依赖它）。
+      // sequences 与 messages 对齐且单调递增（窗口态行号按消息序号换算依赖它）。
       expect(window.sequences).toEqual([...window.sequences].toSorted((a, b) => a - b));
       expect(window.sequences).toHaveLength(window.messages.length);
     } finally {
@@ -120,40 +120,6 @@ describe("session store message window", () => {
       expect(empty.totalCount).toBe(0);
       expect(empty.firstSequence).toBeNull();
       expect(empty.messages).toEqual([]);
-    } finally {
-      store.close();
-    }
-  });
-
-  it("游标分页逐页取更早消息，页间无缝无重叠，并最终到达会话开头", async () => {
-    const root = await mkdtemp(join(tmpdir(), "zcode-message-page-"));
-    tempRoots.push(root);
-    const dbPath = join(root, "session.sqlite");
-    const { sessionID } = await seedSession({ dbPath, messageCount: 25 });
-    const store = openStore(dbPath);
-    try {
-      const all = await store.messages({ sessionID });
-      const window = await store.messageWindow!({ sessionID, limit: 8 });
-      const pages: (typeof all)[] = [];
-      let beforeSequence: number | undefined = window.sequences[0];
-      for (let guard = 0; guard < 10; guard += 1) {
-        const page = await store.messagePageBefore!({
-          sessionID,
-          ...(beforeSequence === undefined ? {} : { beforeSequence }),
-          limit: 8,
-        });
-        if (page.messages.length === 0) break;
-        pages.push(page.messages);
-        beforeSequence = page.sequences[0];
-        if (!page.hasOlder) break;
-      }
-      // 窗口 + 逐页拼回来的正是全量规范顺序的尾部（顺序与内容都一致）：页是按更早方向
-      // 取回的，拼装时要倒序页序，而不是倒序每页内部的行。
-      const pageRows = pages.toReversed().flat();
-      expect([...pageRows, ...window.messages]).toEqual(
-        all.slice(all.length - pageRows.length - window.messages.length),
-      );
-      expect(pageRows.length + window.messages.length).toBe(25);
     } finally {
       store.close();
     }
