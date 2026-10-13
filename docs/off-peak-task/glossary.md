@@ -52,6 +52,10 @@
 | 数据     | automation 表/状态机   | 独立 `off_peak_tasks` 表、消息类型和状态机                  |
 | 多端     | 按既有 Automation 边界 | 手机 `/remote` 和桌面 remote workspace 隐藏闲时产品入口     |
 
+### 任务语义合并后的 Automation（2026-10-13）
+
+「任务」与「自动化」语义合并后，Automation 记录成为统一的任务定义实体：除了 cron 开始调度，还承载可选的截止时间（`deadlineMs`，到点先收尾一轮再硬停）与会话目标（`objective` + 挂会话 `targetTaskId`），`cronExpr` 空串表示纯模板（仅手动运行）；执行状态仍留在 `session_target`，由目标续跑引擎驱动（见 `apps/zcode-cli/packages/core/spec/goal-task-panel-and-deadline.md` 文首「任务纳入自动化体系」章节）。**本表「闲时任务 vs Automation」的边界结论不受影响**：闲时任务仍是独立域（独立表、独立状态机、官方禁止复用标记），不并入任务形态语义。
+
 ## 两轴状态与时序
 
 ```text

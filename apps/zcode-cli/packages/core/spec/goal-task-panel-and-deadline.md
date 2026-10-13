@@ -6,6 +6,19 @@
 
 状态：**已实现**（2026-10-12）。实现与本稿的两处偏离记在文末「实现订正记录」。
 
+## 后续演进：任务纳入自动化体系（2026-10-13）
+
+本文描述的「会话目标（goal）」是**执行状态**层面的机制；任务**定义**层面已于 2026-10-13 与既有「自动化（Automation）」语义合并，形成统一的心智模型：**一个「任务」= 三组可选配置互不排斥**——开始调度（cron，空串 = 纯模板仅手动）、截止时间（`deadlineMs` 墙钟）、会话目标（`objective` + 挂会话 `targetTaskId`）。四种形态：仅定时开始（= 原自动化）、仅截止（= 原目标任务）、纯模板、组合。
+
+落地分工（两库、两状态机，不物理合并）：
+
+- **任务定义**：全部进 `automations` 表——`objective`、`deadline_ms` 两列由 0004 迁移补列（`packages/services/src/session/tasksDatabase/migrations.ts`），`targetTaskId` 沿用既有列；`cron_expr` 空串 = 模板形态（`nextRunAt` 置空、仅手动运行）。校验规则见 `packages/services/src/session/automationService.ts`（模板跳过 cron 校验；`deadlineMs` 必须为未来，`InvalidAutomationDeadlineError`）。
+- **执行状态**：仍在 `session_target` 表，由本文描述的 goal 引擎驱动（该引擎在 CLI core，不可搬移，是唯一必须的分叉）。
+- **触发桥接**：automation 触发/手动运行时，`dispatchCronRun`（`packages/desktop/src/host/index.ts`）在 `sendPrompt` 之外，若任务带 `objective`/`deadlineMs`，向目标会话（`targetTaskId` 或新建）发既有 `session/goal set`（`objective`、`endAtMs = deadlineMs`、`start: true`）落 `session_target`，此后到点收尾与硬停全部走本文机制；桥接失败仅记 run outcome，不阻断主派发。
+- **统一入口**：UI 侧栏合并为单个「任务」入口，统一面板（`AutomationsSection`）聚合 automation 卡片与遗留目标行；表单可建四种形态（「无日程」成为合法提交 = 模板）。
+
+**对本文结论的修订**：D1「面板是会话目标的视图，不新增任务实体」→ 修订为「执行状态不新增实体；任务定义实体 = automation 记录（挂在 `automations` 表）」，双写担忧依旧成立，故定义与执行状态分属两库、以 targetTaskId/sessionId 关联。D2「面板落点 = workspace 主视图 `"goals"`」→ 修订为「统一面板落点 = 既有 automations 主视图，`"goals"` 主视图降级为遗留目标详情承载界面，不删历史功能」。兼容：升级前遗留的 `session_target`（无对应 automation 定义）不搬数据，仍在统一面板「目标」筛选下展示。
+
 ## 背景与问题
 
 ### 现状（已对当前检出的源码逐条核实）

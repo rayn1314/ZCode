@@ -26,17 +26,21 @@ _Avoid_: 按 target 现算身份逐字比对历史条目、连接时静默换身
 可被调度、恢复和归档的工作单元，持久化在 `tasks-index.sqlite`。
 _Avoid_: 把一次会话当成一个任务
 
+**任务 / 自动化（Task Automation）**:
+任务**定义**实体，持久化在 `automations` 表。一组可执行定义 + 三组可选配置互不排斥：开始调度（`cronExpr`，空串 = 纯模板仅手动运行）、截止时间（`deadlineMs` 墙钟，到点先放行一轮收尾再硬停）、会话目标（`objective` + 挂会话 `targetTaskId`，触发时经 `session/goal set` 落到 `session_target`）。四种形态：仅定时开始（= 原自动化）/ 仅截止（= 原目标任务）/ 纯模板 / 组合。任务**定义**在 automations，**执行状态**在 `session_target`（见 Session Goal 词条），两库以 targetTaskId/sessionId 关联，不双写、不物理合并。
+_Avoid_: 把执行状态（`session_target` 行）当任务实体；把「任务」与 Task（`tasks-index.sqlite` 的工作单元）混用
+
 **Session（会话）**:
 一次可恢复的对话与执行上下文，归属于某个 workspace；一个 workspace 下可有多个 session。
 _Avoid_: 与 Task 混用
 
 **Session Goal（会话目标）**:
-挂在一个 session 上的持续任务，持久化在 `session_target` 表（一个 session 至多一个目标，`session_id` 即主键）。它是**会话的属性**，不是新的任务实体：`objective` 是目标正文，`status`（`active` / `paused` / `budget_limited` / `deadline_reached` / `complete`）是权威事实，`tokenBudget` 与 `endAtMs` 是两个相互独立的退出条件（任一触发即停，状态记录先触发者）。运行期由「每轮结束跑一次 LLM 完成校验器 → 未达成则注入续跑提醒」驱动，因此目标会自行循环到达成或触发退出条件为止。到点（`endAtMs`）采用**两段式**：先放行**一轮**收尾回合（`deadlineGraceUsed` 只在行上记一次，resume 与 set/replace 都会重置），再硬停结算 `deadline_reached` 并注入一次性提醒。规则见 `apps/zcode-cli/packages/core/spec/goal-task-panel-and-deadline.md`。
+任务的**执行状态**行，挂在一个 session 上，持久化在 `session_target` 表（一个 session 至多一个目标，`session_id` 即主键）。定义来源有两个：automation 的「挂会话目标」配置（触发桥接经 `session/goal set` 落下，见「任务 / 自动化」词条）与会话内 `/goal` 命令。`objective` 是目标正文，`status`（`active` / `paused` / `budget_limited` / `deadline_reached` / `complete`）是权威事实，`tokenBudget` 与 `endAtMs` 是两个相互独立的退出条件（任一触发即停，状态记录先触发者）。运行期由「每轮结束跑一次 LLM 完成校验器 → 未达成则注入续跑提醒」驱动，因此目标会自行循环到达成或触发退出条件为止。到点（`endAtMs`）采用**两段式**：先放行**一轮**收尾回合（`deadlineGraceUsed` 只在行上记一次，resume 与 set/replace 都会重置），再硬停结算 `deadline_reached` 并注入一次性提醒。规则见 `apps/zcode-cli/packages/core/spec/goal-task-panel-and-deadline.md`。
 _Avoid_: 把它当成 hook / Stop 事件（`Stop` 是模型输出纯文本时的用户脚本钩子，硬上限 3 次）；把它当成每轮注入的系统提示（目标正文不进上下文前缀，只在续跑/校验/状态变更这几个既有时刻出现）；把它当成 Task（Task 在 `tasks-index.sqlite`，目标是目标的行级投影）
 
 **Task Panel / Goals Panel（任务面板）**:
-workspace 主视图之一，是会话目标的**只读视图 + 管理入口**：列表、创建、编辑、暂停/恢复/清除、按工作区过滤。它不是新的状态所有者——所有写入都发 `session/goal` 命令族给唯一的写者（session store），面板只做投影与派生显示。当 `status === "active"` 且已过 `endAtMs` 时，面板按 `deadlineGraceUsed` 显示派生的「已到截止时间 · 收尾中 / 待结算」徽标，**该徽标永不写库、不参与续跑判定**。数据源是 workspace 级只读查询 `session/goalList`。
-_Avoid_: 把它当成独立任务系统（面板按「一目标一会话」呈现，不触碰存储形状）；在面板里直接写状态而不是发命令
+workspace 主视图「任务」= 统一面板（`AutomationsSection`），是任务定义的**管理入口 + 执行状态投影**：automation 卡片按形态（定时/目标/模板）聚合展示，挂会话目标的任务在卡片上显示执行状态徽标；升级前遗留的 `session_target`（无 automation 定义）在「目标」筛选下作为独立行展示（打开详情/清除），不搬数据。所有写入发 `session/goal` 命令族给唯一的写者（session store），面板只做投影与派生显示。当 `status === "active"` 且已过 `endAtMs` 时，按 `deadlineGraceUsed` 显示派生的「已到截止时间 · 收尾中 / 待结算」徽标，**该徽标永不写库、不参与续跑判定**。`"goals"` 主视图保留为遗留目标详情承载界面，不再从侧栏直达。数据源是 automation 列表 + workspace 级只读查询 `session/goalList`。
+_Avoid_: 把它当成独立任务系统（面板按「一任务一卡片 + 一目标一会话」呈现，不触碰存储形状）；在面板里直接写状态而不是发命令
 
 **Subagent Session（子代理会话）**:
 子代理的会话记录，与正式会话同构（同一 AgentRuntime、同一 sessionStore、同一 `sess_*` 体系、同一条会话构造路径），以 `taskType = "subagent_child"` 与指向父会话的 `parentSessionId` 区分身份。它是可输入、可续聊、可被单独唤醒的**附属**会话：输入与正式会话走同一条准入（`packages/shared/src/zcode-protocol-v4/input-role-policy.ts`），只有**受限模式**（冷恢复时读不到 launch spec、工具面身份未还原）的会话恒拒对话输入类命令；**用户配置的工具级 hook 与 hook 信任照常生效，与正式会话同形**（hook 是用户对 Agent 施加的规则，不是会话能力，故不随会话角色收窄）；删除父会话时递归删除，中止父会话运行轮时沿树级联，关闭标签页与空闲回收不级联；它**不进入任务索引**，永不作为左栏顶层行出现，也不得再派生子代理。规则见 `apps/zcode-cli/packages/core/spec/subagent-session-as-first-class.md`。
