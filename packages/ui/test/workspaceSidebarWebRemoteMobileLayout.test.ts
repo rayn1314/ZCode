@@ -234,7 +234,8 @@ describe("WorkspaceSidebar Web remote mobile layout", () => {
     const newTaskIndex = html.indexOf('data-testid="new-task-button-group"');
     const filterIndex = html.indexOf("workspaceSidebar.taskViewOptions");
     const topSearchIndex = html.indexOf("commandCenter.open");
-    const automationsIndex = html.indexOf("workspace.openScheduledSettings");
+    // 侧栏合并后桌面入口统一为「任务 / Tasks」（workspace.openTasks），远端仍不承载该入口。
+    const automationsIndex = html.indexOf("workspace.openTasks");
     const pluginsIndex = html.indexOf("workspace.openPluginsSettings");
     expect(newTaskIndex).toBeGreaterThan(-1);
     expect(filterIndex).toBeGreaterThan(-1);
@@ -272,7 +273,7 @@ describe("WorkspaceSidebar Web remote mobile layout", () => {
   it("places plugins immediately after automations on the desktop home sidebar", async () => {
     render(await createSidebarElement({ webRemoteControlWorkspaceSwitcher: undefined }));
     const automationsButton = screen.getByRole("button", {
-      name: "workspace.openScheduledSettings",
+      name: "workspace.openTasks",
     });
     const pluginsButton = screen.getByRole("button", {
       name: "workspace.openPluginsSettings",

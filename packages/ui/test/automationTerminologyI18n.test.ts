@@ -7,11 +7,14 @@ import {
 } from "@/settings/automationTemplateCatalog.js";
 
 describe("Automations terminology", () => {
-  it("localizes the top-level area as Automations / 自动化", () => {
-    expect(enUS["workspace.openScheduledSettings"]).toBe("Automations");
+  it("localizes the top-level area as Tasks / 任务", () => {
+    // 侧栏合并后顶层入口统一叫「任务 / Tasks」；openScheduledSettings 已删除。
+    expect(enUS["workspace.openTasks"]).toBe("Tasks");
     expect(enUS["settings.automations.title"]).toBe("Automations");
-    expect(zhCN["workspace.openScheduledSettings"]).toBe("自动化");
+    expect(enUS["workspace.openScheduledSettings"]).toBeUndefined();
+    expect(zhCN["workspace.openTasks"]).toBe("任务");
     expect(zhCN["settings.automations.title"]).toBe("自动化");
+    expect(zhCN["workspace.openScheduledSettings"]).toBeUndefined();
   });
 
   it("keeps 定时任务 for the scheduled-task subtype", () => {

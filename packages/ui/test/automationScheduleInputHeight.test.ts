@@ -59,8 +59,10 @@ describe("automation schedule input height", () => {
     expect(editViewSource).toContain(
       "relative flex h-9 items-center overflow-hidden rounded-xl border border-input-border bg-input",
     );
-    expect(editViewSource).toContain('validationErrors.has("schedule")');
-    expect(editViewSource).toContain(': "border-input-border"');
+    // schedule 已随模板合法化退出必填校验；标红通道由「执行截止」字段继承（deadlineError 全局 destructive 描边）。
+    expect(editViewSource).toContain("deadlineError");
+    expect(editViewSource).toContain("outline-destructive/40");
+    expect(editViewSource).toContain('"border-input-border"');
     expect(editViewSource).toContain("hover:border-input-border-hover");
     expect(editViewSource).toContain("focus-within:border-input-border-focused");
   });

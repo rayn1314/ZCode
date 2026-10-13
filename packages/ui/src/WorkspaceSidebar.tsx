@@ -27,7 +27,6 @@ import {
   Minimize2,
   Plus,
   Search,
-  Target,
   X,
 } from "lucide-react";
 import {
@@ -48,7 +47,6 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import type { Locale, RemoteTarget, UserInfo, ZCodeTaskMeta } from "@zcode/shared";
-import { BUILTIN_MODEL_PROVIDER_IDS } from "@zcode/shared";
 import {
   TID_CONVERSATION_NEW_TASK,
   TID_CONVERSATION_SECTION,
@@ -93,7 +91,6 @@ import {
   reorderSidebarPurposeSections,
 } from "@/lib/sidebarPurposeSectionPreferences.js";
 import { useShortcutCommandLabel } from "@/shortcuts/useShortcutBindings.js";
-import { setPendingSettingsSectionIntent } from "@/lib/settingsNavigation.js";
 import { buildTaskWorkspaceKey } from "@/lib/taskQueryCache.js";
 import {
   increaseWorkspaceTaskVisibleLimit,
@@ -266,10 +263,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   goForwardShortcutLabel: _goForwardShortcutLabel,
   onOpenCommandCenter,
   onOpenAutomations,
-  onOpenGoals,
   onOpenPluginStore,
   automationsActive = false,
-  goalsActive = false,
   pluginStoreActive = false,
   onFileTreeOpenChange,
   onWebRemoteTaskOpen,
@@ -324,10 +319,8 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   goForwardShortcutLabel?: string;
   onOpenCommandCenter: () => void;
   onOpenAutomations?: () => void;
-  onOpenGoals?: () => void;
   onOpenPluginStore?: () => void;
   automationsActive?: boolean;
-  goalsActive?: boolean;
   pluginStoreActive?: boolean;
   onFileTreeOpenChange?: (open: boolean) => void;
   onWebRemoteTaskOpen?: (options: { crossWorkspace: boolean }) => void;
@@ -874,9 +867,6 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
   const handleOpenAutomationsMain = useCallback(() => {
     onOpenAutomations?.();
   }, [onOpenAutomations]);
-  const handleOpenGoalsMain = useCallback(() => {
-    onOpenGoals?.();
-  }, [onOpenGoals]);
   const handleOpenCodingPlanUpgrade = useCallback(
     (
       providerId: string,
@@ -1558,24 +1548,9 @@ export const WorkspaceSidebar = memo(function WorkspaceSidebarComponent({
                 )}
               >
                 <CalendarClock className="size-4" />
-                {intl.formatMessage({ id: "workspace.openScheduledSettings" })}
+                {intl.formatMessage({ id: "workspace.openTasks" })}
               </Button>
             ) : null}
-            <Button
-              variant="ghost"
-              onClick={handleOpenGoalsMain}
-              data-icon="inline-start"
-              data-testid="goals-sidebar-open"
-              size="lg"
-              aria-pressed={goalsActive}
-              className={cn(
-                "w-full justify-start gap-2 text-foreground hover:bg-surface-hover hover:text-foreground",
-                goalsActive && "bg-selected text-foreground",
-              )}
-            >
-              <Target className="size-4" />
-              {intl.formatMessage({ id: "goals.title" })}
-            </Button>
             <Button
               variant="ghost"
               onClick={handleOpenPluginStoreMain}

@@ -2038,6 +2038,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                           onOpenSession={({ sessionId, workspacePath, workspaceIdentity }) =>
                             handleSelectTaskInChat(workspacePath, sessionId, workspaceIdentity)
                           }
+                          onOpenGoals={handleOpenGoals}
                         />
                       </div>
                     </ScopedErrorBoundary>
@@ -2267,8 +2268,6 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                         onOpenCommandCenter={handleOpenCommandCenter}
                         onOpenAutomations={handleOpenAutomations}
                         automationsActive={workspaceMainView === "automations"}
-                        onOpenGoals={handleOpenGoals}
-                        goalsActive={workspaceMainView === "goals"}
                         onOpenPluginStore={handleOpenPluginStore}
                         pluginStoreActive={workspaceMainView === "plugin-store"}
                         onFileTreeOpenChange={setIsSidebarFileTreeOpen}
@@ -2514,6 +2513,7 @@ export const WorkspaceShellLayout = memo(function WorkspaceShellLayoutComponent(
                                           workspaceIdentity,
                                         )
                                       }
+                                      onOpenGoals={handleOpenGoals}
                                     />
                                   </div>
                                 </ScopedErrorBoundary>

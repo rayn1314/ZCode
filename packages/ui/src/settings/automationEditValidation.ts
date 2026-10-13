@@ -1,13 +1,15 @@
-export type AutomationEditRequiredField = "title" | "schedule" | "prompt";
+/**
+ * 自动化（任务）表单必填字段校验。
+ * 纯模板（无 cron 调度）是合法形态：空 cron 只影响「定时」标签，不再要求必填 schedule。
+ */
+export type AutomationEditRequiredField = "title" | "prompt";
 
 export function resolveAutomationEditRequiredFieldErrors(params: {
   title: string;
-  cronExpr: string;
   prompt: string;
 }): AutomationEditRequiredField[] {
   const errors: AutomationEditRequiredField[] = [];
   if (!params.title.trim()) errors.push("title");
-  if (!params.cronExpr.trim()) errors.push("schedule");
   if (!params.prompt.trim()) errors.push("prompt");
   return errors;
 }

@@ -20,7 +20,8 @@ describe("Automations populated-list Figma contract", () => {
   it("removes the All tab and its unified mixed grid", () => {
     // 规范出处：docs/off-peak-task/decisions.md D47（2026-07-28）——主视图只保留
     // Scheduled / Idle 两个 tab，All 混排总览及其统一 grid 删除；任务区锚点保留供布局断言使用。
-    expect(automationsSectionSource).not.toContain('"all"');
+    // 形态筛选的 "all"（全部形态）与顶层 All tab 是两回事，此处只约束顶层 tab 枚举。
+    expect(automationsSectionSource).not.toContain('tab: "all"');
     expect(automationsSectionSource).not.toContain("showUnifiedAllTaskGrid");
     expect(automationsSectionSource).toContain("data-automations-task-grid");
     expect(automationsSectionSource).toContain(

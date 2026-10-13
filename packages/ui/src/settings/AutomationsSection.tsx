@@ -4,7 +4,6 @@ import {
   useCallback,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ComponentType,
   type SVGProps,
@@ -25,6 +24,7 @@ import {
   resolveWorkspaceKey,
   type ZCodeAutomation,
   type ZCodeOffPeakTask,
+  type ZCodeSessionGoalListEntry,
 } from "@zcode/shared";
 import { Button } from "@/components/ui/button.js";
 import {
@@ -110,6 +110,16 @@ import {
   type AutomationStatusFilter,
   type AutomationTabState,
 } from "@/settings/automationStatusFilter.js";
+import {
+  AUTOMATION_SHAPE_FILTERS,
+  applyAutomationShapeFilter,
+  isGoalShapeAutomation,
+  type AutomationShapeFilter,
+} from "@/settings/taskShapeFilter.js";
+import { useGoalManagementStore } from "@/store/goalManagementStore.js";
+import { AutomationGoalBadge } from "@/settings/AutomationGoalBadge.js";
+import { LegacyGoalRow } from "@/settings/LegacyGoalRow.js";
+import { goalTitle } from "@/app-shell/goalDisplay.js";
 import { isRemoteAutomationWorkspace } from "@/hooks/useAutomationProjectOptions.js";
 import {
   reportAutomationActionClick,
@@ -170,6 +180,8 @@ interface AutomationsSectionProps {
     workspacePath: string;
     workspaceIdentity?: string;
   }) => void;
+  /** 遗留目标任务「打开详情」→ 跳 goals 主视图（GoalPanel 承载详情）。 */
+  onOpenGoals?: () => void;
 }
 
 export const AUTOMATIONS_TOAST_ANCHOR_ID = "automations-main-toast-anchor";
@@ -526,6 +538,7 @@ export function AutomationsSection({
   openWorkflow,
   onOpenWorkflowConsumed,
   onOpenSession,
+  onOpenGoals,
 }: AutomationsSectionProps) {
   const { intl, locale } = useZCodeIntl();
   const platform = usePlatform();
@@ -554,6 +567,14 @@ export function AutomationsSection({
   const loadRuns = useAutomationManagementStore((state) => state.loadRuns);
   const deleteRun = useAutomationManagementStore((state) => state.deleteRun);
   const refresh = useAutomationManagementStore((state) => state.refresh);
+
+  // 目标数据：统一面板需要把「目标形态」automation 与会话内遗留目标并置展示。
+  // 初始化/刷新走 goalManagementStore（与 GoalsPanel 同一条数据源），只读投影 + 清除命令。
+  const goals = useGoalManagementStore((state) => state.goals);
+  const goalOperationId = useGoalManagementStore((state) => state.operationId);
+  const initializeGoals = useGoalManagementStore((state) => state.initialize);
+  const refreshGoals = useGoalManagementStore((state) => state.refresh);
+  const clearGoal = useGoalManagementStore((state) => state.clearGoal);
 
   const automationTemplates = useAutomationTemplates(clientScenesService);
   const offPeakTasks = useOffPeakTaskStore((state) => state.tasks);
@@ -603,6 +624,8 @@ export function AutomationsSection({
     (filter: AutomationStatusFilter) => setTabState((previous) => ({ ...previous, filter })),
     [],
   );
+  // 形态筛选（定时/目标/模板）独立于状态筛选：两者叠加生效，互相切换不重建对方。
+  const [shapeFilter, setShapeFilter] = useState<AutomationShapeFilter>("all");
   // 动态工作流灰度：未命中就没有「工作流」标签，
   // 页面退回单一的「自动化」。快照未就绪时 enabled 为 false，宁可标题晚半拍长出切换，也不先闪
   // 一个标签再收起——中枢很少是用户进 app 后第一眼看的东西。
@@ -643,7 +666,47 @@ export function AutomationsSection({
   });
   const hasVisibleTaskCards =
     tab === "scheduled" ? automations.length > 0 : offPeakTasks.length > 0;
-  const visibleAutomations = filterAutomationsByStatus(automations, statusFilter);
+  // 状态筛选与形态筛选独立叠加：先按生命周期状态归组，再按定时/目标/模板形态归组。
+  const visibleAutomations = applyAutomationShapeFilter(
+    filterAutomationsByStatus(automations, statusFilter),
+    shapeFilter,
+  );
+  // 目标关联：目标形态 automation 通过 targetTaskId 引用承载会话，这里建立 sessionId 索引。
+  const goalBySessionId = useMemo(
+    () => new Map(goals.map((entry) => [entry.sessionId, entry])),
+    [goals],
+  );
+  const goalShapeAutomations = useMemo(
+    () => automations.filter((automation) => isGoalShapeAutomation(automation)),
+    [automations],
+  );
+  const referencedGoalSessionIds = useMemo(
+    () =>
+      new Set(
+        goalShapeAutomations
+          .map((automation) => automation.targetTaskId?.trim())
+          .filter((sessionId): sessionId is string => Boolean(sessionId)),
+      ),
+    [goalShapeAutomations],
+  );
+  // 遗留目标 = 未被任何目标形态 automation 引用的 session_target；在「全部/目标」形态下列出。
+  const legacyGoals = useMemo(
+    () => goals.filter((entry) => !referencedGoalSessionIds.has(entry.sessionId)),
+    [goals, referencedGoalSessionIds],
+  );
+  const visibleGoalShapeAutomations =
+    shapeFilter === "all" || shapeFilter === "goal"
+      ? goalShapeAutomations.length
+      : applyAutomationShapeFilter(goalShapeAutomations, shapeFilter).length;
+  const showLegacyGoalsSection =
+    tab === "scheduled" &&
+    (shapeFilter === "all" || shapeFilter === "goal") &&
+    legacyGoals.length > 0;
+  const showNoGoalDataHint =
+    tab === "scheduled" &&
+    shapeFilter === "goal" &&
+    visibleGoalShapeAutomations === 0 &&
+    legacyGoals.length === 0;
   const visibleOffPeakTasks = filterOffPeakTasksByStatus(offPeakTasks, statusFilter);
   const { showOffPeakTemplates, showScheduledTemplates } = resolveAutomationTemplateVisibility({
     hasAnyTasks,
@@ -713,6 +776,17 @@ export function AutomationsSection({
       disposed = true;
     };
   }, [workspacePath, workspaceIdentity, zcodeAgentService, initialize]);
+
+  // 目标列表与 automation 列表共用 workspace 生命周期：切换/进入时初始化一次，
+  // 刷新跟随列表手动刷新；与 GoalsPanel 一样只读投影，不做乐观更新。
+  useEffect(() => {
+    if (!workspacePath) return;
+    void initializeGoals({
+      workspacePath,
+      workspaceIdentity,
+      agentService: zcodeAgentService,
+    });
+  }, [workspacePath, workspaceIdentity, initializeGoals, zcodeAgentService]);
 
   useEffect(() => {
     const nextTab = resolveAutomationTabAfterOffPeakChange(tab, offPeakVisible);
@@ -807,6 +881,7 @@ export function AutomationsSection({
     try {
       await Promise.all([
         refresh(zcodeAgentService),
+        refreshGoals(zcodeAgentService),
         offPeakRefresh(offPeakTaskService),
         ...(offPeakGrayEnabled ? [offPeakRefreshCodingPlanSupport(offPeakTaskService)] : []),
       ]);
@@ -820,6 +895,7 @@ export function AutomationsSection({
     offPeakRefreshCodingPlanSupport,
     offPeakTaskService,
     refresh,
+    refreshGoals,
     zcodeAgentService,
   ]);
 
@@ -1235,6 +1311,39 @@ export function AutomationsSection({
     [onOpenSession],
   );
 
+  // 遗留目标「打开会话」复用统一面板的会话导航通道（与 offpeak 行同一入口）。
+  const handleOpenLegacyGoalSession = useCallback(
+    (entry: ZCodeSessionGoalListEntry) => {
+      if (!onOpenSession) return;
+      onOpenSession({
+        sessionId: entry.sessionId,
+        workspacePath: entry.workspacePath,
+        ...(entry.workspaceIdentity ? { workspaceIdentity: entry.workspaceIdentity } : {}),
+      });
+    },
+    [onOpenSession],
+  );
+
+  // 遗留目标「清除」与 GoalsPanel 同口径：确认后清 session_target，不清会话内容。
+  const handleClearLegacyGoal = useCallback(
+    async (entry: ZCodeSessionGoalListEntry) => {
+      const confirmed = await confirmDialog({
+        title: intl.formatMessage({ id: "goals.clearConfirm.title" }),
+        description: intl.formatMessage(
+          { id: "goals.clearConfirm.description" },
+          { title: goalTitle(entry.goal) },
+        ),
+        confirmLabel: intl.formatMessage({ id: "goals.clearConfirm.confirm" }),
+        confirmVariant: "destructive",
+        showKeyboardHints: false,
+      });
+      if (!confirmed) return;
+      const ok = await clearGoal(entry.sessionId, zcodeAgentService);
+      if (!ok) toast(intl.formatMessage({ id: "goals.error.save" }));
+    },
+    [clearGoal, confirmDialog, intl, zcodeAgentService],
+  );
+
   const handleOffPeakOpen = useCallback((task: ZCodeOffPeakTask) => {
     // 有 session 的卡片主点击不能直接跳会话：会使 Settings/History
     // 无法稳定到达。卡片主路径始终进入任务详情，会话只保留为显式次级动作。
@@ -1556,7 +1665,8 @@ export function AutomationsSection({
       ) : null}
 
       {/* 状态筛选：定时 / 闲时共用一组（全部 / 进行中 / 已完成 / 失败），只在当前 tab 有任务时出现。
-         样式沿用顶栏 tab 的胶囊，但字号与内边距更小以体现层级。 */}
+         样式沿用顶栏 tab 的胶囊，但字号与内边距更小以体现层级。
+         形态筛选（定时 / 目标 / 模板）紧随其后，只作用于定时任务列表，与状态筛选独立叠加。 */}
       {visibleTabs.length > 0 && hasVisibleTaskCards ? (
         <div
           className="mt-3 flex flex-wrap items-center gap-1.5"
@@ -1578,6 +1688,27 @@ export function AutomationsSection({
               {intl.formatMessage({ id: `automations.statusFilter.${key}` })}
             </button>
           ))}
+          {tab === "scheduled" ? (
+            <>
+              <span className="mx-1 h-4 w-px bg-border" aria-hidden="true" />
+              {AUTOMATION_SHAPE_FILTERS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-pressed={shapeFilter === key}
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 text-ui-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-input-border-focused",
+                    shapeFilter === key
+                      ? "bg-selected text-foreground"
+                      : "text-foreground-subtle hover:bg-hover hover:text-foreground",
+                  )}
+                  onClick={() => setShapeFilter(key)}
+                >
+                  {intl.formatMessage({ id: `automations.shapeFilter.${key}` })}
+                </button>
+              ))}
+            </>
+          ) : null}
         </div>
       ) : null}
 
@@ -1647,7 +1778,13 @@ export function AutomationsSection({
                     ) : null}
                   </div>
                   {visibleAutomations.length === 0 ? (
-                    <AutomationStatusFilterEmpty />
+                    showNoGoalDataHint ? (
+                      <div className="rounded-[10px] border border-card-border px-3 py-3 text-ui-base text-foreground-subtle">
+                        {intl.formatMessage({ id: "automations.shapeFilter.goalEmpty" })}
+                      </div>
+                    ) : (
+                      <AutomationStatusFilterEmpty />
+                    )
                   ) : (
                     <div
                       data-testid={TID_AUTOMATIONS_LIST}
@@ -1665,6 +1802,13 @@ export function AutomationsSection({
                         const statusMeta = STATUS_META[status];
                         const StatusIcon = statusMeta.icon;
                         const scheduleText = describeAutomationCardSchedule(automation, intl);
+                        // 目标形态卡片：目标描述优先于触发指令作为副行（持续目标比单次指令更承载任务语义）。
+                        const goalEntry = automation.targetTaskId
+                          ? goalBySessionId.get(automation.targetTaskId)
+                          : undefined;
+                        const cardSubtitle = automation.objective?.trim()
+                          ? automation.objective.trim()
+                          : automationPromptSummary(automation.prompt);
                         const formattedNextRun = formatAutomationCardNextRun(
                           automation.nextRunAt,
                           now,
@@ -1715,11 +1859,18 @@ export function AutomationsSection({
                               <span className="block truncate pr-12 text-ui-base font-medium leading-5 text-foreground">
                                 {automation.title}
                               </span>
-                              <p className="text-wrap-phrase line-clamp-2 h-10 text-ui-base font-normal leading-5 text-foreground-subtle">
-                                {automationPromptSummary(automation.prompt)}
+                              <p
+                                className="text-wrap-phrase line-clamp-2 h-10 text-ui-base font-normal leading-5 text-foreground-subtle"
+                                title={automation.objective?.trim() || undefined}
+                              >
+                                {cardSubtitle}
                               </p>
                               <div className="mt-auto flex h-6 min-w-0 items-center gap-2 text-ui-base leading-5">
                                 <div className="flex min-w-0 flex-1 items-center gap-2">
+                                  {goalEntry ? (
+                                    /* 目标形态卡片：展示承载会话的当前执行状态徽标。 */
+                                    <AutomationGoalBadge goal={goalEntry.goal} now={now} />
+                                  ) : null}
                                   {hasFailure ? (
                                     <>
                                       <span className="inline-flex shrink-0 items-center py-0.5 pl-1 pr-2 font-normal text-destructive">
@@ -1851,6 +2002,32 @@ export function AutomationsSection({
                   </div>
                 </div>
               )}
+
+              {/* 遗留目标小节：未被目标形态 automation 引用的会话目标；只在「全部 / 目标」形态下列出。 */}
+              {showLegacyGoalsSection ? (
+                <section data-automations-legacy-goals className="flex w-full flex-col gap-4">
+                  <h2 className="text-ui-base font-medium leading-5 text-foreground-subtle">
+                    {intl.formatMessage({ id: "automations.legacyGoalsTitle" })}
+                  </h2>
+                  <div className="grid grid-cols-1 gap-x-4 gap-y-4 lg:grid-cols-2">
+                    {legacyGoals.map((entry) => (
+                      <LegacyGoalRow
+                        key={entry.sessionId}
+                        entry={entry}
+                        now={now}
+                        busy={
+                          goalOperationId === `goal:clear:${entry.sessionId}` ||
+                          goalOperationId === `goal:pause:${entry.sessionId}` ||
+                          goalOperationId === `goal:resume:${entry.sessionId}`
+                        }
+                        onOpenGoals={() => onOpenGoals?.()}
+                        onOpenSession={() => handleOpenLegacyGoalSession(entry)}
+                        onClear={() => void handleClearLegacyGoal(entry)}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
             </div>
 
             {/* Figma 4798:2443：空态保持唤醒提示条位于大空卡之后。 */}

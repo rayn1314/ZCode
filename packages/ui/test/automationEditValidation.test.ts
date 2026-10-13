@@ -15,19 +15,27 @@ describe("automation edit validation", () => {
     expect(
       resolveAutomationEditRequiredFieldErrors({
         title: " ",
-        cronExpr: "",
         prompt: "\n",
       }),
-    ).toEqual(["title", "schedule", "prompt"]);
+    ).toEqual(["title", "prompt"]);
+  });
+
+  it("treats pure templates (empty cron) as legal: only title/prompt required", () => {
+    // 纯模板 = 无开始调度的任务，仅手动运行；schedule 不再是必填项。
+    expect(resolveAutomationEditRequiredFieldErrors({ title: "template", prompt: "run" })).toEqual(
+      [],
+    );
+    expect(resolveAutomationEditRequiredFieldErrors({ title: "", prompt: "" })).toEqual([
+      "title",
+      "prompt",
+    ]);
   });
 
   it("normal field edits only clear existing validation feedback", () => {
-    const errors = new Set(["title", "schedule", "prompt"] as const);
+    const errors = new Set(["title", "prompt"] as const);
 
-    expect(clearAutomationEditRequiredFieldError(errors, "schedule")).toEqual(
-      new Set(["title", "prompt"]),
-    );
-    expect(clearAutomationEditRequiredFieldError(new Set(), "schedule")).toEqual(new Set());
+    expect(clearAutomationEditRequiredFieldError(errors, "title")).toEqual(new Set(["prompt"]));
+    expect(clearAutomationEditRequiredFieldError(new Set(), "title")).toEqual(new Set());
   });
 
   it("does not reveal schedule validation from the delete interaction", () => {
@@ -37,9 +45,10 @@ describe("automation edit validation", () => {
 
     expect(handlerStart).toBeGreaterThanOrEqual(0);
     expect(handlerSource).toContain('markFieldTouched("schedule")');
-    expect(handlerSource).toContain('clearRequiredFieldValidation("schedule")');
     expect(handlerSource).toContain("setScheduleRemoved(true)");
     expect(handlerSource).not.toContain("setScheduleInvalid(true)");
+    // 删除计划后即纯模板形态（合法任务），不再清字段校验、也不应该有 destructive 校验入口。
+    expect(handlerSource).not.toContain('clearRequiredFieldValidation("schedule")');
     expect(editViewSource.match(/onClick=\{handleRemoveSchedule\}/g)).toHaveLength(2);
   });
 

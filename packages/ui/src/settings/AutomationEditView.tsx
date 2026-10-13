@@ -41,6 +41,7 @@ import {
   type ZCodeAutomation,
   type ZCodeAutomationRun,
   type ZCodeAutomationScheduleRule,
+  type ZCodeSessionInfo,
 } from "@zcode/shared";
 import {
   AutomationAddScheduleIcon,
@@ -125,6 +126,7 @@ import {
   type AutomationEditRequiredField,
 } from "@/settings/automationEditValidation.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { useServices } from "@/hooks/useServices.js";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog.js";
 import { useAutomationProjectOptions } from "@/hooks/useAutomationProjectOptions.js";
 import { useModelSelectionView } from "@/hooks/useModelSelectionView.js";
@@ -169,6 +171,8 @@ const isCronFrequency = (value: string): value is CronFrequency =>
 const RUNS_PAGE_SIZE = 8;
 /** 自定义重复频率输入允许输入的视觉范围。 */
 const CUSTOM_REPEAT_INTERVAL_INPUT_MIN = 0;
+/** 「执行会话」Select 中「自动新建会话」的占位值（空串语义映射回 undefined）。 */
+const AUTO_NEW_SESSION_VALUE = "__automation_auto_new_session__";
 /** cron 的步长必须为正整数，0 不能形成有效调度。 */
 const CUSTOM_REPEAT_INTERVAL_SCHEDULABLE_MIN = 1;
 const CUSTOM_REPEAT_INTERVAL_MAX = 200;
@@ -1213,6 +1217,7 @@ export function AutomationEditView({
   onOpenSession,
 }: AutomationEditViewProps) {
   const { intl } = useZCodeIntl();
+  const { zcodeAgentService } = useServices();
   const confirmDialog = useConfirmDialog();
   const [tab, setTab] = useState<AutomationSettingsHistoryTab>("settings");
   const [runsPage, setRunsPage] = useState(1);
@@ -1245,6 +1250,8 @@ export function AutomationEditView({
   const [validationErrors, setValidationErrors] = useState<
     ReadonlySet<AutomationEditRequiredField>
   >(() => new Set());
+  // 执行截止单独告警：必填字段走 validationErrors，截止是「可空但必须未来」的字段类。
+  const [deadlineError, setDeadlineError] = useState(false);
   const [customRepeatOpen, setCustomRepeatOpen] = useState(false);
   const [touchedFields, setTouchedFields] = useState<ReadonlySet<AutomationEditDirtyField>>(
     () => new Set(),
@@ -1252,6 +1259,10 @@ export function AutomationEditView({
   const currentEditSignaturesRef = useRef<AutomationEditFieldSignatures | null>(null);
   const touchedFieldBaselinesRef = useRef<Partial<AutomationEditFieldSignatures>>({});
   const [endAt, setEndAt] = useState<number | undefined>(() => editing?.endAt);
+  // 「设为会话目标」段：执行截止（墙钟 ms，未来）、目标描述、承载会话（可选，不选=触发时新建会话）。
+  const [deadlineMs, setDeadlineMs] = useState<number | undefined>(() => editing?.deadlineMs);
+  const [objective, setObjective] = useState(() => editing?.objective ?? "");
+  const [targetTaskId, setTargetTaskId] = useState<string | undefined>(() => editing?.targetTaskId);
   // 目标项目 key(仅新建时可改;编辑锁定为 automation 所属项目)。
   const [workspaceKey, setWorkspaceKey] = useState<string | null>(null);
 
@@ -1313,6 +1324,9 @@ export function AutomationEditView({
       setThoughtLevel(editingThoughtLevel);
       setBuilder(initialBuilder(editing, initialDraft));
       setEndAt(editing.endAt);
+      setDeadlineMs(editing.deadlineMs);
+      setObjective(editing.objective ?? "");
+      setTargetTaskId(editing.targetTaskId);
       setWorkspaceKey(
         resolveWorkspaceKey({
           workspacePath: editing.workspacePath,
@@ -1335,6 +1349,9 @@ export function AutomationEditView({
       setThoughtLevel("");
       setBuilder(initialBuilder(editing, initialDraft));
       setEndAt(undefined);
+      setDeadlineMs(undefined);
+      setObjective("");
+      setTargetTaskId(undefined);
       setWorkspaceKey(
         reconcileAutomationWorkspaceSelectionKey(workspaceOptionsRef.current, null, {
           workspacePath: defaultWorkspacePath,
@@ -1371,6 +1388,32 @@ export function AutomationEditView({
     );
   }, [defaultWorkspaceIdentity, defaultWorkspacePath, editing, workspaceOptions]);
 
+  // 执行截止的日期/时刻分解：未设截止时给出「下一小时」作为初始候选，避免选中今天后误判过期。
+  const deadlineFallbackTime = deadlineMs ? null : new Date(Date.now() + 60 * 60 * 1_000);
+  const deadlineHour = deadlineMs
+    ? new Date(deadlineMs).getHours()
+    : (deadlineFallbackTime?.getHours() ?? 0);
+  const deadlineMinute = deadlineMs
+    ? new Date(deadlineMs).getMinutes()
+    : (deadlineFallbackTime?.getMinutes() ?? 0);
+  const setDeadlineFromParts = useCallback((dateValue: string, hour: number, minute: number) => {
+    // dateValue 形如 YYYY-MM-DD（EndDatePicker 输出），按 "-" 拆分组装本地时间戳。
+    const dateParts = dateValue.split("-");
+    if (dateParts.length !== 3) return;
+    const timestamp = new Date(
+      Number(dateParts[0]),
+      Number(dateParts[1]) - 1,
+      Number(dateParts[2]),
+      hour,
+      minute,
+      0,
+      0,
+    ).getTime();
+    if (Number.isNaN(timestamp)) return;
+    setDeadlineMs(timestamp);
+    setDeadlineError(false);
+  }, []);
+
   const markFieldTouched = useCallback((field: AutomationEditDirtyField) => {
     if (touchedFieldBaselinesRef.current[field] === undefined) {
       touchedFieldBaselinesRef.current[field] = currentEditSignaturesRef.current?.[field];
@@ -1390,13 +1433,12 @@ export function AutomationEditView({
   const handleRemoveSchedule = useCallback(() => {
     markFieldTouched("schedule");
     setScheduleRemoved(true);
-    // 删除计划曾直接开启 destructive 校验态，把普通编辑误当成提交失败。
-    clearRequiredFieldValidation("schedule");
+    // 删除计划后 cronExpr 为空即纯模板形态，属合法任务定义，不再需要清字段校验。
     logger.debug("[AutomationEditView] 删除计划草稿", {
       automationId: editing?.automationId ?? null,
       validationVisible: false,
     });
-  }, [clearRequiredFieldValidation, editing?.automationId, markFieldTouched]);
+  }, [editing?.automationId, markFieldTouched]);
 
   useEffect(() => {
     onLoadRunsRef.current = onLoadRuns;
@@ -1459,6 +1501,40 @@ export function AutomationEditView({
   // 新建态无有效项目时保留空目标，避免模型配置读取悄悄回退到 conversation/default workspace。
   const selectedWorkspacePath = selectedWorkspace?.workspacePath ?? "";
   const selectedWorkspaceIdentity = selectedWorkspace?.workspaceIdentity;
+
+  // 「执行会话」候选：随目标项目读取既有会话（只读查询，不拉起 runtime）。
+  // 表单测试会 mock 掉 listSessions，这里用 promise 链把同步缺失转成可捕获的拒绝。
+  const [sessionOptions, setSessionOptions] = useState<ZCodeSessionInfo[] | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
+  useEffect(() => {
+    if (!selectedWorkspacePath) return;
+    let cancelled = false;
+    setSessionsLoading(true);
+    Promise.resolve()
+      .then(() =>
+        zcodeAgentService.listSessions({
+          workspacePath: selectedWorkspacePath,
+          ...(selectedWorkspaceIdentity ? { workspaceIdentity: selectedWorkspaceIdentity } : {}),
+        }),
+      )
+      .then((result) => {
+        if (cancelled) return;
+        setSessionOptions(result);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        logger.warn("[automations] list sessions failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        setSessionOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSessionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWorkspaceIdentity, selectedWorkspacePath, zcodeAgentService]);
   const originalSelection = useMemo(() => {
     if (!model) return null;
     const identity = parseModelPickerValue(model);
@@ -1637,11 +1713,14 @@ export function AutomationEditView({
     () =>
       resolveAutomationEditRequiredFieldErrors({
         title,
-        cronExpr,
         prompt,
       }),
-    [cronExpr, prompt, title],
+    [prompt, title],
   );
+  // 执行截止校验：新建时或编辑时用户改过值，都必须指向未来（A6：编辑态值未变放行）。
+  const deadlineUnchanged = editing ? editing.deadlineMs === deadlineMs : false;
+  const deadlineInvalid =
+    deadlineMs !== undefined && !deadlineUnchanged && deadlineMs <= Date.now();
   const hasValidWorkspace = Boolean(editing || selectedWorkspace);
   const submissionContextReady =
     hasValidWorkspace &&
@@ -1650,19 +1729,21 @@ export function AutomationEditView({
     selectedModelItem !== null &&
     Boolean(effectiveReasoningLevel) &&
     !modelSelectionView?.selectionIssue;
-  const canSubmit = submissionContextReady && requiredFieldErrors.length === 0;
+  const canSubmit = submissionContextReady && requiredFieldErrors.length === 0 && !deadlineInvalid;
 
   const requestRequiredFieldValidation = useCallback(
     (source: "save" | "run-now") => {
       setValidationErrors(new Set(requiredFieldErrors));
+      setDeadlineError(deadlineInvalid);
       logger.debug("[AutomationEditView] 提交前校验必填字段", {
         automationId: editing?.automationId ?? null,
         source,
         invalidFields: requiredFieldErrors,
+        deadlineInvalid,
       });
-      return requiredFieldErrors.length === 0;
+      return requiredFieldErrors.length === 0 && !deadlineInvalid;
     },
-    [editing?.automationId, requiredFieldErrors],
+    [deadlineInvalid, editing?.automationId, requiredFieldErrors],
   );
 
   const currentScheduleRule = useMemo<ZCodeAutomationScheduleRule | undefined>(
@@ -1696,6 +1777,22 @@ export function AutomationEditView({
         // 编辑会话内创建的有限次任务时，不能固定改成循环任务。
         recurring: editing?.recurring ?? true,
         ...(editing ? { endAt: endAt ?? null } : endAt ? { endAt } : {}),
+        // 「设为会话目标」三字段：编辑态用 null 显式清除；新建态缺省不携带。
+        ...(editing
+          ? { deadlineMs: deadlineMs ?? null }
+          : deadlineMs !== undefined
+            ? { deadlineMs }
+            : {}),
+        ...(editing
+          ? { objective: objective.trim() || null }
+          : objective.trim()
+            ? { objective: objective.trim() }
+            : {}),
+        ...(editing
+          ? { targetTaskId: targetTaskId ?? null }
+          : targetTaskId
+            ? { targetTaskId }
+            : {}),
         ...(editing
           ? preserveSessionCreatedSchedule
             ? {}
@@ -1711,12 +1808,15 @@ export function AutomationEditView({
     [
       cronExpr,
       currentScheduleRule,
+      deadlineMs,
       editing,
       endAt,
+      objective,
       preserveSessionCreatedSchedule,
       prompt,
       effectiveSelection,
       effectiveReasoningLevel,
+      targetTaskId,
       title,
       touchedFields,
     ],
@@ -1765,7 +1865,14 @@ export function AutomationEditView({
   );
   // 模型元数据和 cron builder 会在打开页面后异步归一化；只有用户实际操作过的
   // 字段才能触发未保存提示，否则仅打开已有任务再返回也会被误判为修改。
-  const hasUnsavedChanges = Boolean(editing) && changedFields.length > 0;
+  // 「设为会话目标」三字段直比 editing 基线（不经 touched 记录），防止只改截止/目标/挂会话时漏提示。
+  const goalFieldsChanged = Boolean(
+    editing &&
+    (editing.deadlineMs !== deadlineMs ||
+      (editing.objective ?? "") !== objective.trim() ||
+      editing.targetTaskId !== targetTaskId),
+  );
+  const hasUnsavedChanges = Boolean(editing) && (changedFields.length > 0 || goalFieldsChanged);
 
   const recommendStartPlan = useStartPlanRecommendation(modelSelectionView);
   const submitAutomation = useCallback(
@@ -2180,12 +2287,9 @@ export function AutomationEditView({
                       <button
                         type="button"
                         data-testid={TID_AUTOMATION_SCHEDULE_ADD}
-                        aria-invalid={scheduleRemoved && validationErrors.has("schedule")}
                         className={cn(
                           "flex h-9 w-full items-center gap-1 rounded-xl border bg-input px-2 text-ui-base font-normal leading-5 text-foreground-subtle transition-colors hover:border-input-border-hover hover:text-foreground focus-visible:border-input-border-focused focus-visible:bg-input-focused data-[state=open]:border-input-border-focused data-[state=open]:bg-input-focused data-[state=open]:text-foreground",
-                          validationErrors.has("schedule")
-                            ? "!border-destructive !ring-2 !ring-destructive/20"
-                            : "border-input-border",
+                          "border-input-border",
                         )}
                       >
                         <span className="flex size-5 shrink-0 items-center justify-center">
@@ -2215,7 +2319,6 @@ export function AutomationEditView({
                               ...(frequency === "weekdays" ? { weekdays: [1, 2, 3, 4, 5] } : {}),
                             }));
                             setScheduleRemoved(false);
-                            clearRequiredFieldValidation("schedule");
                           }}
                         >
                           {intl.formatMessage({
@@ -2541,7 +2644,6 @@ export function AutomationEditView({
                   }) => {
                     markFieldTouched("schedule");
                     setScheduleRemoved(false);
-                    clearRequiredFieldValidation("schedule");
                     setBuilder((prev) => ({
                       ...prev,
                       frequency: "custom",
@@ -2728,6 +2830,134 @@ export function AutomationEditView({
                   </div>
                 </AutomationInstructionsToolbar>
               </AutomationInstructionsComposer>
+            </div>
+
+            {/* 「设为会话目标」段：会话持续目标 + 执行截止 + 承载会话。
+                模型/项目/权限选择都在上面的 Instructions 工具栏内，因此本段紧随其后。 */}
+            <div className={AUTOMATION_FORM_FIELD_CLASSNAME}>
+              <label className="text-ui-base font-normal leading-5 text-foreground-subtle">
+                {intl.formatMessage({ id: "automations.form.goalSection" })}
+              </label>
+              <div className="flex w-full flex-col gap-3">
+                <div className="flex w-full flex-col gap-1.5">
+                  <label
+                    className="text-ui-base font-normal leading-5 text-foreground-subtle"
+                    htmlFor="automation-goal-objective"
+                  >
+                    {intl.formatMessage({ id: "automations.form.objective" })}
+                  </label>
+                  <textarea
+                    id="automation-goal-objective"
+                    value={objective}
+                    onChange={(event) => {
+                      setObjective(event.target.value);
+                    }}
+                    rows={3}
+                    maxLength={2000}
+                    placeholder={intl.formatMessage({
+                      id: "automations.form.objectivePlaceholder",
+                    })}
+                    className={cn(
+                      "w-full resize-none rounded-xl border border-input-border bg-input px-3 py-2 text-foreground placeholder:text-foreground-subtlest",
+                      AUTOMATION_FORM_INPUT_TYPOGRAPHY_CLASSNAME,
+                      "outline-none transition-colors focus:border-input-border-hover",
+                    )}
+                  />
+                </div>
+                <div className="flex w-full flex-col gap-1.5">
+                  <label className="text-ui-base font-normal leading-5 text-foreground-subtle">
+                    {intl.formatMessage({ id: "automations.form.deadline" })}
+                  </label>
+                  <div
+                    className={cn(
+                      "flex flex-wrap items-center gap-2 rounded-lg",
+                      deadlineError && "outline outline-1 outline-destructive/40",
+                    )}
+                  >
+                    <EndDatePicker
+                      disabled={false}
+                      intl={intl}
+                      min={toDateInputValue(Date.now())}
+                      value={
+                        deadlineMs
+                          ? toDateInputValue(deadlineMs)
+                          : intl.formatMessage({ id: "automations.form.deadlinePlaceholder" })
+                      }
+                      onChange={(dateValue) =>
+                        setDeadlineFromParts(dateValue, deadlineHour, deadlineMinute)
+                      }
+                    />
+                    <TimeOfDayPicker
+                      hour={deadlineHour}
+                      minute={deadlineMinute}
+                      onChange={(hour, minute) =>
+                        setDeadlineFromParts(
+                          toDateInputValue(deadlineMs ?? Date.now()),
+                          hour,
+                          minute,
+                        )
+                      }
+                    />
+                    {deadlineMs !== undefined ? (
+                      <button
+                        type="button"
+                        className="text-ui-sm font-medium text-foreground-subtle underline-offset-4 transition-colors hover:text-destructive hover:underline"
+                        onClick={() => {
+                          setDeadlineMs(undefined);
+                          setDeadlineError(false);
+                        }}
+                      >
+                        {intl.formatMessage({ id: "automations.form.deadlineClear" })}
+                      </button>
+                    ) : null}
+                  </div>
+                  <span
+                    className={cn(
+                      "text-ui-sm leading-4",
+                      deadlineError ? "text-destructive" : "text-foreground-subtle",
+                    )}
+                  >
+                    {deadlineError
+                      ? intl.formatMessage({ id: "automations.form.deadlineInvalid" })
+                      : intl.formatMessage({ id: "automations.form.deadlineHint" })}
+                  </span>
+                </div>
+                <div className="flex w-full flex-col gap-1.5">
+                  <label className="text-ui-base font-normal leading-5 text-foreground-subtle">
+                    {intl.formatMessage({ id: "automations.form.targetSession" })}
+                  </label>
+                  <Select
+                    value={targetTaskId ?? AUTO_NEW_SESSION_VALUE}
+                    onValueChange={(value) => {
+                      // 丢弃受控值注册竞争产生的空串回调（与计划下拉同口径），避免仅打开编辑就清掉挂会话。
+                      if (!value) return;
+                      setTargetTaskId(value === AUTO_NEW_SESSION_VALUE ? undefined : value);
+                    }}
+                  >
+                    <SelectTrigger className="h-9 w-full rounded-xl border border-input-border bg-input px-3 text-foreground data-[placeholder]:text-foreground-subtlest">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={AUTO_NEW_SESSION_VALUE}>
+                        {intl.formatMessage({ id: "automations.form.targetSessionAutoNew" })}
+                      </SelectItem>
+                      {sessionsLoading && sessionOptions === null ? (
+                        <div className="px-3 py-2 text-ui-sm text-foreground-subtle">
+                          {intl.formatMessage({ id: "automations.form.targetSessionLoading" })}
+                        </div>
+                      ) : null}
+                      {(sessionOptions ?? []).map((session) => (
+                        <SelectItem key={session.sessionId} value={session.sessionId}>
+                          {session.title?.trim() || session.sessionId}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <span className="text-ui-sm leading-4 text-foreground-subtle">
+                    {intl.formatMessage({ id: "automations.form.targetSessionHint" })}
+                  </span>
+                </div>
+              </div>
             </div>
           </form>
         ) : (

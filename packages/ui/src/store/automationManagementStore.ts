@@ -34,6 +34,11 @@ export interface CreateAutomationInput {
   maxRuns?: number;
   endAt?: number;
   scheduleRule?: ZCodeAutomationScheduleRule;
+  // 「设为会话目标」三字段：objective 目标描述、deadlineMs 执行截止（未来墙钟）、
+  // targetTaskId 承载会话（空=每次触发新建会话执行）。
+  objective?: string;
+  deadlineMs?: number;
+  targetTaskId?: string;
   // 目标项目;缺省用 store 当前列表所在项目。创建整页可在项目下拉里改。
   workspacePath?: string;
   workspaceIdentity?: string;
@@ -50,6 +55,10 @@ export interface UpdateAutomationInput {
   endAt?: number | null;
   scheduleRule?: ZCodeAutomationScheduleRule | null;
   scheduleEditedByUser?: boolean;
+  // 「设为会话目标」三字段：编辑态显式 null 表示清除对应设置。
+  objective?: string | null;
+  deadlineMs?: number | null;
+  targetTaskId?: string | null;
 }
 
 export interface AutomationManagementState {
