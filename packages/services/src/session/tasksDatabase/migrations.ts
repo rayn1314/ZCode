@@ -8,6 +8,10 @@ import {
 } from "#src/session/tasksDatabase/schema-v1.js";
 import { importLegacyAutomationSelections } from "#src/session/tasksDatabase/provider-selection-v2.js";
 import { OFFICIAL_GLM_SELECTION_MIGRATION_SQL } from "#src/session/tasksDatabase/official-glm-selection-v3.js";
+import {
+  applyTaskGoalMergeMigration,
+  TASK_GOAL_MERGE_MIGRATION_SQL,
+} from "#src/session/tasksDatabase/task-goal-merge-v4.js";
 
 // 冻结历史列声明，不能以实时 Repo/schema 代替，否则新版构建会改变已应用 checksum。
 const columns = [
@@ -64,8 +68,11 @@ const definitions = [
     id: "0003_official_glm_selection",
     checksumInput: [OFFICIAL_GLM_SELECTION_MIGRATION_SQL],
   },
+  {
+    id: "0004_task_goal_merge",
+    checksumInput: [TASK_GOAL_MERGE_MIGRATION_SQL],
+  },
 ] as const;
-
 export function runTasksDatabaseMigrations(
   db: DatabaseSync,
   options: {
@@ -113,7 +120,11 @@ export function runTasksDatabaseMigrations(
       options.onProgress?.("migrating", { ...migrationFacts });
       if (migration.id === "0001_adopt_task_schema") adoptSchema(db);
       else if (migration.id === "0002_provider_selection") importLegacyAutomationSelections(db);
-      else db.exec(OFFICIAL_GLM_SELECTION_MIGRATION_SQL);
+      else if (migration.id === "0003_official_glm_selection") {
+        db.prepare(OFFICIAL_GLM_SELECTION_MIGRATION_SQL).run();
+      } else if (migration.id === "0004_task_goal_merge") {
+        applyTaskGoalMergeMigration(db);
+      }
       migrationFacts.executedCount++;
       db.prepare("INSERT INTO tasks_schema_migration VALUES(?,?,?)").run(
         migration.id,

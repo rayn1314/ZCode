@@ -189,6 +189,12 @@ export interface ZCodeAgentCreateAutomationParams extends ZCodeAgentWorkspaceTar
   cronExpr: string;
   relativeDelayMinutes?: number;
   prompt: string;
+  /** 会话持续目标描述；触发时顺带落 session_target。 */
+  objective?: string;
+  /** 执行截止（墙钟毫秒）；触发时作为目标会话 endAtMs。 */
+  deadlineMs?: number;
+  /** 会话内创建时由 runtime 注入的绑定会话。 */
+  targetTaskId?: string;
   modelSelection?: ModelSelection;
   mode?: string;
   recurring?: boolean;
@@ -202,6 +208,9 @@ export interface ZCodeAgentUpdateAutomationParams extends ZCodeAgentWorkspaceTar
   title?: string;
   cronExpr?: string;
   prompt?: string;
+  objective?: string | null;
+  deadlineMs?: number | null;
+  targetTaskId?: string | null;
   modelSelection?: ModelSelection | null;
   mode?: string | null;
   recurring?: boolean;

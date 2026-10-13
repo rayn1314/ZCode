@@ -2853,6 +2853,8 @@ export function createZCodeTaskServiceAdapter(
         inputId: params.inputId,
         action: params.action,
         objective: params.objective,
+        endAtMs: params.endAtMs,
+        ...(params.start === undefined ? {} : { start: params.start }),
         expectedRevision: params.expectedRevision,
       });
       logger.info(params.inputId, "[zcode-task-service] goalSession agent 返回", {

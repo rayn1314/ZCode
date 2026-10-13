@@ -134,6 +134,8 @@ export function spawnCronScheduler(deps: CronSchedulerDeps): CronSchedulerHandle
           automationId: msg.automationId,
           runId: msg.runId,
           prompt: msg.prompt,
+          objective: msg.objective,
+          deadlineMs: msg.deadlineMs,
           targetTaskId: msg.targetTaskId,
           modelSelection: msg.modelSelection,
           mode: msg.mode,

@@ -4007,8 +4007,13 @@ export const zcodeAutomationProtocolSchema = z
   .object({
     automationId: nonEmptyString,
     title: z.string(),
-    cronExpr: nonEmptyString,
+    // 空字符串 = 无调度（纯任务模板，仅手动运行）。
+    cronExpr: z.string(),
     prompt: nonEmptyString,
+    /** 会话持续目标描述（触发时顺带落 session_target；缺省=不设目标）。 */
+    objective: z.string().optional(),
+    /** 执行截止（墙钟毫秒，未来）；与 endAt（重复截止日末）语义不同。 */
+    deadlineMs: z.number().int().nonnegative().optional(),
     modelSelection: modelSelectionSchema.optional(),
     mode: zcodeTaskModeSchema.optional(),
     targetTaskId: nonEmptyString.optional(),
@@ -4029,9 +4034,14 @@ export type ZCodeAutomationProtocol = z.infer<typeof zcodeAutomationProtocolSche
 export const zcodeAutomationCreateParamsSchema = z
   .object({
     title: z.string().optional(),
-    cronExpr: nonEmptyString,
+    // 空字符串 = 无调度（纯任务模板，仅手动运行）。
+    cronExpr: z.string(),
     relativeDelayMinutes: z.number().int().positive().max(525_600).optional(),
     prompt: nonEmptyString,
+    /** 会话持续目标描述；触发时顺带落 session_target。 */
+    objective: z.string().optional(),
+    /** 执行截止（墙钟毫秒，必须未来）；触发时作为目标会话 endAtMs。 */
+    deadlineMs: z.number().int().positive().optional(),
     modelSelection: modelSelectionSchema.optional(),
     mode: zcodeTaskModeSchema.optional(),
     targetTaskId: nonEmptyString.optional(),
@@ -4073,8 +4083,15 @@ export const zcodeAutomationUpdateParamsSchema = z
   .object({
     automationId: nonEmptyString,
     title: nonEmptyString.optional(),
-    cronExpr: nonEmptyString.optional(),
+    // 空字符串 = 清掉调度（转纯模板，仅手动运行）。
+    cronExpr: z.string().optional(),
     prompt: nonEmptyString.optional(),
+    /** undefined=不修改；null=清除会话目标描述。 */
+    objective: z.string().nullable().optional(),
+    /** undefined=不修改；null=清除执行截止。 */
+    deadlineMs: z.number().int().positive().nullable().optional(),
+    /** undefined=不修改；null=解除会话绑定。 */
+    targetTaskId: nonEmptyString.nullable().optional(),
     recurring: z.boolean().optional(),
     maxRuns: z.number().int().positive().nullable().optional(),
     // 会话侧自定义重复 carrier（同 create 侧语义）。
@@ -4087,6 +4104,9 @@ export const zcodeAutomationUpdateParamsSchema = z
       input.title !== undefined ||
       input.cronExpr !== undefined ||
       input.prompt !== undefined ||
+      input.objective !== undefined ||
+      input.deadlineMs !== undefined ||
+      input.targetTaskId !== undefined ||
       input.recurring !== undefined ||
       input.maxRuns !== undefined ||
       input.intervalUnit !== undefined,

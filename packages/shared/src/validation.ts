@@ -746,6 +746,10 @@ export const hostCronRunMessageSchema = z.object({
   workspacePath: nonEmptyStringSchema,
   workspaceIdentity: z.string().optional(),
   prompt: nonEmptyStringSchema,
+  /** 会话持续目标描述：触发时顺带向目标会话发 session/goal set。 */
+  objective: z.string().optional(),
+  /** 执行截止（墙钟毫秒）：作为目标会话 endAtMs 落库。 */
+  deadlineMs: z.number().int().positive().optional(),
   targetTaskId: nonEmptyStringSchema.optional(),
   modelSelection: modelSelectionSchema.optional(),
   mode: z.string().optional(),

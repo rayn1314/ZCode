@@ -58,6 +58,8 @@ interface AutomationRow {
   title: string;
   cron_expr: string;
   prompt: string;
+  objective: string | null;
+  deadline_ms: number | null;
   model: string | null;
   provider: string | null;
   mode: string | null;
@@ -118,6 +120,8 @@ function rowToAutomation(row: AutomationRow): ZCodeAutomation {
     title: row.title,
     cronExpr: row.cron_expr,
     prompt: row.prompt,
+    objective: row.objective ?? undefined,
+    deadlineMs: row.deadline_ms ?? undefined,
     ...(modelSelection ? { modelSelection } : {}),
     // 历史版本曾把空字符串写进 mode，旧读取逻辑又直接强转为枚举，导致
     // automation/list 在协议层校验整个数组时被单条脏数据拖垮。历史非法值按未设置兼容。
@@ -335,7 +339,7 @@ export class AutomationRepo {
       }
       db.prepare(
         `INSERT INTO automations (
-          automation_id, title, cron_expr, prompt, model, provider, model_selection,
+          automation_id, title, cron_expr, prompt, objective, deadline_ms, model, provider, model_selection,
           workspace_key, workspace_path, workspace_identity, target_task_id, bot_delivery_target, location_kind,
           recurring, max_runs, end_at, schedule_rule, schedule_edited_by_user,
           run_count, enabled, lifecycle_status,
@@ -344,7 +348,7 @@ export class AutomationRepo {
           mode, thought_level,
           created_at, updated_at
         ) VALUES (
-          @automation_id, @title, @cron_expr, @prompt, @model, @provider, @model_selection,
+          @automation_id, @title, @cron_expr, @prompt, @objective, @deadline_ms, @model, @provider, @model_selection,
           @workspace_key, @workspace_path, @workspace_identity, @target_task_id, @bot_delivery_target, 'local',
           @recurring, @max_runs, @end_at, @schedule_rule, 0,
           0, @enabled, @lifecycle_status,
@@ -358,6 +362,8 @@ export class AutomationRepo {
         title: params.title,
         cron_expr: params.cronExpr,
         prompt: params.prompt,
+        objective: params.objective ?? null,
+        deadline_ms: params.deadlineMs ?? null,
         model: null,
         provider: null,
         // 任务配置的显式空值与尚未迁移的 SQL NULL 分开；run 的 SQL NULL 冻结语义不变。
@@ -503,6 +509,11 @@ export class AutomationRepo {
       title: params.title ?? existing.title,
       cron_expr: params.cronExpr ?? existing.cron_expr,
       prompt: params.prompt ?? existing.prompt,
+      objective: params.objective === undefined ? existing.objective : (params.objective ?? null),
+      deadline_ms:
+        params.deadlineMs === undefined ? existing.deadline_ms : (params.deadlineMs ?? null),
+      target_task_id:
+        params.targetTaskId === undefined ? existing.target_task_id : (params.targetTaskId ?? null),
       // 旧三列只供回滚保留；标题等编辑不能清除尚未迁入的旧选择，也不能参与新版运行读取。
       model: existing.model,
       provider: existing.provider,
@@ -821,6 +832,8 @@ export class AutomationRepo {
             a.dispatch_attempts AS a_dispatch_attempts,
             a.retry_at AS a_retry_at,
             a.last_error AS a_last_error,
+            a.objective AS a_objective,
+            a.deadline_ms AS a_deadline_ms,
             a.bot_delivery_target AS a_bot_delivery_target,
             a.created_at AS a_created_at,
             a.updated_at AS a_updated_at,
@@ -871,6 +884,8 @@ export class AutomationRepo {
             title: row["a_title"] as string,
             cron_expr: row["a_cron_expr"] as string,
             prompt: row["a_prompt"] as string,
+            objective: (row["a_objective"] as string | null) ?? null,
+            deadline_ms: (row["a_deadline_ms"] as number | null) ?? null,
             model: (row["a_model"] as string | null) ?? null,
             provider: (row["a_provider"] as string | null) ?? null,
             model_selection: (row["a_model_selection"] as string | null) ?? null,
@@ -1431,7 +1446,8 @@ export class AutomationRepo {
     this.getDatabase()
       .prepare(
         `UPDATE automations SET
-          title = @title, cron_expr = @cron_expr, prompt = @prompt, model = @model, provider = @provider,
+          title = @title, cron_expr = @cron_expr, prompt = @prompt, objective = @objective, deadline_ms = @deadline_ms,
+          model = @model, provider = @provider,
           model_selection = @model_selection,
           mode = @mode, thought_level = @thought_level,
           recurring = @recurring, max_runs = @max_runs, end_at = @end_at,
@@ -1447,6 +1463,8 @@ export class AutomationRepo {
         title: row.title,
         cron_expr: row.cron_expr,
         prompt: row.prompt,
+        objective: row.objective,
+        deadline_ms: row.deadline_ms,
         model: row.model,
         provider: row.provider,
         model_selection: row.model_selection,

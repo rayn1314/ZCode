@@ -403,6 +403,10 @@ export interface IZCodeTaskService {
     inputId?: string;
     action: ZCodeSessionGoalAction;
     objective?: string;
+    /** 墙钟截止（epoch ms）；set/replace 直接写入，resume 传它表示同时重设截止。 */
+    endAtMs?: number | null;
+    /** set/replace 是否立即启动续跑；缺省 true。任务面板「保存」传 false。 */
+    start?: boolean;
     expectedRevision?: number;
   }): Promise<ZCodeSessionGoalResult>;
 

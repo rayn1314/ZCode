@@ -65,9 +65,19 @@ export type ZCodeAutomationRunOutcome = "running" | "succeeded" | "failed" | "st
 export interface ZCodeAutomation {
   automationId: string;
   title: string;
-  /** 5 段 cron，本地时区。 */
+  /**
+   * 5 段 cron，本地时区。空字符串 = 无调度（纯任务模板，仅手动运行），
+   * 由 AutomationService 落库时保持空、nextRunAt=null。
+   */
   cronExpr: string;
   prompt: string;
+  /**
+   * 会话持续目标描述（合并后的「定时结束/目标任务」形态）：触发时顺带向目标会话
+   * 发 session/goal set 落 session_target，此后由 goal 续跑引擎接管。缺省=不设目标。
+   */
+  objective?: string;
+  /** 执行截止（墙钟毫秒）：目标会话的 endAtMs。与 endAt（重复截止的日末边界）语义不同。 */
+  deadlineMs?: number;
   /** 缺失表示 Select 阶段继续跟随 Workspace 首选；存在时固定结构化模型意图。 */
   modelSelection?: ModelSelection;
   /** 权限模式；派发时透传给 createTask，缺省走 workspace 默认。 */
@@ -148,10 +158,15 @@ export interface ZCodeAutomationRun {
 /** 创建 automation 的入参（workspace 由调用方从 session 上下文注入）。 */
 export interface ZCodeAutomationCreateParams {
   title: string;
+  /** 5 段 cron；空字符串 = 无调度（纯模板，仅手动运行）。 */
   cronExpr: string;
   /** 仅创建期使用：由服务层基于真实当前时间换算为 cronExpr，不写入数据库。 */
   relativeDelayMinutes?: number;
   prompt: string;
+  /** 会话持续目标描述；触发时顺带落 session_target（见 ZCodeAutomation.objective）。 */
+  objective?: string;
+  /** 执行截止（墙钟毫秒）；触发时作为目标会话 endAtMs。必须为未来时间。 */
+  deadlineMs?: number;
   modelSelection?: ModelSelection;
   mode?: ZCodeTaskMode;
   workspacePath: string;
@@ -177,8 +192,15 @@ export interface ZCodeAutomationCreateParams {
 /** 编辑 automation 的可变字段。 */
 export interface ZCodeAutomationUpdateParams {
   title?: string;
+  /** 5 段 cron；空字符串 = 清掉调度（转纯模板，仅手动运行）。 */
   cronExpr?: string;
   prompt?: string;
+  /** undefined=不修改；null=清除会话目标描述。 */
+  objective?: string | null;
+  /** undefined=不修改；null=清除执行截止。 */
+  deadlineMs?: number | null;
+  /** undefined=不修改；null=解除会话绑定（触发时新建会话）。 */
+  targetTaskId?: string | null;
   /** undefined=不修改；null=清空，回退到 Workspace 首选。 */
   modelSelection?: ModelSelection | null;
   /** undefined=不修改；null=清空，回退到 workspace 默认权限模式。 */

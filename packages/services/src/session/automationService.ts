@@ -37,37 +37,21 @@ function resolveScopeKey(scope?: AutomationWorkspaceScope): string | undefined {
   });
 }
 
-/** 无效 cron 表达式错误（供管理层向 UI 返回可展示信息）。 */
-export class InvalidCronExprError extends Error {
-  constructor(cronExpr: string) {
-    super(`非法的 cron 表达式：${cronExpr}`);
-    this.name = "InvalidCronExprError";
-  }
-}
-
-/** 非法的有限次数更新错误；用于阻止矛盾状态写入并误结束仍在运行的任务。 */
-export class InvalidAutomationMaxRunsUpdateError extends Error {
-  constructor(message = "清空 maxRuns 时必须在同一次更新中设置 recurring=true") {
-    super(message);
-    this.name = "InvalidAutomationMaxRunsUpdateError";
-  }
-}
-
-/** 非法自定义调度规则；规则必须先通过领域校验才能写入内部任务库。 */
-export class InvalidAutomationScheduleRuleError extends Error {
-  constructor(message: string) {
-    super(`非法的定时任务调度规则：${message}`);
-    this.name = "InvalidAutomationScheduleRuleError";
-  }
-}
-
-/** 相对延迟只用于一次性任务，并由服务端真实时钟生成调度规则。 */
-export class InvalidAutomationRelativeDelayError extends Error {
-  constructor(message: string) {
-    super(`非法的相对时间定时任务：${message}`);
-    this.name = "InvalidAutomationRelativeDelayError";
-  }
-}
+import {
+  InvalidAutomationMaxRunsUpdateError,
+  InvalidAutomationRelativeDelayError,
+  InvalidAutomationScheduleRuleError,
+  InvalidCronExprError,
+} from "#src/session/automationErrors.js";
+import {
+  applyTemplateUpdate,
+  assertAutomationDeadlineInFuture,
+  assertCreateAutomationShape,
+  isTemplateAutomation,
+  toTemplateCreateParams,
+} from "#src/session/automationTaskShape.js";
+// 错误类型仍从本模块导出，保持既有 import 路径与 node.ts 的 re-export 不变。
+export * from "#src/session/automationErrors.js";
 
 const MAX_MONTHLY_AUTOMATION_SCHEDULE_INTERVAL = 1_200;
 const AUTOMATION_SCHEDULE_RULE_UNITS = new Set([
@@ -161,6 +145,8 @@ export class AutomationService {
     if (relativeDelayMinutes !== undefined && params.scheduleRule) {
       throw new InvalidAutomationRelativeDelayError("不能同时提交 delayMinutes 和 scheduleRule");
     }
+    // 纯任务模板（无 cron）：判定与互斥/截止校验集中在 automationTaskShape。
+    const isTemplate = assertCreateAutomationShape(params, createdAt);
     const intervalUnit = params.intervalUnit;
     const interval = params.interval;
     assertValidAutomationIntervalCarrier({
@@ -205,7 +191,7 @@ export class AutomationService {
             ),
           }
         : relativeNormalizedParams;
-    if (!isValidCronExpr(normalizedParams.cronExpr)) {
+    if (!isTemplate && !isValidCronExpr(normalizedParams.cronExpr)) {
       throw new InvalidCronExprError(normalizedParams.cronExpr);
     }
     // computeScheduleRuleNextRunAt 曾静默修正 interval=0，并在超大间隔下返回 null，
@@ -217,8 +203,13 @@ export class AutomationService {
     // 提前触发。产品语义是从创建时刻计时，因此缺少显式规则时在领域层补上分钟锚点。
     const scheduleRule = normalizedParams.scheduleRule
       ? { ...normalizedParams.scheduleRule, anchorAt: createdAt }
-      : inferMinuteIntervalScheduleRule(normalizedParams.cronExpr, createdAt);
+      : isTemplate
+        ? undefined
+        : inferMinuteIntervalScheduleRule(normalizedParams.cronExpr, createdAt);
     const createParams = scheduleRule ? { ...normalizedParams, scheduleRule } : normalizedParams;
+    // 模板任务没有调度：跳过 cron 校验与 nextRunAt 计算，仅手动运行。
+    if (isTemplate)
+      return this.repo.create(toTemplateCreateParams(createParams), { nextRunAt: null });
     // 五段 cron 不含年份；一次性固定月日任务若在创建过程中刚错过目标分钟，
     // 普通 nextRun 会滚到下一年。首次计算只补偿小于一分钟的跨分钟误差，陈旧目标在写库前拒绝。
     const nextRunAt = computeInitialAutomationNextRunAt(createParams, createdAt);
@@ -263,6 +254,8 @@ export class AutomationService {
 
     if (params.scheduleRule) assertValidAutomationScheduleRule(params.scheduleRule);
 
+    assertAutomationDeadlineInFuture(params.deadlineMs, Date.now());
+
     // 会话侧自定义重复 carrier 校验：intervalUnit+interval 必须配对且限定为 1–200，并与直传 scheduleRule 互斥。
     const { intervalUnit, interval, scheduleRule: directScheduleRule, ...restParams } = params;
     // `undefined` 表示不修改，`null` 表示显式清除已有规则；两者不能在解构后混为一谈。
@@ -306,9 +299,15 @@ export class AutomationService {
     } = {};
 
     // 改 cron_expr：校验 + 以 now 重算 next_run_at + 清 retry 态。
+    // 空 cron = 清除调度（转纯任务模板，仅手动运行）。
+    const becomesTemplate = isTemplateAutomation(normalizedParams.cronExpr ?? existing.cronExpr);
     const cronChanged =
       normalizedParams.cronExpr !== undefined && normalizedParams.cronExpr !== existing.cronExpr;
-    if (normalizedParams.cronExpr !== undefined && !isValidCronExpr(normalizedParams.cronExpr)) {
+    if (
+      normalizedParams.cronExpr !== undefined &&
+      !becomesTemplate &&
+      !isValidCronExpr(normalizedParams.cronExpr)
+    ) {
       throw new InvalidCronExprError(normalizedParams.cronExpr);
     }
     const updatedAt = Date.now();
@@ -353,7 +352,7 @@ export class AutomationService {
           ? inferredScheduleRule
           : existing.scheduleRule
         : (explicitScheduleRule ?? undefined);
-    const updateParams =
+    let updateParams =
       cronChanged && effectiveDirectScheduleRule === undefined
         ? { ...normalizedWithSchedule, scheduleRule: inferredScheduleRule ?? null }
         : effectiveDirectScheduleRule === undefined
@@ -364,14 +363,15 @@ export class AutomationService {
       normalizedParams.endAt !== undefined ||
       effectiveDirectScheduleRule !== undefined
     ) {
-      options.nextRunAt = computeAutomationNextRunAt(
-        {
-          cronExpr: effectiveCron,
-          scheduleRule: effectiveScheduleRule,
-        },
-        updatedAt,
-      );
-      options.resetRetry = true;
+      // 转模板（空 cron）：清除调度与重试态、保持 active，并强制 recurring=false。
+      if (becomesTemplate) updateParams = applyTemplateUpdate(options, updateParams);
+      else {
+        options.nextRunAt = computeAutomationNextRunAt(
+          { cronExpr: effectiveCron, scheduleRule: effectiveScheduleRule },
+          updatedAt,
+        );
+        options.resetRetry = true;
+      }
     }
 
     const effectiveEndAt =

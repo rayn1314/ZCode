@@ -705,6 +705,10 @@ interface CronRunDispatchRequest {
   automationId: string;
   runId: string;
   prompt: string;
+  /** 会话持续目标描述：触发时顺带向目标会话发 session/goal set。 */
+  objective?: string;
+  /** 执行截止（墙钟毫秒）：作为目标会话 endAtMs 落库。 */
+  deadlineMs?: number;
   targetTaskId?: string;
   modelSelection?: ModelSelection;
   mode?: ZCodeTaskMode;
@@ -977,6 +981,28 @@ async function dispatchCronRun(request: CronRunDispatchRequest): Promise<{
       clientMode: "desktop-continuous",
       automationId: request.automationId,
     });
+    // 任务纳入自动化体系：automation 带会话目标/截止时，把目标落到目标会话
+    // （session_target），此后由 goal 续跑引擎接管后续轮次与到点收尾。
+    // start:true 置 active 并触发续跑；失败只记录，不阻塞主派发与 run 结算。
+    if (request.objective || request.deadlineMs !== undefined) {
+      try {
+        await zcodeTaskService.goalSession({
+          taskId: task.taskId,
+          workspacePath: request.workspacePath,
+          ...(request.workspaceIdentity ? { workspaceIdentity: request.workspaceIdentity } : {}),
+          inputId: promptTraceId,
+          action: "set",
+          objective: request.objective,
+          endAtMs: request.deadlineMs ?? null,
+          start: true,
+        });
+      } catch (error) {
+        logger.warn(
+          `automation goal bridging failed automation=${request.automationId} run=${request.runId}`,
+          error,
+        );
+      }
+    }
     // prompt 创建的定时任务带 targetTaskId，追加原会话不能计成 session_create。
     if (!request.targetTaskId) {
       reportHostSessionCreate(parentPort, {

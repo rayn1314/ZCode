@@ -188,6 +188,8 @@ function postDispatchRequest(
     automationId: automation.automationId,
     runId,
     prompt: automation.prompt,
+    ...(automation.objective ? { objective: automation.objective } : {}),
+    ...(automation.deadlineMs ? { deadlineMs: automation.deadlineMs } : {}),
     ...(automation.targetTaskId ? { targetTaskId: automation.targetTaskId } : {}),
     ...((fixedSelection ?? automation.modelSelection)
       ? { modelSelection: fixedSelection ?? automation.modelSelection }

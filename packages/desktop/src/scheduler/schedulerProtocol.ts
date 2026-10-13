@@ -11,6 +11,10 @@ export type SchedulerToMainMessage =
       runId: string;
       prompt: string;
       targetTaskId?: string;
+      /** 会话持续目标描述：触发时顺带向目标会话发 session/goal set。 */
+      objective?: string;
+      /** 执行截止（墙钟毫秒）：作为目标会话 endAtMs 落库。 */
+      deadlineMs?: number;
       modelSelection?: ModelSelection;
       mode?: string;
       workspacePath: string;
