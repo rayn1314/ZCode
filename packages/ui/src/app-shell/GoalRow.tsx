@@ -7,6 +7,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
+import { Button } from "@/components/ui/button.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import {
   GOAL_STATUS_TEXT_CLASS,
@@ -15,7 +16,9 @@ import {
   goalDeadlineText,
   goalTitle,
   goalTokenText,
+  isGoalApproachingDeadline,
   resolveGoalDisplayStatus,
+  workspaceLabelFromPath,
   type GoalDisplayStatus,
 } from "./goalDisplay.js";
 import { cn } from "@/components/lib/utils.js";
@@ -83,7 +86,14 @@ export function GoalRow({
         >
           {title}
         </span>
-        <GoalStatusBadge displayStatus={displayStatus} />
+        <div className="flex shrink-0 items-center gap-2">
+          <GoalStatusBadge displayStatus={displayStatus} />
+          {isGoalApproachingDeadline(goal) ? (
+            <span className="shrink-0 whitespace-nowrap text-ui-xs font-medium text-warning">
+              {intl.formatMessage({ id: "goals.status.approaching" })}
+            </span>
+          ) : null}
+        </div>
       </div>
 
       <div
@@ -95,54 +105,78 @@ export function GoalRow({
 
       <div className="flex items-end justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-ui-xs tabular-nums text-foreground-subtle">
+          {/* 跨项目全局列表：每行标明目标所属项目。 */}
+          <span className="whitespace-nowrap text-foreground-subtlest">
+            {intl.formatMessage({ id: "goals.row.project" })}:{" "}
+            {workspaceLabelFromPath(entry.workspacePath)}
+          </span>
           <span className="whitespace-nowrap">{goalDeadlineText(intl, goal, now)}</span>
           <span className="whitespace-nowrap">{goalTokenText(intl, goal)}</span>
         </div>
 
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button
+        <div className="flex shrink-0 items-center gap-1.5">
+          {displayStatus === "notStarted" ? (
+            // 从未运行过的目标：行内主操作是「运行」= 恢复即运行（复用恢复逻辑）。
+            <Button
               type="button"
-              disabled={readOnly}
-              aria-label={intl.formatMessage({ id: "goals.row.more" })}
-              data-testid={`goals-row-menu-${entry.sessionId}`}
-              className="flex size-6 shrink-0 items-center justify-center rounded-md opacity-100 transition-colors hover:bg-hover data-[state=open]:bg-hover disabled:cursor-not-allowed disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+              variant="outline"
+              size="xs"
+              className="shrink-0"
+              disabled={readOnly || busy}
+              data-testid={`goals-row-run-${entry.sessionId}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onResume();
+              }}
+            >
+              {intl.formatMessage({ id: "goals.row.run" })}
+            </Button>
+          ) : null}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                disabled={readOnly}
+                aria-label={intl.formatMessage({ id: "goals.row.more" })}
+                data-testid={`goals-row-menu-${entry.sessionId}`}
+                className="flex size-6 shrink-0 items-center justify-center rounded-md opacity-100 transition-colors hover:bg-hover data-[state=open]:bg-hover disabled:cursor-not-allowed disabled:opacity-40 md:opacity-0 md:group-hover:opacity-100 md:focus-visible:opacity-100"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <MoreHorizontal className="size-4 text-foreground-subtle" aria-hidden="true" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              sideOffset={4}
               onClick={(event) => event.stopPropagation()}
             >
-              <MoreHorizontal className="size-4 text-foreground-subtle" aria-hidden="true" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            align="end"
-            sideOffset={4}
-            onClick={(event) => event.stopPropagation()}
-          >
-            {canPauseGoal(goal) ? (
-              <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onPause}>
-                {intl.formatMessage({ id: "goals.row.pause" })}
+              {canPauseGoal(goal) ? (
+                <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onPause}>
+                  {intl.formatMessage({ id: "goals.row.pause" })}
+                </DropdownMenuItem>
+              ) : null}
+              {canResumeGoal(goal) ? (
+                <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onResume}>
+                  {intl.formatMessage({ id: "goals.row.resume" })}
+                </DropdownMenuItem>
+              ) : null}
+              <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onEdit}>
+                {intl.formatMessage({ id: "goals.row.edit" })}
               </DropdownMenuItem>
-            ) : null}
-            {canResumeGoal(goal) ? (
-              <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onResume}>
-                {intl.formatMessage({ id: "goals.row.resume" })}
+              <DropdownMenuItem className="gap-1" onSelect={onOpenSession}>
+                {intl.formatMessage({ id: "goals.row.openSession" })}
               </DropdownMenuItem>
-            ) : null}
-            <DropdownMenuItem className="gap-1" disabled={readOnly || busy} onSelect={onEdit}>
-              {intl.formatMessage({ id: "goals.row.edit" })}
-            </DropdownMenuItem>
-            <DropdownMenuItem className="gap-1" onSelect={onOpenSession}>
-              {intl.formatMessage({ id: "goals.row.openSession" })}
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem
-              className="gap-1 !text-destructive data-[highlighted]:!bg-menu-hover data-[highlighted]:!text-destructive focus:!text-destructive [&_svg]:!text-destructive"
-              disabled={readOnly || busy}
-              onSelect={onClear}
-            >
-              {intl.formatMessage({ id: "goals.row.clear" })}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                className="gap-1 !text-destructive data-[highlighted]:!bg-menu-hover data-[highlighted]:!text-destructive focus:!text-destructive [&_svg]:!text-destructive"
+                disabled={readOnly || busy}
+                onSelect={onClear}
+              >
+                {intl.formatMessage({ id: "goals.row.clear" })}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
     </div>
   );

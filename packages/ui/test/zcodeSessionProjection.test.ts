@@ -2302,8 +2302,9 @@ describe("zcodeSessionProjection", () => {
             activeInputId: "input-1",
             activeRunLastSeenAtMs: 4_000,
             activeRunStartedAtMs: 4_000,
-            // 本地增强：投影保留截止时间与宽限标记。
+            // 本地增强：投影保留截止时间与宽限/预警标记。
             deadlineGraceUsed: false,
+            deadlineWarningSent: false,
             endAtMs: null,
             objective: "Fix elapsed",
             sessionID: "sess_1",

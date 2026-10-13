@@ -3353,6 +3353,7 @@ function fromZCodeGoal(goal: unknown): ZCodeTaskGoal {
     timeUsedSeconds: numberValue(record.timeUsedSeconds) ?? 0,
     endAtMs: numberValue(record.endAtMs) ?? null,
     deadlineGraceUsed: record.deadlineGraceUsed === true,
+    deadlineWarningSent: record.deadlineWarningSent === true,
     activeInputId: stringValue(record.activeInputId) ?? null,
     activeRunStartedAtMs: numberValue(record.activeRunStartedAtMs) ?? null,
     activeRunLastSeenAtMs: numberValue(record.activeRunLastSeenAtMs) ?? null,

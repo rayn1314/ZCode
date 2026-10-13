@@ -10,11 +10,17 @@ import { logger } from "@/logger.js";
 // 不做任何乐观状态机（状态机由服务端返回快照 / 下一次列表刷新负责）。
 
 export interface CreateGoalInput {
+  /** 目标承载项目：新建表单的项目选择器选中的路径（默认当前工作区）。 */
+  workspacePath: string;
+  /** 仅所选项目需要远端身份时携带（本地项目不编造）；缺省为无身份。 */
+  workspaceIdentity?: string;
   objective: string;
   /** 墙钟截止时间（epoch ms）；null = 不设截止。 */
   endAtMs: number | null;
   /** token 预算；null = 不设预算。 */
   tokenBudget: number | null;
+  /** false = 保存但不运行（服务端落 paused）；true = 保存并运行（置 active 立即续跑）。 */
+  start: boolean;
   /** 承载会话；缺省时先新建会话再设定目标。 */
   sessionId?: string;
 }
@@ -24,6 +30,8 @@ export interface UpdateGoalInput {
   objective: string;
   endAtMs: number | null;
   tokenBudget: number | null;
+  /** false = 保存但不运行（不打断、不触发新续跑）；true = 保存并运行。 */
+  start: boolean;
 }
 
 interface GoalManagementState {
@@ -102,7 +110,8 @@ async function loadInto(
     const result = await agentService.listSessionGoals({
       workspacePath,
       ...(workspaceIdentity ? { workspaceIdentity } : {}),
-      // 面板单次取全量（含归档会话的目标），归档开关在客户端过滤，切换时不重新发查询。
+      // 面板单次取跨项目全量（scope all），归档开关在客户端过滤，切换时不重新发查询。
+      scope: "all",
       includeArchived: true,
     });
     if (requestId !== goalLoadSeq || !sameWorkspace(get(), workspacePath, workspaceIdentity)) {
@@ -169,31 +178,33 @@ export const useGoalManagementStore = create<GoalManagementState>((set, get) => 
   },
 
   async createGoal(input, agentService) {
-    const { workspacePath, workspaceIdentity } = get();
-    if (!workspacePath) return null;
+    // workspacePath 由新建表单的项目选择器显式传入（默认当前工作区），不再从列表状态推断。
+    const viewWorkspacePath = get().workspacePath;
+    if (!viewWorkspacePath) return null;
     set({ operationId: `goal:create:${input.sessionId ?? "new"}`, error: null });
     try {
       let sessionId = input.sessionId?.trim();
       if (!sessionId) {
         const snapshot = await agentService.createSession({
-          workspacePath,
-          ...(workspaceIdentity ? { workspaceIdentity } : {}),
+          workspacePath: input.workspacePath,
+          ...(input.workspaceIdentity ? { workspaceIdentity: input.workspaceIdentity } : {}),
         });
         sessionId = snapshot.session.sessionId;
       }
       await agentService.goalSession({
-        workspacePath,
-        ...(workspaceIdentity ? { workspaceIdentity } : {}),
+        workspacePath: input.workspacePath,
+        ...(input.workspaceIdentity ? { workspaceIdentity: input.workspaceIdentity } : {}),
         sessionId,
         action: "set",
         objective: input.objective,
         endAtMs: input.endAtMs,
         tokenBudget: input.tokenBudget,
+        start: input.start,
       });
       const requestId = ++goalLoadSeq;
       await loadInto(set, get, {
-        workspacePath,
-        workspaceIdentity,
+        workspacePath: viewWorkspacePath,
+        workspaceIdentity: get().workspaceIdentity,
         agentService,
         requestId,
       });
@@ -225,6 +236,7 @@ export const useGoalManagementStore = create<GoalManagementState>((set, get) => 
         objective: input.objective,
         endAtMs: input.endAtMs,
         tokenBudget: input.tokenBudget,
+        start: input.start,
       });
       const requestId = ++goalLoadSeq;
       await loadInto(set, get, {

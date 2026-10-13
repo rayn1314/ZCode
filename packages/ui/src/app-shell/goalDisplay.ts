@@ -18,11 +18,13 @@ export const GOAL_FILTERS: readonly GoalFilter[] = [
 
 /**
  * 派生显示态：`deadlineReached` = 已过点待收尾（graceUsed=false，服务端还会给一轮收尾）；
- * `deadlinePending` = 收尾轮已发出、等待结算。
+ * `deadlinePending` = 收尾轮已发出、等待结算；`notStarted` = 暂停中且从没消耗过 token/时长
+ * （新建落 paused 还没运行过）——行内主操作退化为「运行」（恢复即运行）。
  */
 export type GoalDisplayStatus =
   | "active"
   | "paused"
+  | "notStarted"
   | "deadlineReached"
   | "deadlinePending"
   | "stopped"
@@ -31,6 +33,7 @@ export type GoalDisplayStatus =
 export const GOAL_STATUS_TEXT_CLASS: Record<GoalDisplayStatus, string> = {
   active: "text-success",
   paused: "text-foreground-subtle",
+  notStarted: "text-foreground-subtle",
   deadlineReached: "text-warning",
   deadlinePending: "text-warning",
   stopped: "text-foreground-subtlest",
@@ -52,7 +55,8 @@ export function resolveGoalDisplayStatus(goal: ZCodeSessionGoal, now: number): G
     case "active":
       return "active";
     case "paused":
-      return "paused";
+      // 从没运行过的 paused 目标（新建后「保存但不运行」）单独给一档：一次都还没跑。
+      return goal.tokensUsed === 0 && goal.timeUsedSeconds === 0 ? "notStarted" : "paused";
     case "complete":
       return "complete";
     // deadline_reached 与 budget_limited 都是自动停止，面板统一显示「已停止」。
@@ -60,6 +64,14 @@ export function resolveGoalDisplayStatus(goal: ZCodeSessionGoal, now: number): G
     case "budget_limited":
       return "stopped";
   }
+}
+
+/**
+ * 「即将到点」= 服务端在某次跨过「到点前 10 分钟」窗口时置位（只置一次），
+ * UI 只读这个标志位，不自行计算阈值。
+ */
+export function isGoalApproachingDeadline(goal: ZCodeSessionGoal): boolean {
+  return goal.status === "active" && goal.deadlineWarningSent === true;
 }
 
 export function matchesGoalFilter(displayStatus: GoalDisplayStatus, filter: GoalFilter): boolean {
@@ -73,6 +85,8 @@ export function matchesGoalFilter(displayStatus: GoalDisplayStatus, filter: Goal
       displayStatus === "deadlinePending"
     );
   }
+  // 「已暂停」包含「未启动」：后者是 paused 的特例（从没跑过），筛选上归同一档。
+  if (filter === "paused") return displayStatus === "paused" || displayStatus === "notStarted";
   return displayStatus === filter;
 }
 
@@ -133,4 +147,9 @@ export function canResumeGoal(goal: ZCodeSessionGoal): boolean {
  */
 export function goalResumeNeedsNewDeadline(goal: ZCodeSessionGoal, now: number): boolean {
   return goal.status === "deadline_reached" || (goal.endAtMs != null && goal.endAtMs <= now);
+}
+
+/** 目标所属项目的显示标签：取 workspacePath 的 basename（与 AutomationEditView 同口径）。 */
+export function workspaceLabelFromPath(path: string): string {
+  return path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? path;
 }

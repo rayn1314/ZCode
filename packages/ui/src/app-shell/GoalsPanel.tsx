@@ -114,23 +114,28 @@ export function GoalsPanel({
     async (params: GoalEditSubmit) => {
       const sessionId = await createGoal(
         {
+          // 目标任务项目由表单选择器决定（默认当前工作区），会话与请求都落在所选项目上。
+          workspacePath: params.workspacePath,
+          ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
           objective: params.objective,
           endAtMs: params.endAtMs,
           tokenBudget: params.tokenBudget,
+          start: params.start,
           ...(params.sessionId ? { sessionId: params.sessionId } : {}),
         },
         zcodeAgentService,
       );
       if (!sessionId) return false;
       setView({ mode: "list" });
+      // 保存后跳转到目标承载会话，用所选项目路由（可能不是当前工作区）。
       onOpenSession({
         sessionId,
-        workspacePath,
-        ...(workspaceIdentity ? { workspaceIdentity } : {}),
+        workspacePath: params.workspacePath,
+        ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
       });
       return true;
     },
-    [createGoal, onOpenSession, workspaceIdentity, workspacePath, zcodeAgentService],
+    [createGoal, onOpenSession, zcodeAgentService],
   );
 
   const handleEditSubmit = useCallback(
@@ -143,19 +148,21 @@ export function GoalsPanel({
           objective: params.objective,
           endAtMs: params.endAtMs,
           tokenBudget: params.tokenBudget,
+          start: params.start,
         },
         zcodeAgentService,
       );
       if (!ok) return false;
       setView({ mode: "list" });
+      // 编辑态目标可能属于其它项目（跨项目全局列表），跳转回它所属的项目。
       onOpenSession({
         sessionId,
-        workspacePath,
-        ...(workspaceIdentity ? { workspaceIdentity } : {}),
+        workspacePath: params.workspacePath,
+        ...(params.workspaceIdentity ? { workspaceIdentity: params.workspaceIdentity } : {}),
       });
       return true;
     },
-    [onOpenSession, updateGoal, workspaceIdentity, workspacePath, zcodeAgentService],
+    [onOpenSession, updateGoal, zcodeAgentService],
   );
 
   const handleClear = useCallback(

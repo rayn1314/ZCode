@@ -1,22 +1,15 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { ArrowLeft } from "lucide-react";
-import type { ZCodeSessionGoalListEntry, ZCodeSessionInfo } from "@zcode/shared";
+import type { ZCodeSessionGoalListEntry } from "@zcode/shared";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
-import { Spinner } from "@/components/ui/spinner.js";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select.js";
-import { cn } from "@/components/lib/utils.js";
 import { SettingsBreadcrumbReporter } from "@/settings/SettingsHeaderBreadcrumb.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
-import { useServices } from "@/hooks/useServices.js";
-import { logger } from "@/logger.js";
+import { workspaceLabelFromPath } from "./goalDisplay.js";
+import { Field } from "./GoalFormField.js";
+import { GoalProjectField, type GoalProjectSelection } from "./GoalProjectField.js";
+import { GoalSessionField, type GoalHostMode } from "./GoalSessionField.js";
 
 /** 表单提交结果；`sessionId` 缺省表示「新建会话」承载。 */
 export interface GoalEditSubmit {
@@ -24,6 +17,11 @@ export interface GoalEditSubmit {
   objective: string;
   endAtMs: number | null;
   tokenBudget: number | null;
+  /** false = 保存但不运行；true = 保存并运行（置 active 并立即续跑）。 */
+  start: boolean;
+  /** 目标任务项目：新建=选择器所选，编辑=该目标所属项目。 */
+  workspacePath: string;
+  workspaceIdentity?: string;
 }
 
 interface GoalEditViewProps {
@@ -36,9 +34,6 @@ interface GoalEditViewProps {
   onSubmit: (params: GoalEditSubmit) => Promise<boolean>;
   onBack: () => void;
 }
-
-/** 已有的承载会话候选（新建模式下可选）。 */
-type HostMode = "new" | "existing";
 
 function pad2(value: number): string {
   return String(value).padStart(2, "0");
@@ -62,50 +57,15 @@ export function parseDateTimeLocalValue(value: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-function Field({
-  label,
-  hint,
-  error,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  hint?: string;
-  error?: string;
-  htmlFor?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-1.5">
-      <label htmlFor={htmlFor} className="text-ui-base leading-5 text-foreground">
-        {label}
-      </label>
-      {children}
-      {error ? (
-        <p className="text-ui-sm text-destructive">{error}</p>
-      ) : hint ? (
-        <p className="text-ui-sm text-foreground-subtle">{hint}</p>
-      ) : null}
-    </div>
-  );
+/**
+ * 本次提交是「保存并运行」还是「保存」：两个提交按钮都带 `data-start`，
+ * 通过 SubmitEvent.submitter 取点击的那个按钮（Enter 提交时浏览器默认命中的是
+ * 第一个 submit 按钮「保存」，天然落到 start=false）。
+ */
+function readSubmitStart(event: FormEvent<HTMLFormElement>): boolean {
+  const submitter = (event.nativeEvent as SubmitEvent).submitter;
+  return submitter instanceof HTMLElement && submitter.dataset.start === "true";
 }
-
-function RadioDot({ active }: { active: boolean }) {
-  return (
-    <span
-      className={cn(
-        "flex size-4 shrink-0 items-center justify-center rounded-full border-[1.33px]",
-        active ? "border-primary bg-primary" : "border-border",
-      )}
-      aria-hidden="true"
-    >
-      {active ? <span className="size-1.5 rounded-full bg-primary-foreground" /> : null}
-    </span>
-  );
-}
-
-/** 会话选择器的触发框高度：与仓库其它表单保持一致。 */
-const SELECT_TRIGGER_CLASSNAME = "h-9";
 
 export function GoalEditView({
   editing,
@@ -117,23 +77,26 @@ export function GoalEditView({
   onBack,
 }: GoalEditViewProps) {
   const { intl } = useZCodeIntl();
-  const { zcodeAgentService } = useServices();
 
   const [objective, setObjective] = useState("");
   const [deadlineValue, setDeadlineValue] = useState("");
+  // 进入编辑时的截止时间原文：**用户没动过截止字段就放行**（该目标本来就在这个状态），
+  // 只有“新填/改过”的过去值才拦截。
+  const [originalDeadlineValue, setOriginalDeadlineValue] = useState("");
   const [budgetValue, setBudgetValue] = useState("");
-  const [hostMode, setHostMode] = useState<HostMode>("new");
+  const [hostMode, setHostMode] = useState<GoalHostMode>("new");
   const [existingSessionId, setExistingSessionId] = useState<string>("");
-  const [sessions, setSessions] = useState<ZCodeSessionInfo[] | null>(null);
-  const [sessionsLoading, setSessionsLoading] = useState(false);
+  // 新建时选择的目标项目路径；null = 默认当前工作区。
+  const [createdProjectPath, setCreatedProjectPath] = useState<string | null>(null);
 
   // 打开/切换编辑对象时重置表单。
   useEffect(() => {
     if (editing) {
       setObjective(editing.goal.objective);
-      setDeadlineValue(
-        editing.goal.endAtMs != null ? toDateTimeLocalValue(editing.goal.endAtMs) : "",
-      );
+      const originalDeadline =
+        editing.goal.endAtMs != null ? toDateTimeLocalValue(editing.goal.endAtMs) : "";
+      setDeadlineValue(originalDeadline);
+      setOriginalDeadlineValue(originalDeadline);
       setBudgetValue(editing.goal.tokenBudget != null ? String(editing.goal.tokenBudget) : "");
       setHostMode("existing");
       setExistingSessionId(editing.sessionId);
@@ -141,58 +104,66 @@ export function GoalEditView({
     }
     setObjective("");
     setDeadlineValue("");
+    setOriginalDeadlineValue("");
     setBudgetValue("");
     setHostMode("new");
     setExistingSessionId("");
+    setCreatedProjectPath(null);
   }, [editing]);
 
-  // 选择已有会话时才拉候选列表；用只读查询，避免仅打开表单就拉起 runtime。
-  useEffect(() => {
-    if (editing || hostMode !== "existing") return;
-    let cancelled = false;
-    setSessionsLoading(true);
-    void zcodeAgentService
-      .listSessions({
-        workspacePath,
-        ...(workspaceIdentity ? { workspaceIdentity } : {}),
-      })
-      .then((result) => {
-        if (cancelled) return;
-        setSessions(result);
-      })
-      .catch((error: unknown) => {
-        if (cancelled) return;
-        logger.warn("[goals] list sessions failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-        setSessions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setSessionsLoading(false);
-      });
-    return () => {
-      cancelled = true;
+  // 任务所属项目：编辑态锁定为该目标所在项目；新建态跟随选择器
+  // （默认当前工作区；identity 只在选中当前工作区时透传，本地候选项目不编造身份）。
+  const selectedProject = useMemo<GoalProjectSelection>(() => {
+    if (editing) {
+      return {
+        workspacePath: editing.workspacePath,
+        ...(editing.workspaceIdentity ? { workspaceIdentity: editing.workspaceIdentity } : {}),
+        label: workspaceLabelFromPath(editing.workspacePath),
+      };
+    }
+    return {
+      workspacePath: createdProjectPath ?? workspacePath,
+      ...(createdProjectPath == null && workspaceIdentity ? { workspaceIdentity } : {}),
+      label: workspaceLabelFromPath(createdProjectPath ?? workspacePath),
     };
-  }, [editing, hostMode, workspacePath, workspaceIdentity, zcodeAgentService]);
+  }, [createdProjectPath, editing, workspaceIdentity, workspacePath]);
 
   const deadlineMs = parseDateTimeLocalValue(deadlineValue);
-  const deadlineInvalid = deadlineValue !== "" && (deadlineMs === null || deadlineMs <= Date.now());
+  // 截止字段是否被“用户新填/改过”：编辑态与原值不同，新建态任何非空填写都算改动。
+  const deadlineChanged = editing ? deadlineValue !== originalDeadlineValue : deadlineValue !== "";
+  // 「保存」只拦新改的过去值；没动过的原值（即使已过期）放行，先允许只改文字保存。
+  const saveDeadlineInvalid =
+    deadlineValue !== "" && (deadlineMs === null || (deadlineChanged && deadlineMs <= Date.now()));
+  // 「保存并运行」始终要求空或未来：运行一个已过截止的目标会被立刻硬停。
+  const runDeadlineInvalid =
+    deadlineValue !== "" && (deadlineMs === null || deadlineMs <= Date.now());
+  const deadlinePassedUnchanged =
+    Boolean(editing) && !deadlineChanged && deadlineMs !== null && deadlineMs <= Date.now();
+
   const trimmedBudget = budgetValue.trim();
   const budgetInvalid = trimmedBudget !== "" && !/^[1-9]\d*$/.test(trimmedBudget);
   const objectiveValid = objective.trim().length > 0;
   const sessionValid = editing ? true : hostMode === "new" || existingSessionId !== "";
-  const canSubmit =
-    objectiveValid && !deadlineInvalid && !budgetInvalid && sessionValid && !saving && !readOnly;
-
-  const sessionOptions = useMemo(() => sessions ?? [], [sessions]);
+  const canSave =
+    objectiveValid &&
+    !saveDeadlineInvalid &&
+    !budgetInvalid &&
+    sessionValid &&
+    !saving &&
+    !readOnly;
+  const canSaveAndRun =
+    objectiveValid && !runDeadlineInvalid && !budgetInvalid && sessionValid && !saving && !readOnly;
 
   const handleSubmit = useCallback(
-    async (event: FormEvent) => {
+    async (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      if (!canSubmit) return;
+      const start = readSubmitStart(event);
+      if (start ? !canSaveAndRun : !canSave) return;
       // 客户端是截止时间的唯一校验点（服务端不兜底），提交瞬间再确认一次。
       const submitDeadlineMs = parseDateTimeLocalValue(deadlineValue);
-      if (deadlineValue !== "" && (submitDeadlineMs === null || submitDeadlineMs <= Date.now())) {
+      if (submitDeadlineMs === null) return;
+      if (start && deadlineValue !== "" && submitDeadlineMs <= Date.now()) return;
+      if (!start && deadlineValue !== "" && deadlineChanged && submitDeadlineMs <= Date.now()) {
         return;
       }
       // 成功后的关闭/跳转由调用方负责；这里只负责把表单值交给它。
@@ -205,16 +176,25 @@ export function GoalEditView({
         objective: objective.trim(),
         endAtMs: submitDeadlineMs,
         tokenBudget: trimmedBudget === "" ? null : Number(trimmedBudget),
+        start,
+        workspacePath: selectedProject.workspacePath,
+        ...(selectedProject.workspaceIdentity
+          ? { workspaceIdentity: selectedProject.workspaceIdentity }
+          : {}),
       });
     },
     [
-      canSubmit,
+      canSave,
+      canSaveAndRun,
+      deadlineChanged,
       deadlineValue,
       editing,
       existingSessionId,
       hostMode,
       objective,
       onSubmit,
+      selectedProject.workspaceIdentity,
+      selectedProject.workspacePath,
       trimmedBudget,
     ],
   );
@@ -261,17 +241,19 @@ export function GoalEditView({
           label={intl.formatMessage({ id: "goals.form.deadline" })}
           htmlFor="goal-deadline"
           error={
-            deadlineInvalid
+            saveDeadlineInvalid
               ? intl.formatMessage({ id: "goals.form.deadlineMustBeFuture" })
               : undefined
           }
-          hint={intl.formatMessage({ id: "goals.form.deadlineHint" })}
+          hint={intl.formatMessage({
+            id: deadlinePassedUnchanged ? "goals.form.deadlineRunHint" : "goals.form.deadlineHint",
+          })}
         >
           <Input
             id="goal-deadline"
             type="datetime-local"
             value={deadlineValue}
-            aria-invalid={deadlineInvalid}
+            aria-invalid={saveDeadlineInvalid}
             className="w-fit"
             onChange={(event) => setDeadlineValue(event.target.value)}
           />
@@ -304,78 +286,33 @@ export function GoalEditView({
           />
         </Field>
 
-        {editing ? (
-          <Field label={intl.formatMessage({ id: "goals.form.session" })}>
-            <div className="text-ui-base leading-5 text-foreground-subtle">
-              {editing.sessionTitle}
-            </div>
-          </Field>
-        ) : (
-          <Field label={intl.formatMessage({ id: "goals.form.session" })}>
-            <div
-              className="flex flex-col gap-2"
-              role="radiogroup"
-              aria-label={intl.formatMessage({ id: "goals.form.session" })}
-            >
-              <button
-                type="button"
-                role="radio"
-                aria-checked={hostMode === "new"}
-                onClick={() => setHostMode("new")}
-                className="flex h-9 w-fit items-center gap-2 rounded-[8px] px-2 text-ui-base leading-5 text-foreground transition-colors hover:bg-surface-hover"
-              >
-                <RadioDot active={hostMode === "new"} />
-                {intl.formatMessage({ id: "goals.form.sessionNew" })}
-              </button>
-              <button
-                type="button"
-                role="radio"
-                aria-checked={hostMode === "existing"}
-                onClick={() => setHostMode("existing")}
-                className="flex h-9 w-fit items-center gap-2 rounded-[8px] px-2 text-ui-base leading-5 text-foreground transition-colors hover:bg-surface-hover"
-              >
-                <RadioDot active={hostMode === "existing"} />
-                {intl.formatMessage({ id: "goals.form.sessionExisting" })}
-              </button>
-              {hostMode === "existing" ? (
-                <div className="pl-6">
-                  {sessionsLoading ? (
-                    <div className="flex h-9 items-center">
-                      <Spinner className="size-4" />
-                    </div>
-                  ) : sessionOptions.length === 0 ? (
-                    <p className="text-ui-sm text-foreground-subtle">
-                      {intl.formatMessage({ id: "goals.form.noSessions" })}
-                    </p>
-                  ) : (
-                    <Select value={existingSessionId} onValueChange={setExistingSessionId}>
-                      <SelectTrigger className={cn(SELECT_TRIGGER_CLASSNAME, "w-full max-w-md")}>
-                        <SelectValue
-                          placeholder={intl.formatMessage({ id: "goals.form.sessionExisting" })}
-                        />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {sessionOptions.map((session) => (
-                          <SelectItem key={session.sessionId} value={session.sessionId}>
-                            {session.title || session.sessionId}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </Field>
-        )}
+        <GoalProjectField
+          editing={editing}
+          workspacePath={workspacePath}
+          value={selectedProject.workspacePath}
+          onValueChange={setCreatedProjectPath}
+        />
+
+        <GoalSessionField
+          editing={editing}
+          listWorkspacePath={selectedProject.workspacePath}
+          listWorkspaceIdentity={selectedProject.workspaceIdentity}
+          hostMode={hostMode}
+          sessionId={existingSessionId}
+          onHostModeChange={setHostMode}
+          onSessionIdChange={setExistingSessionId}
+        />
 
         <p className="text-ui-sm text-foreground-subtle">
           {intl.formatMessage({ id: "goals.form.deadlineNotice" })}
         </p>
 
         <div className="flex items-center gap-3">
-          <Button type="submit" disabled={!canSubmit}>
-            {intl.formatMessage({ id: "goals.form.submit" })}
+          <Button type="submit" data-start="false" disabled={!canSave}>
+            {intl.formatMessage({ id: "goals.form.save" })}
+          </Button>
+          <Button type="submit" data-start="true" disabled={!canSaveAndRun}>
+            {intl.formatMessage({ id: "goals.form.saveAndRun" })}
           </Button>
           <Button type="button" variant="outline" onClick={onBack}>
             {intl.formatMessage({ id: "goals.form.cancel" })}
