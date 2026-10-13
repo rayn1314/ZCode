@@ -85,11 +85,46 @@ seq  1               2..N+1                              N+3               N+4 (
 `TRANSIENT_SESSION_EVENT_TYPES = { model_streaming, tool_call_progress, streaming_tool_ledger_updated, model_network_status }`，
 单一出处 `@zcode/contracts`。新增事件类型时若与消息流同频，必须同时加入该集合并补 reducer 忽略断言。
 
+## 单 turn 行数兜底（Phase 3，2026-10-13 落地）
+
+turn 窗口只封顶"几个 turn"、不封顶"一个 turn 有多长"。退避重试会把单个 turn 拖到数小时
+（事故日志实测单 turn 9798s），期间 `model_streaming` delta / `model_network_status` /
+`tool_call_progress` / `streaming_tool_ledger_updated` 只进不出：进程内 15 个 session 叠加，
+内存事件表实测驻留 **27 万行 / 堆 380MB**，事件表上的 O(n) 重放与淘汰随之线性变贵。
+
+**规则（`trimOversizedTurns`，纯函数，随瞬态 append 在 store 内触发）：**
+单个 turn 的瞬态驻留行数上限 `TRANSIENT_TURN_ROW_LIMIT = 2000`，两级处理、先保文本后丢冗余：
+
+1. **合并**：把同一 part 的连续 delta（`text_delta` / `reasoning_delta` / `tool_input_delta`，
+   `done=false`）合并成一条锚点行，`delta` 拼接、文本逐字不变；锚点保留首条的
+   seq / timestamp / id。`start` / `text_start` / `text_end` 等边界 kind 不合并——
+   冷恢复与子代理观察靠它们判断"这条消息有完整 live 流"。
+2. **淘汰**：合并后仍超目标（`TRANSIENT_TURN_ROW_TARGET = 1000`，带滞后避免每条 delta 触发
+   一次 O(n) 扫描）时，从最旧侧淘汰状态类瞬态（网络状态 / 工具进度 / runtime 账本，
+   都是"最新态覆盖旧态"的冗余行），最后才动合并后的 delta 行。
+
+**不变式：** 任意时长的 turn，其瞬态驻留 ≤ `TRANSIENT_TURN_ROW_LIMIT`；保留的全部 delta
+按序拼接 === 全量文本；非瞬态事件与 seq 计数器不动；被移除的行留下的 seq 空洞与既有
+turn 窗口淘汰一致（消费者按 `getLatestSequenceNumber` / `record.lastSeq` 取游标不回退）。
+
+**为何不直接淘汰最旧 delta：** 进行中 turn 的文本唯一来源是内存 delta（步骤结束才落盘），
+淘汰即文本丢失；合并把"行数"降下来而内容一分不少。**为何合并而不是更早落盘：** 落盘把
+SQLite 写放大引入流式热路径，且与 turn 结束才落盘的现有语义冲突，留作未做的事项。
+
+**对照契约：** `unbounded` 模式不提供该兜底（测试替身与对照测试要求逐行保真），与
+RET-011 的"unbounded 不瘦身"同一立场。
+
+**协议消费者无影响：** 合并只发生在 store 的驻留副本上；live 订阅者在 append 时已收到
+逐条事件，重放路径读 store 副本时文本一致（legacy `model_complete` 本身不映射为协议事件；
+`streaming_tool_ledger_updated` 被协议排除）。子代理观察对超过上限的长 turn 回退到
+"持久化文本 + 最新尾部"，属文档化的降级面。
+
 ## 观测
 
-`getStats()` 返回 `sessions / events / evictedEvents / retainedTransient`，随进程内存本地诊断日志
-（仓库根 `docs/monitoring/memory-diagnostics-log.md`）写入 `eventRows / eventEvicted / eventTransientRetained`，
-线上可直接验证策略生效。
+`getStats()` 返回 `sessions / events / evictedEvents / mergedEvents / retainedTransient`，
+随进程内存本地诊断日志（仓库根 `docs/monitoring/memory-diagnostics-log.md`）写入
+`eventRows / eventEvicted / eventMerged / eventTransientRetained`，线上可直接验证策略生效。
+phase-3 后关注的图景：`retainedTransient` 应被 2000×session 数封顶，而不是随 turn 时长漂移。
 
 ## 实现
 
@@ -116,3 +151,16 @@ seq  1               2..N+1                              N+3               N+4 (
 | RET-010 | 协议 server：turn 结束无后继 | `pruneSessionEventStores(now + 3min)` 淘汰该 turn 的 delta，`session/events` 回放不再含 `model.streaming` |
 | RET-011 | store：turn-window 两个 turn | turn 2 开始后 turn 1 的 `model_request` 无 `messages`、`messageCount` 等于原长度、其它字段与 seq 不变；turn 2 的 `model_request` 仍含完整 messages；`append` 返回对象含完整 messages；unbounded 模式不瘦身 |
 | RET-012 | session-mapper | 瘦身后的 payload 映射出的 `messageCount` 与完整 payload 相同 |
+| RET-013 | 策略纯函数：同 part 连续 delta | 超限后合并成一条锚点，文本拼接不变，锚点保留 seq/timestamp；start/complete 等边界与未超限 turn 不动 |
+| RET-014 | 策略纯函数：跨 part / 跨 kind | 不同 part、不同 kind 的 delta 不跨边界合并 |
+| RET-015 | 策略纯函数：状态类超限 | 合并后仍超目标时从最旧侧淘汰状态类瞬态；最新状态与 delta 锚点保留 |
+| RET-016 | 策略纯函数：仅 delta 超限 | 不淘汰状态类瞬态，只合并 delta |
+| RET-017 | 策略工厂 | `unbounded` 不提供 `trimOversizedTurns`，`turn-window` 提供 |
+| RET-018 | store：单 turn 5k delta | 瞬态驻留 ≤ 2000；保留 delta 拼接 === 全量文本；非瞬态与 seq 顺序不动；继续灌 4k 后仍封顶、文本仍完整 |
+| RET-019 | store：状态类灌爆 | 瞬态驻留 ≤ 2000；保留最新状态；最旧状态被淘汰；delta 文本完整 |
+| RET-020 | store：unbounded | 不裁剪：5000 条 delta 全部保留，`mergedEvents` / `evictedEvents` 恒 0 |
+
+> 验收与探针文件：`packages/contracts/tests/session-event-retention.test.ts`（RET-013~017）、
+> `packages/contracts/tests/in-memory-session-event-store.test.ts`（RET-018~020）。重放耗时观测在
+> `server-operations.ts readProtocolSessionEvents`（`READ_PROTOCOL_REPLAY_SLOW_WARN_MS = 250`，
+> 超过阈值记 `zcode_protocol.session.event_replay.slow`）。

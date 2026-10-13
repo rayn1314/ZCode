@@ -390,17 +390,20 @@ export class ZCodeProtocolAgentServer {
   collectMemoryDiagnostics(): Record<string, number> {
     let eventRows = 0;
     let eventEvicted = 0;
+    let eventMerged = 0;
     let eventTransientRetained = 0;
     for (const record of this.context.sessions.values()) {
       const stats = record.eventStore.getStats?.();
       eventRows += stats?.events ?? 0;
       eventEvicted += stats?.evictedEvents ?? 0;
+      eventMerged += stats?.mergedEvents ?? 0;
       eventTransientRetained += stats?.retainedTransient ?? 0;
     }
     const counters: Record<string, number> = {
       sessions: this.context.sessions.size,
       eventRows,
       eventEvicted,
+      eventMerged,
       eventTransientRetained,
     };
     const v4 = this.context.v4Gateway?.collectMemoryDiagnostics();

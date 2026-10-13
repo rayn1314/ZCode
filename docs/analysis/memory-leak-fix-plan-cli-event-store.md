@@ -74,9 +74,15 @@
 - `getStats()` 增加 `evictedEvents`、`retainedTransient`，随内存诊断日志一起落盘，作为线上效果证据。
 - 唯一可观察行为变化：legacy `session/events` / `session/subscribe afterSeq` 对**已完成 turn** 不再重放 token delta；当前 turn 与刚完成的上一 turn 仍可回放。写进 spec 与 `docs/conversation-product-protocol.md`。
 
-### Phase 3（可选）
+### Phase 3（可选）✅ 2026-10-13 已落地
 
 单 turn 内瞬态事件也设上限（防单个跑飞 turn），超限时把最早的 delta 合批成一条；等 Phase 2 上线后看 `retainedTransient` 分布再定。
+
+落地后的分布数据支持了该判断：退避重试把单 turn 拖到最长 9798s，进程内多 session 叠加，
+`retainedTransient` 实测涨到 **27 万行 / 堆 380MB**。实现见
+`apps/zcode-cli/docs/design/v2/session-event-store-retention.md`「单 turn 行数兜底」：
+同一 part 连续 delta 合并成锚点行（文本逐字保留）、超目标再淘汰最旧状态类瞬态；
+单 turn 瞬态驻留硬上限 2000 行，`mergedEvents` 计入内存诊断日志。
 
 ## 四、如何测试
 
