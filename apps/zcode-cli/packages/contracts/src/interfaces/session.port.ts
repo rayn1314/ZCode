@@ -57,8 +57,10 @@ export type TurnSteerRejectReason =
 export interface SessionEventStoreStats {
   sessions: number;
   events: number;
-  /** 按 turn 窗口策略已淘汰的瞬态事件累计数；unbounded 模式恒为 0。 */
+  /** 按 turn 窗口 / 单 turn 行数兜底已淘汰的瞬态事件累计数；unbounded 模式恒为 0。 */
   evictedEvents?: number;
+  /** 被合并进锚点 delta 行的瞬态事件累计数（合并保留文本，只减行数）；unbounded 恒为 0。 */
+  mergedEvents?: number;
   /** 当前仍驻留的瞬态事件数（进行中 turn + 一个滞后 turn）。 */
   retainedTransient?: number;
 }

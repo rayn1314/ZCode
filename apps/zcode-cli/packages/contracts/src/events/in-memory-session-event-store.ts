@@ -6,6 +6,7 @@ import {
   isTransientSessionEvent,
   SEALED_TURN_TRANSIENT_GRACE_MS,
   slimRetainedModelRequest,
+  TRANSIENT_TURN_ROW_LIMIT,
   type SessionEventRetentionMode,
   type SessionEventRetentionPolicy,
 } from "./session-event-retention.js";
@@ -22,6 +23,9 @@ interface SessionEventState {
   latestSequenceNumber: number;
   policy: SessionEventRetentionPolicy;
   evictedEvents: number;
+  mergedEvents: number;
+  /** 每 turn 瞬态行数（O(1) 增量维护）：单 turn 行数兜底的触发器，避免每条 delta 全表扫描。 */
+  transientRowsByTurn: Map<string, number>;
 }
 
 /**
@@ -53,6 +57,8 @@ export class InMemorySessionEventStore implements SessionEventStorePort {
         latestSequenceNumber: 0,
         policy: this.createPolicy(),
         evictedEvents: 0,
+        mergedEvents: 0,
+        transientRowsByTurn: new Map(),
       };
       this.sessions.set(sessionId, state);
     }
@@ -71,7 +77,79 @@ export class InMemorySessionEventStore implements SessionEventStorePort {
     if (evictTurnIds.length > 0) {
       this.evictTransientEvents(state, new Set(evictTurnIds));
     }
+    // 只有瞬态事件可能让某个 turn 的瞬态行数越线；非瞬态 append 走快路径，不做扫描。
+    if (isTransientSessionEvent(storedEvent)) {
+      if (storedEvent.turnId) {
+        state.transientRowsByTurn.set(
+          String(storedEvent.turnId),
+          (state.transientRowsByTurn.get(String(storedEvent.turnId)) ?? 0) + 1,
+        );
+      }
+      this.trimOversizedTurnRows(state);
+    }
     return storedEvent;
+  }
+
+  /**
+   * 单 turn 瞬态行数兜底：同一 part 的连续 delta 合并成一条（`delta` 拼接，文本不变），
+   * 合并后仍超目标的 turn 从最旧侧淘汰冗余瞬态行。规则见 `trimOversizedTurns`。
+   *
+   * 用 `transientRowsByTurn` 做 O(1) 触发器：任何 turn 的瞬态行数 > 上限才全表扫描；
+   * 快路径（正常会话）每条 append 只摊一个 Map get/set。
+   */
+  private trimOversizedTurnRows(state: SessionEventState): void {
+    if (state.policy.trimOversizedTurns === undefined) {
+      return;
+    }
+    let oversizedTurnExists = false;
+    for (const rows of state.transientRowsByTurn.values()) {
+      if (rows > TRANSIENT_TURN_ROW_LIMIT) {
+        oversizedTurnExists = true;
+        break;
+      }
+    }
+    if (!oversizedTurnExists) {
+      return;
+    }
+    const plans = state.policy.trimOversizedTurns(state.events);
+    if (plans.length === 0) {
+      return;
+    }
+    const mergedByEventId = new Map<string, SessionEvent>();
+    const removedEventIds = new Set<string>();
+    for (const plan of plans) {
+      for (const [id, merged] of plan.mergedByEventId) {
+        mergedByEventId.set(id, merged);
+      }
+      for (const id of plan.removedEventIds) {
+        removedEventIds.add(id);
+      }
+      state.evictedEvents += plan.evictedEvents;
+      state.mergedEvents += plan.mergedEvents;
+    }
+    const retained: SessionEvent[] = [];
+    for (const event of state.events) {
+      const id = String(event.id);
+      if (removedEventIds.has(id)) {
+        continue;
+      }
+      retained.push(mergedByEventId.get(id) ?? event);
+    }
+    state.events = retained;
+    this.recomputeTransientRowsByTurn(state);
+  }
+
+  /** 全表重建后（淘汰 / 合并）同步每 turn 瞬态行数。 */
+  private recomputeTransientRowsByTurn(state: SessionEventState): void {
+    state.transientRowsByTurn.clear();
+    for (const event of state.events) {
+      if (isTransientSessionEvent(event) && event.turnId) {
+        state.transientRowsByTurn.set(
+          String(event.turnId),
+          (state.transientRowsByTurn.get(String(event.turnId)) ?? 0) + 1,
+        );
+      }
+    }
   }
 
   /**
@@ -108,6 +186,7 @@ export class InMemorySessionEventStore implements SessionEventStorePort {
       );
     }
     state.events = retained;
+    this.recomputeTransientRowsByTurn(state);
   }
 
   async getEvents(sessionId: SessionId): Promise<SessionEvent[]> {
@@ -132,17 +211,19 @@ export class InMemorySessionEventStore implements SessionEventStorePort {
   getStats(): SessionEventStoreStats {
     let events = 0;
     let evictedEvents = 0;
+    let mergedEvents = 0;
     let retainedTransient = 0;
     for (const state of this.sessions.values()) {
       events += state.events.length;
       evictedEvents += state.evictedEvents;
+      mergedEvents += state.mergedEvents;
       for (const event of state.events) {
         if (isTransientSessionEvent(event)) {
           retainedTransient += 1;
         }
       }
     }
-    return { sessions: this.sessions.size, events, evictedEvents, retainedTransient };
+    return { sessions: this.sessions.size, events, evictedEvents, mergedEvents, retainedTransient };
   }
 }
 

@@ -85,6 +85,7 @@ describe("InMemorySessionEventStore", () => {
       sessions: 1,
       events: 8,
       evictedEvents: 3,
+      mergedEvents: 0,
       retainedTransient: 3,
     });
     await store.deleteSession(S);
@@ -92,6 +93,7 @@ describe("InMemorySessionEventStore", () => {
       sessions: 0,
       events: 0,
       evictedEvents: 0,
+      mergedEvents: 0,
       retainedTransient: 0,
     });
     expect(await store.getLatestSequenceNumber(S)).toBe(0);
@@ -265,5 +267,109 @@ describe("InMemorySessionEventStore · model_request 元数据瘦身", () => {
     expect(requests.map((e) => (e.payload as { messages: unknown[] }).messages.length)).toEqual([
       4, 6,
     ]);
+  });
+});
+
+describe("InMemorySessionEventStore · 单 turn 行数兜底", () => {
+  const LONG = "long";
+
+  function delta(text: string): SessionEvent {
+    const base = event(S, SessionEventType.ModelStreaming, LONG);
+    return {
+      ...base,
+      payload: {
+        kind: "text_delta",
+        delta: text,
+        done: false,
+        assistantMessageId: "m1",
+        partId: "p1",
+      },
+    } as unknown as SessionEvent;
+  }
+
+  function status(): SessionEvent {
+    return event(S, SessionEventType.ModelNetworkStatus, LONG);
+  }
+
+  it("RET-018 长 turn 灌 5000 条 delta：驻留行数封顶、文本逐字保留、seq 不回退", async () => {
+    const store = new InMemorySessionEventStore();
+    await store.append(event(S, SessionEventType.TurnStarted, LONG));
+    const total = 5_000;
+    for (let i = 0; i < total; i += 1) {
+      await store.append(delta("x"));
+    }
+    await store.append(event(S, SessionEventType.ModelComplete, LONG));
+
+    const retained = await store.getEvents(S);
+    const deltas = retained.filter((e) => e.type === SessionEventType.ModelStreaming);
+    // 单 turn 瞬态驻留被上限封顶，而不是随 turn 时长无限涨。
+    expect(store.getStats().retainedTransient).toBeLessThanOrEqual(2_000);
+    expect(deltas.length).toBeGreaterThan(0);
+    // 全部保留 delta 拼接 === 全量文本（合并只减行、不减内容）。
+    const text = deltas
+      .slice()
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      .map((e) => (e.payload as { delta: string }).delta)
+      .join("");
+    expect(text).toBe("x".repeat(total));
+    // 非瞬态一行不少，顺序仍按 seq 递增。
+    expect(retained.filter((e) => e.type !== SessionEventType.ModelStreaming)).toHaveLength(2);
+    const seqs = retained.map((e) => e.sequenceNumber);
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(store.getStats().mergedEvents).toBeGreaterThan(0);
+    expect(await store.getLatestSequenceNumber(S)).toBe(total + 2);
+    const next = await store.append(event(S, SessionEventType.ModelComplete, LONG));
+    expect(next.sequenceNumber).toBe(total + 3);
+    // 继续灌更久（模拟数小时的重试 turn），行数仍封顶、文本仍完整。
+    for (let i = 0; i < 4_000; i += 1) {
+      await store.append(delta("y"));
+    }
+    const after = await store.getEvents(S);
+    expect(store.getStats().retainedTransient).toBeLessThanOrEqual(2_000);
+    const text2 = after
+      .filter((e) => e.type === SessionEventType.ModelStreaming)
+      .slice()
+      .sort((a, b) => a.sequenceNumber - b.sequenceNumber)
+      .map((e) => (e.payload as { delta: string }).delta)
+      .join("");
+    expect(text2).toBe("x".repeat(total) + "y".repeat(4_000));
+  });
+
+  it("RET-019 状态类瞬态灌爆时按上限收敛，最新状态与 delta 文本都在", async () => {
+    const store = new InMemorySessionEventStore();
+    await store.append(event(S, SessionEventType.TurnStarted, LONG));
+    for (let i = 0; i < 100; i += 1) {
+      await store.append(delta("y"));
+    }
+    for (let i = 0; i < 2_500; i += 1) {
+      await store.append(status());
+    }
+    const retained = await store.getEvents(S);
+    const statuses = retained.filter((e) => e.type === SessionEventType.ModelNetworkStatus);
+    const deltas = retained.filter((e) => e.type === SessionEventType.ModelStreaming);
+    // 单 turn 的瞬态驻留被上限封顶（观察到的 2500 条不会全部留下）。
+    expect(store.getStats().retainedTransient).toBeLessThanOrEqual(2_000);
+    expect(statuses.length).toBeLessThan(2_500);
+    expect(store.getStats().evictedEvents).toBeGreaterThan(0);
+    // 保留的是最新的一批状态；最旧的已淘汰。
+    expect(statuses.at(-1)?.sequenceNumber).toBe(2_601);
+    expect(statuses[0]?.sequenceNumber).toBeGreaterThan(102);
+    // delta 已合并成一行，文本完整。
+    expect(deltas).toHaveLength(1);
+    expect((deltas[0]?.payload as { delta: string }).delta).toBe("y".repeat(100));
+  });
+
+  it("RET-020 unbounded 模式不做单 turn 行数兜底（对照测试要求逐行保真）", async () => {
+    const store = new InMemorySessionEventStore({ retention: "unbounded" });
+    await store.append(event(S, SessionEventType.TurnStarted, LONG));
+    const total = 5_000;
+    for (let i = 0; i < total; i += 1) {
+      await store.append(delta("x"));
+    }
+    const stats = store.getStats();
+    expect(stats.retainedTransient).toBe(total);
+    expect(stats.events).toBe(total + 1);
+    expect(stats.mergedEvents).toBe(0);
+    expect(stats.evictedEvents).toBe(0);
   });
 });

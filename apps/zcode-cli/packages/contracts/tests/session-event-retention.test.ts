@@ -5,6 +5,8 @@ import {
   isTransientSessionEvent,
   SessionEventType,
   TRANSIENT_SESSION_EVENT_TYPES,
+  trimOversizedTurns,
+  type SessionEvent,
 } from "../src/index.js";
 
 const ev = (type: SessionEventType, turnId?: string) => ({ type, turnId });
@@ -80,5 +82,113 @@ describe("session event retention policy · 时间兜底", () => {
     policy.onAppend(ev(SessionEventType.TurnStarted, "t1"), 0);
     policy.onAppend(ev(SessionEventType.TurnComplete, "t1"), 1);
     expect(policy.collectExpired(1_000_000, 0)).toEqual([]);
+  });
+});
+
+describe("session event retention policy · 单 turn 行数兜底", () => {
+  const stream = (seq: number, text: string, kind = "text_delta", partId = "p1"): SessionEvent =>
+    ({
+      id: `e${seq}`,
+      sessionId: "s",
+      type: SessionEventType.ModelStreaming,
+      turnId: "t1",
+      timestamp: new Date(seq),
+      sequenceNumber: seq,
+      payload: { kind, delta: text, done: false, assistantMessageId: "m1", partId },
+    }) as unknown as SessionEvent;
+
+  const status = (seq: number): SessionEvent =>
+    ({
+      id: `e${seq}`,
+      sessionId: "s",
+      type: SessionEventType.ModelNetworkStatus,
+      turnId: "t1",
+      timestamp: new Date(seq),
+      sequenceNumber: seq,
+      payload: {},
+    }) as unknown as SessionEvent;
+
+  const boundary = (seq: number, type: SessionEventType): SessionEvent =>
+    ({
+      id: `e${seq}`,
+      sessionId: "s",
+      type,
+      turnId: "t1",
+      timestamp: new Date(seq),
+      sequenceNumber: seq,
+      payload: {},
+    }) as unknown as SessionEvent;
+
+  it("RET-013 超限时把同一 part 的连续 delta 合并成锚点行：文本拼接不变、锚点保留 seq/timestamp", () => {
+    const events = [
+      boundary(1, SessionEventType.TurnStarted),
+      stream(2, "a"),
+      stream(3, "b"),
+      stream(4, "c"),
+      boundary(5, SessionEventType.ModelComplete),
+    ];
+    const plans = trimOversizedTurns(events, 2, 2);
+    expect(plans).toHaveLength(1);
+    const [plan] = plans;
+    expect(plan?.turnId).toBe("t1");
+    expect(plan?.mergedEvents).toBe(2);
+    expect(plan?.evictedEvents).toBe(0);
+    expect([...(plan?.removedEventIds ?? [])].sort()).toEqual(["e3", "e4"]);
+    const merged = plan?.mergedByEventId.get("e2");
+    expect((merged?.payload as { delta: string }).delta).toBe("abc");
+    expect(merged?.sequenceNumber).toBe(2);
+    expect(merged?.timestamp).toEqual(new Date(2));
+    // 边界事件（start / complete）与锚点自身都不在移除集合里。
+    expect(plan?.removedEventIds.has("e1")).toBe(false);
+    expect(plan?.removedEventIds.has("e5")).toBe(false);
+    // 未超限时不动（快路径）。
+    expect(trimOversizedTurns(events, 3, 2)).toEqual([]);
+  });
+
+  it("RET-014 不同 part / 不同 kind 的 delta 不跨边界合并", () => {
+    const events = [stream(1, "a", "text_delta", "p1"), stream(2, "b", "text_delta", "p2")];
+    const plans = trimOversizedTurns(events, 1, 1);
+    const [plan] = plans;
+    expect(plan?.mergedEvents).toBe(0);
+    expect(plan?.mergedByEventId.size).toBe(0);
+  });
+
+  it("RET-015 合并后仍超目标：先淘汰最旧的状态类瞬态，delta 文本行保留到最后一轮", () => {
+    const events = [
+      boundary(1, SessionEventType.TurnStarted),
+      stream(2, "a"),
+      stream(3, "b"),
+      status(4),
+      status(5),
+      status(6),
+      status(7),
+      status(8),
+      status(9),
+    ];
+    const plans = trimOversizedTurns(events, 6, 4);
+    const [plan] = plans;
+    expect(plan?.mergedEvents).toBe(1);
+    // 瞬态行 7 条 → 合并 delta 后 6 行瞬态，仍 > 目标 4：淘汰最旧的 3 条状态事件。
+    expect([...(plan?.removedEventIds ?? [])].sort()).toEqual(["e3", "e4", "e5", "e6"]);
+    expect(plan?.evictedEvents).toBe(3);
+    // 最新的状态事件与合并后的 delta 锚点都留着。
+    expect(plan?.removedEventIds.has("e9")).toBe(false);
+    expect(plan?.mergedByEventId.get("e2")).toBeDefined();
+  });
+
+  it("RET-016 只有 delta 超限时不动状态类瞬态", () => {
+    const events = [status(1), stream(2, "a"), stream(3, "b"), status(4), status(5)];
+    const [plan] = trimOversizedTurns(events, 4, 4);
+    expect(plan?.evictedEvents).toBe(0);
+    expect([...(plan?.removedEventIds ?? [])]).toEqual(["e3"]);
+  });
+
+  it("RET-017 unbounded 策略不提供行数兜底（对照测试要求逐行保真）", () => {
+    expect(
+      createSessionEventRetentionPolicy("unbounded").trimOversizedTurns,
+    ).toBeUndefined();
+    expect(
+      createSessionEventRetentionPolicy("turn-window").trimOversizedTurns,
+    ).toBeTypeOf("function");
   });
 });
