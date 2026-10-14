@@ -181,13 +181,18 @@ export const ledgerOverviewSchema = z.object({
   avgTtftMs: z.number().nullable(),
   /** 范围内有调用的天数（按日序列长度计）。 */
   activeDays: z.number(),
-  /** 今日/本月是固定口径 KPI，不随所选范围变化。 */
+  /** 今日/本月是固定窗口 KPI，不随所选范围变化。 */
   todayCalls: z.number(),
   todayTokens: z.number(),
   todayCost: z.number().nullable(),
   monthCalls: z.number(),
   monthTokens: z.number(),
   monthCost: z.number().nullable(),
+  /** 峰值日按所选范围（与每日趋势图同一份合并后的 daily），只在合并层推导；单源/WSL 不产出。 */
+  peakDayDate: z.string().nullish(),
+  peakDayCalls: z.number().optional(),
+  peakDayTokens: z.number().optional(),
+  peakDayCost: z.number().nullish(),
   /** 加载到价格表时才有费用字段；否则整体缺省，UI 显示「未启用费用估算」。 */
   cost: z.number().optional(),
   unpricedCalls: z.number().optional(),

@@ -3801,6 +3801,7 @@ const zhCN: Record<string, string> = {
   "settings.usage.ledger.kpi.today": "今日",
   "settings.usage.ledger.kpi.month": "本月",
   "settings.usage.ledger.kpi.activeDays": "活跃天数",
+  "settings.usage.ledger.kpi.peakDay": "峰值日",
   "settings.usage.ledger.unit.second": "秒",
   "settings.usage.ledger.unit.calls": "次",
   "settings.usage.ledger.hourlyTitle": "今日各小时",

@@ -4035,6 +4035,7 @@ const enUS: Record<string, string> = {
   "settings.usage.ledger.kpi.today": "Today",
   "settings.usage.ledger.kpi.month": "This month",
   "settings.usage.ledger.kpi.activeDays": "Active days",
+  "settings.usage.ledger.kpi.peakDay": "Peak day",
   "settings.usage.ledger.unit.second": "s",
   "settings.usage.ledger.unit.calls": "calls",
   "settings.usage.ledger.hourlyTitle": "Today by hour",

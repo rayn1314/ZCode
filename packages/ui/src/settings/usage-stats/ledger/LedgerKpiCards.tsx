@@ -3,6 +3,7 @@ import type { LedgerSnapshot } from "@zcode/shared";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import {
   formatCompactNumber,
+  formatDay,
   formatSummaryCompactTokenUsage,
 } from "@/settings/usage-stats/usageStatsUiParts.js";
 import { formatLedgerCost, formatLedgerHourLabel } from "./ledgerFormat.js";
@@ -114,10 +115,17 @@ export function LedgerFixedKpiStrip({
   const { intl } = useZCodeIntl();
   const { overview } = snapshot;
   const hasCost = overview.todayCost !== null && overview.todayCost !== undefined;
+  const peakCalls = overview.peakDayCalls ?? 0;
+  const hasPeakCost = overview.peakDayCost !== null && overview.peakDayCost !== undefined;
+  const peakLabel = intl.formatMessage({ id: "settings.usage.ledger.kpi.peakDay" });
   const parts = [
     `${intl.formatMessage({ id: "settings.usage.ledger.kpi.today" })}：${formatCompactNumber(locale, overview.todayCalls)} ${intl.formatMessage({ id: "settings.usage.ledger.unit.calls" })} · ${formatSummaryCompactTokenUsage(locale, overview.todayTokens)}${hasCost ? ` · ${formatLedgerCost(locale, overview.todayCost ?? 0, currency)}` : ""}`,
     `${intl.formatMessage({ id: "settings.usage.ledger.kpi.month" })}：${formatCompactNumber(locale, overview.monthCalls)} ${intl.formatMessage({ id: "settings.usage.ledger.unit.calls" })} · ${formatSummaryCompactTokenUsage(locale, overview.monthTokens)}${overview.monthCost !== null && overview.monthCost !== undefined ? ` · ${formatLedgerCost(locale, overview.monthCost, currency)}` : ""}`,
     `${intl.formatMessage({ id: "settings.usage.ledger.kpi.activeDays" })}：${formatCompactNumber(locale, overview.activeDays)}`,
+    // 峰值日 = 所选范围内 token（input + output）最高的那天（合并层推导）；无数据时给 --，不堆 0 值
+    peakCalls > 0
+      ? `${peakLabel}（${formatDay(locale, overview.peakDayDate ?? null)}）：${formatCompactNumber(locale, peakCalls)} ${intl.formatMessage({ id: "settings.usage.ledger.unit.calls" })} · ${formatSummaryCompactTokenUsage(locale, overview.peakDayTokens ?? 0)}${hasPeakCost ? ` · ${formatLedgerCost(locale, overview.peakDayCost ?? 0, currency)}` : ""}`
+      : `${peakLabel}：--`,
   ];
   return (
     <section className="flex flex-wrap gap-x-6 gap-y-1 rounded-xl bg-surface px-4 py-2.5 text-ui-sm text-foreground-subtle">

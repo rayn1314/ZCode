@@ -48,6 +48,7 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 4. **时间分桶**：全部参数化整数算术 `(COALESCE(started_at,0)+tzOffsetMs)/86400000`，不用 strftime/date 修饰符；WSL 侧 Python 用同一偏移（host 下发 `tzOffsetMinutes`），跨环境同一条时间轴。
 5. **范围**：today=本地今日 0 点起；7d/30d 含今日；all 上界取 now（`started_at <= NULL` 恒假，不能留 null）；custom 起止可交换，止日为次日 0 点 -1。
 6. **模型 × 供应商明细**：models 按 (model_id, provider_id) 分组聚合，UI「模型与供应商」表整表分页展示（费用占比 = 单行费用 / 已计价费用合计，未定价行显示「--」），还原原 zcode-usage 工具页脚 tabs 区的模型表。**会话层级只改会话视图**：models / agents / daily / recent / overview / facets 一律仍按「每一次调用自身」的用量统计，不做子树合计（否则同一笔调用会在总览里被重复计入）。
+7. **固定口径 KPI 条**（今日 / 本月 / 活跃天数 / 峰值日）：今日与本月是**固定窗口**（今日 0 点起、本月 1 日 0 点起至 now），不随所选范围变化；活跃天数与峰值日按**所选范围**计算，与每日趋势图共用同一份合并后的 `daily`。峰值日 = 范围内 **token（`input + output`）最高**的那一天（并列取较早），展示该日的调用数、token 与费用（token 口径与今日/本月一致，缓存读是输入子集不再叠加）。**峰值日只在合并层推导**（`mergeLedgerPayloads` 基于合并后的 daily 取最大行）：跨源合并后的 daily 才是权威，单源各自的峰值在合并后无意义——故 `ledgerAggregate.ts` 与 WSL dump 均不产出这四个字段（schema 中为 optional），WSL 源缺该字段不影响合并。范围内无调用时 UI 显示「峰值日：--」。
 
 ## 会话层级
 

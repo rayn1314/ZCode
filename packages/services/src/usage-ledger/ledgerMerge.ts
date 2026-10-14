@@ -73,6 +73,10 @@ function emptyOverview(): LedgerSnapshot["overview"] {
     monthCalls: 0,
     monthTokens: 0,
     monthCost: null,
+    peakDayDate: null,
+    peakDayCalls: 0,
+    peakDayTokens: 0,
+    peakDayCost: null,
     // 必须显式给 0：merge 里走 `ov.unpricedCalls += …`，undefined 起步会算出 NaN，
     // 而 NaN 能穿过 `?? 0` 直接炸 Zod 校验（dev 实测踩过）。
     unpricedCalls: 0,
@@ -207,6 +211,21 @@ export function mergeLedgerPayloads(
       cost: d.cost,
     }));
   ov.activeDays = daily.length;
+
+  // 峰值日：所选范围内 token（input + output）最高的那一天。跨源合并后的 daily 才是权威——
+  // 单源各自的峰值在合并后无意义，故只在合并层推导（aggregateFromDb/WSL 不产出）。
+  // 并列取较早的一天（严格 > 保留首个最大值）；展示口径仍是该天的调用数 / token / 费用三项。
+  let peakDay: LedgerDailyRow | null = null;
+  for (const d of daily) {
+    const tokens = d.inputTokens + d.outputTokens;
+    if (!peakDay || tokens > peakDay.inputTokens + peakDay.outputTokens) {
+      peakDay = d;
+    }
+  }
+  ov.peakDayDate = peakDay?.date ?? null;
+  ov.peakDayCalls = peakDay?.calls ?? 0;
+  ov.peakDayTokens = peakDay ? peakDay.inputTokens + peakDay.outputTokens : 0;
+  ov.peakDayCost = peakDay?.cost ?? null;
 
   const hourly = Array.from({ length: 24 }, (_, hour) => ({ hour, calls: 0 }));
   for (const p of usable) {
