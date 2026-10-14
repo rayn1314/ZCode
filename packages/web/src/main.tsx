@@ -1336,11 +1336,11 @@ export function createHomeOnlyWebRemoteControlServices(): RootServices {
 }
 
 function resolveExternalRelayWsUrl(): string {
-  const endpointOrigin =
-    import.meta.env.VITE_ZCODE_BASE_URL?.trim() ||
-    import.meta.env.VITE_ZCODE_ENDPOINT_ORIGIN?.trim();
+  // PWA 与 relay 同源提供（官方部署同源于 zcode.z.ai；自托管由 scripts/start-mobile-remote.mjs
+  // 一并提供），因此按运行期 origin 推导 relay 地址：换网络、换 IP、换端口都不必重新构建。
+  // 显式的 VITE_ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL 仍是最高优先级，用于跨域部署。
   return resolveWebRemoteControlRelayWsUrl({
-    endpointOrigin,
+    endpointOrigin: window.location.origin,
     overrideUrl: import.meta.env.VITE_ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL,
   });
 }

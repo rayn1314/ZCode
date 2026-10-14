@@ -49,6 +49,7 @@ import type { UtilityProcess as ElectronUtilityProcess } from "electron";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { homedir, hostname } from "node:os";
+import { readLocalMobileRemoteConfig } from "./localMobileRemoteConfig.js";
 import {
   createCredentialService,
   createSettingService,
@@ -887,9 +888,18 @@ const webRemoteControlAppVersion = ZCODE_VERSION || app.getVersion();
 const defaultZCodeEndpointUrls = buildZCodeEndpointUrls(DEFAULT_ZCODE_ENDPOINT_ORIGIN, {
   appVersion: webRemoteControlAppVersion,
 });
+/**
+ * 自建 relay 的地址来源，优先级：环境变量 > 数据根 mobile-remote.json > 官方默认。
+ *
+ * 配置文件由 scripts/start-mobile-remote.mjs（`pnpm remote:up`）写入，让自建用户
+ * 不必改启动脚本；官方部署没有该文件，行为与原来完全一致。
+ */
+const localMobileRemoteConfig = readLocalMobileRemoteConfig(getZCodeDataRootDir());
 const webRemoteControlRelayWsEnvOverride =
-  process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL"]?.trim();
-const webRemoteControlUrlEnvOverride = process.env["ZCODE_WEB_REMOTE_CONTROL_URL"]?.trim();
+  process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL"]?.trim() ||
+  localMobileRemoteConfig?.relayWsUrl;
+const webRemoteControlUrlEnvOverride =
+  process.env["ZCODE_WEB_REMOTE_CONTROL_URL"]?.trim() || localMobileRemoteConfig?.remoteUrl;
 
 function extractOpenWorkspacePathFromDeepLinkUrl(url: string): string | null {
   try {
@@ -920,10 +930,14 @@ const webRemoteControlManager = createWebRemoteControlManager({
     });
     return {
       ...derived,
-      relayWsUrl: resolveWebRemoteControlRelayWsUrl({
-        endpointOrigin: derived.origin,
-        overrideUrl: webRemoteControlRelayWsEnvOverride,
-      }),
+      // 自建 relay 不必再配环境变量：设置页的 endpoint override 已经把 origin 指向自建服务，
+      // 同一 origin 推导出的 relayWsUrl 与 remoteUrl 才是一对（官方 endpoint 仍按固定策略）。
+      relayWsUrl: webRemoteControlRelayWsEnvOverride
+        ? resolveWebRemoteControlRelayWsUrl({
+            endpointOrigin: derived.origin,
+            overrideUrl: webRemoteControlRelayWsEnvOverride,
+          })
+        : derived.relayWsUrl,
       remoteUrl: webRemoteControlUrlEnvOverride || derived.remoteUrl,
     };
   },
