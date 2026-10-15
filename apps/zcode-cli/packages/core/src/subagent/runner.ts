@@ -43,6 +43,8 @@ import {
   type SubagentWaitOptions,
   type TraceContext,
   type TurnId,
+  type TurnSteerInput,
+  type TurnSteerResult,
 } from "@zcode/contracts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -56,6 +58,13 @@ import {
 } from "./profile.js";
 import { EXPLORE_AGENT_ALLOWED_TOOLS } from "./explore-tools.js";
 import { formatLocalAgentTaskNotification } from "./completion-notification.js";
+import { createSubagentMessageSink } from "./message-steering.js";
+import {
+  getInputRevivalBinding,
+  registerInputRevivalBinding,
+  requestStopInputRevivalTurn,
+  type SubagentInputRevivalBindingBase,
+} from "./input-revival-bridge.js";
 import { filterSubagentChildToolNames } from "./tool-policy.js";
 import {
   ErrorPayloadRole,
@@ -267,6 +276,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           ...(hasForegroundModelOverride ? { foregroundModelOverride: true } : {}),
         }),
       );
+      registerInputRevivalBindingForTask(options, registry, request, lifecycle);
       try {
         await writeAgentMetadataFile(lifecycle, request, "running");
       } catch (error) {
@@ -579,6 +589,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           status: "running",
         }),
       );
+      registerInputRevivalBindingForTask(options, registry, request, lifecycle);
       try {
         await writeAgentMetadataFile(lifecycle, request, "running");
       } catch (error) {
@@ -694,6 +705,9 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           .get(taskId)
           ?.abort(new Error(`${BACKGROUND_AGENT_STOPPED_STATE.message}: ${taskId}`));
         abortControllers.delete(taskId);
+        // 输入复活轮（spec subagent-input-revival.md A6）不在 runner 的 abortControllers 里：
+        // 终态与 stopped 通知已由上面落定，真实执行的轮只能经桥的 stopTurn 停掉。
+        if (task.inputRevival) requestStopInputRevivalTurn(task.childSessionId);
       });
     },
 
@@ -1156,6 +1170,7 @@ async function resumeTerminalAgentInBackground(
       status: "running",
     }),
   );
+  registerInputRevivalBindingForTask(options, registry, resumeRequest, lifecycle);
   try {
     await writeAgentMetadataFile(lifecycle, resumeRequest, "running", {
       resumedAt: new Date().toISOString(),
@@ -1637,7 +1652,9 @@ function createSubagentSessionReadyGate(): {
 
 function createMessageSinkRegistration(
   options: ExploreSubagentPortOptions,
-  lifecycle: SubagentLifecycle,
+  // Pick 放宽到派发轮与输入复活轮共用的最小面（spec subagent-input-revival.md D5）：
+  // 复活侧只从新建的 lifecycle 取这两个字段，不允许因此复制第二条注册实现。
+  lifecycle: Pick<SubagentLifecycle, "agentId" | "runTraceContext">,
   registry: RuntimeTaskRegistry,
 ): (sink: RuntimeTaskMessageSink) => void {
   return (sink) => {
@@ -1651,7 +1668,7 @@ function createMessageSinkRegistration(
 
 async function flushPendingMessages(
   options: ExploreSubagentPortOptions,
-  lifecycle: SubagentLifecycle,
+  lifecycle: Pick<SubagentLifecycle, "agentId" | "runTraceContext">,
   registry: RuntimeTaskRegistry,
   sink: RuntimeTaskMessageSink,
 ): Promise<void> {
@@ -2114,6 +2131,270 @@ async function emitRuntimeTaskSubagentStoppedEvent(
       error: task.error,
     },
   );
+}
+
+// ============================================================
+// 输入复活（spec `subagent-input-revival.md`）
+// ============================================================
+//
+// 子会话被输入（v4 sendText 直发等）重新驱动时，这轮不在任何 runner 执行体手里。
+// 两个入口把它纳回既有生命周期：开轮 `reviveSubagentTaskForInputTurn` 重新注册 running，
+// 轮末 `settleSubagentInputRevival*` 走 finalize* 结算。所有权判据是快照上的
+// `inputRevival` 标记（D3）：派发轮与 SendMessage 复活轮开轮前已由 runner 注册为
+// 非终态或无标记，下面两处对它们恒 no-op，杜绝双结算。
+
+/** 输入轮宿主：turn 挂钩所在的子 runtime 提供的最小面（结构化声明，不引入 runtime 依赖边）。 */
+export interface SubagentInputTurnHost {
+  steerTurn(input: string | TurnSteerInput): Promise<TurnSteerResult>;
+  stopActiveForegroundExecution?(options?: { reason?: string }): unknown;
+}
+
+interface SubagentInputRevivalBinding extends SubagentInputRevivalBindingBase {
+  options: ExploreSubagentPortOptions;
+  registry: RuntimeTaskRegistry;
+  /** 最近一次构造该任务的执行请求（原始派发或最近一次 SendMessage 复活）。 */
+  request: SubagentRunRequest;
+}
+
+/** 三处快照注册点共用的登记（run / start / SendMessage resume）。 */
+function registerInputRevivalBindingForTask(
+  options: ExploreSubagentPortOptions,
+  registry: RuntimeTaskRegistry,
+  request: SubagentRunRequest,
+  lifecycle: SubagentLifecycle,
+): void {
+  registerInputRevivalBinding({
+    agentId: lifecycle.agentId,
+    childSessionId: lifecycle.childSessionId,
+    parentSessionId: request.sessionId,
+    options,
+    registry,
+    request,
+  });
+}
+
+function resolveInputRevivalProfile(
+  binding: SubagentInputRevivalBinding,
+  agentType: string,
+): AgentProfile {
+  const profile = binding.options.getProfiles?.().find((candidate) => candidate.name === agentType);
+  // profile 被删除只影响 metadata 的 profileSnapshot；结算与事件不能因此缺席。
+  return profile ?? { name: agentType, description: "", source: "built-in", systemPrompt: "" };
+}
+
+function inputRevivalRequest(
+  binding: SubagentInputRevivalBinding,
+  context: { turnId: TurnId; traceContext: TraceContext },
+): SubagentRunRequest {
+  // 通知锚点沿用最近一次构造请求的 parentToolCallId（D2/通知锚点）：翻的是原始
+  // Agent 卡片或最近一次 SendMessage 卡片，与 runner 复活路径同语义。
+  return { ...binding.request, turnId: context.turnId, trace: context.traceContext };
+}
+
+/**
+ * 输入轮开轮钩（`executeTurnCommand` 入口，仅 subagent_child）。
+ * 只在任务已终态时复活：非终态说明本轮由 runner 执行体持有（开轮前已注册 running），
+ * 归 runner 结算。任何失败只 warn——复活失败退化为现状（该轮无通知），不阻断用户输入。
+ */
+export async function reviveSubagentTaskForInputTurn(
+  childSessionId: SessionId,
+  host: SubagentInputTurnHost,
+  context: { turnId: TurnId; traceContext: TraceContext },
+): Promise<void> {
+  const binding = getInputRevivalBinding<SubagentInputRevivalBinding>(childSessionId);
+  if (!binding) return;
+  try {
+    const task = binding.registry.get(binding.agentId);
+    if (!task || task.type !== "local_agent" || !isTerminalRuntimeTask(task)) return;
+
+    const request = inputRevivalRequest(binding, context);
+    const lifecycle = createSubagentLifecycleFromTask(
+      binding.options,
+      request,
+      resolveInputRevivalProfile(binding, request.agentType),
+      task,
+    );
+    if (!lifecycle) return;
+
+    // 保留 pendingMessages（随后 sink flush 消化）与身份面；丢弃上一命的执行态
+    // （正文/用量/停止原因），避免 TaskOutput 读到旧命内容。
+    const {
+      completedAt: _completedAt,
+      error: _error,
+      foregroundModelOverride: _foregroundModelOverride,
+      messageSink: _messageSink,
+      output: _output,
+      stopInitiator: _stopInitiator,
+      usage: _usage,
+      ...identity
+    } = task;
+    binding.registry.register({
+      ...identity,
+      status: "running",
+      notified: false,
+      inputRevival: true,
+      // 无前台等待者：SendMessage 对它走 sink steer，而非释放前台等待。
+      isBackgrounded: true,
+      startedAt: new Date(),
+      turnId: context.turnId,
+      traceContext: context.traceContext,
+    });
+    // stopTask 要停的是真实执行的轮：复活轮没有 runner 的 AbortController，只能经桥停。
+    binding.stopTurn = () => {
+      host.stopActiveForegroundExecution?.({ reason: "subagent input revival stopped" });
+    };
+    createMessageSinkRegistration(
+      binding.options,
+      lifecycle,
+      binding.registry,
+    )(createSubagentMessageSink(host, { traceContext: context.traceContext }));
+
+    const spawnedPayload = {
+      agentId: binding.agentId,
+      agentType: request.agentType,
+      background: true,
+      childSessionId,
+      description: request.description,
+      outputFile: lifecycle.outputFile,
+      parentToolCallId: request.parentToolCallId,
+      prompt: request.prompt,
+      resumed: true,
+      status: "running",
+    };
+    await emitSubagentEvent(
+      binding.options,
+      SessionEventType.SubagentSpawned,
+      request,
+      lifecycle.runTraceContext,
+      spawnedPayload,
+    );
+    await runSubagentLifecycleHooks(
+      binding.options,
+      SessionEventType.SubagentSpawned,
+      request,
+      spawnedPayload,
+    );
+    binding.options.logger?.info("Subagent input revival registered", {
+      ...traceContextToLogContext(context.traceContext),
+      agentId: binding.agentId,
+      childSessionId,
+      event: "subagent.input_revival.registered",
+      module: "core.subagent",
+      parentToolCallId: request.parentToolCallId,
+      status: "started",
+    });
+  } catch (error) {
+    binding.options.logger?.warn("Subagent input revival failed to register", {
+      ...traceContextToLogContext(context.traceContext),
+      childSessionId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.input_revival.failed",
+      module: "core.subagent",
+      status: "failed",
+    });
+  }
+}
+
+/** 输入轮成功终局：复用 finalizeBackgroundCompletion（产物/事件/hook/通知一体）。 */
+export async function settleSubagentInputRevivalSuccess(
+  childSessionId: SessionId,
+  context: { turnId: TurnId; traceContext: TraceContext },
+  result: { events: SessionEvent[]; response: string },
+): Promise<void> {
+  const binding = getInputRevivalBinding<SubagentInputRevivalBinding>(childSessionId);
+  if (!binding) return;
+  try {
+    const task = binding.registry.get(binding.agentId);
+    // 所有权与终态双守卫：非复活轮归 runner；stopTask 抢先结算的不再二次结算。
+    if (!task?.inputRevival || isTerminalRuntimeTask(task)) return;
+    binding.stopTurn = undefined;
+    const request = inputRevivalRequest(binding, context);
+    const lifecycle = createSubagentLifecycleFromTask(
+      binding.options,
+      request,
+      resolveInputRevivalProfile(binding, request.agentType),
+      task,
+    );
+    if (!lifecycle) return;
+    const usage = aggregateModelUsage(result.events);
+    const totalTokens = usage?.totalTokens;
+    const totalToolUseCount = resolveSubagentToolUseCount(result.events);
+    const output: AgentCompletedOutput = {
+      status: "completed",
+      agentId: binding.agentId,
+      agentType: request.agentType,
+      description: request.description,
+      prompt: request.prompt,
+      content: [{ type: "text", text: result.response }],
+      totalDurationMs: Date.now() - task.startedAt.getTime(),
+      totalToolUseCount,
+      ...(totalTokens === undefined ? {} : { totalTokens }),
+      ...(usage === undefined ? {} : { usage }),
+    };
+    await finalizeBackgroundCompletion(binding.options, request, lifecycle, binding.registry, {
+      output,
+    });
+    binding.options.logger?.info("Subagent input revival completed", {
+      ...traceContextToLogContext(context.traceContext),
+      agentId: binding.agentId,
+      childSessionId,
+      event: "subagent.input_revival.completed",
+      module: "core.subagent",
+      status: "completed",
+      totalToolUseCount,
+    });
+  } catch (error) {
+    binding.options.logger?.warn("Subagent input revival settlement failed", {
+      ...traceContextToLogContext(context.traceContext),
+      childSessionId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.input_revival.settle_failed",
+      module: "core.subagent",
+      status: "failed",
+    });
+  }
+}
+
+/** 输入轮失败/中止终局：复用 finalizeBackgroundFailure（错误原文进父通知）。 */
+export async function settleSubagentInputRevivalFailure(
+  childSessionId: SessionId,
+  context: { turnId: TurnId; traceContext: TraceContext },
+  error: unknown,
+): Promise<void> {
+  const binding = getInputRevivalBinding<SubagentInputRevivalBinding>(childSessionId);
+  if (!binding) return;
+  try {
+    const task = binding.registry.get(binding.agentId);
+    if (!task?.inputRevival || isTerminalRuntimeTask(task)) return;
+    binding.stopTurn = undefined;
+    const request = inputRevivalRequest(binding, context);
+    const lifecycle = createSubagentLifecycleFromTask(
+      binding.options,
+      request,
+      resolveInputRevivalProfile(binding, request.agentType),
+      task,
+    );
+    if (!lifecycle) return;
+    await finalizeBackgroundFailure(binding.options, request, lifecycle, binding.registry, error);
+    binding.options.logger?.info("Subagent input revival failed", {
+      ...traceContextToLogContext(context.traceContext),
+      agentId: binding.agentId,
+      childSessionId,
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.input_revival.turn_failed",
+      module: "core.subagent",
+      status: "failed",
+    });
+  } catch (settleError) {
+    binding.options.logger?.warn("Subagent input revival settlement failed", {
+      ...traceContextToLogContext(context.traceContext),
+      childSessionId,
+      errorMessage: settleError instanceof Error ? settleError.message : String(settleError),
+      event: "subagent.input_revival.settle_failed",
+      module: "core.subagent",
+      status: "failed",
+    });
+  }
 }
 
 function enqueueBackgroundNotification(

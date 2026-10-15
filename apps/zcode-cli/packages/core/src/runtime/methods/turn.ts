@@ -53,6 +53,11 @@ import {
   maybeStartDeferredSessionTitleGeneration,
   maybeStartSessionTitleGeneration,
 } from "./session-title.js";
+import {
+  reviveSubagentTaskForInputTurn,
+  settleSubagentInputRevivalFailure,
+  settleSubagentInputRevivalSuccess,
+} from "../../subagent/runner.js";
 import type { RegularTurnLoopState } from "./turn-loop-state.js";
 import { finishOutputTokenRecovery } from "./turn-output-token-continuation.js";
 import { recordTurnUsageFact } from "./usage-observability.js";
@@ -70,9 +75,7 @@ import { scheduleProjectMemoryExtraction } from "../helpers/project-memory-extra
 import { appendBrowserTurnScreenshot } from "./browser-turn-screenshot.js";
 import { clearBrowserTurnState } from "../../repl/browser-turn-state.js";
 import { applySubmissionExecutionState, createTurnModel } from "./turn-model.js";
-import {
-  resolveExecutionModelRetryBudget,
-} from "./turn-model.js";
+import { resolveExecutionModelRetryBudget } from "./turn-model.js";
 import { inboundChainIntentAction } from "./session-message-chain.js";
 import { maybeCompactAfterTurn } from "./post-turn-compact.js";
 import { rebuildContextPrefix } from "./context-refresh.js";
@@ -116,7 +119,9 @@ export async function executeTurnCommand(
   if (options?.intent) {
     const chainAction = inboundChainIntentAction(options.intent);
     if (chainAction.kind !== "keep") {
-      this.noteInboundSessionMessageChain(chainAction.kind === "set" ? chainAction.chain : undefined);
+      this.noteInboundSessionMessageChain(
+        chainAction.kind === "set" ? chainAction.chain : undefined,
+      );
     }
   }
   // 普通 Turn 过去在异步初始化完成后才读取 Session Selection/输出样式，
@@ -146,6 +151,15 @@ export async function executeTurnCommand(
   let turnMachine = TurnMachineImpl.create(this.sessionId, this.turnNumber, input, traceId, turnId);
   this.currentTurnFileChanges = new Map();
   if (!startReservation) this.reserveTurnStart(turnId, turnTraceContext, "regular");
+  // 复活归一（spec subagent-input-revival.md）：输入驱动的子会话轮在开轮时纳回任务
+  // 生命周期。仅 subagent_child 且任务已终态才真正注册；派发轮/复活轮由 runner 持有，
+  // 内部按 inputRevival 所有权判据自行 no-op。
+  if (this.config.taskType === "subagent_child") {
+    await reviveSubagentTaskForInputTurn(this.sessionId, this, {
+      turnId,
+      traceContext: turnTraceContext,
+    });
+  }
 
   const turnAbortScope = createTurnAbortScope(options?.abortSignal);
   const turnAbortSignal = turnAbortScope.signal;
@@ -893,7 +907,7 @@ export async function executeTurnCommand(
       },
     );
 
-  return turnTelemetry.run(execute).finally(async () => {
+  const finishedTurn = turnTelemetry.run(execute).finally(async () => {
     disposeProjectMemoryRecallPrefetch(this);
     if (targetRunHeartbeat) {
       clearInterval(targetRunHeartbeat);
@@ -912,11 +926,32 @@ export async function executeTurnCommand(
       // 生命周期清理失败不能覆盖已经完成/失败的主 turn；backend 会在 session close 再兜底释放。
       this.logger?.warn("Browser turn cleanup failed", {
         error: error instanceof Error ? error.message : String(error),
-        event: "browser.turn_cleanup.failed",
+        event: "browser.turn.cleanup.failed",
         turnId: String(turnId),
       });
     }
   });
+  if (this.config.taskType !== "subagent_child") {
+    return finishedTurn;
+  }
+  // 复活归一的轮末结算（spec subagent-input-revival.md）：只认 inputRevival 标记，
+  // 非复活轮直接透传；结算函数自身全量捕获，不会改写原轮的结果或错误。
+  try {
+    const result = await finishedTurn;
+    await settleSubagentInputRevivalSuccess(
+      this.sessionId,
+      { turnId, traceContext: turnTraceContext },
+      result,
+    );
+    return result;
+  } catch (error) {
+    await settleSubagentInputRevivalFailure(
+      this.sessionId,
+      { turnId, traceContext: turnTraceContext },
+      error,
+    );
+    throw error;
+  }
 }
 
 function injectDateChangeReminderIntoMessageHistory(this: AgentRuntimeInternal): void {
