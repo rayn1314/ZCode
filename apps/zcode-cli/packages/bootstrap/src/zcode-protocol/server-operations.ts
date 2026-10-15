@@ -73,6 +73,9 @@ import {
   zcodeSessionForkParamsSchema,
   zcodeSessionGoalParamsSchema,
   zcodeSessionGoalListParamsSchema,
+  zcodeSessionGenUiReportParamsSchema,
+  type ZCodeSessionGenUiReportResult,
+  type ZCodeGenUiRenderFailureKind,
   zcodeSessionListParamsSchema,
   zcodeSessionMessagesParamsSchema,
   zcodeSessionReadParamsSchema,
@@ -2407,6 +2410,67 @@ export function resolveGoalStartStatus(
 ): "active" | "paused" {
   if (start) return "active";
   return existingStatus === "active" ? "active" : "paused";
+}
+
+/** 同键（sessionId+path+errorKind）终身一次、每会话封顶次数（spec gen-ui-cross-host-render.md 防环三闸）。 */
+export const GEN_UI_RENDER_FAILURE_MAX_INJECTIONS = 5;
+
+const GEN_UI_RENDER_FAILURE_REASONS: Record<ZCodeGenUiRenderFailureKind, string> = {
+  outside_root: "被引用的路径不在执行端输出根目录内（写端/读端跨执行端时根不互通）",
+  invalid_path: "被引用的路径不是读端接受的绝对路径形态",
+  not_found: "被引用的文件不存在",
+  sandbox_mismatch: "沙箱校验不匹配",
+  other: "未知原因",
+};
+
+function formatGenUiRenderFailureNotification(params: {
+  path: string;
+  errorKind: ZCodeGenUiRenderFailureKind;
+  readerRoot?: string;
+}): string {
+  return [
+    "[可视化渲染失败] 你生成的一个可视化没有渲染出来，相关信息如下（只陈述事实，供你修正引用时参考）：",
+    `- 引用路径：${params.path}`,
+    `- 失败原因：${GEN_UI_RENDER_FAILURE_REASONS[params.errorKind]}`,
+    ...(params.readerRoot ? [`- 读端输出根：${params.readerRoot}`] : []),
+    "参考：::visualize 的 path 必须逐字使用执行端上下文注入的 visualizations 目录，并拼接该目录下的文件名。",
+  ].join("\n");
+}
+
+/**
+ * Gen UI 渲染失败报告（spec gen-ui-cross-host-render.md）：UI 渲染侧在
+ * readDocument 失败后上报，这里把失败事实作为 model-only task-notification 注入，
+ * 模型在下一轮（或空闲续跑轮）即可看到自己生成的 ::visualize 引用没有渲染出来。
+ * 防环：同键终身一次 + 每会话封顶；注入即清由 task-notification 一次性投递保证；
+ * 进程内存账本，重启丢失可接受。
+ */
+export async function reportGenUiRenderFailure(
+  context: ZCodeProtocolAgentServerContext,
+  rawParams: unknown,
+): Promise<ZCodeSessionGenUiReportResult> {
+  const params = parseParams(zcodeSessionGenUiReportParamsSchema, rawParams);
+  const record = context.sessions.get(params.sessionId);
+  if (!record) {
+    return { ok: false, reason: "session_not_found" };
+  }
+  const ledger = (record.genUiRenderFailureLedger ??= {
+    injectedKeys: new Set<string>(),
+    injectCount: 0,
+  });
+  if (ledger.injectCount >= GEN_UI_RENDER_FAILURE_MAX_INJECTIONS) {
+    return { ok: false, reason: "injection_cap_reached" };
+  }
+  const key = `${params.sessionId}\u0000${params.path}\u0000${params.errorKind}`;
+  if (ledger.injectedKeys.has(key)) {
+    return { ok: false, reason: "duplicate" };
+  }
+  ledger.injectedKeys.add(key);
+  ledger.injectCount += 1;
+  record.app.runtime.enqueueBackgroundTaskNotification({
+    text: formatGenUiRenderFailureNotification(params),
+    traceContext: record.traceContext,
+  });
+  return { ok: true };
 }
 
 /**

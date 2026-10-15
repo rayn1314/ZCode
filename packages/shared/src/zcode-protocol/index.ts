@@ -2308,6 +2308,37 @@ export const zcodeSessionGoalResultSchema = z
   .strict();
 export type ZCodeSessionGoalResult = z.infer<typeof zcodeSessionGoalResultSchema>;
 
+// Gen UI 渲染失败报告：UI 渲染侧在 readDocument 越界/形态错等失败后，经
+// zcodeAgentService 上报到 CLI，由 CLI 侧按防环三闸把失败事实作为 model-only 通知注入，
+// 让模型在下一轮知道自己生成的 ::visualize 引用没渲染出来（spec gen-ui-cross-host-render.md）。
+export const zcodeGenUiRenderFailureKindSchema = z.enum([
+  "outside_root",
+  "invalid_path",
+  "not_found",
+  "sandbox_mismatch",
+  "other",
+]);
+export type ZCodeGenUiRenderFailureKind = z.infer<typeof zcodeGenUiRenderFailureKindSchema>;
+
+export const zcodeSessionGenUiReportParamsSchema = z
+  .object({
+    sessionId: nonEmptyString,
+    /** 模型 ::visualize 引用的路径（渲染失败的原始引用）。 */
+    path: z.string().min(1).max(4096),
+    errorKind: zcodeGenUiRenderFailureKindSchema,
+    /** 读端实际输出根（渲染进程算的 visualizations 根）；仅诊断与注入文本使用。 */
+    readerRoot: z.string().max(4096).optional(),
+    workspaceKey: z.string().max(4096).optional(),
+  })
+  .strict();
+export type ZCodeSessionGenUiReportParams = z.infer<typeof zcodeSessionGenUiReportParamsSchema>;
+
+export const zcodeSessionGenUiReportResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true) }).strict(),
+  z.object({ ok: z.literal(false), reason: z.string() }).strict(),
+]);
+export type ZCodeSessionGenUiReportResult = z.infer<typeof zcodeSessionGenUiReportResultSchema>;
+
 export const zcodeSessionGoalListParamsSchema = z
   .object({
     /** 路由用工作区；`scope: "all"` 时不用它做过滤（面板默认全局列出）。 */
@@ -4273,6 +4304,7 @@ export const zcodeProtocolMethods = {
   sessionCompact: "session/compact",
   sessionGoal: "session/goal",
   sessionGoalList: "session/goalList",
+  sessionGenUiReport: "session/gen-ui-report",
   sessionClose: "session/close",
   // setModel 仍被 zcodeSessionService 的 desktop 旧链路消费；replayable
   // switchModelConfig 已直接由目标 Environment Registry 解析 Selection。

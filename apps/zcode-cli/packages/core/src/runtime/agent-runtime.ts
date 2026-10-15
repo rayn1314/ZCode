@@ -5,6 +5,7 @@ import {
 } from "../subagent/definitions.js";
 import { DEFAULT_ZCODE_MODEL_CONTEXT_BUDGET_STRATEGY, resolveExecutionState } from "@zcode/shared";
 import type { BackgroundBashOutputResult } from "@zcode/shared";
+import type { BackgroundResultOriginMeta } from "@zcode/contracts";
 import {
   createDenyPermissionBroker,
   createRootTraceContext,
@@ -708,6 +709,15 @@ export interface AgentRuntime {
     reason: "subagent_cancelled";
     traceContext?: TraceContext;
   }): Promise<void>;
+  enqueueBackgroundTaskNotification(notification: {
+    originMeta?: BackgroundResultOriginMeta;
+    taskId?: string;
+    /** 宣告时任务的 registry 状态；仅终态通知的生产者设置（spec background-notification-supersession.md D1）。 */
+    announcedTaskStatus?: string;
+    text: string;
+    toolName?: string;
+    traceContext?: TraceContext;
+  }): void;
   sealBackgroundTaskNotifications(input: {
     reason: "subagent_terminal" | "subagent_cancelled";
     traceContext?: TraceContext;

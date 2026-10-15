@@ -21,7 +21,10 @@ import {
 import { Textarea } from "@/components/ui/textarea.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useGenUi } from "@/hooks/useGenUi.js";
+import { useOptionalBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
+import { logger } from "@/logger.js";
 import { EMPTY_GEN_UI_SNAPSHOT, type GenUiCardTarget, type GenUiPage } from "../contract.js";
+import { buildGenUiRenderFailureKey, classifyGenUiRenderFailure } from "../domain/renderFailure.js";
 import { TweakPanel } from "./TweakPanel.js";
 const subscribeEmpty = () => () => {};
 function PageAnchor({ page, height }: { page: GenUiPage; height: number }) {
@@ -87,6 +90,52 @@ export function GenUiCard({
     page?.getSnapshot ?? (() => EMPTY_GEN_UI_SNAPSHOT),
     () => EMPTY_GEN_UI_SNAPSHOT,
   );
+  const baseServices = useOptionalBaseWorkspaceServices();
+  const failureText = snapshot.phase === "error" ? (snapshot.error ?? "") : acquisitionError;
+  // 渲染失败对模型零感知（spec gen-ui-cross-host-render.md 问题二）：readDocument 失败
+  // 只显示在卡片上。这里把失败事实经 session/gen-ui-report 上报 CLI，CLI 按防环三闸
+  // 注入模型下一轮；同键（sessionId+path+errorKind）在 UI 侧也去重，点重试不再重复上报。
+  const reportedFailureKeysRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!failureText || !target.sessionId || !target.path) return;
+    const errorKind = classifyGenUiRenderFailure(failureText);
+    const key = buildGenUiRenderFailureKey({
+      sessionId: target.sessionId,
+      path: target.path,
+      errorKind,
+    });
+    if (reportedFailureKeysRef.current.has(key)) return;
+    reportedFailureKeysRef.current.add(key);
+    logger.warn("gen-ui render failed", {
+      errorKind,
+      path: target.path,
+      sessionId: target.sessionId,
+      workspacePath: target.workspacePath,
+    });
+    void baseServices?.zcodeAgentService
+      .genUiReportRenderFailure({
+        sessionId: target.sessionId,
+        workspacePath: target.workspacePath,
+        ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
+        path: target.path,
+        errorKind,
+      })
+      .catch((error) => {
+        // 报告失败不影响渲染 UI：失败仅回落 UI 卡片 + 日志（spec 失败语义）。
+        logger.warn("gen-ui render failure report rejected", {
+          errorKind,
+          message: error instanceof Error ? error.message : String(error),
+          sessionId: target.sessionId,
+        });
+      });
+  }, [
+    baseServices,
+    failureText,
+    target.path,
+    target.sessionId,
+    target.workspaceIdentity,
+    target.workspacePath,
+  ]);
   useEffect(() => {
     if (snapshot.escapeSequence) setExpanded(false);
   }, [snapshot.escapeSequence]);
