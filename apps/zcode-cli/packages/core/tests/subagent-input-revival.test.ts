@@ -359,3 +359,60 @@ describe("subagent input revival (复活归一)", () => {
     expect(host.stopCalls).toHaveLength(1);
   });
 });
+
+describe("派发生存边界（spec send-queued-now-preempt-semantics.md D3）", () => {
+  let outputRootDir: string;
+
+  beforeEach(async () => {
+    outputRootDir = await mkdtemp(join(tmpdir(), "zcode-dispatch-survival-"));
+  });
+
+  afterEach(async () => {
+    await rm(outputRootDir, { recursive: true, force: true });
+  });
+
+  it("后台 start 派发不链接父 turn signal：父中止后任务存活，终止权只归 TaskStop", async () => {
+    const ids = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    // 桩先上报 session ready（真实链路 persist-before-spawn 由 AgentRuntime 调用），
+    // 再挂起不结束，才能观察「父中止后任务是否还活着」。
+    harness.options.runExploreAgent = async (agentRequest) => {
+      await agentRequest.onSessionReady?.();
+      return new Promise(() => {}) as never;
+    };
+    const port = createExploreSubagentPort(harness.options);
+    const abortController = new AbortController();
+
+    const started = await port.start?.(ids.request, { signal: abortController.signal });
+    expect(started?.agentId).toBe(ids.agentId);
+    expect(harness.registry.get(ids.agentId)?.status).toBe("running");
+
+    // 「立即发送」抢占 = 父 turn abort：后台派发即句柄（派发后 taskAbort 不挂父 signal），
+    // 父轮中止不得连带子代理陪葬；现在 stopActiveForegroundExecution 只 abort 父轮本身。
+    abortController.abort(new Error("parent turn preempted by sendQueuedNow"));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.registry.get(ids.agentId)?.status).toBe("running");
+
+    // 终止权仍归 TaskStop（owner=父 runtime registry + TaskStop，不经父 signal）。
+    const stopped = await port.stopTask?.(ids.agentId);
+    expect(stopped?.status).toBe("killed");
+    expect(harness.notifications).toHaveLength(1);
+  });
+
+  it("前台 wait 派发的 taskAbort 链接父 signal：父中止即取消（现状契约）", async () => {
+    const ids = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    harness.options.runExploreAgent = async (agentRequest) => {
+      await agentRequest.onSessionReady?.();
+      return new Promise(() => {}) as never;
+    };
+    const port = createExploreSubagentPort(harness.options);
+    const abortController = new AbortController();
+
+    // 前台 wait = 父轮内的工具调用，随父轮取消而失败是正确语义（D3 上分支）。
+    const promise = port.run(ids.request, { signal: abortController.signal });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    abortController.abort(new Error("parent turn preempted by sendQueuedNow"));
+    await expect(promise).rejects.toThrow("cancel");
+  });
+});
