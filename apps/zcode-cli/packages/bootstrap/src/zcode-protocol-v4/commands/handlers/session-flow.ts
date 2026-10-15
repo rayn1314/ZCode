@@ -184,9 +184,11 @@ async function sendText(
         payload.heldQueueDisposition,
         payload.expectedHeldQueueItemIds,
       );
+      // 与 sendQueuedNow 同一语义（spec send-queued-now-preempt-semantics.md D1/D2）：
+      // requestedDelivery=startNow 是插队提问而非停止指令，goal 保持运行。
       preempted = await preemptActiveTurnAndWait(host, record, {
         abortMessage: "v4 sendText startNow preempts active turn",
-        goalPausedMutationReason: "send_now_goal_paused",
+        pauseGoal: false,
         preserveQueueAutoDrainOnCancel: true,
       });
     } catch (error) {
@@ -400,9 +402,10 @@ export async function preemptActiveTurnAndWait(
     goalPausedMutationReason?: string;
     /**
      * 是否走 goal-pause barrier（「停掉当前轮时把目标任务置 paused」）。
-     * 仅显式 stop 需要；「立即发送」（sendQueuedNow 抢占重发）是插队提问，
-     * 不是停止指令，绝不动目标任务（spec send-queued-now-preempt-semantics.md D2）。
-     * 不传默认 true 保持 stop 路径语义不变。
+     * 仅显式 stop 需要；「立即发送」（sendQueuedNow 抢占重发、sendText 的
+     * requestedDelivery=startNow 插队）是插队提问，不是停止指令，绝不动目标任务
+     * （spec send-queued-now-preempt-semantics.md D2）。
+     * 不传默认 true 保持 stop 与 edit-and-resend 路径语义不变。
      */
     pauseGoal?: boolean;
     preserveQueueAutoDrainOnCancel?: boolean;

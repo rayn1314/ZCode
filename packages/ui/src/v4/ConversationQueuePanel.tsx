@@ -263,30 +263,32 @@ const QueueRow = memo(function QueueRow({
         </span>
       </span>
       {onSendNow ? (
-        <Button
-          type="button"
-          variant="secondary"
-          size="default"
-          data-icon="inline-start"
-          data-testid={testId(TID_V4_QUEUE_ITEM_SEND_NOW, item.queueItemId)}
-          data-queue-item-id={item.queueItemId}
-          disabled={rowLocked}
-          onClick={() =>
-            runUserAction({
-              input: {
-                featureId: "conversation.queue.item",
-                action: "send_now",
-                trigger: "button",
-              },
-              operation: () => onSendNow(item.queueItemId),
-              completed: { resultSource: "optimistic_projection" },
-              failureStage: "queue_send_now",
-            })
-          }
-        >
-          <ArrowUpFromLine className="size-3.5" />
-          {intl.formatMessage({ id: isCompact ? "chat.queue.runNow" : "chat.queue.sendNow" })}
-        </Button>
+        <ControlHintTooltip title={intl.formatMessage({ id: "chat.queue.sendNowHint" })}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="default"
+            data-icon="inline-start"
+            data-testid={testId(TID_V4_QUEUE_ITEM_SEND_NOW, item.queueItemId)}
+            data-queue-item-id={item.queueItemId}
+            disabled={rowLocked}
+            onClick={() =>
+              runUserAction({
+                input: {
+                  featureId: "conversation.queue.item",
+                  action: "send_now",
+                  trigger: "button",
+                },
+                operation: () => onSendNow(item.queueItemId),
+                completed: { resultSource: "optimistic_projection" },
+                failureStage: "queue_send_now",
+              })
+            }
+          >
+            <ArrowUpFromLine className="size-3.5" />
+            {intl.formatMessage({ id: isCompact ? "chat.queue.runNow" : "chat.queue.sendNow" })}
+          </Button>
+        </ControlHintTooltip>
       ) : null}
       {onGuideItem && !isCompact && item.kind !== "sendGoalCommand" ? (
         <ControlHintTooltip title={intl.formatMessage({ id: "chat.queue.guide.description" })}>
