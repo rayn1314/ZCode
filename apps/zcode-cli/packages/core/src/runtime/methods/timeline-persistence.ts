@@ -46,6 +46,24 @@ export async function persistPendingModelChangeTimeline(
   if (!pending) return;
   this.pendingModelChangeTimeline = undefined;
 
+  // 落库前校验「切换意图 = 切换事实」（spec model-change-timeline-fact-check.md D1）：
+  // createSession 预热/恢复路径可能请求一个模型而实际生效另一个，若意图残留到本轮
+  // 落库，会写出一条从未发生过的 A → B 切换记录，冷恢复时被当成权威切换重建。
+  // 只认 pending 记录时刻与当前选型一致（身份 + 档位全等）的切换。
+  const currentSelection = this.getSessionModelSelection();
+  if (!currentSelection || !isSameModelSelection(pending.toModel, currentSelection)) {
+    this.logger?.warn?.("model change timeline dropped: intent did not materialize", {
+      event: "model_change.timeline.dropped",
+      module: "core.subagent",
+      pendingToModel: formatModelSelectionLabel(pending.toModel),
+      pendingToLabel: pending.toModelLabel,
+      currentModel: currentSelection
+        ? formatModelSelectionLabel(currentSelection)
+        : "<unset>",
+    });
+    return;
+  }
+
   const created = Date.now();
   await this.persistAssistantTimelinePartForSession({
     sessionId: this.sessionId,
