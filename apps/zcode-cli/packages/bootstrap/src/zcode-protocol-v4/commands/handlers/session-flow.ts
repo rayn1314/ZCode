@@ -50,7 +50,10 @@ async function sendText(
   const rawPayload = envelope.payload as CommandPayloadMap["sendText"];
   const record = requireRecord(host, envelope.sessionId);
   // Bug 根因：旧校验只看正文，UI 已允许的 attachment-only query 会在 CLI 被误判为空。
-  if (!hasPromptInput(rawPayload.text, rawPayload.attachments) && !rawPayload.conversationQuotes?.length) {
+  if (
+    !hasPromptInput(rawPayload.text, rawPayload.attachments) &&
+    !rawPayload.conversationQuotes?.length
+  ) {
     throw new V4InputAdmissionRejectedError("proto.invalidPayload", "input must not be empty");
   }
   const activeAutomationId = resolveTurnAutomationId({
@@ -215,7 +218,7 @@ async function sendText(
         : {}),
       attachmentRefs: payload.attachments,
       sharedContextRefs: payload.context_refs,
-// 防环链（spec D7）：live 通路把 payload 的链放进 intent，core admission 读取并记录。
+      // 防环链（spec D7）：live 通路把 payload 的链放进 intent，core admission 读取并记录。
       ...(payload.sessionMessageChain ? { sessionMessageChain: payload.sessionMessageChain } : {}),
       ...(payload.source ? { source: payload.source } : {}),
     });
@@ -393,7 +396,15 @@ export async function preemptActiveTurnAndWait(
   record: V4SessionRecordView,
   options: {
     abortMessage: string;
-    goalPausedMutationReason: string;
+    /** 仅在 pauseGoal !== false（走 goal-pause barrier）时提供，用于 legacy 广播理由。 */
+    goalPausedMutationReason?: string;
+    /**
+     * 是否走 goal-pause barrier（「停掉当前轮时把目标任务置 paused」）。
+     * 仅显式 stop 需要；「立即发送」（sendQueuedNow 抢占重发）是插队提问，
+     * 不是停止指令，绝不动目标任务（spec send-queued-now-preempt-semantics.md D2）。
+     * 不传默认 true 保持 stop 路径语义不变。
+     */
+    pauseGoal?: boolean;
     preserveQueueAutoDrainOnCancel?: boolean;
   },
 ): Promise<boolean> {
@@ -406,12 +417,15 @@ export async function preemptActiveTurnAndWait(
     reason: options.abortMessage,
   });
   if (bootstrapAbortController || runtimeStop?.kind === "stopped") {
-    const pausedGoal = await pauseActiveGoal(host, record);
+    const pausedGoal = options.pauseGoal === false ? null : await pauseActiveGoal(host, record);
     if (runtimeStop?.kind !== "stopped") {
       bootstrapAbortController?.abort(new Error(options.abortMessage));
     }
     if (pausedGoal) {
-      await host.afterLegacyStateMutation?.(record, options.goalPausedMutationReason);
+      await host.afterLegacyStateMutation?.(
+        record,
+        options.goalPausedMutationReason ?? "goal_paused",
+      );
     }
   }
   await waitForSessionIdle(record);

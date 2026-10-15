@@ -232,7 +232,9 @@ async function sendQueuedNow(
     if (!autoDrainPromotion) {
       preempted = await preemptActiveTurnAndWait(host, record, {
         abortMessage: "v4 sendQueuedNow preempts active turn",
-        goalPausedMutationReason: "send_queued_now_goal_paused",
+        // 立即发送是插队提问而非停止指令：goal 保持运行、子代理按派发模式分层存活
+        // （spec send-queued-now-preempt-semantics.md D1/D2）。
+        pauseGoal: false,
         preserveQueueAutoDrainOnCancel: true,
       });
     }
@@ -382,10 +384,7 @@ async function guideQueueItem(
     case "reserved":
       throw new V4QueueItemReservedError(payload.queueItemId);
     case "no_active_turn":
-      throw new V4QueueItemNotGuideableError(
-        "guard.queueGuideNoActiveTurn",
-        payload.queueItemId,
-      );
+      throw new V4QueueItemNotGuideableError("guard.queueGuideNoActiveTurn", payload.queueItemId);
     case "not_steerable":
       throw new V4QueueItemNotGuideableError("guard.queueGuideNotSteerable", payload.queueItemId);
     case "unsupported_item":

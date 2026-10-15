@@ -395,6 +395,50 @@ describe("v4 原生 sendQueuedNow", () => {
     expect(deleteQueuedTurnExecution).toHaveBeenCalledWith("s1", "source-command-q1");
   });
 
+  describe("抢占与停止的语义边界（spec send-queued-now-preempt-semantics.md）", () => {
+    it("立即发送抢占不动子孙会话树；显式 stop 才级联停树", async () => {
+      const stopTree = vi.fn();
+      const makeBusyApp = () => makeApp({});
+
+      const queuedApp = makeBusyApp();
+      const queuedController = new AbortController();
+      queuedController.signal.addEventListener("abort", () => {
+        queuedRecord.activeAbortController = undefined;
+      });
+      const queuedRecord = makeRecord({
+        app: queuedApp as never,
+        activeAbortController: queuedController,
+      });
+      await new V4CommandExecutor(
+        makeHost(queuedRecord, { stopSubagentDescendantTurns: stopTree }),
+      ).execute(envelope("sendQueuedNow", { queueItemId: "q-1" }));
+      expect(stopTree).not.toHaveBeenCalled();
+
+      // stop handler 的级联停树走 runtime stopped 分支；该分支自己 abort controller，
+      // 不会像 sendQueuedNow 那样依赖 listener 清 record。
+      const stopApp = makeBusyApp();
+      stopApp.runtime = {
+        ...stopApp.runtime,
+        stopActiveForegroundExecution: vi.fn().mockReturnValue({
+          kind: "stopped",
+          foregroundExecutionId: "foreground-1",
+        }),
+      };
+      const stopController = new AbortController();
+      stopController.signal.addEventListener("abort", () => {
+        stopRecord.activeAbortController = undefined;
+      });
+      const stopRecord = makeRecord({
+        app: stopApp as never,
+        activeAbortController: stopController,
+      });
+      await new V4CommandExecutor(
+        makeHost(stopRecord, { stopSubagentDescendantTurns: stopTree }),
+      ).execute(envelope("stop", {}));
+      expect(stopTree).toHaveBeenCalledWith(expect.any(String), "parent session stopped");
+    });
+  });
+
   it("手动提升会使用命令补充的同卡执行材料，避免 CLI 暂存状态缺失后误降级", async () => {
     const app = makeApp();
     const record = makeRecord({ app });
@@ -964,14 +1008,11 @@ describe("v4 原生 sendQueuedNow", () => {
     expect(app.removeQueueItem).toHaveBeenCalledOnce();
   });
 
-  it("运行中 + active goal：先 pause goal 再 abort（barrier 顺序）+ legacy 广播", async () => {
+  it("运行中 + active goal：不 pause goal，只 abort（立即发送≠停止，spec D1/D2）", async () => {
     const calls: string[] = [];
     const app = makeApp({
       readTarget: vi.fn().mockResolvedValue({ targetID: "g1", status: "active" }),
-      updateTargetStatus: vi.fn().mockImplementation(async () => {
-        calls.push("pause");
-        return { targetID: "g1", status: "paused" };
-      }),
+      updateTargetStatus: vi.fn().mockResolvedValue({ targetID: "g1", status: "paused" }),
     });
     const controller = new AbortController();
     controller.signal.addEventListener("abort", () => {
@@ -981,8 +1022,10 @@ describe("v4 原生 sendQueuedNow", () => {
     const record = makeRecord({ app, activeAbortController: controller });
     const host = makeHost(record);
     await new V4CommandExecutor(host).execute(envelope("sendQueuedNow", { queueItemId: "q-1" }));
-    expect(calls).toEqual(["pause", "abort"]);
-    expect(host.legacyMutations).toContain("send_queued_now_goal_paused");
+    expect(calls).toEqual(["abort"]);
+    // goal 必须保持运行；goal-pause barrier 只属显式 stop（v4-native-commands.test.ts）。
+    expect(app.readTarget).not.toHaveBeenCalled();
+    expect(host.legacyMutations).not.toContain("send_queued_now_goal_paused");
   });
 
   it("5s 超时：锁始终不释放 → V4SessionIdleTimeoutError，且不重发", async () => {
