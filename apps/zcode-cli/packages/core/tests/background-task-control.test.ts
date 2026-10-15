@@ -752,10 +752,20 @@ describe("background task control", () => {
           event.type === SessionEventType.SubagentSpawned ||
           event.type === SessionEventType.BackgroundTaskStarted,
       );
+      // 续跑先补发 BackgroundTaskStarted(running) 追齐投影（spec
+      // subagent-input-revival.md D7），再发 SubagentSpawned。
       expect(resumedStartEvents.map((event) => event.type)).toEqual([
+        SessionEventType.BackgroundTaskStarted,
         SessionEventType.SubagentSpawned,
       ]);
       expect(resumedStartEvents[0]?.payload).toMatchObject({
+        childSessionId,
+        status: "running",
+        taskKind: "subagent",
+        taskId: "agent_resume",
+        toolName: "Agent",
+      });
+      expect(resumedStartEvents[1]?.payload).toMatchObject({
         agentId: "agent_resume",
         background: true,
         childSessionId,
@@ -1163,7 +1173,9 @@ describe("background task per-tool provider lookup", () => {
     expect(notification.toolName).toBe("CreateWorkflow");
     // formatWorkflowTaskNotification 的形状（不是 Bash 的那套）：workflow 措辞的 summary
     // 加上截断后的结果。
-    expect(notification.text).toContain('<summary>Workflow &quot;dwfrun-1&quot; completed.</summary>');
+    expect(notification.text).toContain(
+      "<summary>Workflow &quot;dwfrun-1&quot; completed.</summary>",
+    );
     expect(notification.text).toContain("workflow answer");
     expect(notification.originMeta).toMatchObject({
       backgroundSource: "workflow",
@@ -1339,7 +1351,9 @@ describe("background task per-tool provider lookup", () => {
     const guidance = text.indexOf("Present its outcome to the user as a deliverable");
     expect(close).toBeGreaterThanOrEqual(0);
     expect(guidance).toBeGreaterThan(close);
-    expect(text).toContain("which findings were confirmed by a deterministic check or an independent subagent");
+    expect(text).toContain(
+      "which findings were confirmed by a deterministic check or an independent subagent",
+    );
     expect(text).toContain("Do not restate the phase graph or the script.");
     expect(text).not.toContain("Present what it salvaged first");
   });
@@ -1502,7 +1516,10 @@ describe("background task per-tool provider lookup", () => {
           version: 2,
           contentType: "application/pdf",
           itemCount: 0,
-          versions: [{ version: 1, publishedAt: 1, bytes: 10 }, { version: 2, publishedAt: 2, bytes: 4096 }],
+          versions: [
+            { version: 1, publishedAt: 1, bytes: 10 },
+            { version: 2, publishedAt: 2, bytes: 4096 },
+          ],
         },
         {
           id: "perf",
@@ -1529,7 +1546,14 @@ describe("background task per-tool provider lookup", () => {
 
   it("failed 与 cancelled 的通知一样带 <artifacts>，并给一句更短的指引", async () => {
     const artifacts = [
-      { id: "notes", kind: "markdown", version: 1, contentType: "text/markdown", itemCount: 0, versions: [{ version: 1, publishedAt: 1, bytes: 128 }] },
+      {
+        id: "notes",
+        kind: "markdown",
+        version: 1,
+        contentType: "text/markdown",
+        itemCount: 0,
+        versions: [{ version: 1, publishedAt: 1, bytes: 128 }],
+      },
     ];
     const failed = await notificationWithReports("dwf-artifacts-failed", {
       status: "failed",
@@ -1730,9 +1754,9 @@ describe("background task per-tool provider lookup", () => {
    * （面板据此退到命令行文本）——三种情形一次钉住。
    */
   it("Bash 的展示名仍是 input.description 优先于快照，缺席时为 undefined", async () => {
-    async function trackBash(input: Record<string, unknown>): Promise<
-      { payload: Record<string, unknown>; type: string }[]
-    > {
+    async function trackBash(
+      input: Record<string, unknown>,
+    ): Promise<{ payload: Record<string, unknown>; type: string }[]> {
       const sessionId = createSessionId("bash-description-pin");
       const turnId = createTurnId("bash-description-pin");
       const events: { payload: Record<string, unknown>; type: string }[] = [];
@@ -1836,32 +1860,28 @@ describe("dynamic workflow run cancellation", () => {
       }),
     );
 
-    const runtime = createTestAgentRuntime(
-      sessionId,
-      { mode: "build" },
-      {
-        dynamicWorkflowRunPort: {
-          async submit() {
-            throw new Error("submit should not be called");
-          },
-          async getTask(taskId: string) {
-            return { taskId, status: cancelled.includes(taskId) ? "cancelled" : "running" };
-          },
-          async waitForTask(taskId: string) {
-            return { taskId, status: "cancelled" };
-          },
-          async cancel(runId: string) {
-            cancelled.push(runId);
-            return true;
-          },
-          async listEvents() {
-            return [];
-          },
+    const runtime = createTestAgentRuntime(sessionId, { mode: "build" }, {
+      dynamicWorkflowRunPort: {
+        async submit() {
+          throw new Error("submit should not be called");
         },
-        eventStore,
-        runtimeTaskRegistry,
-      } as never,
-    );
+        async getTask(taskId: string) {
+          return { taskId, status: cancelled.includes(taskId) ? "cancelled" : "running" };
+        },
+        async waitForTask(taskId: string) {
+          return { taskId, status: "cancelled" };
+        },
+        async cancel(runId: string) {
+          cancelled.push(runId);
+          return true;
+        },
+        async listEvents() {
+          return [];
+        },
+      },
+      eventStore,
+      runtimeTaskRegistry,
+    } as never);
 
     const result = await runtime.cancelBackgroundTask("dwfrun-cancel");
 
@@ -1886,31 +1906,27 @@ describe("dynamic workflow run cancellation", () => {
       type: "local_dynamic_workflow",
     } as never);
 
-    const runtime = createTestAgentRuntime(
-      sessionId,
-      { mode: "build" },
-      {
-        dynamicWorkflowRunPort: {
-          async submit() {
-            throw new Error("submit should not be called");
-          },
-          async getTask() {
-            return undefined;
-          },
-          async waitForTask() {
-            return undefined;
-          },
-          async cancel() {
-            return false;
-          },
-          async listEvents() {
-            return [];
-          },
+    const runtime = createTestAgentRuntime(sessionId, { mode: "build" }, {
+      dynamicWorkflowRunPort: {
+        async submit() {
+          throw new Error("submit should not be called");
         },
-        eventStore,
-        runtimeTaskRegistry,
-      } as never,
-    );
+        async getTask() {
+          return undefined;
+        },
+        async waitForTask() {
+          return undefined;
+        },
+        async cancel() {
+          return false;
+        },
+        async listEvents() {
+          return [];
+        },
+      },
+      eventStore,
+      runtimeTaskRegistry,
+    } as never);
 
     const result = await runtime.cancelBackgroundTask("dwfrun-gone");
     expect(result.cancelled).toBe(false);
@@ -1934,11 +1950,10 @@ describe("dynamic workflow run cancellation", () => {
       type: "local_dynamic_workflow",
     } as never);
 
-    const runtime = createTestAgentRuntime(
-      sessionId,
-      { mode: "build" },
-      { eventStore, runtimeTaskRegistry } as never,
-    );
+    const runtime = createTestAgentRuntime(sessionId, { mode: "build" }, {
+      eventStore,
+      runtimeTaskRegistry,
+    } as never);
 
     const result = await runtime.cancelBackgroundTask("dwfrun-noport");
     expect(result.cancelled).toBe(false);
@@ -2031,41 +2046,37 @@ describe("dynamic workflow background task registration", () => {
       type: "local_dynamic_workflow",
     } as never);
 
-    const runtime = createTestAgentRuntime(
-      sessionId,
-      { mode: "build" },
-      {
-        dynamicWorkflowRunPort: {
-          async submit() {
-            throw new Error("submit should not be called");
-          },
-          async getTask(taskId: string) {
-            return { taskId, runId: taskId, startedAt: new Date(0), status: "running" };
-          },
-          async waitForTask(taskId: string) {
-            return { taskId, runId: taskId, startedAt: new Date(0), status: "cancelled" };
-          },
-          async cancel(runId: string) {
-            cancelled.push(runId);
-            return true;
-          },
-          async listEvents() {
-            return [];
-          },
+    const runtime = createTestAgentRuntime(sessionId, { mode: "build" }, {
+      dynamicWorkflowRunPort: {
+        async submit() {
+          throw new Error("submit should not be called");
         },
-        eventStore,
-        runtimeTaskRegistry,
-      } as never,
-    );
+        async getTask(taskId: string) {
+          return { taskId, runId: taskId, startedAt: new Date(0), status: "running" };
+        },
+        async waitForTask(taskId: string) {
+          return { taskId, runId: taskId, startedAt: new Date(0), status: "cancelled" };
+        },
+        async cancel(runId: string) {
+          cancelled.push(runId);
+          return true;
+        },
+        async listEvents() {
+          return [];
+        },
+      },
+      eventStore,
+      runtimeTaskRegistry,
+    } as never);
 
     // 这就是 runtime-tools.ts:144 交给工具执行上下文的那个绑定。
     const backgroundTaskControlPort = {
       stopBackgroundTask: runtime.stopBackgroundTask.bind(runtime),
     };
-    const output = (await taskStopToolEntry.handler(
-      { task_id: "dwfrun-taskstop" },
-      { backgroundTaskControlPort, toolCallId: "tool_task_stop" } as never,
-    )) as { task_id?: string; task_type?: string };
+    const output = (await taskStopToolEntry.handler({ task_id: "dwfrun-taskstop" }, {
+      backgroundTaskControlPort,
+      toolCallId: "tool_task_stop",
+    } as never)) as { task_id?: string; task_type?: string };
 
     // 关键断言：模型侧入口也把 runId 直送到了端口的 cancel。
     expect(cancelled).toEqual(["dwfrun-taskstop"]);
@@ -2154,5 +2165,114 @@ describe("dwf 停止分支记录 stopInitiator", () => {
     await (system.runtime as any).stopBackgroundTask("dwfrun-stop", {});
     expect(plain).toEqual(["dwfrun-stop:none"]);
     expect(system.registry.get("dwfrun-stop")?.stopInitiator).toBeUndefined();
+  });
+
+  // 停止权威归属（spec background-stop-registry-authority.md）：
+  // 续跑（SendMessage resume / 输入复活）把注册表翻回 running 时，投影还留着旧生命的
+  // BackgroundTaskCompleted 终态。旧 OR 判定被投影一票否决，TaskStop 报
+  // 「not running (status: running)」、GUI 停止静默空转——判定必须以注册表为唯一权威。
+  it("stop ignores a stale terminal projection entry while the registry task is running", async () => {
+    const sessionId = createSessionId("background-control-stale-projection");
+    const eventStore = createTestSessionEventStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    runtimeTaskRegistry.register({
+      agentId: "agent_revived",
+      agentType: "general-purpose",
+      description: "revived agent",
+      inputRevival: true,
+      isBackgrounded: true,
+      outputFile: "/tmp/agent_revived/output.txt",
+      parentToolCallId: "tool_agent_revived",
+      startedAt: new Date(2),
+      status: "running",
+      taskId: "agent_revived",
+      taskType: "local_agent",
+      type: "local_agent",
+    } as never);
+    // 旧生命的终态事件仍在投影里（复活不再回写投影，见 spec D7 之前的缺口）。
+    await eventStore.append(
+      createSessionEvent(SessionEventType.BackgroundTaskCompleted, sessionId, {
+        completedAt: new Date(1),
+        startedAt: new Date(0),
+        status: "failed",
+        taskId: "agent_revived",
+        terminalId: "agent_revived",
+        toolCallId: "tool_agent_revived",
+        toolName: "Agent",
+      }),
+    );
+    const stoppedTaskIds: string[] = [];
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { mode: "build" },
+      {
+        eventStore,
+        runtimeTaskRegistry,
+        subagentPort: {
+          async launch() {
+            throw new Error("launch should not be called");
+          },
+          async run() {
+            throw new Error("run should not be called");
+          },
+          async stopTask(taskId) {
+            stoppedTaskIds.push(taskId);
+            return {
+              agentId: taskId,
+              agentType: "general-purpose",
+              description: "revived agent",
+              startedAt: new Date(2),
+              status: "killed",
+              taskId,
+            };
+          },
+        },
+      },
+    );
+
+    // strict（TaskStop）与非 strict（GUI）都必须放行到真实停止分支。
+    await expect(
+      (runtime as any).stopBackgroundTask("agent_revived", { strict: true }),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: "killed",
+      taskId: "agent_revived",
+      type: "local_agent",
+    });
+    const gui = await runtime.cancelBackgroundTask("agent_revived");
+    expect(gui).toMatchObject({ cancelled: true, status: "cancelled" });
+    expect(stoppedTaskIds).toEqual(["agent_revived", "agent_revived"]);
+  });
+
+  it("falls back to the projection when the registry entry is gone", async () => {
+    const sessionId = createSessionId("background-control-projection-fallback");
+    const eventStore = createTestSessionEventStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    await eventStore.append(
+      createSessionEvent(SessionEventType.BackgroundTaskCompleted, sessionId, {
+        completedAt: new Date(1),
+        startedAt: new Date(0),
+        status: "failed",
+        taskId: "agent_evicted",
+        terminalId: "agent_evicted",
+        toolCallId: "tool_agent_evicted",
+        toolName: "Agent",
+      }),
+    );
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { mode: "build" },
+      { eventStore, runtimeTaskRegistry },
+    );
+
+    // 注册表条目被驱逐后，投影兜底维持「not running」拒绝语义，且文案与判定同源。
+    await expect(
+      (runtime as any).stopBackgroundTask("agent_evicted", { strict: true }),
+    ).resolves.toMatchObject({
+      ok: false,
+      reason: "background_task_not_running",
+      status: "failed",
+      taskId: "agent_evicted",
+    });
   });
 });

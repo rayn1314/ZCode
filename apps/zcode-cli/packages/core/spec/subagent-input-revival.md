@@ -39,6 +39,13 @@
 - **D6 无绑定即降级为现状。** 桥缺席（进程重启、父 runtime 未派发过该子会话、注册表
   终态被驱逐）时复活与结算都 no-op——不伪造状态、不报错；该缺口属跨进程持久化范畴
   （另行立项），本 spec 不覆盖。
+- **D7 复活注册同步补发 `BackgroundTaskStarted(running)`。** 投影
+  （`projection.backgroundTasks`）只由 `BackgroundTask*` 事件驱动，`SubagentSpawned`
+  不进投影；不补发则投影永久停在旧生命终态——TaskStop 以「not running (status:
+  running)」自相矛盾拒绝、面板显示已结束而注册表明明在跑。停止判定本身已改为注册表
+  单源权威（spec `background-stop-registry-authority.md`），本条修的是投影显示层与
+  后台控制项的追齐。SendMessage 续跑路径（runner 内同形）一并补发，两个入口共用
+  `emitBackgroundTaskRunningEvent`。
 
 ## 行为
 
@@ -53,7 +60,8 @@
    `outputFile`、`prompt`、`pendingMessages`。附 messageSink（steer 注入）并 flush 积压消息，
    与 runner 的 sink 注册同一条实现。
 3. 安装 `stopTurn` 句柄到桥（供 `port.stopTask` 停掉真实执行的轮），随后补发
-   `SubagentSpawned(resumed: true)` 事件与 SubagentStart hook。
+   `BackgroundTaskStarted(running)`（D7，投影追齐新生命）、`SubagentSpawned(resumed: true)`
+   事件与 SubagentStart hook。
 
 结算（`settleSubagentInputRevivalTurn`，挂在 `executeTurnCommand` 返回/抛错之后）：
 
@@ -107,3 +115,6 @@
 - A5 桥缺席（新进程直接 sendText 子会话）：轮照常执行，无通知、无报错（现状行为）。
 - A6 复活轮运行中父调 `stopTask` → 真实轮被停止，父收到 stopped 通知，轮末结算 no-op
   （终态守卫），无双通知。
+- A7 复活轮运行中父调 TaskStop（strict）→ 放行并停掉真实轮（不再报
+  「not running (status: running)」）；投影在复活时收到 `BackgroundTaskStarted(running)`，
+  后台控制项/面板显示 running 而非旧生命终态。

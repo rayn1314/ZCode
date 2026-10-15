@@ -1076,8 +1076,11 @@ describe("Explore subagent", () => {
     const eventStore = createTestSessionEventStore();
     // 主 runtime 每次调用报自己的 sessionId；子 runtime 拿到的是父 runtime 派生的实例
     // （helpers/child-client-ports.ts），派生层把 sessionId 改写成父会话。
-    const refreshes: Array<{ providerId: string; boundSessionId: string; routedSessionId?: string }> =
-      [];
+    const refreshes: Array<{
+      providerId: string;
+      boundSessionId: string;
+      routedSessionId?: string;
+    }> = [];
     const childRequests: any[] = [];
     let parentCallCount = 0;
     const modelSelection = {
@@ -3794,6 +3797,7 @@ describe("Explore subagent", () => {
 
   it("resolves an explicit profile again for a resumed child new input without changing the profile", async () => {
     const sessionId = createSessionId("subagent-effective-resume");
+    const eventStore = createTestSessionEventStore();
     const original = {
       providerId: "account:personal",
       modelId: "fixture",
@@ -3822,7 +3826,7 @@ describe("Explore subagent", () => {
         },
       },
       {
-        eventStore: createTestSessionEventStore(),
+        eventStore,
         sessionStore: createRecordingSubagentSessionStore(),
         resolveEffectiveModelSelection,
         modelFactory: createTestModelFactory({
@@ -3866,6 +3870,17 @@ describe("Explore subagent", () => {
       workspaceRoot: "/workspace/project",
     });
     expect(resumed.delivery).toBe("resumed_background");
+    // 投影追齐（spec subagent-input-revival.md D7）：SendMessage 续跑同样补发
+    // BackgroundTaskStarted(running)，否则投影永久停在旧生命终态。
+    const events = await eventStore.getEvents(sessionId);
+    const resumeStarted = events.filter(
+      (event) =>
+        event.type === SessionEventType.BackgroundTaskStarted &&
+        (event.payload as { status?: string; taskId?: string }).taskId === first.agentId &&
+        (event.payload as { status?: string }).status === "running",
+    );
+    expect(resumeStarted.length).toBeGreaterThanOrEqual(1);
+    expect(resumeStarted.at(-1)?.payload).toMatchObject({ toolCallId: "second" });
     expect((await port.waitForTask(first.agentId))?.status).toBe("completed");
     expect(requests).toEqual(["account:team", "account:personal"]);
     expect(JSON.stringify(requestMessages[1])).toContain("Review next");

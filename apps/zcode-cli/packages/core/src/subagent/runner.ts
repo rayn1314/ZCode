@@ -1195,6 +1195,15 @@ async function resumeTerminalAgentInBackground(
     {
       resumeFromStore: true,
       onSessionReady: async () => {
+        const revived = registry.get(lifecycle.agentId);
+        if (revived) {
+          await emitBackgroundTaskRunningEvent(
+            options,
+            resumeRequest,
+            lifecycle.runTraceContext,
+            revived,
+          );
+        }
         const spawnedPayload = {
           agentId: lifecycle.agentId,
           agentType: resumeRequest.agentType,
@@ -2051,6 +2060,33 @@ async function emitBackgroundTaskCompletedEvent(
   );
 }
 
+/**
+ * 续跑（SendMessage resume / 输入复活）把注册表条目重新注册为 running 时，向父会话
+ * 补发 BackgroundTaskStarted：投影只由 BackgroundTask* 事件驱动，不补这条，投影会
+ * 永久停在旧生命的终态（TaskStop 拒绝、面板显示已结束，而注册表明明在跑）。
+ * Started 的 reducer 是整条替换语义，旧生命的 completedAt/outputTail 不会带进新生命。
+ */
+async function emitBackgroundTaskRunningEvent(
+  options: ExploreSubagentPortOptions,
+  request: SubagentRunRequest,
+  traceContext: TraceContext,
+  task: RuntimeTaskSnapshot,
+): Promise<void> {
+  await emitSubagentEvent(options, SessionEventType.BackgroundTaskStarted, request, traceContext, {
+    taskId: task.taskId,
+    toolCallId: String(task.parentToolCallId ?? request.parentToolCallId),
+    toolName: "Agent",
+    taskKind: "subagent",
+    childSessionId: task.childSessionId,
+    cancellable: true,
+    description: task.description,
+    status: "running",
+    startedAt: task.startedAt,
+    outputPath: task.outputFile,
+    terminalId: task.taskId,
+  });
+}
+
 async function emitRuntimeTaskBackgroundCompletedEvent(
   options: ExploreSubagentPortOptions,
   task: RuntimeTaskSnapshot,
@@ -2249,6 +2285,15 @@ export async function reviveSubagentTaskForInputTurn(
       binding.registry,
     )(createSubagentMessageSink(host, { traceContext: context.traceContext }));
 
+    const revivedTask = binding.registry.get(binding.agentId);
+    if (revivedTask) {
+      await emitBackgroundTaskRunningEvent(
+        binding.options,
+        request,
+        lifecycle.runTraceContext,
+        revivedTask,
+      );
+    }
     const spawnedPayload = {
       agentId: binding.agentId,
       agentType: request.agentType,

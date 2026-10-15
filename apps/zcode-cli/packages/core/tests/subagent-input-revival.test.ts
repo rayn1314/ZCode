@@ -210,6 +210,20 @@ describe("subagent input revival (复活归一)", () => {
       resumed: true,
       status: "running",
     });
+    // 投影追齐（spec D7）：复活补发 BackgroundTaskStarted(running)，否则投影永久停在
+    // 旧生命终态（TaskStop 拒绝、面板显示已结束）。
+    const startedEvents = harness.emitted.filter(
+      (event) => event.type === SessionEventType.BackgroundTaskStarted,
+    );
+    expect(startedEvents.length).toBeGreaterThanOrEqual(1);
+    expect(startedEvents.at(-1)?.payload).toMatchObject({
+      childSessionId: ids.childSessionId,
+      status: "running",
+      taskKind: "subagent",
+      taskId: ids.agentId,
+      toolCallId: ids.parentToolCallId,
+      toolName: "Agent",
+    });
 
     // 复活轮跑完（A1 后半）：走 finalize* 发通知，正文为新结论、锚点=原始 Agent 卡片。
     await settleSubagentInputRevivalSuccess(ids.childSessionId, context, {

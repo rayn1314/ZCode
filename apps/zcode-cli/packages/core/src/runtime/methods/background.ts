@@ -15,10 +15,7 @@ import type {
   RuntimeBackgroundStopTarget,
   TypedRuntimeBackgroundStopTarget,
 } from "./background-stop-types.js";
-import type {
-  RuntimeTaskSnapshot,
-  RuntimeTaskType,
-} from "../../runtime-task/registry.js";
+import type { RuntimeTaskSnapshot, RuntimeTaskType } from "../../runtime-task/registry.js";
 import {
   hasRunningBackgroundRuntimeTask,
   isTerminalRuntimeTask,
@@ -153,10 +150,15 @@ async function resolveBackgroundStopTarget(
 }
 
 function isTerminalBackgroundStopTarget(target: RuntimeBackgroundStopTarget): boolean {
-  return (
-    (target.registryTask ? isTerminalRuntimeTask(target.registryTask) : false) ||
-    isTerminalBackgroundTaskInfoStatus(target.existing?.status)
-  );
+  // 停止判定的唯一权威是 runtimeTaskRegistry（与本文件顶部「不能从协议投影猜测」
+  // 的回收判定同一归属）。投影是事件流重放的历史：SendMessage 续跑与输入复活只把
+  // 注册表条目重新注册为 running、不回写投影，旧生命的 BackgroundTaskCompleted
+  // 永远留在投影里——若投影也能一票判终态，复活期间的 TaskStop 会以
+  // 「not running (status: running)」自相矛盾地拒绝、GUI 停止则静默空转。
+  // 投影仅在注册表条目缺席（终态驱逐 / 跨进程重启）时兜底，维持旧任务的
+  // 「not running」拒绝语义。
+  if (target.registryTask) return isTerminalRuntimeTask(target.registryTask);
+  return isTerminalBackgroundTaskInfoStatus(target.existing?.status);
 }
 
 function isTypedBackgroundStopTarget(
@@ -299,9 +301,7 @@ export async function cancelRunningRuntimeBackgroundTasks(
   const traceContext = input.traceContext ?? this.rootTraceContext;
   const tasks = Object.values(this.runtimeTaskRegistry.all()).filter(
     (task) =>
-      task.type === "local_bash" &&
-      task.isBackgrounded === true &&
-      task.status === "running",
+      task.type === "local_bash" && task.isBackgrounded === true && task.status === "running",
   );
 
   for (const task of tasks) {
@@ -396,8 +396,7 @@ export function buildBackgroundTaskPayload(
 function backgroundInfoFromRuntimeTask(task: RuntimeTaskSnapshot): BackgroundTaskInfo {
   return {
     taskId: task.taskId,
-    toolCallId:
-      typeof task.parentToolCallId === "string" ? task.parentToolCallId : undefined,
+    toolCallId: typeof task.parentToolCallId === "string" ? task.parentToolCallId : undefined,
     toolName: toolNameFromRuntimeTaskType(task.type),
     cancellable: task.status === "running",
     command: commandFromRuntimeTask(task, undefined),
@@ -457,9 +456,7 @@ function toolNameFromRuntimeTaskType(type: RuntimeTaskType): string {
   }
 }
 
-function isTerminalBackgroundTaskInfoStatus(
-  status: BackgroundTaskInfoStatus | undefined,
-): boolean {
+function isTerminalBackgroundTaskInfoStatus(status: BackgroundTaskInfoStatus | undefined): boolean {
   return Boolean(status && status !== "running");
 }
 
