@@ -233,10 +233,16 @@ describe("subagent input revival (复活归一)", () => {
     const settled = harness.registry.get(ids.agentId);
     expect(settled?.status).toBe("completed");
     expect(settled?.notified).toBe(true);
-    expect(harness.notifications).toHaveLength(1);
-    expect(harness.notifications[0]?.text).toContain("<status>completed</status>");
-    expect(harness.notifications[0]?.text).toContain("<result>revived final answer</result>");
-    expect(harness.notifications[0]?.text).toContain(
+    // 两条通知：开轮的复活可见性（spec D8）+ 终态结论。复活通知不 claim notified，
+    // 所以终态通知照常入队。
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[0]).toMatchObject({ taskId: ids.agentId });
+    expect(harness.notifications[0]?.text).toContain("<status>running</status>");
+    expect(harness.notifications[0]?.text).toContain("was resumed and is running again");
+    expect(harness.notifications[0]?.text).toContain("do not dispatch a duplicate agent");
+    expect(harness.notifications[1]?.text).toContain("<status>completed</status>");
+    expect(harness.notifications[1]?.text).toContain("<result>revived final answer</result>");
+    expect(harness.notifications[1]?.text).toContain(
       `<tool-use-id>${ids.parentToolCallId}</tool-use-id>`,
     );
     const written = await readFile(ids.outputFile, "utf8");
@@ -260,9 +266,9 @@ describe("subagent input revival (复活归一)", () => {
     const task = harness.registry.get(ids.agentId);
     expect(task?.status).toBe("failed");
     expect(task?.notified).toBe(true);
-    expect(harness.notifications).toHaveLength(1);
-    expect(harness.notifications[0]?.text).toContain("<status>failed</status>");
-    expect(harness.notifications[0]?.text).toContain("provider exploded");
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[1]?.text).toContain("<status>failed</status>");
+    expect(harness.notifications[1]?.text).toContain("provider exploded");
   });
 
   it("runner-held turns are untouched: no revive on non-terminal, no settle without inputRevival", async () => {
@@ -308,8 +314,9 @@ describe("subagent input revival (复活归一)", () => {
       events: [],
       response: "duplicate",
     });
-    expect(harness.notifications).toHaveLength(1);
-    expect(harness.notifications[0]?.text).toContain("<result>first</result>");
+    // 复活可见性通知各一条；终态通知只结算一次（第二次 settle 撞守卫）。
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[1]?.text).toContain("<result>first</result>");
   });
 
   it("degrades to current behavior when no binding exists (spec D6)", async () => {
@@ -345,15 +352,17 @@ describe("subagent input revival (复活归一)", () => {
     expect(stopped?.status).toBe("killed");
     // 真实执行的轮经桥 stopTurn 停掉（A6）。
     expect(host.stopCalls).toHaveLength(1);
-    expect(harness.notifications).toHaveLength(1);
-    expect(harness.notifications[0]?.text).toContain("<status>stopped</status>");
+    // 复活可见性通知 + 恰好一条 stopped 终态通知。
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[0]?.text).toContain("<status>running</status>");
+    expect(harness.notifications[1]?.text).toContain("<status>stopped</status>");
 
-    // 停止后迟到的轮末结算撞终态守卫：不再产生第二条通知。
+    // 停止后迟到的轮末结算撞终态守卫：不再产生第三条通知。
     await settleSubagentInputRevivalSuccess(ids.childSessionId, context, {
       events: [],
       response: "late completion must be dropped",
     });
-    expect(harness.notifications).toHaveLength(1);
+    expect(harness.notifications).toHaveLength(2);
     // stopTurn 消费即清：再次请求停止不会二次触发。
     requestStopInputRevivalTurn(ids.childSessionId);
     expect(host.stopCalls).toHaveLength(1);

@@ -22,6 +22,7 @@ import {
 } from "@zcode/contracts";
 import { formatTaskNotification } from "../src/runtime-task/notification.js";
 import { formatLocalAgentTaskNotification } from "../src/subagent/completion-notification.js";
+import { InMemoryRuntimeTaskRegistry } from "../src/runtime-task/registry.js";
 import { createTestAgentRuntime } from "./test-agent-runtime.js";
 import { createRuntimeCommandId } from "../src/runtime/command-queue.js";
 import type { PromptRuntimeCommand } from "../src/runtime/command-queue.js";
@@ -871,6 +872,329 @@ describe("subagent background notifications", () => {
       .join("\n");
     expect(runtimeText).toContain("<task-id>active-drain-1</task-id>");
     expect(runtimeText).toContain("<task-id>active-drain-2</task-id>");
+  });
+
+  // 投递期消解（spec background-notification-supersession.md D2/D3）：终态通知是快照，
+  // 复活/重臂让 registry 条目重新非终态后，旧快照不许再进父代理上下文。
+  it("drops active-loop notifications whose task was revived (registry resolves supersession)", async () => {
+    const sessionId = createSessionId("background-active-loop-superseded");
+    const sessionStore = new RecordingSessionStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    runtimeTaskRegistry.register({
+      agentId: "agent_revived",
+      agentType: "general-purpose",
+      description: "revive target",
+      isBackgrounded: true,
+      startedAt: new Date(0),
+      status: "running",
+      taskId: "agent_revived",
+      taskType: "local_agent",
+      type: "local_agent",
+    } as never);
+    const generateText = vi.fn();
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { workingDirectory: "/tmp/zcode-background-active-loop-superseded" },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: createTestModelFactory({ generateText } as never),
+        runtimeTaskRegistry,
+        sessionStore: sessionStore as unknown as SessionStorePort,
+      },
+    ) as unknown as AgentRuntime & {
+      drainPendingRuntimeCommandsForActiveLoop(): Promise<{
+        consumedCommandIds: readonly string[];
+        drained: number;
+        messageIds: readonly string[];
+      }>;
+      runtimeCommandQueue: {
+        enqueue(command: {
+          announcedTaskStatus?: string;
+          branchGeneration: number;
+          createdAt: Date;
+          id: string;
+          mode: "task-notification";
+          priority: "next";
+          source: "background_task";
+          taskId?: string;
+          text: string;
+          traceContext: {
+            sessionId: SessionId;
+            spanId: string;
+            traceId: string;
+          };
+        }): void;
+      };
+    };
+
+    runtime.runtimeCommandQueue.enqueue({
+      announcedTaskStatus: "failed",
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      taskId: "agent_revived",
+      text: "<task-notification><task-id>superseded-failed</task-id></task-notification>",
+      traceContext: {
+        sessionId,
+        spanId: "span_background_active_loop_superseded",
+        traceId: "trace_background_active_loop_superseded",
+      },
+    });
+
+    const result = await runtime.drainPendingRuntimeCommandsForActiveLoop();
+
+    expect(result.drained).toBe(0);
+    expect(sessionStore.savedMessages).toEqual([]);
+  });
+
+  it("keeps superseded-looking notifications when the registry entry is gone (eviction fallback)", async () => {
+    const sessionId = createSessionId("background-active-loop-evicted");
+    const sessionStore = new RecordingSessionStore();
+    const generateText = vi.fn();
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { workingDirectory: "/tmp/zcode-background-active-loop-evicted" },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: createTestModelFactory({ generateText } as never),
+        sessionStore: sessionStore as unknown as SessionStorePort,
+      },
+    ) as unknown as AgentRuntime & {
+      drainPendingRuntimeCommandsForActiveLoop(): Promise<{
+        consumedCommandIds: readonly string[];
+        drained: number;
+        messageIds: readonly string[];
+      }>;
+      messageHistory: {
+        toRuntimeEntries(): readonly { message: { content: ModelMessageContent } }[];
+      };
+      runtimeCommandQueue: {
+        enqueue(command: {
+          announcedTaskStatus?: string;
+          branchGeneration: number;
+          createdAt: Date;
+          id: string;
+          mode: "task-notification";
+          priority: "next";
+          source: "background_task";
+          taskId?: string;
+          text: string;
+          traceContext: {
+            sessionId: SessionId;
+            spanId: string;
+            traceId: string;
+          };
+        }): void;
+      };
+    };
+
+    runtime.runtimeCommandQueue.enqueue({
+      announcedTaskStatus: "failed",
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      taskId: "agent_evicted",
+      text: "<task-notification><task-id>evicted-task</task-id></task-notification>",
+      traceContext: {
+        sessionId,
+        spanId: "span_background_active_loop_evicted",
+        traceId: "trace_background_active_loop_evicted",
+      },
+    });
+
+    const result = await runtime.drainPendingRuntimeCommandsForActiveLoop();
+
+    // registry 条目缺席不猜：保留原文投递（spec background-stop-registry-authority.md 同一原则）。
+    expect(result.drained).toBe(1);
+    const runtimeText = runtime.messageHistory
+      .toRuntimeEntries()
+      .map((entry) => modelMessageContentToText(entry.message.content))
+      .join("\n");
+    expect(runtimeText).toContain("<task-id>evicted-task</task-id>");
+  });
+
+  it("delivers only the newest snapshot when a task failed, was revived, and completed", async () => {
+    const sessionId = createSessionId("background-active-loop-dedupe");
+    const sessionStore = new RecordingSessionStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    runtimeTaskRegistry.register({
+      agentId: "agent_recycled",
+      agentType: "general-purpose",
+      description: "revive target",
+      isBackgrounded: true,
+      startedAt: new Date(0),
+      status: "completed",
+      taskId: "agent_recycled",
+      taskType: "local_agent",
+      type: "local_agent",
+    } as never);
+    const generateText = vi.fn();
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { workingDirectory: "/tmp/zcode-background-active-loop-dedupe" },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: createTestModelFactory({ generateText } as never),
+        runtimeTaskRegistry,
+        sessionStore: sessionStore as unknown as SessionStorePort,
+      },
+    ) as unknown as AgentRuntime & {
+      drainPendingRuntimeCommandsForActiveLoop(): Promise<{
+        consumedCommandIds: readonly string[];
+        drained: number;
+        messageIds: readonly string[];
+      }>;
+      messageHistory: {
+        toRuntimeEntries(): readonly { message: { content: ModelMessageContent } }[];
+      };
+      runtimeCommandQueue: {
+        enqueue(command: {
+          announcedTaskStatus?: string;
+          branchGeneration: number;
+          createdAt: Date;
+          id: string;
+          mode: "task-notification";
+          priority: "next";
+          source: "background_task";
+          taskId?: string;
+          text: string;
+          traceContext: {
+            sessionId: SessionId;
+            spanId: string;
+            traceId: string;
+          };
+        }): void;
+      };
+    };
+
+    runtime.runtimeCommandQueue.enqueue({
+      announcedTaskStatus: "failed",
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      taskId: "agent_recycled",
+      text: "<task-notification><task-id>stale-failed</task-id></task-notification>",
+      traceContext: {
+        sessionId,
+        spanId: "span_background_active_loop_dedupe_a",
+        traceId: "trace_background_active_loop_dedupe",
+      },
+    });
+    runtime.runtimeCommandQueue.enqueue({
+      announcedTaskStatus: "completed",
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      taskId: "agent_recycled",
+      text: "<task-notification><task-id>fresh-completed</task-id></task-notification>",
+      traceContext: {
+        sessionId,
+        spanId: "span_background_active_loop_dedupe_b",
+        traceId: "trace_background_active_loop_dedupe",
+      },
+    });
+
+    const result = await runtime.drainPendingRuntimeCommandsForActiveLoop();
+
+    expect(result.drained).toBe(1);
+    const runtimeText = runtime.messageHistory
+      .toRuntimeEntries()
+      .map((entry) => modelMessageContentToText(entry.message.content))
+      .join("\n");
+    expect(runtimeText).toContain("<task-id>fresh-completed</task-id>");
+    expect(runtimeText).not.toContain("<task-id>stale-failed</task-id>");
+  });
+
+  it("keeps progress notifications for a running task (no announced status is never superseded)", async () => {
+    const sessionId = createSessionId("background-active-loop-progress");
+    const sessionStore = new RecordingSessionStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    runtimeTaskRegistry.register({
+      agentId: "dwfrun_progress",
+      agentType: "dynamic_workflow",
+      description: "nightly audit",
+      isBackgrounded: true,
+      startedAt: new Date(0),
+      status: "running",
+      taskId: "dwfrun_progress",
+      taskType: "local_workflow",
+      type: "local_workflow",
+    } as never);
+    const generateText = vi.fn();
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { workingDirectory: "/tmp/zcode-background-active-loop-progress" },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: createTestModelFactory({ generateText } as never),
+        runtimeTaskRegistry,
+        sessionStore: sessionStore as unknown as SessionStorePort,
+      },
+    ) as unknown as AgentRuntime & {
+      drainPendingRuntimeCommandsForActiveLoop(): Promise<{
+        consumedCommandIds: readonly string[];
+        drained: number;
+        messageIds: readonly string[];
+      }>;
+      messageHistory: {
+        toRuntimeEntries(): readonly { message: { content: ModelMessageContent } }[];
+      };
+      runtimeCommandQueue: {
+        enqueue(command: {
+          announcedTaskStatus?: string;
+          branchGeneration: number;
+          createdAt: Date;
+          id: string;
+          mode: "task-notification";
+          priority: "next";
+          source: "background_task";
+          taskId?: string;
+          text: string;
+          traceContext: {
+            sessionId: SessionId;
+            spanId: string;
+            traceId: string;
+          };
+        }): void;
+      };
+    };
+
+    runtime.runtimeCommandQueue.enqueue({
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      taskId: "dwfrun_progress",
+      text: "<task-notification><task-id>progress-stall</task-id></task-notification>",
+      traceContext: {
+        sessionId,
+        spanId: "span_background_active_loop_progress",
+        traceId: "trace_background_active_loop_progress",
+      },
+    });
+
+    const result = await runtime.drainPendingRuntimeCommandsForActiveLoop();
+
+    expect(result.drained).toBe(1);
+    const runtimeText = runtime.messageHistory
+      .toRuntimeEntries()
+      .map((entry) => modelMessageContentToText(entry.message.content))
+      .join("\n");
+    expect(runtimeText).toContain("<task-id>progress-stall</task-id>");
   });
 
   it("drops active-loop notifications queued by an older rewind branch generation", async () => {

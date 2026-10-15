@@ -8,10 +8,14 @@ import { describe, expect, it } from "vitest";
 import { createRootTraceContext, createSessionId } from "@zcode/contracts";
 import type { BackgroundResultOriginMeta } from "@zcode/contracts";
 import { resolveBackgroundTaskNotificationOriginMeta } from "../src/runtime/methods/background-notifications.js";
+import { selectDeliverableTaskNotifications } from "../src/runtime/methods/background-notifications.js";
 import {
   createRuntimeCommandId,
+  type RuntimeCommand,
   type TaskNotificationRuntimeCommand,
 } from "../src/runtime/command-queue.js";
+import type { AgentRuntimeInternal } from "../src/runtime/internal.js";
+import type { RuntimeTaskSnapshot } from "../src/runtime-task/registry.js";
 
 function makeCommand(originMeta?: BackgroundResultOriginMeta): TaskNotificationRuntimeCommand {
   return {
@@ -70,5 +74,89 @@ describe("resolveBackgroundTaskNotificationOriginMeta", () => {
     });
     // 载荷不得随批量轮搭车——「一轮一张 manifest」在批量下不成立。
     expect(resolved?.workflowNotification).toBeUndefined();
+  });
+});
+
+describe("selectDeliverableTaskNotifications", () => {
+  function registryStub(
+    entries: Record<string, Pick<RuntimeTaskSnapshot, "status">>,
+  ): AgentRuntimeInternal {
+    return {
+      runtimeTaskRegistry: {
+        get: (taskId: string) => entries[taskId],
+      },
+    } as unknown as AgentRuntimeInternal;
+  }
+
+  function notification(
+    id: string,
+    taskId: string | undefined,
+    announcedTaskStatus?: string,
+  ): TaskNotificationRuntimeCommand {
+    return {
+      branchGeneration: 0,
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      mode: "task-notification",
+      priority: "next",
+      source: "background_task",
+      text: id,
+      traceContext: createRootTraceContext({ sessionId: createSessionId("bg-notif-select") }),
+      ...(taskId === undefined ? {} : { taskId }),
+      ...(announcedTaskStatus === undefined ? {} : { announcedTaskStatus }),
+    };
+  }
+
+  function prompt(id: string): RuntimeCommand {
+    return {
+      createdAt: new Date(),
+      id: createRuntimeCommandId(),
+      input: id,
+      mode: "prompt",
+      priority: "next",
+      reject: () => {},
+      resolve: () => {},
+      traceContext: createRootTraceContext({ sessionId: createSessionId("bg-notif-select") }),
+    } as RuntimeCommand;
+  }
+
+  it("消解复活窗口的过期终态通知；同任务只留最新快照；其余原样保留", () => {
+    const runtime = registryStub({
+      task_running: { status: "running" },
+      task_completed: { status: "completed" },
+    });
+    const commands = [
+      prompt("p1"),
+      notification("revived-window", "task_running", "failed"),
+      notification("stale-failed", "task_a", "failed"),
+      notification("fresh-completed", "task_a", "completed"),
+      notification("no-task", undefined, "failed"),
+      notification("terminal-kept", "task_completed", "failed"),
+      notification("evicted-kept", "task_gone", "failed"),
+    ];
+
+    const selected = selectDeliverableTaskNotifications.call(runtime, commands);
+
+    // prompt 命令无 text 字段，按 mode 标注；其余按 text（即构造入参 id）。
+    const label = (command: RuntimeCommand) =>
+      command.mode === "prompt" ? `prompt:${command.input}` : command.text;
+    expect(selected.map(label)).toEqual([
+      "prompt:p1",
+      "fresh-completed",
+      "no-task",
+      "terminal-kept",
+      "evicted-kept",
+    ]);
+  });
+
+  it("进行中的进度通知（无宣告状态）永不消解", () => {
+    const runtime = registryStub({ task_running: { status: "running" } });
+
+    const selected = selectDeliverableTaskNotifications.call(runtime, [
+      notification("stall", "task_running"),
+      notification("escalation", "task_running"),
+    ]);
+
+    expect(selected.map((command) => command.text)).toEqual(["stall", "escalation"]);
   });
 });

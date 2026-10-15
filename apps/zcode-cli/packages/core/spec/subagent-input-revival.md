@@ -46,6 +46,11 @@
   单源权威（spec `background-stop-registry-authority.md`），本条修的是投影显示层与
   后台控制项的追齐。SendMessage 续跑路径（runner 内同形）一并补发，两个入口共用
   `emitBackgroundTaskRunningEvent`。
+- **D8 复活开轮即向父代理补一条 `status: running` 的通知。** 父代理只持有上一命的
+  终态快照，用户面板发起的复活对它不可见——不补这条「又活了」，它会照旧重开一个
+  重复子代理（spec `background-notification-supersession.md` D5）。该通知不复用
+  终态格式化器、不 claim `notified`（否则堵死终态通知）；SendMessage 续跑的工具回执
+  已自带同义句，D8 只覆盖 input revival。
 
 ## 行为
 
@@ -60,7 +65,8 @@
    `outputFile`、`prompt`、`pendingMessages`。附 messageSink（steer 注入）并 flush 积压消息，
    与 runner 的 sink 注册同一条实现。
 3. 安装 `stopTurn` 句柄到桥（供 `port.stopTask` 停掉真实执行的轮），随后补发
-   `BackgroundTaskStarted(running)`（D7，投影追齐新生命）、`SubagentSpawned(resumed: true)`
+   `BackgroundTaskStarted(running)`（D7，投影追齐新生命）、向父代理入队
+   `status: running` 复活通知（D8）、`SubagentSpawned(resumed: true)`
    事件与 SubagentStart hook。
 
 结算（`settleSubagentInputRevivalTurn`，挂在 `executeTurnCommand` 返回/抛错之后）：
@@ -118,3 +124,6 @@
 - A7 复活轮运行中父调 TaskStop（strict）→ 放行并停掉真实轮（不再报
   「not running (status: running)」）；投影在复活时收到 `BackgroundTaskStarted(running)`，
   后台控制项/面板显示 running 而非旧生命终态。
+- A8 用户面板直发复活开轮的**同一刻**，父代理即收到 `status: running` 通知
+  （「was resumed and is running again… do not dispatch a duplicate」），且该通知
+  不消耗 `notified` 声明；复活轮终局时父仍收到 exactly 一条终态通知。

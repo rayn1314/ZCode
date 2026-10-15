@@ -4,6 +4,7 @@ import type { RuntimeCommandId } from "../command-queue.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import {
   persistBackgroundTaskNotificationCommand,
+  selectDeliverableTaskNotifications,
   shouldSuppressTaskNotificationRuntimeCommand,
 } from "./background-notifications.js";
 import { persistSubagentMessageCommand } from "./subagent-messages.js";
@@ -22,7 +23,13 @@ export interface ActiveLoopRuntimeCommandDrainResult {
 export async function drainPendingRuntimeCommandsForActiveLoop(
   this: AgentRuntimeInternal,
 ): Promise<ActiveLoopRuntimeCommandDrainResult> {
-  const commands = this.runtimeCommandQueue.getByMaxPriority("next");
+  // 与 idle 唤醒批次（runTaskNotificationBatch）同一套消解规则：过期终态通知
+  // （任务已复活）不进模型上下文，同任务同批只留最新快照
+  // （spec background-notification-supersession.md D2/D3）。
+  const commands = selectDeliverableTaskNotifications.call(
+    this,
+    this.runtimeCommandQueue.getByMaxPriority("next"),
+  );
   const consumedCommandIds: RuntimeCommandId[] = [];
   let backgroundSubagentResultConsumed = false;
   let workflowResultConsumed = false;

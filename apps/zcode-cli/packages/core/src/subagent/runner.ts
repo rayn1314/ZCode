@@ -57,7 +57,10 @@ import {
   type BuiltInSubagentModelSelectionOverrides,
 } from "./profile.js";
 import { EXPLORE_AGENT_ALLOWED_TOOLS } from "./explore-tools.js";
-import { formatLocalAgentTaskNotification } from "./completion-notification.js";
+import {
+  formatLocalAgentTaskNotification,
+  formatLocalAgentTaskRevivedNotification,
+} from "./completion-notification.js";
 import { createSubagentMessageSink } from "./message-steering.js";
 import {
   getInputRevivalBinding,
@@ -117,6 +120,11 @@ export interface ParentTaskNotificationCommand {
   text: string;
   traceContext: TraceContext;
   taskId: string;
+  /**
+   * 宣告时任务的 registry 终态。投递时若 registry 显示同一任务又活了（复活/重臂），
+   * 这条快照会被消解、不进父代理上下文（spec background-notification-supersession.md D2）。
+   */
+  announcedTaskStatus?: string;
 }
 
 export type EnqueueParentTaskNotification = (
@@ -2294,6 +2302,27 @@ export async function reviveSubagentTaskForInputTurn(
         revivedTask,
       );
     }
+    // 复活可见性（spec subagent-input-revival.md D8）：父代理只持有上一命的终态快照，
+    // 用户面板发起的复活对它不可见——不补这条「又活了」，它会照旧重开一个重复子代理。
+    // SendMessage 续跑的工具回执已自带同义句（resumed it in the background），
+    // 这里只覆盖面板直发的 input revival。
+    // 刻意不经 enqueueBackgroundNotification：那条路会 claim notified，把终态通知堵死。
+    binding.options.enqueueParentTaskNotification?.({
+      originMeta: {
+        backgroundSource: "subagent",
+        title: request.description.trim() || binding.agentId,
+        workId: binding.agentId,
+      },
+      taskId: binding.agentId,
+      text: formatLocalAgentTaskRevivedNotification({
+        agentId: binding.agentId,
+        agentType: request.agentType,
+        description: request.description,
+        outputFile: lifecycle.outputFile,
+        parentToolCallId: String(request.parentToolCallId ?? binding.agentId),
+      }),
+      traceContext: context.traceContext,
+    });
     const spawnedPayload = {
       agentId: binding.agentId,
       agentType: request.agentType,
@@ -2479,6 +2508,9 @@ function enqueueBackgroundNotification(
         workId: taskId,
       },
       taskId,
+      // 三个 finalize 调用方都已先把 registry 更新为终态，此处读到的即宣告状态；
+      // 任务缺席时留空——投递时没有宣告状态就不消解，保守投递。
+      ...(task && isTerminalRuntimeTask(task) ? { announcedTaskStatus: task.status } : {}),
       text: message,
       traceContext,
     });

@@ -56,6 +56,8 @@ import type {
 export interface BackgroundTaskNotificationCommand {
   originMeta?: BackgroundResultOriginMeta;
   taskId?: string;
+  /** 宣告时任务的 registry 终态；仅终态回合的生产者设置（spec background-notification-supersession.md D1）。 */
+  announcedTaskStatus?: string;
   text: string;
   toolName?: string;
   traceContext: TraceContext;

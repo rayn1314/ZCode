@@ -1,17 +1,24 @@
 import { createMessageId, HookEventName, traceContextToLogContext } from "../deps.js";
 import type { MessageId, TraceContext } from "../deps.js";
 import type { BackgroundResultOriginMeta } from "@zcode/contracts";
-import { createRuntimeCommandId, type TaskNotificationRuntimeCommand } from "../command-queue.js";
+import {
+  createRuntimeCommandId,
+  type RuntimeCommand,
+  type TaskNotificationRuntimeCommand,
+} from "../command-queue.js";
 import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import type { SealBackgroundTaskNotificationsInput } from "../types.js";
 import { shouldSuppressSealedSubagentBashNotification } from "../../runtime-task/notification-policy.js";
+import { isTerminalRuntimeTask, isTerminalRuntimeTaskStatus } from "../../runtime-task/registry.js";
 
 export function enqueueBackgroundTaskNotification(
   this: AgentRuntimeInternal,
   notification: {
     originMeta?: BackgroundResultOriginMeta;
     taskId?: string;
+    /** 宣告时任务的 registry 状态；仅终态通知的生产者设置（spec background-notification-supersession.md D1）。 */
+    announcedTaskStatus?: string;
     text: string;
     toolName?: string;
     traceContext: TraceContext;
@@ -51,6 +58,9 @@ export function enqueueBackgroundTaskNotification(
     source: "background_task",
     originMeta: notification.originMeta,
     taskId: notification.taskId,
+    ...(notification.announcedTaskStatus === undefined
+      ? {}
+      : { announcedTaskStatus: notification.announcedTaskStatus }),
     text: notification.text,
     toolName: notification.toolName,
     traceContext: notification.traceContext,
@@ -267,4 +277,72 @@ export function shouldSuppressTaskNotificationRuntimeCommand(
     toolName: command.toolName,
   });
   return true;
+}
+
+/**
+ * 投递时按 registry 消解过期终态通知（spec `background-notification-supersession.md` D2）。
+ *
+ * 终态通知是 `finalize` 那一刻冻结的快照。同一 taskId 被复活（SendMessage resume /
+ * input revival）或重臂后，registry 条目重新变为非终态——旧快照不再代表当前状态，
+ * 而新生命会在自己的终态再发一条通知（两条复活路径都会把条目的 `notified` 重置为
+ * false）。父代理读到过期失败就会习惯性重开一个重复子代理，这正是要消灭的窗口。
+ *
+ * 只在「宣告终态 ∧ 当前非终态」时返回 true：
+ * - 未宣告状态（workflow stall/escalation/hole 等进度通知）永不消解；
+ * - registry 条目缺席（终态驱逐 / 跨进程重启）不猜，保留原文投递——与
+ *   `background-stop-registry-authority.md`「投影兜底」同一原则。
+ */
+export function isSupersededTaskNotificationRuntimeCommand(
+  this: AgentRuntimeInternal,
+  command: TaskNotificationRuntimeCommand,
+): boolean {
+  if (!command.taskId || command.announcedTaskStatus === undefined) return false;
+  if (!isTerminalRuntimeTaskStatus(command.announcedTaskStatus)) return false;
+  const current = this.runtimeTaskRegistry.get(command.taskId);
+  if (!current) return false;
+  return !isTerminalRuntimeTask(current);
+}
+
+/**
+ * 宣告终态的快照通知（taskId + 终态 announcedTaskStatus）。只有它们参与
+ * 消解与批内归一——workflow 的 stall/escalation/hole 等进度通知没有宣告状态，
+ * 同一 run 的多条进度是各自独立的事实，全部投递。
+ */
+/** taskId 必填的终态快照通知：参与消解与批内归一的最小形状。 */
+type TerminalAnnouncedTaskNotification = TaskNotificationRuntimeCommand & {
+  readonly taskId: string;
+};
+
+function isTerminalAnnouncedTaskNotification(
+  command: RuntimeCommand,
+): command is TerminalAnnouncedTaskNotification {
+  return (
+    command.mode === "task-notification" &&
+    command.taskId !== undefined &&
+    command.announcedTaskStatus !== undefined &&
+    isTerminalRuntimeTaskStatus(command.announcedTaskStatus)
+  );
+}
+
+/**
+ * drain 出口共享的过滤器：mid-turn steer 注入与 idle 唤醒批次必须同一套规则，
+ * 否则同一队列在两个出口会给出不同的父代理视图。两条规则：
+ * 1. 消解过期终态通知（{@link isSupersededTaskNotificationRuntimeCommand}）；
+ * 2. 同一 taskId 的终态快照在批内只保留最新一条——「失败 → 复活 → 完成」
+ *    两次快照都投递，父代理仍会按先读到的过期失败决策。
+ */
+export function selectDeliverableTaskNotifications<T extends RuntimeCommand>(
+  this: AgentRuntimeInternal,
+  commands: readonly T[],
+): readonly T[] {
+  const latestIndexByTaskId = new Map<string, number>();
+  commands.forEach((command, index) => {
+    if (!isTerminalAnnouncedTaskNotification(command)) return;
+    if (isSupersededTaskNotificationRuntimeCommand.call(this, command)) return;
+    latestIndexByTaskId.set(command.taskId, index);
+  });
+  return commands.filter((command, index) => {
+    if (!isTerminalAnnouncedTaskNotification(command)) return true;
+    return latestIndexByTaskId.get(command.taskId) === index;
+  });
 }
