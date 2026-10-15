@@ -5057,6 +5057,10 @@ const zhCN: Record<string, string> = {
   "chat.queue.sendNow": "立即",
   // compact 队列项曾单独显示“立即执行”，与同一队列中的即时动作文案不一致。
   "chat.queue.runNow": "立即",
+  // 抢占语义与 bootstrap spec send-queued-now-preempt-semantics.md D1/D2/D3 同文：
+  // 停父轮重发；前台 wait 子代理随父轮取消；后台子代理与目标任务不动。
+  "chat.queue.sendNowHint":
+    "打断当前这轮对话，立即发送这条消息。等待中的子代理会一并取消；后台子代理和目标任务不受影响",
   "chat.queue.guide": "引导",
   "chat.queue.guide.description": "不打断当前任务，在当前命令结束后插入",
   "chat.queue.edit": "编辑",
@@ -5081,7 +5085,8 @@ const zhCN: Record<string, string> = {
   "chat.followup.deliveryMenuLabel": "选择发送方式",
   "chat.followup.queueDesc": "当前任务完成后处理",
   "chat.followup.guideDesc": "不打断当前命令，本轮结束后尽快插入；不可引导时自动转为排队",
-  "chat.followup.sendNowDesc": "打断当前任务，立即开始",
+  "chat.followup.sendNowDesc":
+    "打断当前这轮对话立即开始；等待中的子代理会取消，后台子代理和目标任务不受影响",
   "chat.followup.guideAttachmentsUnsupported": "引导暂不支持附件",
   "chat.modelChangeNotice.changed": "已从 {fromModel} 切换至 {toModel}",
   "chat.preparing": "准备中...",

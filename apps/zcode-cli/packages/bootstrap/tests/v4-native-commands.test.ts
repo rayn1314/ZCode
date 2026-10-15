@@ -1150,6 +1150,35 @@ describe("v4 原生 sendText", () => {
     expect(releaseForegroundPromotionLease).toHaveBeenCalledWith("send-now:cmd-1");
   });
 
+  it("运行中 startNow + active goal：不 pause goal，只 abort（立即发送≠停止，spec D1/D2）", async () => {
+    const controller = new AbortController();
+    const app = makeApp({
+      readTarget: vi.fn().mockResolvedValue({ targetID: "g1", status: "active" }),
+      updateTargetStatus: vi.fn().mockResolvedValue({ targetID: "g1", status: "paused" }),
+      runtime: {
+        acquireForegroundPromotionLease: vi.fn().mockReturnValue({ kind: "acquired" }),
+        getActiveForegroundExecutionId: vi.fn().mockReturnValue(undefined),
+        releaseForegroundPromotionLease: vi.fn().mockReturnValue(true),
+        stopActiveForegroundExecution: vi.fn().mockReturnValue({ kind: "idle" }),
+      },
+    });
+    const record = makeRecord({ app, activeAbortController: controller });
+    const host = makeHost(record);
+    controller.signal.addEventListener("abort", () => {
+      record.activeAbortController = undefined;
+    });
+
+    await new V4CommandExecutor(host).execute(
+      envelope("sendText", { text: "插队问一句", requestedDelivery: "startNow" }),
+    );
+
+    expect(controller.signal.aborted).toBe(true);
+    // goal 必须保持运行；pauseActiveGoal 第一步就是 readTarget，未被调用即未触达 barrier。
+    expect(app.readTarget).not.toHaveBeenCalled();
+    expect(host.legacyMutations).not.toContain("send_now_goal_paused");
+    expect(host.legacyMutations).not.toContain("goal_paused");
+  });
+
   it("automation 运行中会话：Core queue 保留完整 automation denylist", async () => {
     const app = makeApp({
       sendInput: vi.fn().mockResolvedValue({

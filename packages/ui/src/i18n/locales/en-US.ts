@@ -5388,6 +5388,8 @@ const enUS: Record<string, string> = {
   "chat.queue.drag": "Drag to reorder",
   "chat.queue.sendNow": "Send now",
   "chat.queue.runNow": "Run now",
+  "chat.queue.sendNowHint":
+    "Interrupt the current turn and send this message now. Waiting subagents are cancelled; background subagents and active goals keep running",
   "chat.queue.guide": "Guide",
   "chat.queue.guide.description":
     "Insert after the current command finishes without interrupting the current task",
@@ -5416,7 +5418,8 @@ const enUS: Record<string, string> = {
   "chat.followup.queueDesc": "Handle after the current task finishes",
   "chat.followup.guideDesc":
     "Don't interrupt; insert as soon as the current command finishes. Falls back to queue when steering isn't possible.",
-  "chat.followup.sendNowDesc": "Interrupt the current task and start now",
+  "chat.followup.sendNowDesc":
+    "Interrupt the current turn and start now. Waiting subagents are cancelled; background subagents and active goals keep running",
   "chat.followup.guideAttachmentsUnsupported": "Steering doesn't support attachments",
   "chat.modelChangeNotice.changed": "Switched from {fromModel} to {toModel}",
   "chat.preparing": "Preparing...",
