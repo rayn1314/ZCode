@@ -5,6 +5,9 @@ import {
   useWorkspaceServicesResolution,
 } from "./useWorkspaceServices.js";
 import { acquireGenUiPage, type GenUiCardTarget, type RetainedGenUiPage } from "@/gen-ui/host.js";
+import { resolveGenUiTargetRemoteIdentity } from "@/gen-ui/domain/remoteIdentity.js";
+import { useTabStore } from "@/store/TabStoreProvider.js";
+import { isWorkspaceTab } from "@/store/tabStore.js";
 export function useGenUi(
   target: GenUiCardTarget,
   confirm: (prompt: string) => Promise<string | null>,
@@ -14,10 +17,21 @@ export function useGenUi(
   const platform = platformService?.pluginSandbox;
   const services = useOptionalBaseWorkspaceServices();
   const state = services?.genUiService;
+  // 侧聊/fork 会话渲染链可能丢远端身份透传，tab 快照按 workspacePath 兜底借身份，
+  // 避免服务解析回落到本机 base services（读端变 Windows 根导致越界）。
+  const fallbackIdentity = useTabStore((state) =>
+    resolveGenUiTargetRemoteIdentity({
+      workspacePath: target.workspacePath,
+      workspaceIdentity: target.workspaceIdentity,
+      remoteSessionId: target.remoteSessionId,
+      workspaceTabs: state.tabs.filter(isWorkspaceTab),
+    }),
+  );
   const resolution = useWorkspaceServicesResolution(
     target.workspacePath,
-    target.remoteSessionId,
-    target.workspaceIdentity,
+    target.remoteSessionId ?? fallbackIdentity?.remoteSessionId,
+    target.workspaceIdentity ?? fallbackIdentity?.workspaceIdentity,
+    fallbackIdentity?.remoteTarget,
   );
   const files = resolution.services.genUiService;
   const [result, setResult] = useState<{
