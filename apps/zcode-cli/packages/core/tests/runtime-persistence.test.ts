@@ -708,6 +708,7 @@ describe("AgentRuntime session persistence", () => {
       },
     );
 
+    runtime.setSessionModelSelection(createTestModelSelection("provider-b/model-b"));
     runtime.recordPendingModelChange({
       fromModel: createTestModelSelection("provider-a/model-a"),
       fromModelLabel: "provider-a/model-a",
@@ -734,6 +735,48 @@ describe("AgentRuntime session persistence", () => {
     });
   });
 
+  it("drops a pending model change whose intent did not materialize", async () => {
+    // 回归：createSession 预热/恢复请求一个模型、实际生效另一个时，切换意图残留到
+    // 落库会写出一条从未真实发生的 A → B 记录（spec model-change-timeline-fact-check.md）。
+    // 当前选型是 default-runtime-model，pending 的 toModel 却是 provider-b/model-b，
+    // 两者不一致 → 不得落任何 model_change part。
+    const sessionId = createSessionId("runtime-persistence-model-change-stale-intent");
+    const store = createRecordingSessionStore();
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      {
+        agentName: "persistence-test",
+        workingDirectory: "/tmp/zcode-runtime-persistence-stale-intent",
+      },
+      {
+        eventStore: createTestSessionEventStore(),
+        modelFactory: createTestModelFactory({
+          async generateText() {
+            return {
+              finishReason: "stop",
+              text: "answer with stale intent",
+              usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+            };
+          },
+        } as never),
+        sessionStore: store,
+      },
+    );
+
+    runtime.recordPendingModelChange({
+      fromModel: createTestModelSelection("provider-a/model-a"),
+      fromModelLabel: "provider-a/model-a",
+      toModel: createTestModelSelection("provider-b/model-b"),
+      toModelLabel: "provider-b/model-b",
+    });
+    await runtime.executeTurn("prompt after stale intent");
+
+    const timelineIndex = store.savedParts.findIndex(
+      (part) => part.type === "timeline" && part.timelineType === "model_change",
+    );
+    expect(timelineIndex).toBe(-1);
+  });
+
   it("persists a source-less initial child model fact before the first accepted input", async () => {
     const sessionId = createSessionId("runtime-persistence-initial-child-model");
     const store = createRecordingSessionStore();
@@ -758,6 +801,7 @@ describe("AgentRuntime session persistence", () => {
       },
     );
 
+    runtime.setSessionModelSelection(createTestModelSelection("child-provider/child-model"));
     runtime.recordPendingModelChange({
       toModel: createTestModelSelection("child-provider/child-model"),
       toModelLabel: "child-provider/child-model",
