@@ -108,6 +108,15 @@ export interface ZCodeProtocolSessionRecord {
   stateRevision: number;
   taskType?: SessionTaskType;
   /**
+   * Gen UI 渲染失败报告防环账本（进程内存，spec gen-ui-cross-host-render.md）：
+   * injectedKeys = 同键（sessionId+path+errorKind）终身一次；injectCount = 每会话注入上限。
+   * 注入即清由 task-notification 一次性投递语义保证；进程重启后丢失，可接受。
+   */
+  genUiRenderFailureLedger?: {
+    injectedKeys: Set<string>;
+    injectCount: number;
+  };
+  /**
    * 子代理子会话的受限模式静态事实：仅 `taskType === "subagent_child"` 且 launch spec
    * 读不到时置位（工具面身份 / agentName / maxTurns 已随规格一起丢失，见 spec D2 / S1a）。
    * 判据只有一个——launch spec 读不到；"父会话已删除"不另设第二判据：父删除会递归删除

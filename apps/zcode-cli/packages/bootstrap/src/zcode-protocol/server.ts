@@ -45,6 +45,7 @@ import {
   getUsageStats,
   listSessions,
   listSessionSubagents,
+  reportGenUiRenderFailure,
   readEvents,
   readMessages,
   readSession,
@@ -678,6 +679,8 @@ export class ZCodeProtocolAgentServer {
         return await compactSession(this.context, request.params);
       case zcodeProtocolMethods.sessionGoal:
         return await goalSession(this.context, request.params);
+      case zcodeProtocolMethods.sessionGenUiReport:
+        return await reportGenUiRenderFailure(this.context, request.params);
       case zcodeProtocolMethods.sessionGoalList:
         return await goalListSessions(this.context, request.params);
       case zcodeProtocolMethods.sessionSetModel:

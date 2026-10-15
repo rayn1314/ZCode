@@ -113,6 +113,7 @@ import {
   zcodeMcpResourceSamplesSchema,
   zcodeToolExecResourceSchema,
   zcodeProcessResourceSampleSchema,
+  zcodeSessionGenUiReportResultSchema,
   zcodeSessionCloseResultSchema,
   zcodeSessionCompactResultSchema,
   zcodeSessionEventsResultSchema,
@@ -199,6 +200,7 @@ import type {
   ZCodeAgentTestModelConnectivityParams,
   ZCodeAgentGoalParams,
   ZCodeAgentGoalListParams,
+  ZCodeAgentGenUiRenderFailureParams,
   ZCodeAgentGrantWorkspaceHookTrustParams,
   ZCodeAgentInitializeResult,
   ZCodeAgentListSessionsParams,
@@ -5410,6 +5412,34 @@ export function createZCodeAgentService(
         logger.warn(params.inputId, "ZCode Protocol session/goal 失败", {
           action: params.action,
           durationMs: Date.now() - startedAt,
+          message: error instanceof Error ? error.message : String(error),
+          sessionId: params.sessionId,
+          workspaceKey: resolveWorkspaceKey(params),
+          workspacePath: params.workspacePath,
+        });
+        throw error;
+      }
+    },
+
+    async genUiReportRenderFailure(params: ZCodeAgentGenUiRenderFailureParams) {
+      // 渲染失败报告不触发任何模型执行，走只读客户端：未配置供应商标识也能把
+      // 失败事实送达 CLI（CLI 侧再按防环三闸注入，spec gen-ui-cross-host-render.md）。
+      const client = await getReadOnlyClient(params);
+      try {
+        return await client.request(
+          zcodeProtocolMethods.sessionGenUiReport,
+          {
+            sessionId: params.sessionId,
+            path: params.path,
+            errorKind: params.errorKind,
+            ...(params.readerRoot ? { readerRoot: params.readerRoot } : {}),
+            ...(params.workspaceKey ? { workspaceKey: params.workspaceKey } : {}),
+          },
+          zcodeSessionGenUiReportResultSchema,
+        );
+      } catch (error) {
+        logger.warn("gen-ui-report", "ZCode Protocol session/gen-ui-report 失败", {
+          errorKind: params.errorKind,
           message: error instanceof Error ? error.message : String(error),
           sessionId: params.sessionId,
           workspaceKey: resolveWorkspaceKey(params),
