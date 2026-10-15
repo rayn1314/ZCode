@@ -67,6 +67,12 @@ export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
    * 端口 cancel 之前写下它；终态通知稍后由 waiter 结算时读它。重臂（resume 新生命）随结算面复位。
    */
   stopInitiator?: "user" | "model";
+  /**
+   * 本条 running 快照由输入复活注册（spec `subagent-input-revival.md` D3）：这轮没有
+   * runner 执行体持有，轮末由 turn 挂钩结算；派发轮与 SendMessage 复活轮恒缺席该标记，
+   * 其轮末钩子据此 no-op，杜绝双结算。
+   */
+  inputRevival?: boolean;
   taskType?: RuntimeTaskType;
   traceContext?: TraceContext;
   turnId?: TurnId;
