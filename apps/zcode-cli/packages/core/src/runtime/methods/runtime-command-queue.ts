@@ -4,6 +4,7 @@ import { uuidv7 } from "@zcode/shared";
 import type { AgentRuntimeInternal } from "../internal.js";
 import {
   persistBackgroundTaskNotificationBatch,
+  selectDeliverableTaskNotifications,
   shouldSuppressTaskNotificationRuntimeCommand,
 } from "./background-notifications.js";
 import { persistSubagentMessageCommand } from "./subagent-messages.js";
@@ -318,11 +319,16 @@ async function runTaskNotificationBatch(
   this: AgentRuntimeInternal,
   commands: readonly TaskNotificationRuntimeCommand[],
 ): Promise<void> {
-  const eligibleCommands = commands.filter(
-    (command) =>
-      !isStaleBranchRuntimeCommand(this, command) &&
-      !shouldSuppressTaskNotificationRuntimeCommand.call(this, command),
-  );
+  // 与 mid-turn steer drain 同一套消解规则（spec background-notification-supersession.md
+  // D2/D3）：过期终态通知（任务已复活）不唤醒新轮，同任务同批只投最新快照。
+  const eligibleCommands = selectDeliverableTaskNotifications
+    .call(this, commands)
+    .filter(
+      (command): command is TaskNotificationRuntimeCommand =>
+        command.mode === "task-notification" &&
+        !isStaleBranchRuntimeCommand(this, command) &&
+        !shouldSuppressTaskNotificationRuntimeCommand.call(this, command),
+    );
   const firstCommand = eligibleCommands[0];
   if (!firstCommand) return;
 

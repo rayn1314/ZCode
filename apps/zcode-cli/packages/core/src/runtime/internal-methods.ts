@@ -173,6 +173,8 @@ export interface AgentRuntimeCoreMethods {
   enqueueBackgroundTaskNotification(notification: {
     originMeta?: BackgroundResultOriginMeta;
     taskId?: string;
+    /** 宣告时任务的 registry 状态；仅终态通知的生产者设置（spec background-notification-supersession.md D1）。 */
+    announcedTaskStatus?: string;
     text: string;
     toolName?: string;
     traceContext: TraceContext;

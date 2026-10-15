@@ -68,6 +68,14 @@ export interface TaskNotificationRuntimeCommand extends RuntimeCommandBase {
   readonly source: "background_task";
   readonly originMeta?: BackgroundResultOriginMeta;
   readonly taskId?: string;
+  /**
+   * 通知宣告时该任务的 registry 状态（终态语义）。
+   * 只有宣告终态的生产者（子代理 finalize、Bash/workflow 终态回合）设置；
+   * 进行中的进度通知（workflow stall/escalation/hole）刻意不设——投递时据此
+   * 消解「宣告终态但任务已复活」的过期通知（spec
+   * `background-notification-supersession.md` D1/D2）。
+   */
+  readonly announcedTaskStatus?: string;
   readonly text: string;
   readonly toolName?: string;
 }

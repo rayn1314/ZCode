@@ -100,6 +100,7 @@ export function createDefaultSubagentPort(
       this.enqueueBackgroundTaskNotification({
         originMeta: notification.originMeta,
         taskId: notification.taskId,
+        announcedTaskStatus: notification.announcedTaskStatus,
         text: notification.text,
         traceContext: notification.traceContext,
       });

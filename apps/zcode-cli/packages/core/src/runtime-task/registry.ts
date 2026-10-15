@@ -360,6 +360,15 @@ export function isTerminalRuntimeTask(task: Pick<RuntimeTaskSnapshot, "status">)
   return TERMINAL_STATUSES.has(task.status);
 }
 
+/**
+ * 字符串级终态判定，与 {@link isTerminalRuntimeTask} 同一词汇表：供通知「宣告状态」
+ * 使用——宣告状态来自外部生产者的 string，词汇表外的值一律按非终态处理
+ * （不猜，宁可投递也不误杀进行中通知）。
+ */
+export function isTerminalRuntimeTaskStatus(status: string): boolean {
+  return TERMINAL_STATUSES.has(status as RuntimeTaskSnapshot["status"]);
+}
+
 /** 终态条目的 settle 时间：优先 completedAt，缺省回退 startedAt（只可能出现在畸形快照上）。 */
 function settledAtMs(task: RuntimeTaskSnapshot): number {
   return task.completedAt?.getTime() ?? task.startedAt.getTime();

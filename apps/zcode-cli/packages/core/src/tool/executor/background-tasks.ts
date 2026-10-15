@@ -592,6 +592,8 @@ export class BackgroundTaskTracker {
             }
           : {}),
         taskId,
+        // 宣告状态：本路径只发终态回合（含 lost），任务若被重臂/复活，投递时按 registry 消解。
+        announcedTaskStatus: status,
         text,
         toolName: toolCall.name,
         traceContext,
