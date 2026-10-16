@@ -8,6 +8,7 @@ import tailwindcss from "@tailwindcss/vite";
 import { resolveZCodeEndpointOrigin } from "@zcode/shared/zcodeEndpoint";
 import { pdfJsCMapsPlugin } from "../ui/vite/pdfJsCMapsPlugin.js";
 import { getBuildMetadata } from "./scripts/build-metadata.mjs";
+import { materialIconsIndexPlugin } from "../../scripts/material-icons-index-plugin.mjs";
 import {
   resolveDesktopProductFlavor,
   resolveDesktopProductIdentityForFlavor,
@@ -216,6 +217,9 @@ export default defineConfig(({ mode }) => {
     ...(e2eCoverageEnabled ? [createE2EUIRendererCoveragePlugin(repoRoot)] : []),
     htmlProductNamePlugin(zcodeProductIdentity.productName),
     pdfJsCMapsPlugin(),
+    materialIconsIndexPlugin({
+      iconsDir: resolve(__dirname, "src/renderer/public/material-icons"),
+    }),
     react(),
     tailwindcss(),
   ];
