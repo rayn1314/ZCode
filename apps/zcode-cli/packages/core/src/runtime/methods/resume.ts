@@ -36,6 +36,7 @@ import {
 } from "./session-shell-environment.js";
 import { resetProjectMemoryRecall } from "../helpers/project-memory-recall.js";
 import { restoreDynamicWorkflowActivationOnResume } from "./dynamic-workflow-activation.js";
+import { reconcileOrphanedSubagentLifecycles } from "./subagent-lifecycle-reconciliation.js";
 import { repairPersistedRemoteSessionPaths } from "../helpers/persisted-remote-session-path-repair.js";
 import {
   restoreWorkspaceCheckpointEntries,
@@ -152,6 +153,10 @@ export async function resumeFromStore(
     messages,
     traceContext,
   );
+  // 冷接管时认领上一个进程丢下的子代理孤儿（spec subagent-lifecycle-orphan-reconciliation.md）：
+  // 进程异常退出不会给正在跑的子代理任何结算机会，那类行会永久停在「只有 spawn」并被 roster
+  // 报成 lost。这里把它落定成 interrupted，条数随 SessionResumed 事件一并留痕。
+  const reconciledOrphanCount = await reconcileOrphanedSubagentLifecycles.call(this, traceContext);
   const hydration = await hydrateMessageHistoryFromSession({
     artifactStore: this.artifactStore,
     branchCutAfterMessageId,
@@ -250,6 +255,7 @@ export async function resumeFromStore(
       messageCount: hydration.messageCount,
       partCount: hydration.partCount,
       recoveredCompactTimelineCount,
+      reconciledOrphanCount,
       recoveredSteerInputCount,
       resumedTodoCount: resumedTodos.length,
       resumedTarget: resumedTarget?.status,

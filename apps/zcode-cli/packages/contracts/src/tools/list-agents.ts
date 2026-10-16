@@ -23,6 +23,7 @@ export const AGENT_TASK_STATUSES = [
   "killed",
   "stopped",
   "lost",
+  "interrupted",
 ] as const;
 
 export const ListAgentsInputSchema = z

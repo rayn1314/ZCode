@@ -154,8 +154,11 @@ async function readExistingLifecycleEntry(
   return entries.find((entry) => entry.id === entryId);
 }
 
-/** 从旧 entry 解出最小事实集；结构损坏时当作没有旧行（stop 会因此跳过，不写半条）。 */
-function readLifecycleData(
+/**
+ * 从旧 entry 解出最小事实集；结构损坏时当作没有旧行（stop 会因此跳过，不写半条）。
+ * 孤儿对账也读它来判行事实（agentId / 状态词），所以两者对「什么是一行有效记录」的判断同源。
+ */
+export function readLifecycleData(
   entry: SessionEntryInfo | undefined,
 ): SubagentLifecycleEntryData | undefined {
   if (!entry) return undefined;

@@ -106,7 +106,10 @@ export type SubagentTaskStatus =
   | "cancelled"
   | "killed"
   | "stopped"
-  | "lost";
+  | "lost"
+  // 宿主进程在它运行期间死亡（崩溃/重启），由下次接管会话时的孤儿对账落定：这一轮没有任何
+  // 结果，且不会再变。它与 `lost` 是同一情形的两个阶段——`lost` 是尚未被认领的形态。
+  | "interrupted";
 
 export interface SubagentTaskSnapshot {
   taskId: string;

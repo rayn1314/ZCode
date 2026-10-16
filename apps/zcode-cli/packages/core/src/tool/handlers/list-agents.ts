@@ -45,6 +45,7 @@ const LIST_AGENTS_DESCRIPTION = [
   "",
   "- Never conclude a subagent never ran just because it is missing here: history rows only exist when this host keeps durable session events, and the in-process registry is empty after a restart. If the persisted history could not be read, the result is flagged (`history_unavailable`) instead of pretending there is no history.",
   "- Honest status semantics: a history row with no terminal event is reported as `lost`, never `running` — the process that owned it is gone.",
+  "- `interrupted` is the reconciled form of that same situation: the run ended because its host process died (crash or restart), and the record was closed when this session was reopened. There is no result to collect, and the row will not change again.",
 ].join("\n");
 
 const listAgentsHandler: ToolHandler = async (input, context) => {
