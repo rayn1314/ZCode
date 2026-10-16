@@ -94,6 +94,7 @@ export function GeneralSectionContent({
   receivePreviewUpdates,
   autoDownloadAndInstallUpdates,
   dataBaseDir,
+  dataRootDir,
   terminalInheritSystemProfile = true,
   terminalFontFamily = "",
   integratedTerminalShell = { mode: "auto" },
@@ -163,6 +164,8 @@ export function GeneralSectionContent({
   receivePreviewUpdates: boolean;
   autoDownloadAndInstallUpdates: boolean;
   dataBaseDir: string;
+  /** 当前实际数据根（含身份后缀，如 `C:\Users\rayn\.zcode-rayn`），由 systemService.info() 提供 */
+  dataRootDir: string;
   terminalInheritSystemProfile: boolean;
   terminalFontFamily: string;
   integratedTerminalShell?: IntegratedTerminalShellSelection;
@@ -984,6 +987,7 @@ export function GeneralSectionContent({
             <DataBaseDirControl
               dataBaseDir={dataBaseDir}
               defaultHomeDir={defaultHomeDir}
+              dataRootDir={dataRootDir}
               onDataBaseDirChange={onDataBaseDirChange}
               onSelectDataBaseDir={onSelectDataBaseDir}
             />

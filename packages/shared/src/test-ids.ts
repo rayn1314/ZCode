@@ -354,6 +354,8 @@ export const TID_SETTINGS_DATA_BASE_DIR_BROWSE = "settings-data-base-dir-browse"
 export const TID_SETTINGS_DATA_BASE_DIR_SAVE = "settings-data-base-dir-save";
 /** 常规设置中的数据存储路径复制/待重启/失败状态 */
 export const TID_SETTINGS_DATA_BASE_DIR_STATUS = "settings-data-base-dir-status";
+/** 常规设置中的当前实际数据根展示（含身份后缀） */
+export const TID_SETTINGS_DATA_BASE_DIR_EFFECTIVE_ROOT = "settings-data-base-dir-effective-root";
 /** 资源管理器顶部 tab（suffix=cpu|memory|storage） */
 export const TID_RESOURCE_MANAGER_TAB = "resource-manager-tab";
 /** 资源管理器「存储」tab：分区容器 */

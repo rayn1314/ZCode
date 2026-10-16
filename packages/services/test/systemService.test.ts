@@ -7,13 +7,15 @@ const PROBE_SERVICE_URL = "http://intranet-probe.example:3850/api/intranet/probe
 const SECONDARY_PROBE_IP = "192.0.2.151";
 
 describe("systemService", () => {
-  it("info 会返回当前平台和 home 目录", async () => {
+  it("info 会返回当前平台、home 目录和生效数据根", async () => {
     const service = createSystemService();
     const info = await service.info();
 
     expect(info.platform).toBe(process.platform);
     expect(typeof info.homedir).toBe("string");
     expect(info.homedir.length).toBeGreaterThan(0);
+    expect(typeof info.dataRootDir).toBe("string");
+    expect(info.dataRootDir.length).toBeGreaterThan(0);
   });
 
   it("listIntegratedTerminalShells 在非 Windows host 返回空列表", async () => {

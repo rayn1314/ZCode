@@ -13,6 +13,7 @@ import type {
   SystemInfo,
 } from "@zcode/shared";
 import type { ISystemService } from "./system.js";
+import { getZCodeDataRootDir } from "../paths.js";
 import { listIntegratedTerminalShellOptions } from "./integratedTerminalShells.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 800;
@@ -350,7 +351,11 @@ export function createSystemService(options: CreateSystemServiceOptions = {}): I
 
   return {
     async info(): Promise<SystemInfo> {
-      return { homedir: homedir(), platform: process.platform };
+      return {
+        homedir: homedir(),
+        platform: process.platform,
+        dataRootDir: getZCodeDataRootDir(),
+      };
     },
 
     async listIntegratedTerminalShells(): Promise<IntegratedTerminalShellOption[]> {

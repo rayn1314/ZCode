@@ -70,6 +70,8 @@ export interface WorkspaceFileEntry {
 export interface SystemInfo {
   homedir: string;
   platform: string;
+  /** 当前生效的数据根（含身份后缀，如 `~/.zcode-rayn`）；设置页「数据存储路径」展示用 */
+  dataRootDir: string;
 }
 
 /** 支持的语言 */
