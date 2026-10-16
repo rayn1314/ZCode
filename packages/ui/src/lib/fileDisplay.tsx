@@ -8,6 +8,8 @@ import {
   getIconPalette,
   getIconLabel,
   buildInlineSvgDataUrl,
+  getKnownMaterialIconNames,
+  resolveAvailableMaterialIconName,
 } from "@/lib/fileDisplayHelpers.js";
 
 export const INLINE_FALLBACK_FILE_ICON_SRC =
@@ -53,7 +55,10 @@ function resolveMaterialIconBasePath(): string {
 }
 
 export function buildMaterialFileIconSrc(iconName: string): string {
-  return `${resolveMaterialIconBasePath()}/${iconName}.svg`;
+  // 素材里不存在的图标名（未知扩展名直接按扩展名拼路径）先回退到 document，
+  // 避免每个未知扩展名的文件都发起一个注定失败的请求、在控制台持续刷 ERR_FILE_NOT_FOUND。
+  const availableIconName = resolveAvailableMaterialIconName(iconName, getKnownMaterialIconNames());
+  return `${resolveMaterialIconBasePath()}/${availableIconName}.svg`;
 }
 
 function buildIconSrc(iconName: string): string {

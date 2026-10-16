@@ -2,6 +2,11 @@
 
 export const DEFAULT_FILE_ICON_NAME = "document";
 
+// 由 desktop / web 的 vite config 在构建期注入（scripts/material-icons-index-plugin.mjs）：
+// 值是 material-icons 目录里实际存在的素材文件名（不含 .svg 后缀）。
+// 未注入的环境（独立 typecheck / 单测 / 未接入插件的构建）下为 undefined，过滤不生效。
+declare const __MATERIAL_ICONS_INDEX__: readonly string[] | undefined;
+
 const ICON_COLOR_MAP: Record<string, { accent: string; background: string }> = {
   audio: { accent: "#7C3AED", background: "#EDE9FE" },
   css: { accent: "#1572B6", background: "#E0F2FE" },
@@ -191,4 +196,28 @@ export function getIconLabel(iconName: string): string {
 
 export function buildInlineSvgDataUrl(svg: string): string {
   return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+let cachedKnownMaterialIconNames: ReadonlySet<string> | null | undefined;
+
+export function getKnownMaterialIconNames(): ReadonlySet<string> | null {
+  if (cachedKnownMaterialIconNames === undefined) {
+    cachedKnownMaterialIconNames =
+      typeof __MATERIAL_ICONS_INDEX__ !== "undefined" ? new Set(__MATERIAL_ICONS_INDEX__) : null;
+  }
+  return cachedKnownMaterialIconNames;
+}
+
+export function resolveAvailableMaterialIconName(
+  iconName: string,
+  knownIconNames: ReadonlySet<string> | null,
+): string {
+  if (
+    iconName === DEFAULT_FILE_ICON_NAME ||
+    knownIconNames === null ||
+    knownIconNames.has(iconName)
+  ) {
+    return iconName;
+  }
+  return DEFAULT_FILE_ICON_NAME;
 }
