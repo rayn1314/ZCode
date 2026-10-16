@@ -15,7 +15,7 @@
   - 目标平台：Windows（本仓库已实测：自带 `dist/windows/amd64/open-computer-use.exe`，经 UI Automation + Win32 window-message bridge 工作，无需额外权限授予）。
   - 配置形态：stdio MCP server。
 - **明确不做**：
-  - 不修改 `packages/zcode-cua` 占位包（那是路线 B 的工作，见"迁移边界"）。
+  - 本文档不修改 `packages/zcode-cua` 占位包（桥接改造是路线 B，**已落地**，见「迁移边界」与 `packages/zcode-cua/spec/cua-bridge-runtime.md`）。
   - 不复刻官方权限弹窗 UI / PiP / 帧保护外壳——它们只对 `zcode-cua` MCP server 生效，不覆盖本路线。
 
 ## 行为
@@ -84,5 +84,5 @@
 
 ## 迁移边界
 
-- **路线 B（后续）**：把 `packages/zcode-cua` 占位包替换为桥接实现——保留官方 `mcp__zcode-cua__*` 工具面与帧保护外壳，底层执行转发到开源引擎（如 open-computer-use 或底层自动化库）。届时本路线 A 的 MCP 配置可保留作为兜底，或整体移除。
+- **路线 B（已落地）**：`packages/zcode-cua` 占位包已改造成桥接实现——保留官方工具面，底层执行转发到开源引擎 `open-computer-use`；启用需显式 `ZCODE_CUA_BRIDGE_ENABLE=1`，默认仍 fail-closed（未装开源引擎时不产生进程开销）。契约与工具映射见 `packages/zcode-cua/spec/cua-bridge-runtime.md`。本路线 A 的 MCP 配置**两套共存**：A 是日常默认路径，B 覆盖 A 够不到的 node-repl 内建 CUA bridge。
 - 若官方 CUA 未来开源，或自建实现成熟到覆盖权限 UI / PiP，可整体移除本配置。

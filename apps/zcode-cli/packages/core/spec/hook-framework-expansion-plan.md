@@ -1,6 +1,7 @@
 # Hook 框架通用型扩充 · 实施方案
 
 - 状态：**v2，已按无上下文评审修订**
+- 落地状态：**P0–P4 全部已完成**（详见 `hook-framework-expansion.md` 的落地状态行）。本文档保留分期施工顺序、验收口径与 UI 规格，作为已完成工作的记录与回归参照；`prompt` / `agent` handler 与 zod 统一仍未做。
 - 配套设计规格：`apps/zcode-cli/packages/core/spec/hook-framework-expansion.md`（契约、不变式、失败语义、单源设计以它为准；本文件只讲施工顺序与验收）
 - 目标:对齐业界事实标准（Claude Code 为标杆），把"加一个事件"的成本压到一处，并为压缩 hook、子代理 hook 铺路
 - 开工前跑 `node scripts/check-workspace-freshness.mjs` 检查基线
@@ -146,7 +147,7 @@ P1 同时落地：`blockable` / `injectsContext` 从"元数据"接进引擎判�
 
 设置页表单在 `packages/ui/src/settings/HookForm.tsx`，文案在 `packages/ui/src/i18n/locales/{zh-CN,en-US}.ts`。
 
-> **前置**：P2 开工前必须先补齐规格 §10 的安全模型（SSRF / 凭据脱敏 / MCP 是否过权限 broker / 并发上限），否则不予放行。
+> **前置（已满足）**：规格 §10 的安全模型（SSRF / 凭据脱敏 / MCP 是否过权限 broker / 并发上限）已实现，P2 据此放行。
 
 ### 5.1 handler 类型选择器（P2）
 
@@ -204,7 +205,7 @@ P1 同时落地：`blockable` / `injectsContext` 从"元数据"接进引擎判�
 
 ## 8. 遗留与归属
 
-**本轮范围（P0）之外、但已规划的**：P1 事件与能力字段接引擎、P2 handler 类型（含安全前置）、P3 协议补全与配置合并语义、P4 插件样例与文档。
+**P1–P4（均已完成）**：P1 事件与能力字段接引擎、P2 handler 类型（含安全前置）、P3 协议补全与配置合并语义、P4 插件样例与文档。
 
 **单独立项（明确不在本任务）**：
 

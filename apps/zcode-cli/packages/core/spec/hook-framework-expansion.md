@@ -1,6 +1,7 @@
 # Hook 框架通用型扩充 · 设计规格
 
 - 状态：**v2，已按无上下文评审修订**（v1 的核心前提被推翻，见 §0）
+- 落地状态：**P0–P4 全部已落地**——17 个事件、单源 `packages/shared/src/hooks.ts` + 类型级穷尽守卫、`http` / `mcp_tool` handler（§10 安全模型约束已实现）、PreCompact（可阻断）/ PostCompact / PreModelSwitch 全链路已接通。唯一仍暂缓的是 `prompt` / `agent` 两类模型 handler 与 zod 统一（单独立项）。本文档保留设计契约、不变式与安全模型；分期施工与验收见配套实施方案。
 - 主责包：`apps/zcode-cli/packages/core`（hook 执行引擎与生命周期行为）
 - 涉及其它包：`packages/shared`（**单源与全部根侧副本**）、`packages/ui`、`packages/services`、`apps/zcode-cli/packages/contracts`、`apps/zcode-cli/packages/adapters`、`apps/zcode-cli/packages/bootstrap`、`apps/zcode-cli/packages/cli`
 - 相关既有文档：`packages/services/spec/workspace-hook-trust-location.md`（信任库位置与不变式，不在本规格重复）
@@ -118,7 +119,7 @@ v1 提交给一个无上下文的对抗式评审后，四个基础前提被证�
 - **D3 穷尽性用 `satisfies` + 类型级断言，不用 `Object.fromEntries`，不引入代码生成器**。见 §5.2。理由：`Object.fromEntries` 会丢字面量键从而**取消**编译检查，正好是我们要买的东西的反面。
 - **D4 本轮不动 zod 版本统一**。三处 CLI/根 schema 各自的 zod 实例保留，改为从单源派生事件键；zod 统一（把 `contracts` 升到 4.x 后删副本改 re-export）**单独立项**，因为它是依赖升级，风险与目标不同。`packages/shared/src/workspace-hook-trust-store-file.ts:3-18` 已有一段"schema 下沉 shared 做单源、CLI 侧 re-export"的先例与 zod3/zod4 实例禁忌说明，本设计沿用该先例。
 - **D5 能力字段本轮不接引擎**。描述符里的 `matcherKind` / `blockable` / `injectsContext` 在 P0 是**元数据**（供 UI、文档、后续 P1 使用），**不改变现有执行语义**。任何"用能力字段驱动阻断判定"的改动都是行为变更，留到 P1 并配测试。禁止把它们当成"已经生效的约束"来宣称。
-- **D6 handler 类型本轮只扩 `http` 与 `mcp_tool`**。`prompt` / `agent`（模型类 handler）需要独立模型调用与成本上限设计，暂缓。`http` / `mcp_tool` 的安全模型见 §10，**未补齐不予放行**。
+- **D6 handler 类型只扩 `http` 与 `mcp_tool`**（已落地）。`prompt` / `agent`（模型类 handler）需要独立模型调用与成本上限设计，仍暂缓。`http` / `mcp_tool` 的安全模型见 §10，**未补齐不予放行**（P2 放行时已按 §10 实现）。
 - **D7 决策合并 `deny > ask > allow`（最严格获胜）仅适用于权限类字段**；且 **hook 的 `allow` 不得绕过原生权限系统的 deny**。注意现状是**逐字段**语义不同：`permissionBehavior` 取最严，而 `permissionRequestResult` / `updatedInput` / `stopShouldContinue` 是**后写覆盖**（`core/src/hooks/output.ts:81-96,145-152`）。合并规则必须先按字段列成表，不能一句"最严获胜"带过。
 - **D8 默认 fail-open，安全类事件可 per-hook fail-closed**。默认值必须写进文档，不让用户猜。
 - **D9 `SessionEnd` 依赖前置修复**：先给 `SessionEventType.SessionEnded` 补上 append 点，才能挂 `SessionEnd` hook。

@@ -79,8 +79,8 @@ _Avoid_: 在 Renderer 侧自行排队已提交的输入
 _Avoid_: 把两条链路当成同一套恢复语义
 
 **Product Identity（产品身份）**:
-官方与自建两套并排存在的产品身份，由编译期常量 `ZCODE_DATA_ROOT_SUFFIX` 派生数据根后缀。远端 Server 的代码安装根按身份隔离（保证连过去跑的是匹配的构建），数据根保持共享（历史属于"该环境"）。
-_Avoid_: 只隔离代码却共用后缀规则，或反过来隔离数据
+官方与自建两套并排存在的产品身份，由编译期常量 `ZCODE_DATA_ROOT_SUFFIX` 派生数据根后缀。远端 Server 的代码安装根（`~/.zcode/server<suffix>`）与业务数据根（`~/.zcode<suffix>`）**都按身份隔离**：代码隔离保证连过去跑的是匹配的构建，数据隔离保证两侧 schema 不必永远兼容。用户资产共享域（skills/commands/plugins/AGENTS.md）例外，两个身份就是同一份目录。
+_Avoid_: 只隔离代码却共用后缀规则，或反过来隔离数据；把「远端历史属于该环境」当成共享数据根的理由（自建版与官方版在远端看到的是两份会话历史）
 
 **Data Migration（数据迁移）**:
 把另一个产品身份数据根里的数据按**域**搬进当前身份的产品能力，域如界面设置、服务商配置、登录凭据、会话与任务历史、用户级工作流、hooks 声明。域内策略固定（目标已有则跳过，不做覆盖开关）；来源根自动探测本机全部数据根而非写死官方；共享域（skills/commands/plugins/AGENTS.md）与权限边界（hook 信任）不在迁移内。规则见 `packages/services/spec/identity-data-migration.md`。

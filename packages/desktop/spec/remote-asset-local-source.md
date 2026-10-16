@@ -41,7 +41,10 @@
 ## 迁移边界
 
 - 纯增量，无数据迁移。
-- 自建打包版由外部启动器（`E:\ZCode-dev`）在启动时注入该变量，指向其
-  `mock-cdn`（或固定资产目录）；资产由 `pnpm prepare:remote-assets` 生成。
+- 自建打包版由**仓库级启动器** `packages/desktop/scripts/launch-packaged-app.vbs`
+  （等价命令 `pnpm --filter @zcode/desktop launch`）在启动时注入该变量，指向本仓库
+  `packages/desktop/mock-cdn`；打包收尾会把开始菜单 / 桌面快捷方式指向它。
+  资产由 `pnpm prepare:remote-assets` 生成。变量不由进程内默认值推断，因此**直接双击
+  exe 会缺这个变量并回落 CDN**，这是刻意的（不把 Linux 远端运行时塞进安装包）。
 - 远端代码安装根的产品隔离见 `packages/server/spec/remote-runtime-isolation.md`；
   本 spec 只负责“资产从哪来”，二者配合实现自包含的自建远端。

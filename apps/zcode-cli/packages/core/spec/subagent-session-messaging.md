@@ -4,7 +4,7 @@
 
 对标：OpenAI Codex 的 multi-agent v2 协作面（`spawn_agent` 立即返回句柄、`send_message`/`followup_task` 双语义、`list_agents`、agent message board）。本 spec 只取其中与本仓库现有能力缺口对应的部分，不引入消息板（channel/thread/post/subscription）。
 
-> **后续变更（未落地）**：子代理会话正被改造为「一等会话」——由与正式会话同一条构造路径创建、可输入、可续聊、列表按父会话层级展示（`subagent-session-as-first-class.md`）。本文 D2 的寻址约定（一律用 `sess_*` 主键、不按 title/alias 解析）不变；D8 末条「历史行只能用 `childSessionId` 走跨会话路径」的结论会随输入面开放扩展为「可投递、可输入」。本文 D1、D3–D7 继续有效。（注意：本文原文并未声明「子代理会话只读」——那是实现侧 `guard.subagentReadOnly` 的现状，不是本文的决策。）
+> **后续变更（已落地）**：子代理会话已改造为「一等会话」——由与正式会话同一条构造路径创建、可输入、可续聊、列表按父会话层级展示（`subagent-session-as-first-class.md`）。本文 D2 的寻址约定（一律用 `sess_*` 主键、不按 title/alias 解析）不变；D8 末条「历史行只能用 `childSessionId` 走跨会话路径」已随输入面开放扩展为「可投递、可输入」。本文 D1、D3–D7 继续有效。（注意：本文原文并未声明「子代理会话只读」——那是实现侧 `guard.subagentReadOnly` 的历史现状，已随一等会话改造移除。）
 
 ## 背景与问题
 
@@ -263,7 +263,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 **B. 需要你拍板（产品取舍，不是技术债）**
 
 3. **会话级消息的 UI 呈现** —— **已落地（2026-10-04）**，采用"渲染层加工"而非"协议投影"：信封字节形态一字未改（模型侧口径不变），改由 `packages/ui` 在对话流渲染时把 `<session-message>` 解析成结构化引用（pill + 悬浮详情），顺带解决「看不到消息从哪个会话来」。见 `packages/ui/spec/session-message-envelope-rendering.md`。剩下没做的是**逐会话收件箱视图**（列出某会话收到过的全部消息），那需要协议投影，等有真实诉求再做。
-4. **跨机器（远端 workspace）mailbox 共享** —— 当前 mailbox 固定在本机 `~/.zcode/mailbox`，远端目标需要在远端 Host 落盘并让远端 CLI drain。与「手机远控 + 远端 workspace 是否要互发消息」这个需求绑定，需求未定前不动。
+4. **跨机器（远端 workspace）mailbox 共享** —— 当前 mailbox 固定在**本机身份数据根** `{dataRoot}/mailbox`（自建版即 `~/.zcode-rayn/mailbox`，可用 `ZCODE_MAILBOX_ROOT` 覆盖），远端目标需要在远端 Host 落盘并让远端 CLI drain。与「手机远控 + 远端 workspace 是否要互发消息」这个需求绑定，需求未定前不动。
 
 **C. 工程排序（我建议的次序，不需要你介入）**
 

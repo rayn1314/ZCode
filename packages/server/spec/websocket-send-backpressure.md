@@ -113,8 +113,8 @@
 
 ## 迁移边界 / 遗留
 
-1. **SAT 对端方向性（结论已定，实现留待）**：`sendFlowState` 零调用者是发送侧的既有缺口；
-   桌面 renderer→host 的链路同样没接（接收端已就绪）。若要让客户端感知服务端拥塞，需要
+1. **SAT 对端方向性（结论已定，实现留待）**：`sendFlowState` 目前只有桌面 main 转发 relay 饱和态这一处调用（`webRemoteControlManager.ts`），
+   手机端 renderer→host 的链路仍未接（接收端已就绪）。若要让客户端感知服务端拥塞，需要
    应用层 credit/ACK（`/ws` 的 SocketProtocol 无 ACK），属于新协议设计，本轮不硬造。服务端
    侧不需要它（见上文方向性结论）。
 2. **同源 fake drain（批量治理另立任务）**：
