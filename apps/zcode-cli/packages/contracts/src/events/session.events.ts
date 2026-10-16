@@ -202,6 +202,11 @@ export interface SessionResumedPayload {
   messageCount: number;
   partCount: number;
   recoveredCompactTimelineCount?: number;
+  /**
+   * 本次接管认领的子代理孤儿条数（宿主进程异常退出丢下的、只有 spawn 的生命周期行）。
+   * 语义见 core/spec/subagent-lifecycle-orphan-reconciliation.md。
+   */
+  reconciledOrphanCount?: number;
   recoveredSteerInputCount?: number;
   resumedTodoCount?: number;
 }

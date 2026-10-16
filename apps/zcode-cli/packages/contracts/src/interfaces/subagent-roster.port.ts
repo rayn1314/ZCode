@@ -34,6 +34,43 @@ export interface SubagentRosterEntry {
   endedAt?: number;
 }
 
+/**
+ * entry 状态词 → `SubagentTaskStatus`：roster 投影与 core 孤儿对账**共用的单一实现**。
+ *
+ * entry 里存的是事件原词（core `runner.ts` 发 `completed`/`failed`/`stopped`，孤儿对账发
+ * `interrupted`），`success`/`error` 是 UI 面已在用的同义词。
+ *
+ * 三条刻意对齐：
+ * - `stopped` → `killed`：后台被 TaskStop 时活体注册表报 `killed`，而事件只带 `stopped`，
+ *   同一个事实在两种来源下必须同一个词，以活体注册表为准。
+ * - `running` → `lost`：本进程注册表缺席时无权断言 `running`，猜 running 会让模型去发一条
+ *   永远送不到的消息。
+ * - 认不出的词 → `lost`：把未知状态硬塞成 running/completed 等于替一个我们不认识的周期编造
+ *   结论，`lost` 是唯一不需要额外假设的保守事实。
+ *
+ * 放在契约层而不是各实现里：core 的孤儿对账要靠 `=== "lost"` 判断「这行是否需要认领」，
+ * bootstrap 的 roster 要靠它投影；两处各写一份就是「枚举副本静默失效」的老坑。
+ */
+export function mapSubagentLifecycleStatus(status: string | undefined): SubagentTaskStatus {
+  switch (status) {
+    case "completed":
+    case "success":
+      return "completed";
+    case "failed":
+    case "error":
+      return "failed";
+    case "cancelled":
+      return "cancelled";
+    case "stopped":
+    case "killed":
+      return "killed";
+    case "interrupted":
+      return "interrupted";
+    default:
+      return "lost";
+  }
+}
+
 export interface SubagentRosterPort {
   /**
    * 按父会话列出历史子代理。父会话不在本进程（没有可读的会话存储）时返回空数组：

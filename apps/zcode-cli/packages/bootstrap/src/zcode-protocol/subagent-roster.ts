@@ -12,6 +12,7 @@
 // `running` 永远只由本进程的 runtimeTaskRegistry 断言。
 
 import {
+  mapSubagentLifecycleStatus,
   SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   type Logger,
   type SessionEntryInfo,
@@ -19,7 +20,6 @@ import {
   type SessionStorePort,
   type SubagentRosterEntry,
   type SubagentRosterPort,
-  type SubagentTaskStatus,
 } from "@zcode/contracts";
 
 export interface SubagentRosterDeps {
@@ -87,8 +87,9 @@ function projectRosterEntries(entries: readonly SessionEntryInfo[]): SubagentRos
       agentType: nonEmptyString(data.agentType) ?? "subagent",
       description: nonEmptyString(data.description) ?? "",
       // 只有 spawn 无终态 → lost，不是 running：本进程注册表缺席时那个 runtime 已经不存在了。
-      // 猜 running 会让模型去发一条永远送不到的消息。
-      status: mapLifecycleStatus(nonEmptyString(data.status)),
+      // 猜 running 会让模型去发一条永远送不到的消息。宿主进程异常退出留下的行会停在
+      // `lost`，直到下次接管该会话时由 core 的孤儿对账认领成 `interrupted`。
+      status: mapSubagentLifecycleStatus(nonEmptyString(data.status)),
       // 后台 spawn 带 `background: true`；resume spawn 也带。前台 spawn 没有该字段。
       isBackgrounded: data.background === true,
       // startedAt 是这条 agent 被创建的时刻（首次 spawn），stop 不重置。
@@ -97,36 +98,6 @@ function projectRosterEntries(entries: readonly SessionEntryInfo[]): SubagentRos
     });
   }
   return projected;
-}
-
-/**
- * entry 状态词 → `AGENT_TASK_STATUSES`。entry 里存的是事件原词（core `runner.ts` 发
- * "completed"/"failed"/"stopped"），`success`/`error` 是 UI 面已在用的同义词。
- *
- * `stopped` → `killed` 是刻意的对齐：后台被 TaskStop 时活体注册表报 `killed`
- * （core `runner.ts` 的 `BACKGROUND_AGENT_STOPPED_STATE.registryStatus`），而事件只带
- * `subagentEventStatus="stopped"`。同一个事实在两种来源下必须同一个词，以活体注册表为准。
- *
- * `running` 无法由历史断言（本进程注册表缺席），归一到 `lost`；认不出的词同样 `lost`——
- * 把未知状态硬塞成 running/completed 等于替一个我们不认识的周期编造结论，而 `lost` 是唯一
- * 不需要额外假设的保守事实。
- */
-function mapLifecycleStatus(status: string | undefined): SubagentTaskStatus {
-  switch (status) {
-    case "completed":
-    case "success":
-      return "completed";
-    case "failed":
-    case "error":
-      return "failed";
-    case "cancelled":
-      return "cancelled";
-    case "stopped":
-    case "killed":
-      return "killed";
-    default:
-      return "lost";
-  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
