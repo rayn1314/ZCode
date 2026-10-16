@@ -157,6 +157,7 @@ vi.mock("@/i18n/IntlProvider.js", () => ({
           "settings.taskAutoArchiveDays.option.30": "30 天后归档",
           "settings.dataBaseDir": "数据存储路径",
           "settings.dataBaseDirDescription": "desc",
+          "settings.dataBaseDirEffectiveRoot": "当前数据根：",
           "settings.dataBaseDirPlaceholder": "默认：用户主目录",
           "settings.dataBaseDirBrowse": "选择文件夹",
           "settings.dataBaseDirSave": "保存",
@@ -191,6 +192,7 @@ async function renderGeneralSection(
       autoDownloadAndInstallUpdates: false,
       desktopChromiumHardwareAccelerationEnabled: true,
       dataBaseDir: "/Users/test",
+      dataRootDir: "/Users/test/.zcode-rayn",
       terminalInheritSystemProfile: true,
       terminalFontFamily: "",
       nativeSearchEnhancementsEnabled: true,
@@ -252,6 +254,13 @@ describe("GeneralSectionContent data directory control", () => {
 
     expect(capturedInputs.some((input) => input.readOnly === true)).toBe(true);
     expect(findButton("保存")?.disabled).toBe(true);
+  });
+
+  it("输入框下方展示当前实际数据根（含身份后缀）", async () => {
+    const markup = await renderGeneralSection();
+
+    expect(markup).toContain("settings-data-base-dir-effective-root");
+    expect(markup).toContain("当前数据根：/Users/test/.zcode-rayn");
   });
 
   it("ModelIO 全量保留默认关闭，并通过标准设置开关提交", async () => {

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   isDataBaseDirForbiddenWindowsInstallDirError,
   TID_SETTINGS_DATA_BASE_DIR_BROWSE,
+  TID_SETTINGS_DATA_BASE_DIR_EFFECTIVE_ROOT,
   TID_SETTINGS_DATA_BASE_DIR_INPUT,
   TID_SETTINGS_DATA_BASE_DIR_SAVE,
   TID_SETTINGS_DATA_BASE_DIR_STATUS,
@@ -14,11 +15,14 @@ import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 export function DataBaseDirControl({
   dataBaseDir,
   defaultHomeDir,
+  dataRootDir,
   onDataBaseDirChange,
   onSelectDataBaseDir,
 }: {
   dataBaseDir: string;
   defaultHomeDir: string;
+  /** 当前实际数据根（含身份后缀，如 `C:\Users\rayn\.zcode-rayn`），由 systemService.info() 提供 */
+  dataRootDir: string;
   onDataBaseDirChange: (dir: string) => Promise<void>;
   onSelectDataBaseDir: () => Promise<string | null>;
 }) {
@@ -114,6 +118,13 @@ export function DataBaseDirControl({
           )}
         </Button>
       </div>
+      <p
+        data-testid={TID_SETTINGS_DATA_BASE_DIR_EFFECTIVE_ROOT}
+        className="text-ui-base text-foreground-subtle"
+      >
+        {intl.formatMessage({ id: "settings.dataBaseDirEffectiveRoot" })}
+        {dataRootDir}
+      </p>
       {saveState === "saving" ? (
         <p
           data-testid={TID_SETTINGS_DATA_BASE_DIR_STATUS}

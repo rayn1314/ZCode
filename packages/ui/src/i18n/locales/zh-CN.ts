@@ -2543,7 +2543,8 @@ const zhCN: Record<string, string> = {
   "settings.taskArchiveNowFeedbackError": "归档失败，请稍后重试",
   "settings.dataBaseDir": "数据存储路径",
   "settings.dataBaseDirDescription":
-    "应用数据的根目录（默认为用户主目录），修改后会将现有数据复制到新位置。路径后缀 .zcode/v2 不可更改。",
+    "应用数据的根目录（默认为用户主目录），修改后会将现有数据复制到新位置。数据根目录名由应用身份决定，不可更改。",
+  "settings.dataBaseDirEffectiveRoot": "当前数据根：",
   "settings.dataBaseDirPlaceholder": "默认：用户主目录",
   "settings.dataBaseDirBrowse": "选择文件夹",
   "settings.dataBaseDirSave": "保存",

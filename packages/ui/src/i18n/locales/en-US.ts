@@ -2703,7 +2703,8 @@ const enUS: Record<string, string> = {
   "settings.taskArchiveNowFeedbackError": "Archiving failed; try again later",
   "settings.dataBaseDir": "Data storage path",
   "settings.dataBaseDirDescription":
-    "Root directory for app data (defaults to user home directory). Existing data will be copied to the new location. The .zcode/v2 suffix cannot be changed.",
+    "Root directory for app data (defaults to user home directory). Existing data will be copied to the new location. The data root directory name is fixed by the app identity and cannot be changed.",
+  "settings.dataBaseDirEffectiveRoot": "Current data root: ",
   "settings.dataBaseDirPlaceholder": "Default: user home directory",
   "settings.dataBaseDirBrowse": "Choose folder",
   "settings.dataBaseDirSave": "Save",

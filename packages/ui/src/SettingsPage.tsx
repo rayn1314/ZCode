@@ -751,6 +751,7 @@ export function SettingsPage({
     sharedSettings?.permissionRequestAutoDenyEnabled !== false;
   const modelIoFullRetentionEnabled = sharedSettings?.modelIoFullRetentionEnabled === true;
   const [dataBaseDir, setDataBaseDir] = useState("");
+  const [effectiveDataRootDir, setEffectiveDataRootDir] = useState("");
   const [terminalInheritSystemProfile, setTerminalInheritSystemProfile] = useState(true);
   const [terminalFontFamily, setTerminalFontFamily] = useState("");
   const [integratedTerminalShell, setIntegratedTerminalShell] =
@@ -873,6 +874,7 @@ export function SettingsPage({
       .info()
       .then((info) => {
         setDefaultHomeDir(info.homedir);
+        setEffectiveDataRootDir(info.dataRootDir);
         setHostPlatform(info.platform);
         if (info.platform !== "win32") {
           setIntegratedTerminalShellOptions([]);
@@ -1789,6 +1791,7 @@ export function SettingsPage({
                             receivePreviewUpdates={receivePreviewUpdates}
                             autoDownloadAndInstallUpdates={autoDownloadAndInstallUpdates}
                             dataBaseDir={dataBaseDir}
+                            dataRootDir={effectiveDataRootDir}
                             terminalInheritSystemProfile={terminalInheritSystemProfile}
                             terminalFontFamily={terminalFontFamily}
                             integratedTerminalShell={integratedTerminalShell}
