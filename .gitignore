@@ -11,6 +11,7 @@ mock-cdn/
 packages/desktop/bundled-resources/
 packages/desktop/bundled-agents/
 packages/desktop/bundled-tools/
+packages/desktop/bundled-mobile-remote/
 packages/desktop/mock-cdn/
 packages/desktop/.e2e-home/
 # 修复原因：Windows shard runner 会生成带 run id 的 HOME；中断后不应把测试产物误判为源码改动。

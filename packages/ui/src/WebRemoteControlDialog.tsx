@@ -278,6 +278,31 @@ export const WebRemoteControlDialog = memo(function WebRemoteControlDialogCompon
     () => getStatusDetail(status, intl.formatMessage),
     [intl.formatMessage, status],
   );
+
+  /**
+   * 中转服务由本应用自己托管（用户不需要起任何进程、不用命令行）。
+   * 这里把地址与就绪状态显式说出来：既是"功能已经自动在跑"的可见凭证，
+   * 也方便用户在失败时一眼看到服务到底起没起来。
+   */
+  const relayHostDetail = useMemo(() => {
+    const host = status.relayHost;
+    if (!host) {
+      return null;
+    }
+    if (host.state === "running" && host.host && host.port) {
+      return intl.formatMessage(
+        { id: "webRemoteControl.relayHost.running" },
+        { address: `${host.host}:${host.port}` },
+      );
+    }
+    if (host.state === "starting") {
+      return intl.formatMessage({ id: "webRemoteControl.relayHost.starting" });
+    }
+    if (host.state === "error") {
+      return host.error?.trim() || intl.formatMessage({ id: "webRemoteControl.relayHost.error" });
+    }
+    return null;
+  }, [intl, status.relayHost]);
   const failureDescription = useMemo(
     () => getFailureDescription(status.failure, intl.formatMessage),
     [intl.formatMessage, status.failure],
@@ -658,6 +683,15 @@ export const WebRemoteControlDialog = memo(function WebRemoteControlDialogCompon
                       <div className="text-ui-base/relaxed text-foreground-subtle">
                         {statusDetail}
                       </div>
+                      {relayHostDetail ? (
+                        <div
+                          data-testid="web-remote-control-relay-host-detail"
+                          className="truncate text-ui-xs text-foreground-subtle"
+                          title={relayHostDetail}
+                        >
+                          {relayHostDetail}
+                        </div>
+                      ) : null}
                     </div>
                     {loading ? (
                       <LoaderCircle className="size-4 animate-spin text-foreground-subtle" />

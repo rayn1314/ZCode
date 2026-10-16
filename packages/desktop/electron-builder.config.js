@@ -615,6 +615,19 @@ export default {
     `node_modules/node-pty/prebuilds/${targetPlatform.key}/**`,
   ],
   beforePack: async (context) => {
+    // 打包前重建 mobile-remote PWA staging（幂等，秒级）：
+    // extraResources 整目录拷贝 bundled-mobile-remote → resources/mobile-remote，
+    // 而该暂存目录可能被任意前置步骤清空或污染，所以这里自愈，不依赖调用方记住步骤顺序。
+    runTimedSync("beforePack:ensureMobileRemoteBundleStaging", () =>
+      runCommand(
+        process.execPath,
+        [resolve(desktopPackageRoot, "scripts", "prepare-mobile-remote-bundle.mjs")],
+        {
+          cwd: desktopPackageRoot,
+          env: process.env,
+        },
+      ),
+    );
     // 打包前重建 agent bundle 暂存（幂等，秒级）。extraResources 整目录拷贝
     // bundled-agents/<platform>/glm → resources/glm，而该暂存目录可能被任意前置
     // 步骤清空或污染（历史上 prepare:remote-assets 的远端暂存就清过它，打包后
@@ -801,6 +814,13 @@ export default {
           },
         ]
       : []),
+    {
+      // 手机远控 PWA：桌面进程内托管 relay 时由本机提供静态页。
+      // 用户点开远控功能即自动托管，无需另起进程或命令行；缺失时 host 会明确报错。
+      from: "bundled-mobile-remote",
+      to: "mobile-remote",
+      filter: ["**/*", "!**/*.map"],
+    },
     {
       // agent 运行时资产，打包到 resources/glm。
       // 桌面端内置的是 agent 的 JS bundle（glm/zcode.cjs，由 prepare:agent-bundle 生成），

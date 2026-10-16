@@ -49,7 +49,10 @@ import type { UtilityProcess as ElectronUtilityProcess } from "electron";
 import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { homedir, hostname } from "node:os";
-import { readLocalMobileRemoteConfig } from "./localMobileRemoteConfig.js";
+import {
+  createWebRemoteControlRelayHost,
+  resolveBundledPwaStaticRoot,
+} from "./webRemoteControlRelayHost.js";
 import {
   createCredentialService,
   createSettingService,
@@ -889,17 +892,19 @@ const defaultZCodeEndpointUrls = buildZCodeEndpointUrls(DEFAULT_ZCODE_ENDPOINT_O
   appVersion: webRemoteControlAppVersion,
 });
 /**
- * 自建 relay 的地址来源，优先级：环境变量 > 数据根 mobile-remote.json > 官方默认。
+ * 手机远控 relay 的地址来源。
  *
- * 配置文件由 scripts/start-mobile-remote.mjs（`pnpm remote:up`）写入，让自建用户
- * 不必改启动脚本；官方部署没有该文件，行为与原来完全一致。
+ * 默认路径是进程内托管（webRemoteControlRelayHost）：用户在弹层里点一下，桌面自己把
+ * relay 拉起来并直接给出地址，不需要外部进程、不需要命令行、不需要写配置文件。
+ * 环境变量只作为指向外部 relay（例如自建 VPS）的逃生口，值为空时一律走本机托管。
  */
-const localMobileRemoteConfig = readLocalMobileRemoteConfig(getZCodeDataRootDir());
 const webRemoteControlRelayWsEnvOverride =
-  process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL"]?.trim() ||
-  localMobileRemoteConfig?.relayWsUrl;
+  process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL"]?.trim() || undefined;
 const webRemoteControlUrlEnvOverride =
-  process.env["ZCODE_WEB_REMOTE_CONTROL_URL"]?.trim() || localMobileRemoteConfig?.remoteUrl;
+  process.env["ZCODE_WEB_REMOTE_CONTROL_URL"]?.trim() || undefined;
+const webRemoteControlRelayHostOverride =
+  process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_HOST"]?.trim() || undefined;
+const usesExternalWebRemoteControlRelay = Boolean(webRemoteControlRelayWsEnvOverride);
 
 function extractOpenWorkspacePathFromDeepLinkUrl(url: string): string | null {
   try {
@@ -923,29 +928,57 @@ let startupOpenWorkspaceRequest: ExplicitStartupWorkspaceRequest | null =
       ? { path: startupDeepLinkWorkspacePath, source: "deep-link" }
       : null;
 
+/**
+ * 进程内托管的手机远控中转服务。静态资源按开发态/打包态就近解析：
+ * 开发态用仓库里的 packages/web/dist，打包态用随包 resources/mobile-remote。
+ */
+const webRemoteControlRelayHost = createWebRemoteControlRelayHost({
+  resolveStaticRoot: () =>
+    resolveBundledPwaStaticRoot({
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+      repoRoot: resolve(import.meta.dirname, "../.."),
+    }),
+  preferredPort: Number(process.env["ZCODE_WEB_REMOTE_CONTROL_RELAY_PORT"] ?? "3030") || 3030,
+});
+if (webRemoteControlRelayHostOverride) {
+  // 显式放行绑定地址（例如容器/VPN 场景）；默认只绑私网，不触公网。
+  webRemoteControlRelayHost.setHostOverride(webRemoteControlRelayHostOverride);
+}
+
 const webRemoteControlManager = createWebRemoteControlManager({
   getEndpointUrls: async () => {
     const derived = buildZCodeEndpointUrls(await resolveCurrentZCodeEndpointOrigin(), {
       appVersion: webRemoteControlAppVersion,
     });
+    // 指向外部 relay 时（环境变量逃生口）保持原样；否则由本机托管，地址随启动结果而定。
+    if (usesExternalWebRemoteControlRelay) {
+      return {
+        ...derived,
+        relayWsUrl: resolveWebRemoteControlRelayWsUrl({
+          endpointOrigin: derived.origin,
+          overrideUrl: webRemoteControlRelayWsEnvOverride,
+        }),
+        remoteUrl: webRemoteControlUrlEnvOverride || derived.remoteUrl,
+      };
+    }
+    const hosted = await webRemoteControlRelayHost.start();
     return {
       ...derived,
-      // 自建 relay 不必再配环境变量：设置页的 endpoint override 已经把 origin 指向自建服务，
-      // 同一 origin 推导出的 relayWsUrl 与 remoteUrl 才是一对（官方 endpoint 仍按固定策略）。
-      relayWsUrl: webRemoteControlRelayWsEnvOverride
-        ? resolveWebRemoteControlRelayWsUrl({
-            endpointOrigin: derived.origin,
-            overrideUrl: webRemoteControlRelayWsEnvOverride,
-          })
-        : derived.relayWsUrl,
-      remoteUrl: webRemoteControlUrlEnvOverride || derived.remoteUrl,
+      relayWsUrl: `ws://${hosted.host}:${hosted.port}/ws`,
+      remoteUrl: `http://${hosted.host}:${hosted.port}/remote/v4/`,
     };
   },
-  relayWsUrl: resolveWebRemoteControlRelayWsUrl({
-    endpointOrigin: DEFAULT_ZCODE_ENDPOINT_ORIGIN,
-    overrideUrl: webRemoteControlRelayWsEnvOverride,
-  }),
-  mobileRemoteControlUrl: webRemoteControlUrlEnvOverride || defaultZCodeEndpointUrls.remoteUrl,
+  relayWsUrl: usesExternalWebRemoteControlRelay
+    ? resolveWebRemoteControlRelayWsUrl({
+        endpointOrigin: DEFAULT_ZCODE_ENDPOINT_ORIGIN,
+        overrideUrl: webRemoteControlRelayWsEnvOverride,
+      })
+    : defaultZCodeEndpointUrls.relayWsUrl,
+  mobileRemoteControlUrl: usesExternalWebRemoteControlRelay
+    ? webRemoteControlUrlEnvOverride || defaultZCodeEndpointUrls.remoteUrl
+    : defaultZCodeEndpointUrls.remoteUrl,
+  relayHost: usesExternalWebRemoteControlRelay ? undefined : webRemoteControlRelayHost,
   deviceMid,
   deviceName: hostname(),
   appVersion: webRemoteControlAppVersion,

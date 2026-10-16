@@ -128,6 +128,26 @@
   手机 terminal 需要重新走二维码或刷新页面。
 - 内存注册表满（设备数上限，默认 64）时新注册返回 `error: INTERNAL`。
 
+### 桌面侧：连不上 relay 时的可见失败（`web-remote-replayable` 弹层）
+
+桌面 `WebRemoteControlDeviceTransport` 对"能否连上 relay"分两类处理，判据是
+**TCP/WS 握手是否成功过一次**（`relayReachedOnce`，在 socket `open` 时置位）：
+
+| 情形                                               | 处理                                                                                                | 用户可见                                                                                                                                                                  |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 从未连上过（relay 未启动 / 地址写错 / 防火墙拦截） | 最多重试 `WEB_REMOTE_CONTROL_MAX_INITIAL_CONNECT_ATTEMPTS`（默认 6）次，随后停在 `error` 不再自重启 | 弹层常驻一条可读错误，含 relay 地址、底层原因（如 `ECONNREFUSED`）与处置动作（relay 默认由本应用托管；指向外部 relay 时提示检查 `ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL`） |
+| 曾经连上过（已配对会话遇到 relay 短抖动）          | 沿用既有**无限重连** + 宽限期，不设预算                                                             | 已配对会话在宽限期内保持 active；手机拿旧二维码回来可恢复                                                                                                                 |
+
+边界与不变式：
+
+- 预算只约束"start 之后从未握手成功"的连接；握手成功过一次后永久解除，不受后续掉线时长影响。
+- 停在 `error` 后必须自愈只能靠用户动作：关掉再开弹层会 `dispose()` 旧 transport 并新建
+  （`start()` 复位全部计数），因此预算会被重置。
+- `error` 状态必须带真实原因：manager 从 `transport.getLastError()` 取回并写入
+  `status.error`；只切状态不填消息会让 UI 退化成固定的"无法启动移动端远程控制。"，用户无从判断该做什么。
+- 这条约束的动机是修复一类真实缺陷：无差别无限重连会把 `error` 每 2 秒洗回
+  `starting`，表现为"一直启动中、偶尔闪一下报错、二维码永远不出现"。
+
 ## 迁移边界
 
 - **不改**桌面、手机、共享协议的任何行为；本变更是纯新增 entry。
@@ -139,19 +159,22 @@
 
 ## 实现现状
 
-| 文件                                                   | 职责                                                                                                                        |
-| ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
-| `src/relay/relayAuth.ts`                               | 鉴权原语与常量时间比较（与桌面 `webRemoteControlRelayAuthProvider.ts` 逐位一致）                                            |
-| `src/relay/webRemoteControlRelayRegistry.ts`           | 内存注册表唯一所有者：device/terminal/连接三表、单 terminal 不变式、容量回收、kick/retire/displace 簿记；不做协议解析与 I/O |
-| `src/relay/webRemoteControlRelayHub.ts`                | 控制面状态机：帧解析、注册、auth challenge/proof 校验、配对状态应答、错误码下发                                             |
-| `src/relay/webRemoteControlRelayDataPlane.ts`          | 数据面：`data` 帧按原始文本逐字节透传                                                                                       |
-| `src/relay/relayFrameFields.ts`                        | 纯函数：信封形状校验、必填字符串读取、日志安全元数据                                                                        |
-| `src/relay/relayStaticAssets.ts`                       | 可选 PWA 静态托管（SPA fallback + 路径穿越防护）                                                                            |
-| `src/entry-relay.ts`                                   | Node 入口：`node:http` + `ws`，`/ws` 升级、routing hint、1 MiB 帧上限、`/healthz`                                           |
-| `tsup.relay.config.ts`                                 | 独立构建（`pnpm --filter @zcode/server run build:relay`）                                                                   |
-| `scripts/start-mobile-remote.mjs`（仓库根）            | 一键启动：构建 relay+PWA、探测局域网 IP、起服务并托管 PWA、把地址写进桌面数据根、打印指引（`pnpm remote:up`）               |
-| `packages/web/src/main.tsx`                            | 手机端 relay 地址改为按运行期 `window.location.origin` 推导（原为构建期 `VITE_ZCODE_BASE_URL`），换网络无需重编             |
-| `packages/desktop/src/main/localMobileRemoteConfig.ts` | 桌面读数据根 `mobile-remote.json`；只接受回环/私有网段的明文 ws/http，防配置被篡改后指向外部 relay                          |
+| 文件                                                        | 职责                                                                                                                             |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `src/relay/relayAuth.ts`                                    | 鉴权原语与常量时间比较（与桌面 `webRemoteControlRelayAuthProvider.ts` 逐位一致）                                                 |
+| `src/relay/webRemoteControlRelayRegistry.ts`                | 内存注册表唯一所有者：device/terminal/连接三表、单 terminal 不变式、容量回收、kick/retire/displace 簿记；不做协议解析与 I/O      |
+| `src/relay/webRemoteControlRelayHub.ts`                     | 控制面状态机：帧解析、注册、auth challenge/proof 校验、配对状态应答、错误码下发                                                  |
+| `src/relay/webRemoteControlRelayDataPlane.ts`               | 数据面：`data` 帧按原始文本逐字节透传                                                                                            |
+| `src/relay/relayFrameFields.ts`                             | 纯函数：信封形状校验、必填字符串读取、日志安全元数据                                                                             |
+| `src/relay/relayStaticAssets.ts`                            | 可选 PWA 静态托管（SPA fallback + 路径穿越防护）                                                                                 |
+| `src/relay/relayHttpServer.ts`                              | **服务端引导的唯一实现**：`node:http` + `ws`、`/ws` 升级、routing hint、1 MiB 帧上限、`/healthz`、静态托管；CLI 与桌面进程内共用 |
+| `src/relay/lanHost.ts`                                      | 私网地址探测与绑定地址选择（默认只绑私网，绝不回退 0.0.0.0）                                                                     |
+| `src/relay/index.ts`                                        | `@zcode/server/relay` 公开入口，只导出能力与类型                                                                                 |
+| `src/entry-relay.ts`                                        | 命令行入口：读环境变量后调用上面的引导实现，自身不再含服务逻辑                                                                   |
+| `tsup.relay.config.ts`                                      | 独立构建（`pnpm --filter @zcode/server run build:relay`）                                                                        |
+| `packages/desktop/src/main/webRemoteControlRelayHost.ts`    | **桌面进程内托管 relay 的唯一所有者**：按用户触发启动/停止、端口占用递增探测、dev/packaged 静态根解析                            |
+| `packages/desktop/scripts/prepare-mobile-remote-bundle.mjs` | 打包前 staging PWA（剥 sourcemap）；`beforePack` 调用，`extraResources` 拷到 `resources/mobile-remote`                           |
+| `packages/web/src/main.tsx`                                 | 手机端 relay 地址按运行期 `window.location.origin` 推导（原为构建期 `VITE_ZCODE_BASE_URL`），换网络无需重编                      |
 
 ## 与初版设计的差异（实现选择，均已固化测试）
 
@@ -167,30 +190,44 @@
 ## 部署
 
 relay 不依赖任何云端账号；桌面与手机经它互通，**relay 不接触业务内容**。
+relay 的服务端引导实现只有一份 `src/relay/relayHttpServer.ts`，被两种形态共用。
 
-### 一键方式（推荐）
+### 默认方式：桌面进程内托管（用户零操作）
 
-```bash
-pnpm remote:build   # 构建 relay + 手机端 PWA（只需一次，产物与网络无关）
-pnpm remote:up      # 起服务并打印：手机要开的地址 + 桌面要注入的环境变量
+用户在桌面弹层里打开手机远控，桌面 main 自己把 relay 拉起来并托管 PWA：
+
+```
+手机 PWA ──ws──► [桌面 main 进程内的 relay] ◄──ws── [桌面 device transport]
+                      └─ 同时托管 PWA 静态资源
 ```
 
-`scripts/start-mobile-remote.mjs` 会做：检测局域网 IPv4（虚拟网卡排后、常见家用网段优先）→
-以 `ZCODE_WEB_STATIC_ROOT=packages/web/dist` 启动 relay 并托管 PWA → 等 `/healthz` 就绪 →
-打印手机访问地址与桌面环境变量；多网卡时列出备选地址。`Ctrl+C` 一并停掉 relay。
-支持 `--port <n>`、`--skip-build`、`--build-only`。
+| 维度     | 行为                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------ |
+| 触发     | 第一次打开远控功能时启动；用户点「退出」时随最后一个 runtime 一起停止                                              |
+| 绑定地址 | 默认只绑私网 IPv4（192.168/10./172.16-31/169.254/CGNAT）；探测不到就明确报错，**绝不回退 0.0.0.0**                 |
+| 端口     | 默认 3030，被占用时向上探测（上限 20 个）；二维码用**实际**端口而非 preferredPort                                  |
+| 静态资源 | 开发态读仓库 `packages/web/dist`；打包态读 `resources/mobile-remote`（`prepare-mobile-remote-bundle.mjs` staging） |
 
-**为什么只需构建一次**：relay 地址在手机端是**运行期按 `window.location.origin` 推导**的
-（`packages/web/src/main.tsx` 的 `resolveExternalRelayWsUrl`；官方部署 PWA 与 relay 同源，
-推导结果不变），换 Wi-Fi、换 IP、换端口都不必重新构建。路由路径 `/remote/v4` 是构建期常量，
-与网络无关。
+用户完全不需要起进程、设变量、写配置。失败时会给出可自助处置的文案（无局域网地址 / 缺页面资源 / 端口用尽）。
 
-### 手工方式
+### 逃生口：指向自建 relay（VPS 等场景）
+
+```bash
+ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL=wss://<domain>/ws
+ZCODE_WEB_REMOTE_CONTROL_URL=https://<domain>/remote/v4/
+```
+
+设了 `RELAY_WS_URL` 后不再进程内托管，relay 生命周期由部署方负责。另有一个绑定地址逃生口
+`ZCODE_WEB_REMOTE_CONTROL_RELAY_HOST=0.0.0.0`，仅用于容器/VPN 场景（默认策略不满足时才需要）。
+
+> 此前"`pnpm remote:up` 把地址写进数据根 `mobile-remote.json`、桌面启动时读取"的路径已删除：
+> 进程内托管让桌面成为 relay 的生命周期所有者后，磁盘配置就成了多余的第二条路径。
+
+### 手工方式（自建常驻 relay）
 
 ```bash
 pnpm --filter @zcode/server run build:relay
-VITE_WEB_REMOTE_CONTROL_ROUTE_PATH=/remote/v4/ \
-  pnpm --filter @zcode/web exec vite build --base=/remote/v4/
+pnpm --filter @zcode/web run build   # 若想让 relay 顺带托管 PWA
 PORT=3030 ZCODE_RELAY_HOST=0.0.0.0 \
   ZCODE_WEB_STATIC_ROOT=packages/web/dist \
   node packages/server/dist/entry-relay.js
@@ -200,28 +237,12 @@ PORT=3030 ZCODE_RELAY_HOST=0.0.0.0 \
 > `VITE_WEB_REMOTE_CONTROL_ROUTE_PATH` 或 `VITE_ZCODE_BASE_URL` 的 pathname），必须与
 > `--base` 对齐；只传 `--base` 会落到 `/remote`，手机打开 `/remote/v4/` 时走错分支。
 
-**桌面侧地址来源**（优先级：环境变量 > 数据根 `mobile-remote.json` > 官方默认）：
-
-```bash
-ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL=ws://<relay-ip>:3030/ws
-ZCODE_WEB_REMOTE_CONTROL_URL=http://<relay-ip>:3030/remote/v4/
-```
-
-`pnpm remote:up` 会自动把这两个值写进桌面数据根的 `mobile-remote.json`
-（`getZCodeDataRootDir()/mobile-remote.json`，自建版为 `~/.zcode-rayn/`），因此**自建用户不需要设
-任何环境变量**：跑 `pnpm remote:up` → 重启桌面 → 扫码即可。桌面读该文件的实现是
-`packages/desktop/src/main/localMobileRemoteConfig.ts`。
-
-该文件只被允许指向**回环或私有网段的明文 ws/http** 地址：文件在用户数据目录里，理论上可被本机
-其他程序改写，若允许指向任意公网主机，就能把桌面连到伪造 relay 从而截获二维码里的 `passHash`。
-所以公网域名一律要求走环境变量（这是有意的显式选择）。
-
-**方案一：局域网（零公网暴露，最安全）**——relay 跑在家里/公司常开的机器上，只绑局域网地址。
+**方案一：局域网（零公网暴露，最安全）**——默认的进程内托管就是这一档，无需任何常驻进程。
 
 **方案二：VPS 公网**——relay 放 VPS，务必套 TLS 反代（`wss://`），且建议只放行必要来源；
-此时把 `ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL` 换成 `wss://<domain>/ws`。
+此时桌面改用上面的环境变量逃生口。
 
-**安全姿态**：桌面零入站端口（只连出 relay）；配对码一次性短 TTL；每设备独立 token；
+**安全姿态**：默认只绑私网地址；配对走 pass_hash + nonce 的一次性 HMAC 挑战；每设备独立 token；
 relay 只见 opaque 帧；`pass_hash` 不落盘不进日志。仍建议：VPS 场景开 TLS、按需限制来源 IP、
 并保持 `ZCODE_RELAY_MAX_DEVICES` 收敛。
 

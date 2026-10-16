@@ -30,6 +30,7 @@ import {
   type WebRemoteControlPlatformRequestPayload,
   type WebRemoteControlPlatformResponsePayload,
   type WebRemoteControlRpcTransportPayload,
+  type WebRemoteControlRelayHost,
   type WebRemoteControlStartResult,
   type WebRemoteControlStatus,
   type WebRemoteControlTaskTarget,
@@ -83,6 +84,8 @@ interface WebRemoteControlDeviceTransportLike {
   sendPayload(payload: WebRemoteControlAppPayload): boolean;
   sendPayloadResult?(payload: WebRemoteControlAppPayload): WebRemoteControlPayloadSendResult;
   measurePayloadBytes?(payload: WebRemoteControlAppPayload): number;
+  /** error 状态下的真实原因；manager 用它填 status.error，让失败可读。 */
+  getLastError?(): Error | undefined;
   dispose(): void;
 }
 
@@ -158,6 +161,11 @@ interface WebRemoteControlManagerDependencies {
     ) => Promise<WebRemoteControlPlatformMethodResultMap[K]>;
   };
   reconnectWorkspace: (windowId: number, workspaceKey: string) => Promise<void>;
+  /**
+   * 进程内 relay 托管者。start() 首次打开远控功能时拉起，用户退出功能时随最后一个
+   * runtime 一起停止；指向外部 relay 的部署不注入，生命周期由部署方负责。
+   */
+  relayHost?: WebRemoteControlRelayHost;
   reportRemoteUsageEvent?: (windowId: number, event: TelemetryEventPayload) => void;
   reportRendererTelemetryEvent?: (event: RendererTelemetryEventPayload) => void;
   onStatusChanged?: (windowId: number, status: WebRemoteControlStatus) => void;
@@ -288,6 +296,9 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
   const runtimes = new Map<number, WindowControlRuntime>();
   const startAuthorizations = new Map<string, WebRemoteControlStartAuthorization>();
   const availableWorkspacesByWindowId = new Map<number, WebRemoteControlWorkspaceTarget[]>();
+  // 无 runtime 期间的启动失败（典型：中转服务没起来）。必须按窗口记住，否则
+  // getStatus 会返回 idle，把弹层里刚显示的失败提示立刻覆盖掉。
+  const startFailureByWindowId = new Map<number, string>();
 
   function reportRemoteUsageEvent(windowId: number, event: TelemetryEventPayload): void {
     try {
@@ -489,6 +500,8 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
       initialTaskId: runtime.currentBridge?.initialTaskId ?? runtime.initialTaskId,
       error: runtime.error,
       failure: runtime.failure,
+      // 中转服务由本应用托管；把实时状态透出，用户能直接看到地址与就绪情况。
+      relayHost: dependencies.relayHost?.getStatus(),
     };
   }
 
@@ -660,6 +673,20 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
     runtime.pendingOutboundPayloads.length = 0;
     runtime.transport.dispose();
     dependencies.disposeWorkspaceHostAttachmentsForWindow(windowId, reason);
+
+    // 用户退出的是整个远控功能，不是只断开当前窗口的连接：进程内 relay 随之停止，
+    // 否则会残留一个没人连的监听端口，用户下次进来看到的还是旧二维码。
+    if (runtimes.size === 0) {
+      await dependencies.relayHost?.stop().catch((error: unknown) => {
+        dependencies.logger.warn(
+          `[web-remote-control] relay host stop failed reason=${reason} message=${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
+    startFailureByWindowId.delete(windowId);
 
     dependencies.logger.info(
       `[web-remote-control] stopped window=${windowId} session=${runtime.deviceSid} reason=${reason}`,
@@ -1205,6 +1232,8 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
     const previousTransportState = runtime.transportState;
     runtime.transportState = state;
     if (state === "connecting" || state === "registering" || state === "authenticating") {
+      // 进入重连前清掉上一次的错误详情：可恢复错误自愈后不应把旧文案留在弹层里。
+      runtime.error = undefined;
       if (runtime.mobileConnected) {
         // Bugfix: 已配对会话的 relay 短抖会先经历 connecting/authenticating。
         // 旧逻辑把 dialog 立刻切成“启动中”，用户会误以为远控重新启动；这里在宽限期内保持 active。
@@ -1288,6 +1317,10 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
         );
       }
       runtime.status = "error";
+      // Bugfix: 之前这里只切状态，不填 runtime.error，UI 只能显示固定的
+      // "无法启动移动端远程控制。"，而真正的原因（连接被拒绝 / 超时 / 协议错误）被丢掉。
+      // 从 transport 取回真实原因，让错误可读、可据此处置。
+      runtime.error = runtime.transport.getLastError?.()?.message ?? "无法启动移动端远程控制。";
       emitRuntimeStatus(runtime);
     }
   }
@@ -1327,7 +1360,22 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
       dependencies.featureGate.assertEnabled();
       startupRestoreClaimed = true;
       await stopWindowRuntime(windowId, "restart");
-      const endpointUrls = await dependencies.getEndpointUrls?.();
+      let endpointUrls: ZCodeEndpointUrls | undefined;
+      try {
+        endpointUrls = await dependencies.getEndpointUrls?.();
+      } catch (error) {
+        // Bugfix: 中转服务启动失败（无局域网地址 / 页面资源缺失 / 端口用尽）以前只在
+        // start() 的 rejection 里出现一次，弹层随后被 1 秒轮询的 idle 覆盖——用户看到
+        // 错误一闪就没了，以为功能"没反应"。这里把失败按窗口记住，getStatus 会持续返回它，
+        // 直到一次成功的启动把它清掉。
+        const message = error instanceof Error ? error.message : String(error);
+        startFailureByWindowId.set(windowId, message);
+        dependencies.logger.error(
+          `[web-remote-control] start failed before relay ready window=${windowId} message=${message}`,
+        );
+        throw error;
+      }
+      startFailureByWindowId.delete(windowId);
       const relayWsUrl = endpointUrls?.relayWsUrl ?? dependencies.relayWsUrl;
       const mobileRemoteControlUrl = endpointUrls?.remoteUrl ?? dependencies.mobileRemoteControlUrl;
 
@@ -1585,7 +1633,18 @@ export function createWebRemoteControlManager(dependencies: WebRemoteControlMana
 
       const runtime = runtimes.get(windowId);
       if (!runtime) {
-        return { status: "idle" };
+        const failure = startFailureByWindowId.get(windowId);
+        if (failure) {
+          return {
+            status: "error",
+            error: failure,
+            relayHost: dependencies.relayHost?.getStatus(),
+          };
+        }
+        return {
+          status: "idle",
+          relayHost: dependencies.relayHost?.getStatus(),
+        };
       }
 
       return buildRuntimeStatus(runtime);

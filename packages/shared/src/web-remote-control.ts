@@ -407,6 +407,11 @@ export interface WebRemoteControlStatus {
   initialTaskId?: string;
   error?: string;
   failure?: WebRemoteControlFailure;
+  /**
+   * 进程内托管的手机远控中转服务状态。桌面默认自己托管（用户无需起任何进程），
+   * 这里把它暴露给弹层，让用户看得见"服务在哪、是否已就绪"。
+   */
+  relayHost?: WebRemoteControlRelayHostStatus;
 }
 
 export interface WebRemoteControlSessionCreateRequest {
@@ -1038,3 +1043,42 @@ export type RelayDesktopControlEvent =
   | WebRemoteControlWorkspaceControlResponse
   | WebRemoteControlWindowControlRequest
   | WebRemoteControlWindowControlResponse;
+
+/**
+ * 手机远控中转服务进程内托管（relay host）的契约。
+ *
+ * 桌面 main 是唯一所有者：默认在用户打开远控功能时自动拉起，用户点「退出」时停止。
+ * 这里只描述状态与外观，不涉及转发实现；契约见 packages/server/spec/web-remote-control-relay.md。
+ */
+export interface WebRemoteControlRelayHostUrls {
+  /** 桌面连出的 ws 地址。 */
+  relayWsUrl: string;
+  /** 手机打开的 PWA 页面地址（二维码内容）。 */
+  remoteUrl: string;
+}
+
+export type WebRemoteControlRelayHostState = "stopped" | "starting" | "running" | "error";
+
+export interface WebRemoteControlRelayHostStatus {
+  state: WebRemoteControlRelayHostState;
+  /** 绑定成功的私网地址；stopped/error 时为空。 */
+  host?: string;
+  /** 实际监听端口（探测到占用时自动递增，调用方必须用这个值构造地址）。 */
+  port?: number;
+  staticRoot?: string;
+  error?: string;
+}
+
+export interface WebRemoteControlRelayHost {
+  /** 幂等：已在运行时直接返回当前状态；并发调用复用同一次启动。 */
+  start(): Promise<WebRemoteControlRelayHostStatus>;
+  stop(): Promise<void>;
+  getStatus(): WebRemoteControlRelayHostStatus;
+  /** 仅在 state === "running" 时有值。 */
+  getRelayUrls(): WebRemoteControlRelayHostUrls | undefined;
+  /**
+   * 显式指定绑定地址（容器/VPN 等场景的逃生口）。
+   * 只在 start() 之前调用有意义；已在运行时调用不改变当前绑定。
+   */
+  setHostOverride(host: string): void;
+}

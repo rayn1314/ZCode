@@ -5,6 +5,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./stdio": "./src/stdio.ts",
+    "./relay": "./src/relay/index.ts",
     "./remote": "./src/remote/index.ts",
     "./remote/*.js": "./src/remote/*.ts"
   },

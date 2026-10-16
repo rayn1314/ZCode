@@ -8,6 +8,7 @@ import {
 import {
   WEB_REMOTE_CONTROL_HEARTBEAT_ACK_TIMEOUT_MS,
   WEB_REMOTE_CONTROL_HEARTBEAT_INTERVAL_MS,
+  WEB_REMOTE_CONTROL_MAX_INITIAL_CONNECT_ATTEMPTS,
   WEB_REMOTE_CONTROL_RECONNECT_JITTER_MS,
   getWebRemoteControlHeartbeatDelayMs,
   getWebRemoteControlHeartbeatJitterMs,
@@ -197,6 +198,11 @@ export class WebRemoteControlDeviceTransport {
   private connectAttempt = 0;
   private socketGeneration = 0;
   private lastPairedSocketGeneration = 0;
+  // TCP 是否连上过 relay。连上过一次说明地址/网络/防火墙都没问题，此后的短抖动
+  // 继续走无限重连；从未连上则说明是致命前提不满足，重试没有意义（见 scheduleReconnect）。
+  private relayReachedOnce = false;
+  private lastConnectError?: Error;
+  private lastError?: Error;
   private readonly payloadSerializer = new WebRemoteControlRelayPayloadSerializer();
 
   constructor(private readonly options: WebRemoteControlDeviceTransportOptions) {
@@ -211,6 +217,9 @@ export class WebRemoteControlDeviceTransport {
     this.lastPairedSocketGeneration = 0;
     this.staleWaitingCount = 0;
     this.lastPairStatusAckAt = 0;
+    this.relayReachedOnce = false;
+    this.lastConnectError = undefined;
+    this.lastError = undefined;
     this.connect();
   }
 
@@ -249,6 +258,15 @@ export class WebRemoteControlDeviceTransport {
     this.setState("idle");
   }
 
+  /**
+   * 最近一次进入 error 状态的原因。manager 在 mapTransportState("error") 里读取它填
+   * status.error——否则 error 分支只把状态切成"错误"，文案固定为"无法启动…"，
+   * 真实原因（连接被拒绝 / 超时 / 协议错误）对用户完全不可见。
+   */
+  getLastError(): Error | undefined {
+    return this.lastError;
+  }
+
   private connect(): void {
     this.clearReconnectTimer();
     this.stopHeartbeat();
@@ -279,6 +297,9 @@ export class WebRemoteControlDeviceTransport {
       if (socket !== this.socket) {
         return;
       }
+      // TCP/WS 握手成功即证明 relay 可达，之后的断线按短抖动无限重连。
+      this.relayReachedOnce = true;
+      this.lastConnectError = undefined;
       const negotiatedExtensions = typeof socket.extensions === "string" ? socket.extensions : "";
       this.options.logger.info("[web-remote-control] external relay negotiated extensions", {
         perMessageDeflate: negotiatedExtensions.includes("permessage-deflate"),
@@ -333,6 +354,9 @@ export class WebRemoteControlDeviceTransport {
     socket.on("error", (error) => {
       if (socket !== this.socket) {
         return;
+      }
+      if (!this.relayReachedOnce) {
+        this.lastConnectError = error;
       }
       this.options.logger.warn("[web-remote-control] external relay device socket error", {
         message: error.message,
@@ -628,6 +652,26 @@ export class WebRemoteControlDeviceTransport {
     if (this.manuallyClosed || this.terminalClose) {
       return;
     }
+    // Bugfix: relay 未启动 / 地址写错 / 被防火墙拦截时，重试多少次都不会成功。旧逻辑无差别
+    // 无限重连，ECONNREFUSED 每 2 秒触发一次，manager 因此不停在 error(闪一下)↔starting
+    // 之间翻转——用户看到的是"一直启动中、偶尔闪个报错、二维码永远不出现"，无法自行判断
+    // 该做什么。这里对"从未连上 relay"设尝试预算，耗尽后停在 error 并把真实原因交给用户；
+    // 已连上过的会话不受影响，仍靠无限重连保证手机拿旧二维码能恢复。
+    if (
+      !this.relayReachedOnce &&
+      this.connectAttempt >= WEB_REMOTE_CONTROL_MAX_INITIAL_CONNECT_ATTEMPTS
+    ) {
+      const reason = this.lastConnectError?.message ?? "连接失败";
+      this.enterError(
+        new Error(
+          `无法连接手机远控中转服务器（${this.options.relayWsUrl}）：${reason}。` +
+            `中转服务器通常由本应用自动启动；如果你在环境变量里指定了外部中转服务器` +
+            `（ZCODE_WEB_REMOTE_CONTROL_RELAY_WS_URL），请确认那台服务已启动且地址可达。` +
+            `关闭本弹层再重新打开即可重试。`,
+        ),
+      );
+      return;
+    }
     this.clearReconnectTimer();
     this.reconnectTimer = setTimeout(() => this.connect(), delayMs);
   }
@@ -693,6 +737,7 @@ export class WebRemoteControlDeviceTransport {
     this.terminalClose = true;
     this.stopHeartbeat();
     this.clearStaleWaitingRecoveryTimer();
+    this.lastError = error;
     this.setState("error");
     this.options.onError(error);
     this.socket?.close();
@@ -701,6 +746,7 @@ export class WebRemoteControlDeviceTransport {
   private enterRecoverableError(error: Error): void {
     this.stopHeartbeat();
     this.clearStaleWaitingRecoveryTimer();
+    this.lastError = error;
     this.setState("error");
     this.options.onError(error);
     this.socket?.close();

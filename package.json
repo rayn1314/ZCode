@@ -44,8 +44,6 @@
     "build:web-remote-control:v3": "pnpm --filter @zcode/web exec vite build --base=/remote/v3/",
     "build:web-remote-control:v4": "pnpm --filter @zcode/web exec vite build --base=/remote/v4/",
     "build:web-remote-control:test": "pnpm --filter @zcode/web exec vite build --base=/remote/__test__/",
-    "remote:build": "node scripts/start-mobile-remote.mjs --build-only",
-    "remote:up": "node scripts/start-mobile-remote.mjs",
     "build:web-share": "pnpm --filter @zcode/web-share build",
     "build:zcode": "node scripts/build-zcode.mjs",
     "build:bootstrap": "pnpm -r --filter \"./packages/*\" --filter \"!@zcode/desktop\" build && pnpm --filter @zcode/desktop build:no-runtime-assets",
