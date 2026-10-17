@@ -21,10 +21,13 @@ import {
 import { Textarea } from "@/components/ui/textarea.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useGenUi } from "@/hooks/useGenUi.js";
-import { useOptionalBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
 import { logger } from "@/logger.js";
 import { EMPTY_GEN_UI_SNAPSHOT, type GenUiCardTarget, type GenUiPage } from "../contract.js";
-import { buildGenUiRenderFailureKey, classifyGenUiRenderFailure } from "../domain/renderFailure.js";
+import {
+  buildGenUiRenderFailureDetail,
+  buildGenUiRenderFailureKey,
+  classifyGenUiRenderFailure,
+} from "../domain/renderFailure.js";
 import { TweakPanel } from "./TweakPanel.js";
 const subscribeEmpty = () => () => {};
 function PageAnchor({ page, height }: { page: GenUiPage; height: number }) {
@@ -84,25 +87,34 @@ export function GenUiCard({
     },
     [],
   );
-  const { page, supported, online, error: acquisitionError } = useGenUi(target, confirm, retry);
+  const {
+    page,
+    supported,
+    online,
+    error: acquisitionError,
+    report,
+  } = useGenUi(target, confirm, retry);
   const snapshot = useSyncExternalStore(
     page?.subscribe ?? subscribeEmpty,
     page?.getSnapshot ?? (() => EMPTY_GEN_UI_SNAPSHOT),
     () => EMPTY_GEN_UI_SNAPSHOT,
   );
-  const baseServices = useOptionalBaseWorkspaceServices();
   const failureText = snapshot.phase === "error" ? (snapshot.error ?? "") : acquisitionError;
   // 渲染失败对模型零感知（spec gen-ui-cross-host-render.md 问题二）：readDocument 失败
   // 只显示在卡片上。这里把失败事实经 session/gen-ui-report 上报 CLI，CLI 按防环三闸
-  // 注入模型下一轮；同键（sessionId+path+errorKind）在 UI 侧也去重，点重试不再重复上报。
+  // 注入模型下一轮；同键（sessionId+path+errorKind+detail）在 UI 侧也去重，点重试不再重复上报。
+  // 上报走 `report.agentService`（会话自己的运行时）而不是本机 base services：远端会话在
+  // 本机 CLI 里不存在，报告会被判 session_not_found 丢弃。
   const reportedFailureKeysRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     if (!failureText || !target.sessionId || !target.path) return;
     const errorKind = classifyGenUiRenderFailure(failureText);
+    const detail = buildGenUiRenderFailureDetail(failureText);
     const key = buildGenUiRenderFailureKey({
       sessionId: target.sessionId,
       path: target.path,
       errorKind,
+      ...(detail ? { detail } : {}),
     });
     if (reportedFailureKeysRef.current.has(key)) return;
     reportedFailureKeysRef.current.add(key);
@@ -112,13 +124,15 @@ export function GenUiCard({
       sessionId: target.sessionId,
       workspacePath: target.workspacePath,
     });
-    void baseServices?.zcodeAgentService
+    void report.agentService
       .genUiReportRenderFailure({
         sessionId: target.sessionId,
         workspacePath: target.workspacePath,
-        ...(target.workspaceIdentity ? { workspaceIdentity: target.workspaceIdentity } : {}),
+        ...(report.workspaceIdentity ? { workspaceIdentity: report.workspaceIdentity } : {}),
+        ...(report.remoteSessionId ? { remoteSessionId: report.remoteSessionId } : {}),
         path: target.path,
         errorKind,
+        ...(detail ? { detail } : {}),
       })
       .catch((error) => {
         // 报告失败不影响渲染 UI：失败仅回落 UI 卡片 + 日志（spec 失败语义）。
@@ -129,11 +143,12 @@ export function GenUiCard({
         });
       });
   }, [
-    baseServices,
+    report.agentService,
+    report.remoteSessionId,
+    report.workspaceIdentity,
     failureText,
     target.path,
     target.sessionId,
-    target.workspaceIdentity,
     target.workspacePath,
   ]);
   useEffect(() => {

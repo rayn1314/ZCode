@@ -81,5 +81,13 @@ export function useGenUi(
     error: key === result.key ? result.error : undefined,
     supported: Boolean(platform),
     online: resolution.rpcReady,
+    // 渲染失败的上报通道必须与读端同源：远端会话要走执行端 zcode-agent。
+    // 走本机 base（`useOptionalBaseWorkspaceServices`）会打到本机 CLI，那里没有该会话，
+    // 报告被判 session_not_found 静默丢弃（spec gen-ui-cross-host-render.md 问题二补记）。
+    report: {
+      agentService: resolution.services.zcodeAgentService,
+      remoteSessionId: target.remoteSessionId ?? fallbackIdentity?.remoteSessionId,
+      workspaceIdentity: target.workspaceIdentity ?? fallbackIdentity?.workspaceIdentity,
+    },
   };
 }

@@ -2314,11 +2314,15 @@ export type ZCodeSessionGoalResult = z.infer<typeof zcodeSessionGoalResultSchema
 export const zcodeGenUiRenderFailureKindSchema = z.enum([
   "outside_root",
   "invalid_path",
+  "invalid_fragment",
   "not_found",
   "sandbox_mismatch",
   "other",
 ]);
 export type ZCodeGenUiRenderFailureKind = z.infer<typeof zcodeGenUiRenderFailureKindSchema>;
+
+/** 渲染失败详情长度上限：UI 侧按它截断，CLI 侧按它校验。 */
+export const GEN_UI_RENDER_FAILURE_DETAIL_MAX_LENGTH = 400;
 
 export const zcodeSessionGenUiReportParamsSchema = z
   .object({
@@ -2329,6 +2333,11 @@ export const zcodeSessionGenUiReportParamsSchema = z
     /** 读端实际输出根（渲染进程算的 visualizations 根）；仅诊断与注入文本使用。 */
     readerRoot: z.string().max(4096).optional(),
     workspaceKey: z.string().max(4096).optional(),
+    /**
+     * 读端错误原文（UI 侧已折叠空白与控制字符并按上限截断）。它同时进注入去重键：
+     * 读端形态违规的消息里带内容指纹，模型改写文件后同类失败可再提醒一次。
+     */
+    detail: z.string().min(1).max(GEN_UI_RENDER_FAILURE_DETAIL_MAX_LENGTH).optional(),
   })
   .strict();
 export type ZCodeSessionGenUiReportParams = z.infer<typeof zcodeSessionGenUiReportParamsSchema>;

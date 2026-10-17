@@ -131,4 +131,24 @@ describe("Gen UI executor file reader", () => {
     await writeFile(target.path, "x".repeat(5_000_001));
     await expect(readGenUiDocument(target, outputRoot)).rejects.toThrow("5 MB");
   });
+  // 渲染失败报告的注入去重键含这条消息：同一份内容必须给同一指纹（维持去重），
+  // 模型改写后必须变（否则模型改完仍不合规时收不到第二次提醒）。
+  it("fingerprints a whole-document rejection by content", async () => {
+    const { outputRoot, target } = await fixture();
+    const message = async () => {
+      try {
+        await readGenUiDocument(target, outputRoot);
+        return "";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    };
+    await writeFile(target.path, "<!doctype html><html><body>not a fragment</body></html>");
+    const first = await message();
+    expect(first).toContain("HTML fragment");
+    expect(first).toMatch(/content sha256:[0-9a-f]{16}/u);
+    expect(await message()).toBe(first);
+    await writeFile(target.path, "<html><body>rewritten, still a document</body></html>");
+    expect(await message()).not.toBe(first);
+  });
 });

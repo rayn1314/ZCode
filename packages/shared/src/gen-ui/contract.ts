@@ -2,6 +2,14 @@ import { z } from "zod";
 export * from "./tweakProtocol.js";
 
 export const GEN_UI_HTML_MAX_BYTES = 5_000_000;
+/**
+ * ::visualize 只接受 HTML 片段：`<!doctype>`/`<html>`/`<head>`/`<body>` 由宿主自己拼接
+ * （`createGenUiService.prepareSandbox`）。读取端据此拒绝完整文档，渲染侧据此归类为
+ * `invalid_fragment` 并把失败事实回传给模型。
+ */
+export const GEN_UI_DOCUMENT_WRAPPER_PATTERN = /<(?:!doctype\b|\/?(?:html|head|body)(?:\s|>))/iu;
+/** 片段违规错误消息的固定前缀：读端抛出、渲染侧按它归类，两侧共用同一常量避免文案漂移。 */
+export const GEN_UI_FRAGMENT_REQUIRED_MESSAGE = "Gen UI requires an HTML fragment";
 export const GEN_UI_STATE_MAX_BYTES = 16 * 1024;
 export const GEN_UI_STATE_MAX_ENTRIES = 100;
 export const GEN_UI_CONTEXT_MAX_BYTES = 64 * 1024;

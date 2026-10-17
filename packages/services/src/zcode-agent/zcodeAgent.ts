@@ -351,7 +351,8 @@ export interface ZCodeAgentGoalParams extends ZCodeAgentSessionTarget {
 /**
  * Gen UI 渲染失败报告（spec gen-ui-cross-host-render.md）：渲染侧 readDocument 失败后
  * 上报到 CLI，CLI 按防环三闸把失败事实注入模型下一轮，让模型知道自己生成的
- * ::visualize 引用没有渲染出来。errorKind 为共享枚举，不透传原始英文错误串。
+ * ::visualize 引用没有渲染出来。errorKind 为共享枚举，不透传原始英文错误串；
+ * `detail` 是折行截断后的读端错误原文，只进注入文本与去重键。
  */
 export interface ZCodeAgentGenUiRenderFailureParams extends ZCodeAgentSessionTarget {
   path: string;
@@ -359,6 +360,7 @@ export interface ZCodeAgentGenUiRenderFailureParams extends ZCodeAgentSessionTar
   /** 读端实际输出根（渲染进程算的 visualizations 根），仅诊断用，可省略。 */
   readerRoot?: string;
   workspaceKey?: string;
+  detail?: string;
 }
 
 // 面板数据源不落在某个会话上，因此继承 workspace target（workspacePath +

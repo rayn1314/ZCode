@@ -5434,6 +5434,7 @@ export function createZCodeAgentService(
             errorKind: params.errorKind,
             ...(params.readerRoot ? { readerRoot: params.readerRoot } : {}),
             ...(params.workspaceKey ? { workspaceKey: params.workspaceKey } : {}),
+            ...(params.detail ? { detail: params.detail } : {}),
           },
           zcodeSessionGenUiReportResultSchema,
         );

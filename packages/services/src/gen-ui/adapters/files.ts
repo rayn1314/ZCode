@@ -1,7 +1,10 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, realpath } from "node:fs/promises";
 import { isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
 import {
+  GEN_UI_DOCUMENT_WRAPPER_PATTERN,
+  GEN_UI_FRAGMENT_REQUIRED_MESSAGE,
   GEN_UI_HTML_MAX_BYTES,
   genUiStateTargetSchema,
   type GenUiDocument,
@@ -11,8 +14,19 @@ import {
 export function assertGenUiFragment(html: string): void {
   if (Buffer.byteLength(html, "utf8") > GEN_UI_HTML_MAX_BYTES)
     throw new Error("Gen UI file exceeds 5 MB");
-  if (/<(?:!doctype\b|\/?(?:html|head|body)(?:\s|>))/iu.test(html))
-    throw new Error("Gen UI requires an HTML fragment");
+  if (GEN_UI_DOCUMENT_WRAPPER_PATTERN.test(html))
+    throw new Error(`${GEN_UI_FRAGMENT_REQUIRED_MESSAGE}: ${describeFullDocument(html)}`);
+}
+
+/**
+ * 形态违规的失败描述里带内容指纹：渲染失败报告的注入去重键含这条消息，因此模型把同一个
+ * 文件改写后仍不合规时会再提醒一次；内容没变则维持去重（spec gen-ui-cross-host-render.md）。
+ * 只放字节数与摘要，绝不放文件内容。
+ */
+function describeFullDocument(html: string): string {
+  const bytes = Buffer.byteLength(html, "utf8");
+  const digest = createHash("sha256").update(html, "utf8").digest("hex").slice(0, 16);
+  return `it is a full HTML document (${bytes} bytes, content sha256:${digest})`;
 }
 export async function readGenUiDocument(
   raw: GenUiStateTarget,

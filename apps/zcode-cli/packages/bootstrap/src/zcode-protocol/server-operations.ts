@@ -2412,27 +2412,45 @@ export function resolveGoalStartStatus(
   return existingStatus === "active" ? "active" : "paused";
 }
 
-/** 同键（sessionId+path+errorKind）终身一次、每会话封顶次数（spec gen-ui-cross-host-render.md 防环三闸）。 */
+/**
+ * 同键（sessionId+path+errorKind+detail）终身一次、每会话封顶次数
+ * （spec gen-ui-cross-host-render.md 防环三闸）。detail 进键是为了让「模型改写文件后
+ * 仍同类失败」能再提醒一次：读端形态违规的消息里带内容指纹，内容没变则维持去重。
+ */
 export const GEN_UI_RENDER_FAILURE_MAX_INJECTIONS = 5;
 
 const GEN_UI_RENDER_FAILURE_REASONS: Record<ZCodeGenUiRenderFailureKind, string> = {
   outside_root: "被引用的路径不在执行端输出根目录内（写端/读端跨执行端时根不互通）",
   invalid_path: "被引用的路径不是读端接受的绝对路径形态",
+  invalid_fragment: "被引用的文件是完整 HTML 文档（含 <!doctype>/<html>/<head>/<body>），而 ::visualize 只接受 HTML 片段",
   not_found: "被引用的文件不存在",
   sandbox_mismatch: "沙箱校验不匹配",
   other: "未知原因",
+};
+
+/**
+ * 形态契约违规的修法是唯一的（不像路径猜错有多种可能），所以这里给确定指令而不是
+ * 只陈述事实；其余 kind 仍只陈述事实，避免模型盲从注入文本反复重试（spec 决策 3）。
+ */
+const GEN_UI_RENDER_FAILURE_FIX_HINTS: Partial<Record<ZCodeGenUiRenderFailureKind, string>> = {
+  invalid_fragment:
+    "修正方向：保留 <style> 与 <body> 里的内容，删除 <!doctype> / <html> / <head> / <body> 外壳（宿主会自己拼接外壳与运行时），原地改写同一个文件路径即可，不需要重画视图。",
 };
 
 function formatGenUiRenderFailureNotification(params: {
   path: string;
   errorKind: ZCodeGenUiRenderFailureKind;
   readerRoot?: string;
+  detail?: string;
 }): string {
+  const fixHint = GEN_UI_RENDER_FAILURE_FIX_HINTS[params.errorKind];
   return [
-    "[可视化渲染失败] 你生成的一个可视化没有渲染出来，相关信息如下（只陈述事实，供你修正引用时参考）：",
+    "[可视化渲染失败] 你生成的一个可视化没有渲染出来，相关信息如下：",
     `- 引用路径：${params.path}`,
     `- 失败原因：${GEN_UI_RENDER_FAILURE_REASONS[params.errorKind]}`,
     ...(params.readerRoot ? [`- 读端输出根：${params.readerRoot}`] : []),
+    ...(params.detail ? [`- 读端诊断：${params.detail}`] : []),
+    ...(fixHint ? [fixHint] : []),
     "参考：::visualize 的 path 必须逐字使用执行端上下文注入的 visualizations 目录，并拼接该目录下的文件名。",
   ].join("\n");
 }
@@ -2460,7 +2478,7 @@ export async function reportGenUiRenderFailure(
   if (ledger.injectCount >= GEN_UI_RENDER_FAILURE_MAX_INJECTIONS) {
     return { ok: false, reason: "injection_cap_reached" };
   }
-  const key = `${params.sessionId}\u0000${params.path}\u0000${params.errorKind}`;
+  const key = `${params.sessionId}\u0000${params.path}\u0000${params.errorKind}\u0000${params.detail ?? ""}`;
   if (ledger.injectedKeys.has(key)) {
     return { ok: false, reason: "duplicate" };
   }
