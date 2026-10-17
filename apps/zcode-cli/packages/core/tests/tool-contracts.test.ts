@@ -135,6 +135,8 @@ const SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION = [
 // agent」「Each agent type's model, reasoning effort, and tools come from its definition」在本
 // fork 已不复存在，故改为与 `src/tool/handlers/agent.ts` 的 buildAgentProviderDescription 逐字对齐
 // （与 SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION 同款 golden，只强不弱）。
+// 省略 `model` 的落点单独占一行：旧版把 profile 与会话模型并成 "profile/session model"，被读成
+// 「省略 = 用会话模型」，于是模型既不传参又向用户复述了一个没发生的继承。
 const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.",
   "",
@@ -148,8 +150,9 @@ const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "",
   "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
   "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
-  "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only and changes nothing persistent: the profile, the session model and later Agent calls are untouched, and you stay on the session model yourself.",
-  "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) currently runs on the profile/session model.",
+  "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only: that agent type's own setting and the session model are untouched, and you stay on the session model yourself.",
+  '- With `model` omitted the spawn runs on that agent type\'s configured model (Settings → Subagents), and on the session model only if that type is set to inherit — so omitting is NOT "run on the session model". To force the session model on a type that configures its own, pass the `[current]` id from ListModels, or tell the user that type\'s setting is not on inherit.',
+  "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
   "- The agent's final message is not shown to the user — relay what matters. With the default background launch it arrives later via the completion notification, not in this tool result.",
   "- A new Agent call starts fresh, so the prompt must be self-contained.",
   "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently (they all run in the background by default).",

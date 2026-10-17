@@ -70,6 +70,10 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 照 `CreateWorkflow` 的 `subagent_model` 先例：在 `resolveInput` 阶段用 `modelCatalogPort` 解析成规范形，解不开即业务失败；插进 `resolveSubagentSelection` 的解析顺序（`override(turn) ≥ 调用级 > profile > 父模型`）；**只活一次、不回写任何配置**——这是当年移除该字段的原因，规范化为"本次 spawn 的一次性请求"即可规避历史回放覆盖配置的问题。后台/复活路径当前拿不到调用级 override，此不对称在工具描述与本节明说。
 
+**省略 `model` 的落点必须逐字写明（2026-10-17 追记）**：解析顺序里 `profile` 高于父模型，所以「省略 = 用会话模型」是**错的**，只有该类型在设置页选「继承默认」时才成立；省略时实际跑的是该类型在设置页配的模型。旧文案把两者并成 `profile/session model` 一个词，模型据此既没传 `model` 又向用户复述了一个没发生的继承，而子代理跑的是设置页那个模型——**描述写省一个词，等于给模型一条错的事实**。要强制会话模型只有两条路：显式传 `ListModels` 里标 `[current]` 的 id（仅前台生效），或让用户改该类型的设置。`Agent` 工具描述（`core/src/tool/handlers/agent.ts`）与 `AgentInputSchema.model` 的 describe（`contracts/src/tools/agent.ts`）两处必须同口径，golden 见 `core/tests/tool-contracts.test.ts`。
+
+**与工作流那条路的差别**（不要套用同一句话）：`subagent_model` 缺席时子代理跑在**父会话当前模型**上（`bootstrap/src/app/workflow-actor-model.ts`：persona 绑定 > run 选择 > resume pin > 父模型），与设置页 profile 无关——`ListModels` 输出里 `current` 的注释只对这条路成立。
+
 ### D7 · 防环：链深随消息携带，cap 由发送侧端口裁决（阶段 5）
 
 两个会话互相回信没有终止条件，这是本能力唯一的系统性风险。设计要点：

@@ -126,10 +126,16 @@ function buildAgentProviderDescription(
 "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
     "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
     // 调用级 model 的口径照 ListModels / CreateWorkflow：只在用户要求时设，且只动这个子代理。
-    // 最后那句不对称必须留着——后台路径当前不携带调用级选型，不说穿等于让模型向用户复述一个
-    // 没有发生过的换模（与 describeWorkflowSubagentModel 括号里那半句同一个理由）。
-    "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only and changes nothing persistent: the profile, the session model and later Agent calls are untouched, and you stay on the session model yourself.",
-    "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) currently runs on the profile/session model.",
+    // 省略时的落点必须**拆开写**：解析顺序是 `override(turn) > 调用级 > profile(该类型的设置页) >
+    // 会话模型`，所以「省略 = 用会话模型」是错的，只有该类型在设置页选「继承默认」时才成立。
+    // 2026-10-17 实测过一次事故：旧文案把这两者并成 "profile/session model" 一个词，模型读成
+    // 「省略即继承会话模型」，于是既没传 `model` 又向用户复述了一个没发生的继承——而实际跑的是
+    // 设置页里配的那个模型。
+    "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only: that agent type's own setting and the session model are untouched, and you stay on the session model yourself.",
+    "- With `model` omitted the spawn runs on that agent type's configured model (Settings → Subagents), and on the session model only if that type is set to inherit — so omitting is NOT \"run on the session model\". To force the session model on a type that configures its own, pass the `[current]` id from ListModels, or tell the user that type's setting is not on inherit.",
+    // 最后那句不对称必须留着——后台路径不携带调用级选型，不说穿等于让模型向用户复述一个没有
+    // 发生过的换模（与 describeWorkflowSubagentModel 括号里那半句同一个理由）。
+    "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
     "- The agent's final message is not shown to the user — relay what matters. With the default background launch it arrives later via the completion notification, not in this tool result.",
     "- A new Agent call starts fresh, so the prompt must be self-contained.",
     "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently (they all run in the background by default).",

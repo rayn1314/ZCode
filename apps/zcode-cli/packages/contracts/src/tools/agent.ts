@@ -46,6 +46,11 @@ export const AgentInputSchema = z.object({
    * 历史回放不再有任何副作用可覆写。
    *
    * 主代理自己的模型不受影响（与 ListModels 的描述口径一致）：它只描述这个子代理。
+   *
+   * **省略时的落点必须写明**（解析顺序 `override(turn) > 调用级 > profile > 父模型`）：省略即走
+   * 该类型在设置页的模型，只有那里是「继承默认」时才落到会话模型。写成 "profile/session model"
+   * 一个词会被读成「省略 = 会话模型」——模型据此向用户复述一个没发生过的继承，而实际跑的是
+   * 设置页那个模型（2026-10-17 实测）。
    */
   model: z
     .string()
@@ -54,10 +59,10 @@ export const AgentInputSchema = z.object({
     .optional()
     .describe(
       "Model for this one spawn (`providerId/modelId`, optionally `$<reasoningLevel>`; ListModels prints ids in this shape). " +
-        "Only when the user asks for this agent to run on a different model — omit to use the profile/session model. " +
-        "It applies to this one call only and never changes the profile, the session model, or later Agent calls; " +
+        "Only when the user asks for this agent to run on a different model — omit to use that agent type's own configured model, and the session model only when that type is set to inherit. " +
+        "It applies to this one call only and never changes the agent type's setting, the session model, or later Agent calls; " +
         "you stay on the session model yourself. " +
-        "Honored on a foreground spawn (`wait: true`); a background launch (the default) currently runs on the profile/session model.",
+        "Honored on a foreground spawn (`wait: true`); a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
     ),
 });
 
