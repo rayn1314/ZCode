@@ -102,6 +102,16 @@ describe("显式 Subagent 选择使用注入的公共解析", () => {
         resolveSelection,
       }).selection,
     ).toEqual(effective);
+    // 调用级「显式继承」（`Agent.model = null`）：跳过 profile 落到父会话，同样不重解析——
+    // 「继承」拿到的选择与缺省继承是同一个，已经有执行归属。
+    expect(
+      resolveSubagentSelection({
+        profileSelection: effective,
+        parentSelection: original,
+        callInherit: true,
+        resolveSelection,
+      }).selection,
+    ).toEqual(original);
     expect(resolveSelection).not.toHaveBeenCalled();
   });
 

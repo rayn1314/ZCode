@@ -124,6 +124,8 @@ export function createDefaultSubagentPort(
         overrideSelection: options?.modelOverride?.selection,
         // 调用级 `Agent.model`：只在本次 spawn 有效，已在 resolveInput 解析成规范形。
         callSelection: options?.callModelSelection,
+        // 调用级「显式继承」（`Agent.model = null`）：跳过 profile，落到父会话模型。
+        ...(options?.callModelInherit ? { callInherit: true as const } : {}),
         resolveSelection: deps.resolveEffectiveModelSelection,
       });
       const modelOverride = options?.modelOverride;

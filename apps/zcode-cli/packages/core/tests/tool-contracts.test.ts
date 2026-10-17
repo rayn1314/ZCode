@@ -131,12 +131,12 @@ const SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION = [
 ].join("\n");
 
 // 本 fork 的 Agent 描述改了口径：默认「派发即句柄」（后台），`wait: true` 才前台同步，`model` 是
-// 一次性调用级选型。上游那版描述里的「refer to local agents by the agentId」「resume a completed
-// agent」「Each agent type's model, reasoning effort, and tools come from its definition」在本
-// fork 已不复存在，故改为与 `src/tool/handlers/agent.ts` 的 buildAgentProviderDescription 逐字对齐
-// （与 SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION 同款 golden，只强不弱）。
-// 省略 `model` 的落点单独占一行：旧版把 profile 与会话模型并成 "profile/session model"，被读成
-// 「省略 = 用会话模型」，于是模型既不传参又向用户复述了一个没发生的继承。
+// 三态（省略 = profile / `null` = 显式继承 / id = 钉模型）。上游那版描述里的「refer to local
+// agents by the agentId」「resume a completed agent」「Each agent type's model, reasoning effort,
+// and tools come from its definition」在本 fork 已不复存在，故改为与 `src/tool/handlers/agent.ts`
+// 的 buildAgentProviderDescription 逐字对齐（与 SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION 同款
+// golden，只强不弱）。「省略」与「继承」必须分开写：并成 "profile/session model" 会被读成
+// 「省略 = 用会话模型」，而 `null` 才是那把扳手（两条派发路都生效，见 SubagentStartOptions）。
 const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.",
   "",
@@ -151,8 +151,8 @@ const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
   "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
   "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only: that agent type's own setting and the session model are untouched, and you stay on the session model yourself.",
-  '- With `model` omitted the spawn runs on that agent type\'s configured model (Settings → Subagents), and on the session model only if that type is set to inherit — so omitting is NOT "run on the session model". To force the session model on a type that configures its own, pass the `[current]` id from ListModels, or tell the user that type\'s setting is not on inherit.',
-  "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
+  '- To make this one spawn inherit the session model, pass `model` as null: it ignores that agent type\'s configured model (the setting is untouched) and applies to both launch modes. That is how to honor a user asking for "inherit" / "follow my session model" — no ListModels lookup and no settings change needed.',
+  "- A pinned `model` id takes effect on a foreground spawn only, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
   "- The agent's final message is not shown to the user — relay what matters. With the default background launch it arrives later via the completion notification, not in this tool result.",
   "- A new Agent call starts fresh, so the prompt must be self-contained.",
   "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently (they all run in the background by default).",
@@ -450,10 +450,10 @@ describe("tool contract declarations", () => {
 
     expect(byName.get("Agent")?.outputSchema).toBeDefined();
     expect(byName.get("Agent")?.inputSchema).not.toHaveProperty("properties.subagent_type.enum");
-    // 本 fork 把 `model` 重新做成 First-class 的调用级选型（`AgentInputSchema`，规范形
-    // `providerId/modelId[$level]`，只在本次 launch 生效、零持久化），旧键
-    // `run_in_background` 反而被删除。
-    expect(byName.get("Agent")?.inputSchema).toHaveProperty("properties.model.type");
+    // 本 fork 把 `model` 重新做成 First-class 的调用级三态（`AgentInputSchema`：省略 = 该类型
+    // 的设置、`null` = 本发显式继承父会话、字符串 = 规范形 `providerId/modelId[$level]`，都只在
+    // 本次 launch 生效、零持久化），旧键 `run_in_background` 反而被删除。
+    expect(byName.get("Agent")?.inputSchema).toHaveProperty("properties.model.oneOf");
     expect(byName.get("Agent")?.inputSchema).toHaveProperty("properties.wait.type");
     expect(byName.get("Agent")?.permission?.sideEffectScope).toBe("session");
 
@@ -1286,7 +1286,7 @@ describe("tool contract declarations", () => {
       "The type of specialized agent to use for this task",
     );
     // 本 fork 的旧键是 `run_in_background`（已从 schema 删除，非 strict 静默剥离），
-    // 前台开关改名为 `wait`；`model` 则是重新做成 First-class 的调用级选型。
+    // 前台开关改名为 `wait`；`model` 则是重新做成 First-class 的调用级三态。
     expect(agentInput.properties.wait.description).toBe(
       "Defaults to false: the agent is launched in the background and the call returns a handle " +
         "(agentId, childSessionId) immediately, without waiting for any model call. Keep steering it with " +
@@ -1296,8 +1296,12 @@ describe("tool contract declarations", () => {
     );
     expect(agentInput.properties.subagent_type.enum).toBeUndefined();
     expect(agentInput.properties).not.toHaveProperty("run_in_background");
-    expect(agentInput.properties.model.type).toBe("string");
-    expect(agentInput.properties.model.minLength).toBe(1);
+    // 归一化把 `.nullable()` 的 anyOf 收成 oneOf：字符串支带 minLength（空串是 schema 错误），
+    // null 支就是「本发显式继承」。
+    expect(agentInput.properties.model.oneOf).toEqual([
+      { minLength: 1, type: "string" },
+      { type: "null" },
+    ]);
 
     expect(bashInput.properties.command.description).toBe("The command to execute");
     expect(bashInput.properties.timeout.description).toBe(

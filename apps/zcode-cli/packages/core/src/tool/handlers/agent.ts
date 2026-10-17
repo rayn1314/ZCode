@@ -126,16 +126,18 @@ function buildAgentProviderDescription(
 "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
     "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
     // 调用级 model 的口径照 ListModels / CreateWorkflow：只在用户要求时设，且只动这个子代理。
-    // 省略时的落点必须**拆开写**：解析顺序是 `override(turn) > 调用级 > profile(该类型的设置页) >
-    // 会话模型`，所以「省略 = 用会话模型」是错的，只有该类型在设置页选「继承默认」时才成立。
-    // 2026-10-17 实测过一次事故：旧文案把这两者并成 "profile/session model" 一个词，模型读成
+    // 三态必须**拆开写**：`override(turn) > 调用级 > profile(该类型的设置页) > 会话模型`，所以
+    // 「省略 = 用会话模型」是错的（省略走 profile），而 `null` 是模型能自己拧的那把扳手。
+    // 2026-10-17 实测过一次事故：旧文案把省略与继承并成 "profile/session model" 一个词，模型读成
     // 「省略即继承会话模型」，于是既没传 `model` 又向用户复述了一个没发生的继承——而实际跑的是
-    // 设置页里配的那个模型。
+    // 设置页里配的那个模型；当时它没有别的办法做到用户要的「继承」，只能劝用户去改设置。
     "- Pass `model` only when the user asks this agent to run on a different model (`providerId/modelId` from ListModels, optionally `$<reasoningLevel>`). It applies to this one spawn only: that agent type's own setting and the session model are untouched, and you stay on the session model yourself.",
-    "- With `model` omitted the spawn runs on that agent type's configured model (Settings → Subagents), and on the session model only if that type is set to inherit — so omitting is NOT \"run on the session model\". To force the session model on a type that configures its own, pass the `[current]` id from ListModels, or tell the user that type's setting is not on inherit.",
-    // 最后那句不对称必须留着——后台路径不携带调用级选型，不说穿等于让模型向用户复述一个没有
-    // 发生过的换模（与 describeWorkflowSubagentModel 括号里那半句同一个理由）。
-    "- `model` takes effect on a foreground spawn, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
+    '- To make this one spawn inherit the session model, pass `model` as null: it ignores that agent type\'s configured model (the setting is untouched) and applies to both launch modes. That is how to honor a user asking for "inherit" / "follow my session model" — no ListModels lookup and no settings change needed.',
+    // 最后那句不对称必须留着——后台路径不携带**选型**，不说穿等于让模型向用户复述一个没有发生过
+    // 的换模（与 describeWorkflowSubagentModel 括号里那半句同一个理由）。继承不在此列：它是开关
+    // 不是选型，两条路都带（contracts 的 SubagentStartOptions.callModelInherit），否则用户要的
+    // 「跟着会话走」在默认的后台派发下会被静默丢掉。
+    "- A pinned `model` id takes effect on a foreground spawn only, so pair it with `wait: true`; a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
     "- The agent's final message is not shown to the user — relay what matters. With the default background launch it arrives later via the completion notification, not in this tool result.",
     "- A new Agent call starts fresh, so the prompt must be self-contained.",
     "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently (they all run in the background by default).",
@@ -202,17 +204,20 @@ function formatAgentOutputForModel(output: unknown): string {
 }
 
 /**
- * 调用级 `model` 的归一化：解析成规范形，或一个整次调用的业务失败。
+ * 调用级 `model` 的归一化：解析成规范形、识别 `null`（显式继承），或一个整次调用的业务失败。
  *
  * 与 `CreateWorkflow` 的 `subagent_model` 共用同一个解析器（`resolveModelReference`）：三档匹配、
  * 大小写、档位校验与失败清单都是同一套。差别只有拒绝文案点名的是 `model`——那是各工具自己的
  * 字段名，所以这段薄包装留在各自的 handler 里。
+ *
+ * `null` 在目录检查**之前**返回：继承不是一个模型引用，宿主没有模型目录也照样能继承父会话。
  */
 function resolveAgentModel(
-  requested: string | undefined,
+  requested: string | null | undefined,
   catalog: ModelCatalogPort | undefined,
-): { result: true; canonical?: string } | ToolHandlerFailure {
+): { result: true; canonical?: string; inherit?: true } | ToolHandlerFailure {
   if (requested === undefined) return { result: true };
+  if (requested === null) return { result: true, inherit: true };
   if (catalog === undefined) {
     return { result: false, errorCode: AGENT_MODEL_FAILURE_CODE, message: AGENT_MODEL_UNAVAILABLE };
   }
@@ -225,8 +230,9 @@ function resolveAgentModel(
 }
 
 /**
- * `model` 的归一化钩子。省略时逐字节恒等返回原入参——那是「零回归」的可测形式：没有调用级
- * 模型的调用，hook / 权限规则 / handler 看到的字节与引入本字段之前完全一致。
+ * `model` 的归一化钩子。缺席时逐字节恒等返回原入参——那是「零回归」的可测形式：没有调用级
+ * 模型的调用，hook / 权限规则 / handler 看到的字节与引入本字段之前完全一致。`null` 同样是自己的
+ * 规范形（它就是「继承」这个请求的字节形态），只有字符串需要归一。
  */
 function resolveAgentInput(
   input: unknown,
@@ -238,6 +244,9 @@ function resolveAgentInput(
   const model = resolveAgentModel(parsed.data.model, context.modelCatalogPort);
   if (!model.result) return model;
   const rawModel = (input as { model?: unknown } | null)?.model;
+  // `null` 已是自己的规范形（它就是「继承」这个请求的字节形态），无需归一也不必回填。
+  if (model.inherit === true) return { result: true, input };
+  if (model.canonical === undefined) return { result: true, input };
   // 比的是**原始**入参：schema 带 `.trim()`，所以两端有空白的字符串与规范形解析后相等，而恒等
   // 放行会让下游看到那串空白（与 CreateWorkflow 的归一化同一条理由）。
   if (model.canonical === rawModel) return { result: true, input };
@@ -263,9 +272,12 @@ const agentHandler: ToolHandler = async (input, context) => {
     );
   }
 
-  // 走到 handler 的 `model` 已被 resolveInput 归一成规范形（解不出来的调用根本走不到这里），
-  // 所以这里只把那个字符串拆回结构化选型。与 CreateWorkflow 的 handler 同一姿态。
-  const callModelSelection = parseSubagentModelSelection(parsed.model, "agent model");
+  // 走到 handler 的 `model` 已被 resolveInput 归一：字符串是规范形、`null` 是显式继承（解不出来
+  // 的调用根本走不到这里）。与 CreateWorkflow 的 handler 同一姿态。
+  const callModelInherit = parsed.model === null;
+  const callModelSelection = callModelInherit
+    ? undefined
+    : parseSubagentModelSelection(parsed.model ?? undefined, "agent model");
 
   const request = {
     sessionId: context.sessionId,
@@ -298,6 +310,8 @@ const agentHandler: ToolHandler = async (input, context) => {
       // 调用级选型只放在本次 launch 的 options 里：不回写 Settings / profile / turn 状态，
       // 因此历史 tool call 回放不会留下任何能覆盖当前配置的东西。
       ...(callModelSelection ? { callModelSelection } : {}),
+      // 同理：`null` 只对这一发生效，设置页里那个类型的选择不动。
+      ...(callModelInherit ? { callModelInherit: true as const } : {}),
     },
   );
 };

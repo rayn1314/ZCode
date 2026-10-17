@@ -253,13 +253,17 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           });
           return withBackgroundDeniedNotice(await port.run(executionRequest, launchOptions));
         }
-        // 后台路径有意不带 `callModelSelection`（调用级 `Agent.model`）：`start` 只接普通
-        // Model 继承，没有「选型」通道，SendMessage 复活同样没有。这是记录在案的不对称——
-        // 调用级模型只在本次前台 run 生效，工具描述与 contracts 的 `callModelSelection` 都
-        // 明说了这一点，不要让两处看起来一致。
+        // 后台路径有意不带 `callModelSelection`（调用级 `Agent.model` 的**选型**）：`start` 只接
+        // 普通 Model 继承，没有「选型」通道，SendMessage 复活同样没有。这是记录在案的不对称——
+        // 调用级选型只在本次前台 run 生效，工具描述与 contracts 的 `callModelSelection` 都明说了
+        // 这一点，不要让两处看起来一致。
+        // 例外是 `callModelInherit`：它不是选型而是「别用 profile 的选择」，不需要 Model 实例与
+        // request dependencies，所以两条路都带（否则用户要的「这一发跟着会话走」在默认的后台
+        // 派发下会被静默丢掉）。
         return port.start(executionRequest, {
           signal: launchOptions?.signal,
           ...(launchOptions?.model ? { model: launchOptions.model } : {}),
+          ...(launchOptions?.callModelInherit ? { callModelInherit: true as const } : {}),
         });
       }
       return port.run(executionRequest, launchOptions);
@@ -331,6 +335,8 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           ...(runOptions?.callModelSelection
             ? { callModelSelection: runOptions.callModelSelection }
             : {}),
+          // 显式继承两条路都带（见 launch 的后台分支注释）。
+          ...(runOptions?.callModelInherit ? { callModelInherit: true as const } : {}),
         },
         {
           reportActivity: activityWatchdog.reportActivity,
@@ -620,6 +626,8 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
         {
           signal: taskAbort.signal,
           ...(startOptions?.model ? { model: startOptions.model } : {}),
+          // 继承这条在后台也带（见 launch 的分支注释）：它不是一个选型，只是一个开关。
+          ...(startOptions?.callModelInherit ? { callModelInherit: true as const } : {}),
         },
         {
           onSessionReady: async () => {

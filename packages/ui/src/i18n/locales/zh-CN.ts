@@ -4332,8 +4332,8 @@ const zhCN: Record<string, string> = {
   "settings.subagents.reasoningUnavailable": "推理档位暂不可用",
   "settings.subagents.syncFailed":
     "已保存到本机，但未能同步到全部运行中会话与远端环境；新建会话或重连后自动生效。",
-  "settings.subagents.model.inherit": "继承默认",
-  "settings.subagents.model.defaultMain": "继承默认",
+  "settings.subagents.model.inherit": "继承父会话",
+  "settings.subagents.model.defaultMain": "继承父会话",
   "settings.subagents.model.select": "选择模型",
   "settings.subagents.model.main": "主模型",
   "settings.subagents.model.lite": "轻量模型",

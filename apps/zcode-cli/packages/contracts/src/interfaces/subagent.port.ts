@@ -36,12 +36,25 @@ export interface SubagentRunOptions {
    *
    * **只活一次**：由 handler 放进本次 launch options，绝不回写 Settings / profile / turn 状态。
    * 解析顺序见 `core/src/runtime/helpers/subagent-selection.ts`：
-   * `modelOverride(turn) > callModelSelection(调用级) > profile > 父模型`。
+   * `modelOverride(turn) > 调用级 > profile > 父模型`。
    *
    * 只有前台 `run` 通道携带它：后台 `start` 与 SendMessage 复活都没有选型通道（见 runner.launch
-   * 的注释），这是记录在案的不对称，不要让描述假装一致。
+   * 的注释），这是记录在案的不对称，不要让描述假装一致。**显式继承不属于这个不对称**——见
+   * {@link callModelInherit}。
    */
   callModelSelection?: ModelSelection;
+  /**
+   * 调用级「显式继承」：本次 spawn **忽略该类型 profile 的模型**，跑父会话当前模型
+   * （`Agent.model = null`，设置页那个「继承」选项的等价物）。
+   *
+   * 与 {@link callModelSelection} 互斥（handler 二选一），但**优先级不同于它**：这是一个
+   * 「不要用 profile 的选择」的开关，不是一个模型引用，所以
+   * 1. 不需要模型目录（宿主没有 catalog 时同样成立）；
+   * 2. 后台 `start` 通道也携带它——继承不是选型，无需 Model 实例或 request dependencies。
+   *    「让这一发跟着会话走」在默认（后台）派发下必须真的生效，否则模型只能靠 `wait: true`
+   *    兜住，那就是一条没人看得见的静默失败。
+   */
+  callModelInherit?: true;
 }
 
 export interface SubagentLaunchRequest extends SubagentRunRequest {
@@ -60,6 +73,14 @@ export interface SubagentStartOptions {
   signal?: AbortSignal;
   /** 后台 child 启动时继承的普通 Model；临时 turn 模型仍禁止进入后台。 */
   model?: Model;
+  /**
+   * 调用级「显式继承」（{@link SubagentRunOptions.callModelInherit}）的后台通道。
+   *
+   * 后台不接 `callModelSelection`（选型需要 Model 实例与 request dependencies），但继承只需要
+   * 一句「别用 profile 的模型」，所以它在这里也有通道——否则模型照用户的话要求继承，默认的
+   * 后台派发却跑回设置页那个模型。
+   */
+  callModelInherit?: true;
 }
 
 export interface SubagentWaitOptions {

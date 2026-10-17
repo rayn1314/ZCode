@@ -4620,8 +4620,8 @@ const enUS: Record<string, string> = {
   "settings.subagents.reasoningUnavailable": "Reasoning effort unavailable",
   "settings.subagents.syncFailed":
     "Saved locally, but could not sync to every running session and remote environment; it will apply on new sessions or after reconnecting.",
-  "settings.subagents.model.inherit": "Inherit",
-  "settings.subagents.model.defaultMain": "Inherit default",
+  "settings.subagents.model.inherit": "Inherit parent session",
+  "settings.subagents.model.defaultMain": "Inherit parent session",
   "settings.subagents.model.select": "Select model",
   "settings.subagents.model.main": "Main",
   "settings.subagents.model.lite": "Lite",

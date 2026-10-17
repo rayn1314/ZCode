@@ -36,10 +36,11 @@ export const AgentInputSchema = z.object({
         "message in this same tool result.",
     ),
   /**
-   * 调用级 model：只给**本次** spawn 指定子代理模型，规范形与 `CreateWorkflow` 的
-   * `subagent_model` 完全同形（`resolveInput` 会先用宿主模型目录解析成规范形，解不开即整次调用
-   * 业务失败）。与 workflow 同一条纪律：**不留痕**——它只在 handler → `subagentPort.launch` 的
-   * 本次 options 里生效，绝不回写 Settings / profile / turn 状态。
+   * 调用级 model：**三态**，与 `AmendWorkflow.subagent_model` 同规——省略 = 沿用该类型在设置页的
+   * 模型、`null` = 本次显式继承父会话（忽略 profile 的选择）、字符串 = 指定一个模型（规范形与
+   * `CreateWorkflow` 的 `subagent_model` 完全同形，`resolveInput` 先用宿主模型目录解析，解不开即
+   * 整次调用业务失败）。与 workflow 同一条纪律：**不留痕**——它只在 handler →
+   * `subagentPort.launch` 的本次 options 里生效，绝不回写 Settings / profile / turn 状态。
    *
    * 这一点是该字段当年被移除的原因的反面：父模型暴露一个"选模"参数后，历史 tool call 会持续
    * 带着旧 override 复现并覆盖用户当前配置；规范化为"一次调用的一次性请求、零持久化"之后，
@@ -47,22 +48,26 @@ export const AgentInputSchema = z.object({
    *
    * 主代理自己的模型不受影响（与 ListModels 的描述口径一致）：它只描述这个子代理。
    *
-   * **省略时的落点必须写明**（解析顺序 `override(turn) > 调用级 > profile > 父模型`）：省略即走
-   * 该类型在设置页的模型，只有那里是「继承默认」时才落到会话模型。写成 "profile/session model"
-   * 一个词会被读成「省略 = 会话模型」——模型据此向用户复述一个没发生过的继承，而实际跑的是
-   * 设置页那个模型（2026-10-17 实测）。
+   * **三态必须逐字写明**（解析顺序 `override(turn) > 调用级 > profile > 父模型`）：省略即走该类型
+   * 在设置页的模型，只有那里是「继承」时才落到会话模型——写成 "profile/session model" 一个词会被
+   * 读成「省略 = 会话模型」，于是模型既不传参又向用户复述一个没发生过的继承（2026-10-17 实测）。
+   * `null` 是给模型用的那把扳手：用户说「这一发跟着会话模型走」时，模型能自己做到，不必让用户
+   * 去改设置，也不必拿 `ListModels` 的 `[current]` id 去钉一个模型。
    */
   model: z
     .string()
     .trim()
     .min(1)
+    .nullable()
     .optional()
     .describe(
       "Model for this one spawn (`providerId/modelId`, optionally `$<reasoningLevel>`; ListModels prints ids in this shape). " +
-        "Only when the user asks for this agent to run on a different model — omit to use that agent type's own configured model, and the session model only when that type is set to inherit. " +
-        "It applies to this one call only and never changes the agent type's setting, the session model, or later Agent calls; " +
-        "you stay on the session model yourself. " +
-        "Honored on a foreground spawn (`wait: true`); a background launch (the default) carries no call-level model and runs on that agent type's configured model.",
+        "Omit to keep that agent type's own configured model. " +
+        "Pass null to make this one spawn inherit the session model instead: it ignores the agent type's configured model, the setting is left untouched, and it applies to both launch modes — " +
+        'that is how to honor a user asking for "inherit" / "follow my session model". ' +
+        "Pass a model id only when the user asks this agent to run on a different one. " +
+        "It applies to this one call only and never changes the agent type's setting, the session model, or later Agent calls; you stay on the session model yourself. " +
+        "A pinned model id is honored on a foreground spawn (`wait: true`) only, because a background launch (the default) carries no call-level model.",
     ),
 });
 

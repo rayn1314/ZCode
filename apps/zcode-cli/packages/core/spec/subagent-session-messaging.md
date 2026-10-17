@@ -70,7 +70,17 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 照 `CreateWorkflow` 的 `subagent_model` 先例：在 `resolveInput` 阶段用 `modelCatalogPort` 解析成规范形，解不开即业务失败；插进 `resolveSubagentSelection` 的解析顺序（`override(turn) ≥ 调用级 > profile > 父模型`）；**只活一次、不回写任何配置**——这是当年移除该字段的原因，规范化为"本次 spawn 的一次性请求"即可规避历史回放覆盖配置的问题。后台/复活路径当前拿不到调用级 override，此不对称在工具描述与本节明说。
 
-**省略 `model` 的落点必须逐字写明（2026-10-17 追记）**：解析顺序里 `profile` 高于父模型，所以「省略 = 用会话模型」是**错的**，只有该类型在设置页选「继承默认」时才成立；省略时实际跑的是该类型在设置页配的模型。旧文案把两者并成 `profile/session model` 一个词，模型据此既没传 `model` 又向用户复述了一个没发生的继承，而子代理跑的是设置页那个模型——**描述写省一个词，等于给模型一条错的事实**。要强制会话模型只有两条路：显式传 `ListModels` 里标 `[current]` 的 id（仅前台生效），或让用户改该类型的设置。`Agent` 工具描述（`core/src/tool/handlers/agent.ts`）与 `AgentInputSchema.model` 的 describe（`contracts/src/tools/agent.ts`）两处必须同口径，golden 见 `core/tests/tool-contracts.test.ts`。
+**`model` 的三态与描述口径（2026-10-17 追记）**：解析顺序里 `profile` 高于父模型，所以「省略 = 用会话模型」是**错的**——省略走该类型在设置页配的模型。旧文案把两者并成 `profile/session model` 一个词，模型据此既没传 `model` 又向用户复述了一个没发生的继承，而子代理跑的是设置页那个模型；它当时也确实没有别的办法做到用户要的「继承」，只能劝用户去改设置。**描述写省一个词，等于给模型一条错的事实。** 因此该字段定为三态（与 `AmendWorkflow.subagent_model` 同规）：
+
+| 取值 | 语义 | 需要模型目录 | 生效的派发路 |
+| --- | --- | --- | --- |
+| 省略 | 沿用该类型在设置页的模型（缺失时才是父会话模型） | 否 | 两条 |
+| `null` | **本次显式继承父会话**（忽略 profile 的选择，设置不动） | 否 | 两条 |
+| 字符串 | 本次钉一个模型（`providerId/modelId[$level]`） | 是 | 仅前台 |
+
+`null` 落在目录检查**之前**，且不过 `resolveSelection`（继承来的选择已有执行归属）；它让 `hasConcreteModel` 为假，调用方于是照常复用父模型实例（含父 turn 的执行模型）——这正是「继承」该有的行为。**它是唯一一条两条派发路都带得动的调用级模型请求**（`SubagentStartOptions.callModelInherit`）：继承是开关不是选型，不需要 Model 实例与 request dependencies，所以后台 `start` 也带；否则用户说「这一发跟着会话走」时，默认的后台派发会静默丢掉它，模型只能靠 `wait: true` 兜。字符串那条仍是记录在案的前台独占（后台 `start` 与 SendMessage 复活都没有选型通道）——**复活会把模型解析回 profile**，与首次派发的调用级请求不一致，这是本字段已知边界。
+
+两处描述（`core/src/tool/handlers/agent.ts` 的 `buildAgentProviderDescription` 与 `contracts/src/tools/agent.ts` 的 describe）必须同口径，golden 逐字断言在 `core/tests/tool-contracts.test.ts`。设置页里同一件事的选项名同日从「继承默认」改成**「继承父会话」**：「默认」会被读成"模型自己的默认值"，而它说的其实是跟随派发它的那个会话。
 
 **与工作流那条路的差别**（不要套用同一句话）：`subagent_model` 缺席时子代理跑在**父会话当前模型**上（`bootstrap/src/app/workflow-actor-model.ts`：persona 绑定 > run 选择 > resume pin > 父模型），与设置页 profile 无关——`ListModels` 输出里 `current` 的注释只对这条路成立。
 
