@@ -5,6 +5,7 @@ import { createContextBuilder } from "../src/context/index.js";
 import { createTestRuntimeModel } from "./test-runtime-model.js";
 
 import { buildMemorySection } from "../src/context/sections/memory.js";
+import { buildDesktopContextSection } from "../src/context/sections/desktop.js";
 import {
   buildCliPrefixSection,
   buildEnvInfoSection,
@@ -231,6 +232,13 @@ describe("ContextBuilder meta user context", () => {
     expect(result.systemMessages).toHaveLength(3);
     expect(result.systemMessages[1]?.content).toContain("# ZCode Desktop Context");
     expect(result.systemMessages[2]?.content).not.toContain("# ZCode Desktop Context");
+  });
+
+  it("states the Gen UI fragment contract when an output directory is supplied", () => {
+    // 模型容易把“HTML 片段”理解成完整文档；读端硬性拒绝 doctype/html/head/body。
+    const section = buildDesktopContextSection("/home/user/.zcode/v2/visualizations/hash");
+    expect(section.content).toContain("HTML fragment");
+    expect(section.content).toContain("<!doctype>");
   });
 
   it("does not inject the Desktop context for the default terminal surface", () => {

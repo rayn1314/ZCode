@@ -14,6 +14,7 @@ export function buildDesktopContextSection(genUiOutputDirectory?: string): Conte
             "- This Desktop host supports Gen UI: completed assistant references to HTML fragments in the supplied session directory render inline, including on remote executors.",
             `- Writable, durable visualization directory for this session: ${JSON.stringify(genUiOutputDirectory)}. Save inline fragments here, outside the project. Other paths cannot be rendered.`,
             "- The ::visualize path must be exactly the session directory above joined with a lowercase-hyphenated .html file name. Do not reference UNC mounts, the project directory, or any other absolute path — they are rejected and the widget will not render.",
+            "- The file must be an HTML fragment: never include `<!doctype>`, `<html>`, `<head>`, or `<body>`; the host rejects them and the widget will not render. `<style>` and `<script>` inside the fragment are allowed.",
             "- Use the independent visualize skill for authoring instructions, styles and the restricted window.zcode bridge. Load the skill before generating an interactive view.",
           ]
         : ["- No visualization output directory is supplied; inline Gen UI is unavailable."]),
