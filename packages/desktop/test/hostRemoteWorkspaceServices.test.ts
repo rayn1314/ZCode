@@ -33,6 +33,7 @@ import {
   ISubagentsService,
   ICommandsService,
   ISettingsSyncService,
+  IGenUiService,
   type ZCodeAgentSessionRuntimePreferencesRequest,
 } from "@zcode/services";
 import {
@@ -134,7 +135,22 @@ function makeRemoteServices() {
       getView: vi.fn(async () => ({ revision: 0, providers: [] })),
     },
     providerSettingsService: { remote: "provider-settings" },
+    // 读端必须落到执行端：远端 server 的 gen-ui 与 Agent 写入根同进程同源。
+    genUiService: {
+      readDocument: vi.fn(async () => ({ path: "/home/u/v/a.html", html: "<p>remote</p>" })),
+    },
   } as never;
+}
+
+function createBaseGenUiService() {
+  return {
+    readDocument: vi.fn(async () => ({ path: "", html: "" })),
+    prepareSandbox: vi.fn(async () => ({}) as never),
+    getState: vi.fn(async () => null),
+    setState: vi.fn(async () => {}),
+    listState: vi.fn(async () => []),
+    onStateChanged: vi.fn(() => ({ dispose: () => {} })),
+  };
 }
 
 function remoteWorkspaceHostOptions(onError = vi.fn()) {
@@ -214,6 +230,70 @@ describe("remote workspace host service wiring", () => {
     expect(services.get(ICommandsService)).toBe(remoteServices.commandsService);
     expect(services.get(ISubagentsService)).toBeTruthy();
     expect(services.get(ISettingsSyncService)).toBeTruthy();
+    // 读端必须解析到远端实例，否则 POSIX 路径会在 Windows 根上越界（A2 回归）。
+    expect(services.get(IGenUiService)).toBeTruthy();
+  });
+
+  it("routes Gen UI reads to the executor host and keeps widget state on the desktop base", async () => {
+    const remoteServices = makeRemoteServices();
+    const baseGenUi = createBaseGenUiService();
+    const sourceServices = new ServiceCollection().register(IGenUiService, baseGenUi as never);
+    const services = createRemoteWorkspaceServiceCollection({
+      clientConfigService,
+      connectionServices: remoteServices,
+      sourceServices,
+      ...remoteWorkspaceHostOptions(),
+      parentPort: null,
+      createRemotePromptAttachmentTaskService: passthroughService,
+      createRemotePromptAttachmentSessionService: passthroughService,
+      createReportingRemoteZCodeTaskService: passthroughService,
+    });
+    const genUi = services.get(IGenUiService);
+    const target = {
+      workspacePath: "/home/u/ws",
+      workspaceIdentity: "remote:wsl:Ubuntu:u:/home/u/ws",
+      sessionId: "sess-1",
+      path: "/home/u/.zcode-rayn/v2/visualizations/hash/a.html",
+    };
+
+    await expect(genUi.readDocument(target)).resolves.toEqual({
+      path: "/home/u/v/a.html",
+      html: "<p>remote</p>",
+    });
+    expect(remoteServices.genUiService.readDocument).toHaveBeenCalledWith(target);
+    expect(baseGenUi.readDocument).not.toHaveBeenCalled();
+
+    await genUi.getState(target);
+    await genUi.setState({ target, state: {} });
+    await genUi.listState({ workspacePath: target.workspacePath, sessionId: "sess-1" });
+    expect(baseGenUi.getState).toHaveBeenCalled();
+    expect(baseGenUi.setState).toHaveBeenCalled();
+    expect(baseGenUi.listState).toHaveBeenCalled();
+  });
+
+  it("fails closed when the remote executor has no gen-ui channel", async () => {
+    const remoteServices = { ...(makeRemoteServices() as object), genUiService: undefined };
+    const baseGenUi = createBaseGenUiService();
+    const services = createRemoteWorkspaceServiceCollection({
+      clientConfigService,
+      connectionServices: remoteServices as never,
+      sourceServices: new ServiceCollection().register(IGenUiService, baseGenUi as never),
+      ...remoteWorkspaceHostOptions(),
+      parentPort: null,
+      createRemotePromptAttachmentTaskService: passthroughService,
+      createRemotePromptAttachmentSessionService: passthroughService,
+      createReportingRemoteZCodeTaskService: passthroughService,
+    });
+
+    await expect(
+      services.get(IGenUiService).readDocument({
+        workspacePath: "/home/u/ws",
+        sessionId: "sess-1",
+        path: "/home/u/ws/a.html",
+      }),
+    ).rejects.toThrow("remote executor does not expose gen-ui");
+    // 绝不能回落到本机读：那正是 A2 的失败形态。
+    expect(baseGenUi.readDocument).not.toHaveBeenCalled();
   });
 
   it.each(["desktop-attached", "server"] as const)(

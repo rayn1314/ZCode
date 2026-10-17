@@ -37,6 +37,7 @@ import {
   IMemoryService,
   IOutputStyleService,
   ISettingsSyncService,
+  IGenUiService,
   IPromptAttachmentTransferService,
   type IServiceAccessor,
 } from "@zcode/services";
@@ -92,6 +93,51 @@ import {
 const runtimePreferencesLogger = createServiceLogger("remote-runtime-preferences");
 const ZCODE_JWT_TOKEN_KEY = "zcodejwttoken";
 const conversationShareLog = createServiceLogger("conversation-share");
+
+/**
+ * 远端 workspace 的 Gen UI 服务：读端必须落在执行端（spec gen-ui-cross-host-render.md 决策 1）。
+ *
+ * 远端 server bundle 已注册 `IGenUiService`，其 outputRoot 与 spawn Agent 时注入的
+ * `ZCODE_GEN_UI_OUTPUT_ROOT` 同进程同源；但远端服务集合此前漏注册该通道，renderer
+ * 只能回落到本机 base 实例，POSIX 路径在 Windows 根上必然越界。
+ *
+ * 只把 `readDocument` 交给远端：widget state 与 sandbox 仍由本机 base 服务持有
+ * （sandbox 注册表只在桌面主进程存在，远端没有 registerSandbox）。
+ */
+function createRemoteGenUiService(
+  remote: Partial<{ readDocument: IGenUiService["readDocument"] }> | undefined,
+  local: IGenUiService,
+): IGenUiService {
+  return {
+    readDocument: (target) => {
+      if (!remote?.readDocument) {
+        return Promise.reject(
+          new Error("Gen UI read is unavailable: remote executor does not expose gen-ui"),
+        );
+      }
+      return remote.readDocument(target);
+    },
+    prepareSandbox: (input) => local.prepareSandbox(input),
+    getState: (target) => local.getState(target),
+    setState: (input) => local.setState(input),
+    listState: (scope) => local.listState(scope),
+    onStateChanged: local.onStateChanged,
+  };
+}
+
+/** 没有桌面 base 服务可用时的兜底：Gen UI 的 state/sandbox 只在桌面主进程存在。 */
+function createUnsupportedGenUiStateHost(): IGenUiService {
+  const unsupported = (): Promise<never> =>
+    Promise.reject(new Error("Gen UI widget state requires the desktop base host"));
+  return {
+    readDocument: unsupported,
+    prepareSandbox: unsupported,
+    getState: unsupported,
+    setState: unsupported,
+    listState: unsupported,
+    onStateChanged: () => ({ dispose: () => {} }),
+  };
+}
 
 function createUnsupportedRemoteConversationShareService(): IConversationShareService {
   return createUnsupportedConversationShareService({
@@ -445,6 +491,13 @@ export function createRemoteWorkspaceServiceCollection(params: {
       ISettingsSyncService,
       createSettingsSyncService({ settingService: localSettingService }),
     )
+    .register(
+      IGenUiService,
+      createRemoteGenUiService(
+        params.connectionServices.genUiService,
+        params.sourceServices?.getOptional(IGenUiService) ?? createUnsupportedGenUiStateHost(),
+      ),
+    )
     .register(IPromptAttachmentTransferService, params.promptAttachmentTransferService);
   registerHostApiNetworkTransportForDispose(services, hostApiNetworkTransport);
   registerRemoteProviderProvisioningExecutor(services, remoteProviderProvisioningService);
@@ -502,6 +555,13 @@ export function createServerRemoteWorkspaceServiceCollection(params: {
     .register(IMemoryService, params.connectionServices.memoryService)
     .register(IOutputStyleService, params.connectionServices.outputStyleService)
     .register(ISettingsSyncService, params.connectionServices.settingsSyncService)
+    .register(
+      IGenUiService,
+      createRemoteGenUiService(
+        params.connectionServices.genUiService,
+        params.sourceServices?.getOptional(IGenUiService) ?? createUnsupportedGenUiStateHost(),
+      ),
+    )
     .register(
       IPromptAttachmentTransferService,
       params.connectionServices.promptAttachmentTransferService,

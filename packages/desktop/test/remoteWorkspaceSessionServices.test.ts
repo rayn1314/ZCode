@@ -26,6 +26,7 @@ function makeServices(id: string): IServiceAccessor {
     pluginsService: { id, service: "plugins" },
     commandsService: { id, service: "commands" },
     hooksService: { id, service: "hooks" },
+    genUiService: { id, service: "gen-ui" },
     clientScenesService: { id, service: "clientScenes" },
     settingService: { id, service: "setting" },
     credentialService: { id, service: "credential" },
@@ -69,6 +70,9 @@ describe("buildRemoteWorkspaceSessionServices", () => {
     // hooksService 曾被 ...baseServices 展开静默回落到本机 host，远程机器上的
     // workspace hooks（含待审项）永远加载不出来。hooks 读写与 trust 授权必须打到远端。
     expect(merged.hooksService).toBe(remoteServices.hooksService);
+    // Gen UI 读端必须落在执行端：Agent 把 ::visualize 文件写到远端数据根，
+    // 本机实例用自己的 outputRoot 校验 POSIX 路径必然越界（A2 回归）。
+    expect(merged.genUiService).toBe(remoteServices.genUiService);
 
     expect(merged.clientScenesService).toBe(baseServices.clientScenesService);
     expect(merged.settingService).toBe(baseServices.settingService);

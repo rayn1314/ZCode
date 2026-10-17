@@ -48,6 +48,9 @@ export function buildRemoteWorkspaceSessionServices(
     // 无法读取远端待审 Hook。
     // hooks 读写（loadHooks/saveHooks）与 grantWorkspaceHookTrust 授权都必须打到远端 host。
     hooksService: remoteServices.hooksService,
+    // Gen UI 读端必须落在执行端：Agent 把 ::visualize 文件写到远端数据根，本机实例
+    // 用自己的 outputRoot 校验 POSIX 路径必然越界（spec gen-ui-cross-host-render.md 决策 1）。
+    genUiService: remoteServices.genUiService,
   };
 }
 

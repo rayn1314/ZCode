@@ -60,13 +60,16 @@ Windows 侧目录全空说明：桌面 host 会按会话在 Windows 根下创建
 
 由此**假设 B 排除**（模型引用的是注入的 POSIX 目录，不是 UNC/项目路径），修法收敛为「修读端路由」一条，无需路径形态兜底。
 
-### 读端为何落本机（待定位到具体判据）
+### 读端为何落本机（2026-10-17 已定位到判据）
 
-已确证「读端 = 桌面本机 base services」，但落点判据未定。已知线索：
+`useGenUi` 的服务解析本身是对的（远端会话解析到 `remoteServiceAccess`），断点在**服务集合装配漏项**，共两处：
 
-- 出问题的是**划选辅助对话（fork 会话）**，不是主会话；fork 会话在远端服务解析里是否登记（`sessionsById` / `workspaceIdentity` / `remoteSessionId`）是首要嫌疑；
-- 桌面 host 确实在本机为会话创建了 gen-ui 目录（Windows 根下空目录即证据），说明本机 gen-ui 服务在跑并为会话初始化；
-- 修法落点：`packages/ui/src/hooks/useWorkspaceServices.tsx` 的 `resolveWorkspaceServicesForTarget` 及其判据（`isRemoteTarget` / `resolvedRemoteSessionId`），需覆盖「远端执行端 + fork/侧聊会话」组合。
+1. 桌面 Host 的 `createRemoteWorkspaceServiceCollection` 没有注册 `IGenUiService`，远端连接暴露的服务集合里没有 `gen-ui` 通道；
+2. renderer 的 `buildRemoteWorkspaceSessionServices` 用 `...baseServices` 合并远端服务时，没有把 `genUiService` 覆盖成远端实例。
+
+结果：`sessionsById[remoteSessionId].services.genUiService` 就是本机 base 实例，`readDocument` 永远在 Windows 根上校验 POSIX 路径。取证方式：在 renderer 里比较 `resolution.services.genUiService === baseServices.genUiService`（实测为 `true`），并观察 `gen-ui.readDocument` 的失败栈落在桌面 Host 进程。
+
+修法：Host 侧注册一个组合服务——`readDocument` 走远端 `connectionServices.genUiService`（与 Agent 写入根同进程同源），widget state 与 sandbox 仍委托本机 base（sandbox 注册表只在桌面主进程存在）；远端未暴露 `gen-ui` 时 fail closed，**不回落到本机读**。renderer 合并时把 `genUiService` 显式指向远端实例。
 
 ## 设计决策
 
