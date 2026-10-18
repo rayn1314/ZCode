@@ -175,6 +175,10 @@ export const commandPayloadSchemas = {
   compact: z.object({}),
   // running 时对稳定 assistant row 可用。
   forkAssistant: z.object({ target: conversationRowTargetSchema }),
+  // 以"当前上下文状态"分叉：不带 row target，复制口径 = 当前模型可见上下文
+  // （core `activeSessionMessages`，有压缩时从最后一个 compact boundary 起）。
+  // 与 forkAssistant 是两种语义（按行回溯 / 按上下文），刻意不合并。
+  forkCurrentContext: z.object({}),
   applyFileRewind: z.object({ target: conversationRowTargetSchema }),
   editUserQuery: z
     .object({
@@ -334,6 +338,7 @@ export const BACKGROUND_WORK_CANCEL_REJECTED_FAULT_PREFIX =
 export const COMMANDS_REQUIRING_BASE_REVISION: ReadonlySet<CommandType> = new Set([
   "applyFileRewind",
   "forkAssistant",
+  "forkCurrentContext",
   "editUserQuery",
   "retryTurn",
   "setAssistantFeedback",
@@ -409,7 +414,12 @@ export function parseCommandEnvelope(
 // ── ACK ──
 export const commandResultSchema = z.discriminatedUnion("type", [
   z.object({
-    type: z.enum(["createSession", "createSelectionSideSession", "forkAssistant"]),
+    type: z.enum([
+      "createSession",
+      "createSelectionSideSession",
+      "forkAssistant",
+      "forkCurrentContext",
+    ]),
     sessionId: z.string(),
     input: z
       .object({

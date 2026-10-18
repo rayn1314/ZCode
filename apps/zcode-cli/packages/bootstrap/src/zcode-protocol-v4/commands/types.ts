@@ -308,6 +308,17 @@ export interface V4CommandCoreHost {
       revisionAtDecision: number;
     },
   ): Promise<{ forkedSessionId: string }>;
+  /**
+   * 以当前上下文分叉（无 row target）。复制口径由 core 的 `activeSessionMessages` 决定，
+   * 有压缩时从最后一个 compact boundary 起；同样不得 stop parent / rewind workspace。
+   */
+  forkCurrentContext?(
+    sessionId: string,
+    options: {
+      sourceCommandId: string;
+      revisionAtDecision: number;
+    },
+  ): Promise<{ forkedSessionId: string }>;
   /** @deprecated 仅旧宿主结构兼容；新 editUserQuery 永不调用，显式 forkAssistant 不受影响。 */
   forkConversationBeforeInput?(
     sessionId: string,

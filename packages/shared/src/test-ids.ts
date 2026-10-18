@@ -689,6 +689,9 @@ export const TID_V4_SPLIT_CLOSE = "v4-split-close";
 export const TID_V4_SPLIT_DIVIDER = "v4-split-divider";
 /** v4 pane header 的 workspace 徽标（跨 workspace pane 显示归属） */
 export const TID_V4_PANE_WORKSPACE_BADGE = "v4-pane-workspace-badge";
+/** v4 会话级「以当前状态分叉」入口（复制当前模型可见上下文，非按行回溯）。
+ *  值刻意不落在 `v4-fork-` 前缀下：该前缀被 E2E 的行级 fork 定位器（`[data-testid^="v4-fork-"]`）占据。 */
+export const TID_V4_FORK_CURRENT_CONTEXT = "v4-session-fork-current-context";
 /** 侧栏会话项上下文菜单「在分屏打开」（仅桌面 shell，收尾） */
 export const TID_V4_TASK_OPEN_IN_SPLIT = "v4-task-open-in-split";
 /** v4 时间线「加载更早」按钮（游标分页；窗口首行未到全序首行时出现） */

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "caseName": "conversation-session-v4-fork-current-context",
+  "spec": "./test/e2e/conversation-session/conversation-session-v4-fork-current-context.test.ts",
+  "providerFixtures": [
+    "./test/e2e/fixtures/upstream/common.json",
+    "./test/e2e/fixtures/upstream/conversation-session/conversation-session-v4-fork-current-context.json"
+  ],
+  "fileFixtures": [],
+  "requests": [
+    {
+      "id": "v4-ctx-fork-title",
+      "description": "E2E_V4_CTX_FORK_SEED 首发的 case-local 标题生成响应。",
+      "kind": "common",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "E2E_V4_CTX_FORK_SEED 首发会触发默认 title sidecar；固定 case-local 标题响应，避免 default replay 回退 legacy provider-basic，并用该首发 marker 隔离跨 case 匹配。"
+    },
+    {
+      "id": "v4-ctx-fork-seed",
+      "description": "会话级分叉门禁：父会话首轮固定文本回复，形成待压缩的历史。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "压缩需要一段已完成历史；首轮只需稳定产出可被压缩的 assistant 文本。"
+    },
+    {
+      "id": "v4-ctx-fork-compact",
+      "description": "会话级分叉门禁：手动 compact 的 streaming summary 成功响应。",
+      "kind": "main",
+      "source": "synthetic",
+      "timingPolicy": "fast-text",
+      "syntheticReason": "本用例的核心断言是压缩后 child 复制的是压缩后上下文；summary 文案固定即可，且刻意不含任何 E2E marker，避免 child 文本断言被摘要正文污染。"
+    }
+  ]
+}

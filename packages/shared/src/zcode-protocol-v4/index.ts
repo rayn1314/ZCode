@@ -26,6 +26,8 @@ export * from "./workflow-artifact.js";
 export * from "./workflow-artifacts.js";
 // 工作区 transcript（files.* / git.* / world.run 的回放）。
 export * from "./workflow-workspace.js";
+// 压缩摘要正文的只读读端（投影只下发 summaryRef 占位）。
+export * from "./compaction-summary.js";
 export * from "./attachment-ref.js";
 export * from "./attachment-faults.js";
 export * from "./delta.js";

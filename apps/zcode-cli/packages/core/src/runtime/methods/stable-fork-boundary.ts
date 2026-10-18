@@ -91,7 +91,7 @@ export async function persistStableForkCompletionBoundary(
   await store.saveMessage({ ...boundary.info, anchor });
 }
 
-function stableGoalSnapshot(target: SessionGoal): SessionGoal {
+export function stableGoalSnapshot(target: SessionGoal): SessionGoal {
   // active run 字段属于 parent 的瞬时执行权，不是 child 可继承状态。生产 adapter 的
   // cloneTargetForFork 也会清空；anchor 同样先清空，避免查询/诊断误读为历史运行中。
   return {
@@ -103,7 +103,7 @@ function stableGoalSnapshot(target: SessionGoal): SessionGoal {
   };
 }
 
-async function verificationEntryIdsAtBoundary(
+export async function verificationEntryIdsAtBoundary(
   runtime: AgentRuntimeInternal,
   target: SessionGoal,
   prefixMessageIds: ReadonlySet<string>,

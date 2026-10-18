@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import {
   TID_V4_DELETE_SESSION,
+  TID_V4_FORK_CURRENT_CONTEXT,
   TID_V4_PANE_WORKSPACE_BADGE,
   TID_V4_RENAME_INPUT,
   TID_V4_RENAME_SUBMIT,
@@ -63,5 +64,27 @@ describe("ConversationHeader split chrome", () => {
     expect(html).not.toContain(`data-testid="${TID_V4_RENAME_INPUT}"`);
     expect(html).not.toContain(`data-testid="${TID_V4_RENAME_SUBMIT}"`);
     expect(html).not.toContain(`data-testid="${TID_V4_DELETE_SESSION}"`);
+  });
+});
+
+describe("ConversationHeader fork at current context", () => {
+  it("renders the session-level fork entry only when the host provides it", () => {
+    expect(renderHeader()).not.toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
+
+    const html = renderHeader({ onForkCurrentContext: vi.fn() });
+    expect(html).toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
+    expect(html).toContain("以当前状态分叉");
+  });
+
+  it("keeps the entry in place but disabled while compaction runs", () => {
+    const html = renderHeader({
+      onForkCurrentContext: vi.fn(),
+      forkCurrentContextDisabled: true,
+      forkCurrentContextDisabledReason: "压缩进行中，暂不能以当前状态分叉",
+    });
+
+    expect(html).toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
+    expect(html).toContain("disabled");
+    expect(html).toContain("压缩进行中，暂不能以当前状态分叉");
   });
 });

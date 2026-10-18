@@ -1,10 +1,11 @@
 import { memo } from "react";
 import {
+  TID_V4_FORK_CURRENT_CONTEXT,
   TID_V4_PANE_WORKSPACE_BADGE,
   TID_V4_SESSION_TITLE,
   TID_V4_SPLIT_CLOSE,
 } from "@zcode/shared";
-import { XIcon } from "lucide-react";
+import { TrendingUpDownIcon, XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { runUserAction } from "@/lib/userActionTelemetry.js";
@@ -22,6 +23,12 @@ export interface PaneWorkspaceBadge {
 export interface ConversationHeaderProps {
   /** meta.title；仅作为测试/可观测投影，不渲染占位 header。 */
   title: string;
+  /** 会话级「以当前状态分叉」：复制当前模型可见上下文（有压缩时含摘要与其后对话）。 */
+  onForkCurrentContext?: () => void;
+  /** 压缩进行中：入口留在原地但不可点，tooltip 说明原因（不忽隐忽现）。 */
+  forkCurrentContextDisabled?: boolean;
+  /** 不可点时的原因文案。 */
+  forkCurrentContextDisabledReason?: string;
   /** 向右拆分新 draft 窗格（叶子数达上限时宿主不下发）。 */
   onSplitRight?: () => void;
   /** 向下拆分新 draft 窗格。 */
@@ -36,9 +43,23 @@ export interface ConversationHeaderProps {
  * pane chrome：不占布局高度，只在右上角悬浮拆分/关闭入口。
  * 保留 title data 节点，供 E2E 读取投影但不恢复旧横条。
  */
-function ConversationHeaderImpl({ title, onClosePane, workspaceBadge }: ConversationHeaderProps) {
+function ConversationHeaderImpl({
+  title,
+  onForkCurrentContext,
+  forkCurrentContextDisabled,
+  forkCurrentContextDisabledReason,
+  onClosePane,
+  workspaceBadge,
+}: ConversationHeaderProps) {
   const { intl } = useZCodeIntl();
-  const hasFloatingActions = Boolean(workspaceBadge) || Boolean(onClosePane);
+  const hasFloatingActions =
+    Boolean(workspaceBadge) || Boolean(onClosePane) || Boolean(onForkCurrentContext);
+  const forkCurrentContextLabel = intl.formatMessage({
+    id: "chat.message.forkCurrentContext",
+  });
+  const forkCurrentContextTitle = forkCurrentContextDisabled
+    ? (forkCurrentContextDisabledReason ?? forkCurrentContextLabel)
+    : intl.formatMessage({ id: "chat.message.forkCurrentContextTitle" });
 
   return (
     <>
@@ -90,6 +111,34 @@ function ConversationHeaderImpl({ title, onClosePane, workspaceBadge }: Conversa
               <SquareSplitVerticalIcon className="size-4" />
             </Button>
           ) : null} */}
+          {/* 会话级分叉入口：与按行回溯的 forkAssistant 并列，不走消息行 hover 工具栏。 */}
+          {onForkCurrentContext ? (
+            <span className="pointer-events-auto" title={forkCurrentContextTitle}>
+              <Button
+                type="button"
+                variant="outline"
+                size="icon-md"
+                data-testid={TID_V4_FORK_CURRENT_CONTEXT}
+                disabled={forkCurrentContextDisabled}
+                aria-label={forkCurrentContextLabel}
+                onClick={() =>
+                  runUserAction({
+                    input: {
+                      featureId: "conversation.history.branch",
+                      action: "fork_current_context",
+                      trigger: "button",
+                    },
+                    operation: onForkCurrentContext,
+                    completed: { resultSource: "optimistic_projection" },
+                    failureStage: "fork",
+                  })
+                }
+                className="bg-[var(--color-popover)] shadow-md"
+              >
+                <TrendingUpDownIcon className="size-4" />
+              </Button>
+            </span>
+          ) : null}
           {onClosePane ? (
             <Button
               type="button"

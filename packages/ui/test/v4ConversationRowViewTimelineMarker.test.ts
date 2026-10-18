@@ -2,13 +2,15 @@
 
 import { act, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { render } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { BUILTIN_MODEL_PROVIDER_IDS } from "@zcode/shared";
 import type { ModelSelectionView } from "@zcode/services";
 import type { TimelineMarkerRow } from "@zcode/shared/zcode-protocol-v4";
 import { DEFAULT_CODE_PREVIEW_SETTINGS } from "@/lib/codePreviewSettings.js";
+import { formatCompactTokenNumber } from "@/lib/tokenNumberFormat.js";
 import { ZCodeIntlProvider } from "@/i18n/IntlProvider.js";
+import { resetCompactionSummaryCache } from "@/hooks/useCompactionSummary.js";
 import { ConversationRowView } from "@/v4/ConversationRowView.js";
 import type { ConversationRowRenderContext } from "@/v4/conversationRowContext.js";
 
@@ -251,6 +253,167 @@ describe("ConversationRowView timeline marker contract", () => {
     expect(view.container.textContent).toContain(
       "模型已切换 Primary Coding Plan/glm-5.2 → Alternate API/glm-5.2",
     );
+    view.unmount();
+  });
+});
+
+describe("ConversationRowView 压缩摘要块契约", () => {
+  // 契约（spec: packages/ui/spec/compact-summary-block.md 的 D5 / §3 / §5）：
+  // 只有「终态成功 + summaryRef + 读端可用」三件齐备才出现展开入口；任何一项缺席都
+  // 退回升级前的纯分隔线；展开才请求，失败给重试。
+  const SUMMARY_BODY = "Summary:\n1. 目标\n2. 关键决策";
+  const readCompactionSummary = vi.fn(async () => ({ summary: SUMMARY_BODY }));
+
+  function compactRow(
+    marker: Partial<Extract<TimelineMarkerRow["marker"], { type: "compact" }>> = {},
+  ): TimelineMarkerRow {
+    return {
+      rowId: 21,
+      turnId: "turn-compact",
+      createdAt: 1_700_000_010_000,
+      createdAtSeq: 10,
+      kind: "timelineMarker",
+      sourceCommandId: "command-compact-9",
+      marker: {
+        type: "compact",
+        status: "success",
+        origin: "manual",
+        summaryRef: "msg_summary_1",
+        tokensBefore: 128_000,
+        tokensAfter: 21_000,
+        ...marker,
+      },
+    };
+  }
+
+  function renderCompact(
+    row: TimelineMarkerRow,
+    overrides: Partial<ConversationRowRenderContext> = {},
+  ) {
+    return render(
+      createElement(
+        ZCodeIntlProvider,
+        { initialLocale: "zh-CN" },
+        createElement(ConversationRowView, {
+          context: { ...currentContext(), readCompactionSummary, ...overrides },
+          row,
+        }),
+      ),
+    );
+  }
+
+  function renderCompactMarkup(
+    row: TimelineMarkerRow,
+    overrides: Partial<ConversationRowRenderContext> = {},
+  ): string {
+    return renderToStaticMarkup(
+      createElement(
+        ZCodeIntlProvider,
+        { initialLocale: "zh-CN" },
+        createElement(ConversationRowView, {
+          context: { ...currentContext(), readCompactionSummary, ...overrides },
+          row,
+        }),
+      ),
+    );
+  }
+
+  beforeEach(() => {
+    readCompactionSummary.mockClear();
+    resetCompactionSummaryCache();
+  });
+
+  it("终态成功且有 summaryRef 时块头可展开，默认折叠且显示 token 变化", () => {
+    const html = renderCompactMarkup(compactRow());
+
+    expect(html).toContain('data-marker-type="compact"');
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).toContain("展开上下文摘要");
+    expect(html).toContain(
+      `${formatCompactTokenNumber("zh-CN", 128_000)} → ${formatCompactTokenNumber("zh-CN", 21_000)}`,
+    );
+    // 默认折叠：块头在、正文不在，且不请求。
+    expect(html).not.toContain("data-compaction-summary-body");
+    expect(readCompactionSummary).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["running", { status: "running" as const }],
+    ["failed", { status: "failed" as const }],
+    ["cancelled", { status: "cancelled" as const }],
+    ["noop", { status: "noop" as const }],
+    ["summaryRef 缺失", { summaryRef: undefined }],
+  ])("status=%s 时保持纯分隔线，不给展开入口", (_label, marker) => {
+    const html = renderMarker(compactRow(marker));
+
+    expect(html).toContain('data-marker-type="compact"');
+    expect(html).not.toContain("aria-expanded");
+    expect(html).not.toContain("展开上下文摘要");
+    expect(html).not.toContain("data-compaction-summary-body");
+  });
+
+  it("读端不可用（旧宿主注入不到读函数）时同样降级为纯分隔线", () => {
+    const view = renderCompact(compactRow(), { readCompactionSummary: undefined });
+
+    expect(view.container.innerHTML).not.toContain("aria-expanded");
+    expect(view.container.innerHTML).not.toContain("展开上下文摘要");
+    view.unmount();
+  });
+
+  it("两个 token 计数缺任一项时不显示 token 变化，但展开入口仍在", () => {
+    const html = renderCompactMarkup(compactRow({ tokensAfter: undefined }));
+
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("→");
+  });
+
+  it("展开后才请求并显示落库的摘要正文", async () => {
+    const view = renderCompact(compactRow());
+    expect(readCompactionSummary).not.toHaveBeenCalled();
+
+    fireEvent.click(view.container.querySelector('button[data-marker-type="compact"]')!);
+
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-compaction-summary-body]")?.textContent).toContain(
+        SUMMARY_BODY,
+      );
+    });
+    expect(readCompactionSummary).toHaveBeenCalledWith({
+      sessionId: "session-1",
+      messageId: "msg_summary_1",
+    });
+    expect(
+      view.container
+        .querySelector('button[data-marker-type="compact"]')
+        ?.getAttribute("aria-expanded"),
+    ).toBe("true");
+    view.unmount();
+  });
+
+  it("读取失败显示失败文案与重试入口，重试后恢复且不阻断会话", async () => {
+    readCompactionSummary
+      .mockRejectedValueOnce(new Error("fault.compactionSummary.notFound: msg_summary_1"))
+      .mockResolvedValueOnce({ summary: SUMMARY_BODY });
+    const view = renderCompact(compactRow());
+
+    fireEvent.click(view.container.querySelector('button[data-marker-type="compact"]')!);
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-compaction-summary-body]")?.textContent).toContain(
+        "上下文摘要加载失败",
+      );
+    });
+
+    fireEvent.click(
+      Array.from(view.container.querySelectorAll("button")).find(
+        (button) => button.textContent === "重试",
+      )!,
+    );
+    await waitFor(() => {
+      expect(view.container.querySelector("[data-compaction-summary-body]")?.textContent).toContain(
+        SUMMARY_BODY,
+      );
+    });
+    expect(readCompactionSummary).toHaveBeenCalledTimes(2);
     view.unmount();
   });
 });

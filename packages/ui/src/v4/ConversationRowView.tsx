@@ -17,6 +17,7 @@ import {
   ArchiveIcon,
   ArrowRightLeftIcon,
   CheckIcon,
+  ChevronRightIcon,
   Clock,
   CopyIcon,
   FileClockIcon,
@@ -83,6 +84,7 @@ import {
 } from "@/components/ai-elements/reasoning.js";
 import { cn } from "@/components/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
+import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { WorkflowToolSummary } from "@/v4/WorkflowToolSummary.js";
 import {
@@ -99,6 +101,8 @@ import {
 import { ToolCallBlock } from "@/ToolCallBlocks.js";
 import { resolveWorkflowRunOpenToolCallId } from "@/v4/workflowRunCardJoin.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
+import { useCompactionSummary } from "@/hooks/useCompactionSummary.js";
+import { formatCompactTokenNumber } from "@/lib/tokenNumberFormat.js";
 import { useOptionalPlatform } from "@/hooks/usePlatform.js";
 import { reportAppTelemetryEvent } from "@/lib/appTelemetry.js";
 import { runUserAction, runUserActionAsync } from "@/lib/userActionTelemetry.js";
@@ -1863,7 +1867,9 @@ function MarkerDividerRow({
   markerSourceCommandId,
   icon,
   label,
+  trailing,
   running = false,
+  expanded,
   onClick,
 }: {
   rowId: number;
@@ -1873,8 +1879,12 @@ function MarkerDividerRow({
   markerSourceCommandId?: string;
   icon: React.ReactNode;
   label: React.ReactNode;
+  /** 可展开的块头才传：渲染在文案右侧（同一 pill 内）的 token 变化与展开指示。 */
+  trailing?: React.ReactNode;
   running?: boolean;
-  /** 传入即整行可点（fork→跳父会话）；不传为静态分隔线。 */
+  /** 可展开的块头才传：`aria-expanded` 反映当前态（undefined = 不是折叠块头）。 */
+  expanded?: boolean;
+  /** 传入即整行可点（fork→跳父会话；compact→切换展开）；不传为静态分隔线。 */
   onClick?: () => void;
 }) {
   const clickable = Boolean(onClick);
@@ -1890,12 +1900,14 @@ function MarkerDividerRow({
         >
           {label}
         </span>
+        {trailing}
       </span>
       <div aria-hidden="true" className="h-px min-w-8 flex-1 bg-border/50" />
     </>
   );
   if (onClick) {
     // 整行 <button>（对齐旧版 fork divider）：hover 变亮 + 文案下划线示意可点。
+    // Enter / Space 由原生 button 承担，不再自己接键盘事件。
     return (
       <button
         type="button"
@@ -1906,6 +1918,7 @@ function MarkerDividerRow({
         data-origin={markerOrigin}
         data-source-command-id={markerSourceCommandId}
         data-testid={testId(TID_V4_ROW, String(rowId))}
+        aria-expanded={expanded}
         onClick={onClick}
         className={`group/marker ${rowClassName} text-left transition-colors hover:text-[var(--color-foreground)]`}
       >
@@ -1928,6 +1941,200 @@ function MarkerDividerRow({
     </div>
   );
 }
+
+type CompactMarkerPayload = Extract<TimelineMarkerRow["marker"], { type: "compact" }>;
+
+/** 收起后延迟卸载展开区：Radix 的高度动画在 closed 阶段仍要读到真实内容高度（同 reasoning.tsx）。 */
+const COMPACTION_CONTENT_UNMOUNT_DELAY_MS = 300;
+
+const COMPACTION_SUMMARY_PANEL_CLASS =
+  "max-h-96 overflow-auto rounded-lg border border-border bg-panel px-3 py-2 font-sans text-ui-sm leading-5 break-words whitespace-pre-wrap text-foreground select-text";
+
+/**
+ * 压缩标记的展开区：懒加载那一条落库的摘要正文（`Summary:` + 固定九段）。
+ * 三态各有文案，失败带重试入口且**不阻断**会话渲染（spec §3.2 / §5）。
+ */
+function CompactionSummaryBody({
+  error,
+  loading,
+  summary,
+  onRetry,
+}: {
+  error: string | null;
+  loading: boolean;
+  summary: string | null;
+  onRetry: () => void;
+}) {
+  const { intl } = useZCodeIntl();
+  if (loading) {
+    return (
+      <p role="status" className="text-ui-sm text-foreground-subtle">
+        {intl.formatMessage({ id: "chat.contextCompaction.summaryLoading" })}
+      </p>
+    );
+  }
+  if (error !== null) {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-ui-sm text-foreground-subtle">
+        <span role="alert">
+          {intl.formatMessage({ id: "chat.contextCompaction.summaryFailed" })}
+        </span>
+        <Button type="button" variant="ghost" size="xs" onClick={onRetry}>
+          {intl.formatMessage({ id: "chat.contextCompaction.retry" })}
+        </Button>
+      </div>
+    );
+  }
+  if (summary === null || summary.length === 0) {
+    return (
+      <p className="text-ui-sm text-foreground-subtle">
+        {intl.formatMessage({ id: "chat.contextCompaction.summaryEmpty" })}
+      </p>
+    );
+  }
+  // 正文常态是 2 万字符量级：不截断，靠限高 + 内部滚动吸收（spec §5）。
+  return <pre className={COMPACTION_SUMMARY_PANEL_CLASS}>{summary}</pre>;
+}
+
+/**
+ * 压缩标记的折叠块（spec: packages/ui/spec/compact-summary-block.md）。
+ *
+ * 块头沿用 MarkerDividerRow（与 fork / goal / modelChange 同款分隔线），新增
+ * `tokensBefore → tokensAfter` 与展开指示；展开区按 `summaryRef` 懒加载落库的摘要正文。
+ * 展示的是 `summary.body`（`Summary:` + 九段），**不是**发给模型的指令包装（spec D2）。
+ *
+ * 折叠态是**组件本地 state**：不进协议、不落库、不广播，因此与分叉口径正交，
+ * 也一个字节都不改变「模型看到什么」（spec D4 / I1）。
+ */
+const CompactSummaryMarkerRow = memo(function CompactSummaryMarkerRow({
+  rowId,
+  marker,
+  summaryRef,
+  sessionId,
+  read,
+  icon,
+  label,
+  markerSourceCommandId,
+}: {
+  rowId: number;
+  marker: CompactMarkerPayload;
+  summaryRef: string;
+  sessionId: string;
+  read: NonNullable<ConversationRowRenderContext["readCompactionSummary"]>;
+  icon: React.ReactNode;
+  label: React.ReactNode;
+  markerSourceCommandId?: string;
+}) {
+  const { intl, locale } = useZCodeIntl();
+  const [expanded, setExpanded] = useState(false);
+  const [shouldRenderContent, setShouldRenderContent] = useState(false);
+  const unmountDelayRef = useRef<number | null>(null);
+  // 折叠态不发请求；展开后缓存命中即秒开（spec I2）。
+  const { summary, loading, error, retry } = useCompactionSummary({
+    sessionId,
+    messageId: summaryRef,
+    enabled: expanded,
+    read,
+  });
+
+  useEffect(() => {
+    if (expanded) {
+      if (unmountDelayRef.current !== null) {
+        window.clearTimeout(unmountDelayRef.current);
+        unmountDelayRef.current = null;
+      }
+      setShouldRenderContent(true);
+      return undefined;
+    }
+    if (!shouldRenderContent) {
+      return undefined;
+    }
+    unmountDelayRef.current = window.setTimeout(() => {
+      setShouldRenderContent(false);
+      unmountDelayRef.current = null;
+    }, COMPACTION_CONTENT_UNMOUNT_DELAY_MS);
+    return () => {
+      if (unmountDelayRef.current !== null) {
+        window.clearTimeout(unmountDelayRef.current);
+        unmountDelayRef.current = null;
+      }
+    };
+  }, [expanded, shouldRenderContent]);
+
+  useEffect(
+    () => () => {
+      if (unmountDelayRef.current !== null) {
+        window.clearTimeout(unmountDelayRef.current);
+      }
+    },
+    [],
+  );
+
+  // 两个计数都在场才显示；缺任一项就整段不出（spec §3.1）。
+  const tokenChange = useMemo(() => {
+    if (marker.tokensBefore === undefined || marker.tokensAfter === undefined) {
+      return null;
+    }
+    return intl.formatMessage(
+      { id: "chat.contextCompaction.summaryTokens" },
+      {
+        before: formatCompactTokenNumber(locale, marker.tokensBefore),
+        after: formatCompactTokenNumber(locale, marker.tokensAfter),
+      },
+    );
+  }, [intl, locale, marker.tokensAfter, marker.tokensBefore]);
+
+  const trailing = (
+    <span className="inline-flex shrink-0 items-center gap-1.5">
+      {tokenChange === null ? null : (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="tabular-nums">{tokenChange}</span>
+        </>
+      )}
+      <ChevronRightIcon
+        aria-hidden="true"
+        className={cn("size-3.5 transition-transform", expanded && "rotate-90")}
+      />
+      <span className="sr-only">
+        {intl.formatMessage({
+          id: expanded
+            ? "chat.contextCompaction.collapseSummary"
+            : "chat.contextCompaction.expandSummary",
+        })}
+      </span>
+    </span>
+  );
+
+  return (
+    <Collapsible open={expanded} className="w-full">
+      <MarkerDividerRow
+        rowId={rowId}
+        markerType="compact"
+        markerStatus={marker.status}
+        markerOrigin={marker.origin}
+        markerSourceCommandId={markerSourceCommandId}
+        icon={icon}
+        label={label}
+        trailing={trailing}
+        expanded={expanded}
+        onClick={() => setExpanded((current) => !current)}
+      />
+      <CollapsibleContent>
+        {shouldRenderContent ? (
+          <div data-compaction-summary-body="" className="px-4 pb-3">
+            <CompactionSummaryBody
+              error={error}
+              loading={loading}
+              summary={summary}
+              onRetry={retry}
+            />
+          </div>
+        ) : null}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+});
 
 /**
  * timelineMarker 行渲染：compact / forkNotice / goalVerify / modelChange 画成分隔线。
@@ -2056,6 +2263,30 @@ const TimelineMarkerRowView = memo(function TimelineMarkerRowView({
 
   if (!view) {
     return null;
+  }
+  // 压缩块升级为「默认折叠、可展开看摘要」。
+  // 门槛刻意收窄（spec D5）：只有终态成功、投影给了 summaryRef、且宿主注入了读端
+  // （旧宿主没有这个只读命令）时才出现展开入口；running / failed / cancelled / noop
+  // 与无 summaryRef 时，分隔线形态与升级前逐字一致——不给「点开是空的」的机会。
+  if (
+    marker.type === "compact" &&
+    marker.status === "success" &&
+    marker.summaryRef !== undefined &&
+    context.readCompactionSummary !== undefined &&
+    context.sessionId
+  ) {
+    return (
+      <CompactSummaryMarkerRow
+        rowId={row.rowId}
+        marker={marker}
+        summaryRef={marker.summaryRef}
+        sessionId={context.sessionId}
+        read={context.readCompactionSummary}
+        icon={view.icon}
+        label={view.label}
+        markerSourceCommandId={row.sourceCommandId}
+      />
+    );
   }
   return (
     <MarkerDividerRow

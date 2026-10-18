@@ -56,6 +56,7 @@ import type {
   V4AttachmentReadResult,
   V4ConversationAttachmentReadResult,
   V4ConversationAttachmentStatResult,
+  V4ConversationCompactionSummaryResult,
   V4ConversationFileChangesResult,
   V4ConversationFileRewindPreviewResult,
   V4ConversationPlansResult,
@@ -99,6 +100,8 @@ import {
   v4ConversationAttachmentStatParamsSchema,
   v4ConversationAttachmentStatResultSchema,
   v4ConnectionFlowParamsSchema,
+  v4ConversationCompactionSummaryParamsSchema,
+  v4ConversationCompactionSummaryResultSchema,
   v4ConversationFileChangesParamsSchema,
   v4ConversationFileRewindPreviewParamsSchema,
   v4ConversationPlansParamsSchema,
@@ -465,6 +468,15 @@ export interface V4GatewayHost {
     sessionId: string,
     input: { runId: string; siteId: string; ordinal: number; maxBytes: number },
   ): Promise<DynamicWorkflowRunWorkspaceNodeResult | undefined>;
+  /**
+   * 压缩摘要正文：一条 `semantics.kind === "compact_summary"` 消息的 `summary.body`。
+   * 授权在宿主侧——messageId 不属于本会话、或不是压缩摘要消息，都回 `undefined`
+   * （与「无此消息」同一个答案；这条通道不能变成任意消息读取）。
+   */
+  readCompactionSummary?(
+    sessionId: string,
+    messageId: string,
+  ): Promise<{ summary: string } | undefined>;
   /**
    * hydration：读取 session 的持久化事件用于冷订阅重建投影（fork child / resume /
    * app-restart）。`synthesized=true` 表示事件日志覆盖不了 transcript，events 是从
@@ -1914,6 +1926,27 @@ export class ConversationV4Gateway {
       );
     }
     return v4ConversationWorkflowRunNodeResultResultSchema.parse(result);
+  }
+
+  /**
+   * 一份压缩摘要的正文（落库的 `summary.body`，形态是 `Summary:` + 固定九段），按
+   * `summaryRef` 懒加载。与 workflowRunNodeResult 同族：只读、无状态、超时重发安全。
+   *
+   * 不调 `ensureHostRecordForJournalRead`：这份正文的数据源是全局 sessionStore（宿主
+   * 能力直接读消息表），不依赖 per-session host record，也就没有为读一段文本把会话
+   * 冷恢复起来的理由。授权仍在宿主侧——宿主回 `undefined` = 无此消息 / 不是压缩摘要，
+   * 这里归一成结构化的 not found。
+   */
+  async compactionSummary(rawParams: unknown): Promise<V4ConversationCompactionSummaryResult> {
+    const params = v4ConversationCompactionSummaryParamsSchema.parse(rawParams);
+    if (!this.host.readCompactionSummary) {
+      throw new V4CapabilityUnsupportedError("readCompactionSummary", params.sessionId);
+    }
+    const result = await this.host.readCompactionSummary(params.sessionId, params.messageId);
+    if (result === undefined) {
+      throw new Error(`fault.compactionSummary.notFound: ${params.messageId}`);
+    }
+    return v4ConversationCompactionSummaryResultSchema.parse(result);
   }
 
   /**

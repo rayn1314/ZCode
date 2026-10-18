@@ -270,6 +270,7 @@ import type {
   ZCodeAgentAttachmentTerminalParams,
   ZCodeAgentConversationCommandParams,
   ZCodeAgentCommandsQueryParams,
+  ZCodeAgentConversationCompactionSummaryParams,
   ZCodeAgentConversationFileChangesParams,
   ZCodeAgentConversationFileRewindPreviewParams,
   ZCodeAgentConversationRowsRangeParams,
@@ -320,6 +321,7 @@ import {
   v4ConversationAttachmentStatParamsSchema,
   v4ConversationAttachmentStatResultSchema,
   v4ConnectionFlowResultSchema,
+  v4ConversationCompactionSummaryResultSchema,
   v4ConversationFileChangesResultSchema,
   v4ConversationFileRewindPreviewResultSchema,
   v4ConversationRowsRangeResultSchema,
@@ -6469,6 +6471,17 @@ export function createZCodeAgentService(
           ...(params.maxBytes !== undefined ? { maxBytes: params.maxBytes } : {}),
         },
         v4ConversationWorkflowRunNodeResultResultSchema,
+      );
+    },
+
+    // 压缩摘要正文（messageId = 投影下发的 summaryRef）。与 plans 同族：只读、无状态、
+    // 超时重发安全；授权在 CLI 宿主侧（只认 compact_summary 消息）。
+    async conversationCompactionSummaryV4(params: ZCodeAgentConversationCompactionSummaryParams) {
+      const client = await getReadOnlyClient(params);
+      return client.request(
+        V4_METHODS.conversationCompactionSummary,
+        { sessionId: params.sessionId, messageId: params.messageId },
+        v4ConversationCompactionSummaryResultSchema,
       );
     },
 

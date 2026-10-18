@@ -342,6 +342,9 @@ export const V4_METHODS = {
   // 当前有效分支的终态 ExitPlanMode 目录；只读、无状态、超时重发安全。
   conversationPlans: "v4/conversation/plans",
   conversationFileChanges: "v4/conversation/fileChanges",
+  // 压缩摘要正文（会话流里展开压缩块时才取）：只读、无状态、超时重发安全。
+  // 投影只下发 summaryRef 占位，正文按 ref 懒加载（见 compaction-summary.ts 文件头）。
+  conversationCompactionSummary: "v4/conversation/compactionSummary",
   backgroundBashOutput: "v4/conversation/backgroundBashOutput",
   conversationFileRewindPreview: "v4/conversation/fileRewindPreview",
   // workflow run 的事件日志分页（详情页审计面）：只读、无状态、超时重发安全。

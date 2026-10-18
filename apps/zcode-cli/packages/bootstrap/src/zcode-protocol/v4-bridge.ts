@@ -83,6 +83,7 @@ import type {
   ForkCommitBundle,
   GoalStatus,
   MessageId,
+  MessageWithParts,
   SessionEvent,
   SessionEventStorePort,
   SessionId,
@@ -681,6 +682,27 @@ export function persistHighspeedTimingOnTurnTerminal(
       sessionId,
     });
   });
+}
+
+/**
+ * 从一批消息里取一条压缩摘要的正文（`v4/conversation/compactionSummary` 的授权判据）。
+ *
+ * 只有 `semantics.kind === "compact_summary"` 的消息算数：messageId 不存在、那条消息不是
+ * 压缩摘要、或落在别的会话（调用方传的就是本会话的消息表），一律 `undefined`——宿主据此
+ * 回同一个 not found，这条只读通道因此不会变成任意消息读取。
+ *
+ * 正文取 `summary.body`（落库的结构化摘要，`Summary:` + 固定九段），**不是** text part：
+ * 后者是发给模型的包装文本（含 "This session is being continued…" 指令头）。
+ * 消息在场但没有 body 时回空串（合法结果 = UI 的「摘要为空」），不是 not found。
+ */
+export function readCompactSummaryBody(
+  messages: readonly MessageWithParts[],
+  messageId: string,
+): string | undefined {
+  const message = messages.find((candidate) => String(candidate.info.id) === messageId);
+  if (!message || message.info.semantics?.kind !== "compact_summary") return undefined;
+  if (message.info.role !== "user") return undefined;
+  return message.info.summary?.body ?? "";
 }
 
 export function createConversationV4Gateway(
@@ -1383,6 +1405,36 @@ export function createConversationV4Gateway(
       });
       return { forkedSessionId: String(fork.forkedSessionId) };
     },
+    // 以当前上下文分叉：没有 boundary 消息可读，选型/模式取父会话当前值；复制口径
+    // （含"有压缩时从最后一个 compact boundary 起"）完全由 core 决定。
+    forkCurrentContext: async (sessionId, options) => {
+      const record = context.sessions.get(sessionId);
+      if (!record) throw new Error("proto.sessionNotFound");
+      if (!context.deps.sessionStore) throw new Error("fault.command.stableForkStoreUnavailable");
+      const modelSelection = derivedSessionModelSelection(
+        undefined,
+        record.app.runtime.getSessionModelSelection(),
+      );
+      const fork = await record.app.runtime.forkConversationAtCurrentContext({
+        modelSelection,
+        sourceCommandId: options.sourceCommandId,
+        revisionAtDecision: options.revisionAtDecision,
+        traceContext: record.traceContext,
+      });
+      await registerCommittedForkBestEffort(context, record, fork, {
+        commandId: options.sourceCommandId,
+        runtimeConfig: {
+          mode: record.app.getMode(),
+          model: modelSelection ? `${modelSelection.providerId}/${modelSelection.modelId}` : "",
+          ...(modelSelection?.options?.reasoningLevel
+            ? { thoughtLevel: modelSelection.options.reasoningLevel }
+            : {}),
+        },
+        // core 已把父当前 goal 快照复制过去；禁止再用 parent 当前 target 覆盖。
+        inheritLatestTarget: false,
+      });
+      return { forkedSessionId: String(fork.forkedSessionId) };
+    },
     forkConversationBeforeInput: async (sessionId, { editTarget, envelope, admission }) => {
       const record = context.sessions.get(sessionId);
       if (!record) throw new Error("proto.sessionNotFound");
@@ -1912,6 +1964,16 @@ export function createConversationV4Gateway(
         throw new V4CapabilityUnsupportedError("readDynamicWorkflowRunNodeResult", sessionId);
       }
       return record.app.readDynamicWorkflowRunNodeResult(input);
+    },
+    // 压缩摘要正文。数据源是全局 sessionStore（transcript 权威），不依赖 per-session
+    // host record，所以这里既不冷恢复也不做 sessionNotFound 判定——会话不存在时消息表
+    // 本来就是空的。授权判据与取字段全在 readCompactSummaryBody（见其注释）。
+    readCompactionSummary: async (sessionId, messageId) => {
+      const sessionStore = context.deps.sessionStore;
+      if (!sessionStore) return undefined;
+      const messages = await sessionStore.messages({ sessionID: sessionId as SessionId });
+      const summary = readCompactSummaryBody(messages, messageId);
+      return summary === undefined ? undefined : { summary };
     },
     previewConversationFileRewind: async (sessionId, _targetRowId, messageIds, targetTurnId) => {
       const record = context.sessions.get(sessionId);

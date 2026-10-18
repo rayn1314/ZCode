@@ -195,6 +195,12 @@ export class ReplaceableConversationTransport implements ConversationTransport {
     return this.current.fileChanges(params);
   }
 
+  compactionSummary(
+    params: Parameters<ConversationTransport["compactionSummary"]>[0],
+  ): ReturnType<ConversationTransport["compactionSummary"]> {
+    return this.current.compactionSummary(params);
+  }
+
   fileRewindPreview(
     params: Parameters<ConversationTransport["fileRewindPreview"]>[0],
   ): ReturnType<ConversationTransport["fileRewindPreview"]> {

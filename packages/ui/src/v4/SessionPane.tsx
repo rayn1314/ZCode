@@ -625,6 +625,7 @@ export function SessionPane({
     attachmentPut,
     attachmentRead,
     attachmentReadRange,
+    compactionSummary,
     onRuntimeRestart,
     onRuntimeLifecycle,
     fileChanges,
@@ -2780,6 +2781,8 @@ export function SessionPane({
       applyFileRewind: workspaceFileRewindEnabled ? handleApplyFileRewind : undefined,
       readAttachment: attachmentRead,
       readAttachmentRange: attachmentReadRange,
+      // 压缩块的摘要正文：与 readAttachment 同一个供给点（pane 绑定的 workspace transport）。
+      readCompactionSummary: compactionSummary,
     }),
     [
       workspacePath,
@@ -2841,6 +2844,7 @@ export function SessionPane({
       handleApplyFileRewind,
       attachmentRead,
       attachmentReadRange,
+      compactionSummary,
     ],
   );
 
@@ -3802,6 +3806,32 @@ export function SessionPane({
     },
     [dispatchCommand, onSessionCreated, sessionId],
   );
+
+  /**
+   * 会话级「以当前状态分叉」：无 row target，复制口径由 CLI 决定（当前模型可见上下文，
+   * 有压缩时从最后一个 compact boundary 起）。与 handleFork 一样是 CAS 命令。
+   */
+  const handleForkCurrentContext = useCallback(() => {
+    const current = snapshotRef.current;
+    if (!sessionId || current === null) return;
+    void dispatchCommand(
+      "forkCurrentContext",
+      {},
+      sessionId,
+      current.revision,
+      current.logEpoch,
+    ).then((ack) => {
+      if (ack.status !== "accepted" && ack.status !== "duplicate") {
+        logger.warn(`[v4-pane] forkCurrentContext 被拒绝: ${ack.status} ${ack.reasonCode ?? ""}`);
+        toast(intl.formatMessage({ id: "chat.message.forkCurrentContextFailed" }));
+        return;
+      }
+      if (ack.result?.type === "forkCurrentContext") {
+        // 原地切到 child session（与新建会话同一选择路径）。
+        onSessionCreated?.(ack.result.sessionId);
+      }
+    });
+  }, [dispatchCommand, intl, onSessionCreated, sessionId]);
 
   const handleEdit = useCallback(
     async (
@@ -5521,6 +5551,13 @@ export function SessionPane({
           onSplitDown={onSplitDown}
           onClosePane={onClosePane}
           workspaceBadge={workspaceBadge}
+          onForkCurrentContext={isDraft ? undefined : handleForkCurrentContext}
+          forkCurrentContextDisabled={(snapshot?.control.activeWorks ?? []).some(
+            (work) => work.kind === "compact",
+          )}
+          forkCurrentContextDisabledReason={intl.formatMessage({
+            id: "chat.message.forkCurrentContextCompacting",
+          })}
         />
 
         <div

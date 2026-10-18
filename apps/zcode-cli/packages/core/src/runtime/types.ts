@@ -753,6 +753,18 @@ export interface StableConversationForkOptions {
   traceContext?: TraceContext;
 }
 
+/**
+ * 以当前上下文分叉：无行目标（不锚定某条消息），复制口径是 running 状态下模型的
+ * 可见上下文（有压缩时从最后一个 compact boundary 起），goal 取当前 target 快照。
+ */
+export interface CurrentContextForkOptions {
+  forkedSessionId?: SessionId;
+  modelSelection?: ModelSelection;
+  sourceCommandId: string;
+  revisionAtDecision?: number;
+  traceContext?: TraceContext;
+}
+
 /** 从父会话稳定落盘边界创建隐藏副屏 child；不复制 goal/queue/阻塞运行态。 */
 export interface SelectionSideChatCreateOptions {
   modelSelection?: ModelSelection;

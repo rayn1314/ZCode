@@ -57,6 +57,12 @@ export const INPUT_COMMAND_ROLE_POLICY = {
       subagent_child: "guard.subagentCannotDeriveSession",
     },
   },
+  forkCurrentContext: {
+    deniedFor: {
+      selection_side_chat: "guard.selectionSideChatRestrictedCommand",
+      subagent_child: "guard.subagentCannotDeriveSession",
+    },
+  },
   applyFileRewind: {},
   editUserQuery: {
     deniedFor: { selection_side_chat: "guard.selectionSideChatRestrictedCommand" },

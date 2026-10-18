@@ -56,6 +56,7 @@ import type {
   ParsedRewindCommand,
   PermissionDecisionResult,
   ResolvedTurnAttachment,
+  CurrentContextForkOptions,
   SelectionSideChatCreateOptions,
   StableConversationForkOptions,
   TurnResult,
@@ -272,6 +273,9 @@ export interface AgentRuntimeTurnMethods {
   }): Promise<WorkspaceForkResult>;
   forkStableConversationAtMessage(
     options: StableConversationForkOptions,
+  ): Promise<WorkspaceForkResult>;
+  forkConversationAtCurrentContext(
+    options: CurrentContextForkOptions,
   ): Promise<WorkspaceForkResult>;
   createSelectionSideConversation(
     options: SelectionSideChatCreateOptions,

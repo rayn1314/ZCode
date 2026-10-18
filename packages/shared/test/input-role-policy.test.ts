@@ -18,6 +18,7 @@ const SUBAGENT_CHILD_DENIED: Partial<Record<CommandType, InputCommandDenialReaso
   createSession: "guard.subagentCannotDeriveSession",
   createSelectionSideSession: "guard.subagentCannotDeriveSession",
   forkAssistant: "guard.subagentCannotDeriveSession",
+  forkCurrentContext: "guard.subagentCannotDeriveSession",
   startSavedWorkflow: "guard.subagentCannotDeriveSession",
   resumeWorkflowRun: "guard.subagentCannotDeriveSession",
   amendWorkflowRunSettings: "guard.subagentCannotDeriveSession",
@@ -27,7 +28,7 @@ const SUBAGENT_CHILD_DENIED: Partial<Record<CommandType, InputCommandDenialReaso
   pauseGoal: "guard.subagentCannotRunGoalLoop",
 };
 
-/** selection_side_chat 的完整拒绝集（7 条，与改造前逐字一致）。 */
+/** selection_side_chat 的完整拒绝集（8 条：既有 7 条 + forkCurrentContext）。 */
 const SIDE_CHAT_DENIED: CommandType[] = [
   "sendGoalCommand",
   "pauseGoal",
@@ -35,6 +36,7 @@ const SIDE_CHAT_DENIED: CommandType[] = [
   "editUserQuery",
   "retryTurn",
   "forkAssistant",
+  "forkCurrentContext",
   "discardSharedContext",
 ];
 
@@ -78,7 +80,7 @@ test("subagent_child 的拒绝集与 reasonCode 逐条钉死，其余全部放�
   }
 });
 
-test("selection_side_chat 只拒既有 7 条，其余全部放行", () => {
+test("selection_side_chat 只拒既有 8 条，其余全部放行", () => {
   const denied = denyMapFor("selection_side_chat");
   assert.deepEqual([...denied.keys()].sort(), SIDE_CHAT_DENIED.slice().sort());
   for (const reasonCode of denied.values()) {

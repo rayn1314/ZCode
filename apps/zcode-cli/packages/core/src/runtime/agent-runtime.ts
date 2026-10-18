@@ -124,6 +124,7 @@ import type {
   RuntimeTurnFileChangeMap,
   ResumeSessionOptions,
   ResumeSessionResult,
+  CurrentContextForkOptions,
   SelectionSideChatCreateOptions,
   StableConversationForkOptions,
   StopActiveForegroundExecutionOptions,
@@ -733,6 +734,9 @@ export interface AgentRuntime {
   }): Promise<WorkspaceForkResult>;
   forkStableConversationAtMessage(
     options: StableConversationForkOptions,
+  ): Promise<WorkspaceForkResult>;
+  forkConversationAtCurrentContext(
+    options: CurrentContextForkOptions,
   ): Promise<WorkspaceForkResult>;
   createSelectionSideConversation(
     options: SelectionSideChatCreateOptions,

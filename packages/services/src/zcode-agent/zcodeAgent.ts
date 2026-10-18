@@ -108,6 +108,7 @@ import type {
   V4ConversationAttachmentReadResult,
   V4ConversationAttachmentStatResult,
   V4ConnectionFlowState,
+  V4ConversationCompactionSummaryResult,
   V4ConversationFileChangesResult,
   V4ConversationFileRewindPreviewResult,
   V4ConversationPlansResult,
@@ -532,6 +533,11 @@ export interface ZCodeAgentConversationWorkflowRunNodeResultParams extends ZCode
 
 export interface ZCodeAgentBackgroundBashOutputParams extends ZCodeAgentSessionTarget {
   workId: string;
+}
+
+/** 一份压缩摘要的正文（messageId = 投影下发的 summaryRef）。 */
+export interface ZCodeAgentConversationCompactionSummaryParams extends ZCodeAgentSessionTarget {
+  messageId: string;
 }
 
 export interface ZCodeAgentConversationFileChangesParams extends ZCodeAgentSessionTarget {
@@ -991,6 +997,10 @@ export interface IZCodeAgentService {
   backgroundBashOutputV4(
     params: ZCodeAgentBackgroundBashOutputParams,
   ): Promise<BackgroundBashOutputResult>;
+  /** 一份压缩摘要的正文（展开压缩块时才读）；与 plans 同族（只读、无状态、超时重发安全）。 */
+  conversationCompactionSummaryV4(
+    params: ZCodeAgentConversationCompactionSummaryParams,
+  ): Promise<V4ConversationCompactionSummaryResult>;
   conversationFileChangesV4(
     params: ZCodeAgentConversationFileChangesParams,
   ): Promise<V4ConversationFileChangesResult>;

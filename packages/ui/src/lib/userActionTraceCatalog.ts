@@ -17,7 +17,7 @@ export const CORE_USER_ACTION_FEATURES = {
     "clear_and_send",
     "keep_and_send",
   ],
-  "conversation.history.branch": ["retry", "edit", "fork", "rewind_files"],
+  "conversation.history.branch": ["retry", "edit", "fork", "fork_current_context", "rewind_files"],
   "conversation.history.feedback": ["like", "dislike", "clear_feedback", "copy"],
   "conversation.blocking.user_input": ["select_option", "submit_text", "cancel"],
   "conversation.blocking.hook": ["review", "dismiss"],

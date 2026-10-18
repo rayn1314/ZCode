@@ -22,6 +22,8 @@ import {
   type TopicFrameDeliveryKind,
   type V4AttachmentPutParams,
   type V4AttachmentPutResult,
+  type V4ConversationCompactionSummaryParams,
+  type V4ConversationCompactionSummaryResult,
   type V4ConversationFileChangesParams,
   type V4ConversationFileChangesResult,
   type V4ConversationFileRewindPreviewParams,
@@ -69,6 +71,7 @@ type ConversationV4AgentService = Pick<
   | "conversationWorkflowRunArtifactReadV4"
   | "conversationWorkflowRunWorkspaceV4"
   | "conversationWorkflowRunNodeResultV4"
+  | "conversationCompactionSummaryV4"
   | "conversationFileChangesV4"
   | "conversationFileRewindPreviewV4"
   | "attachmentBeginV4"
@@ -390,6 +393,17 @@ export function createAgentConversationTransport(
     },
     // dwf journal 的两个只读查询拆在 agentConversationTransportWorkflowRuns.ts（max-lines 边界）。
     ...createWorkflowRunTransportMethods({ agentService, ensureHandshake, workspace }),
+    /** 压缩摘要正文：messageId = 投影下发的 `summaryRef`，只在展开压缩块时取。 */
+    async compactionSummary(
+      params: V4ConversationCompactionSummaryParams,
+    ): Promise<V4ConversationCompactionSummaryResult> {
+      await ensureHandshake();
+      return agentService.conversationCompactionSummaryV4({
+        ...workspace,
+        sessionId: params.sessionId,
+        messageId: params.messageId,
+      });
+    },
     async fileChanges(
       params: V4ConversationFileChangesParams,
     ): Promise<V4ConversationFileChangesResult> {

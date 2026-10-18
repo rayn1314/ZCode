@@ -12,6 +12,8 @@ import type {
   SubscribeParams,
   V4AttachmentPutParams,
   V4AttachmentPutResult,
+  V4ConversationCompactionSummaryParams,
+  V4ConversationCompactionSummaryResult,
   V4ConversationFileChangesParams,
   V4ConversationFileChangesResult,
   V4ConversationFileRewindPreviewParams,
@@ -98,6 +100,13 @@ export interface ConversationTransport {
   ): Promise<V4ConversationWorkflowRunNodeResultResult>;
   /** v4/conversation/fileChanges：按 turn row 展开文件摘要详情与只读 diff。 */
   fileChanges(params: V4ConversationFileChangesParams): Promise<V4ConversationFileChangesResult>;
+  /**
+   * v4/conversation/compactionSummary：一份压缩摘要的正文（messageId = 投影下发的
+   * `summaryRef`，展开压缩块时才取）。
+   */
+  compactionSummary(
+    params: V4ConversationCompactionSummaryParams,
+  ): Promise<V4ConversationCompactionSummaryResult>;
   /** v4/conversation/fileRewindPreview：按 turn row 预览 workspace-only 文件撤销。 */
   fileRewindPreview(
     params: V4ConversationFileRewindPreviewParams,

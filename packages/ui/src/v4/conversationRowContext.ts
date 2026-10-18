@@ -206,6 +206,14 @@ export interface ConversationRowRenderContext {
   readAttachmentRange?: (
     params: Parameters<ConversationTransport["attachmentReadRange"]>[0],
   ) => ReturnType<ConversationTransport["attachmentReadRange"]>;
+  /**
+   * 压缩摘要正文（`messageId` = compact marker 的 `summaryRef`）。与 `readAttachment` 同款：
+   * 由 pane 绑定的 workspace transport 注入；缺席（旧宿主）时压缩块降级为纯分隔线。
+   */
+  readCompactionSummary?: (params: {
+    sessionId: string;
+    messageId: string;
+  }) => Promise<{ summary: string }>;
 }
 
 export interface ConversationFileChangesRequestOptions {

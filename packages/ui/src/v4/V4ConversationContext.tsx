@@ -11,6 +11,8 @@ import type {
   CommandEnvelope,
   V4AttachmentPutParams,
   V4AttachmentPutResult,
+  V4ConversationCompactionSummaryParams,
+  V4ConversationCompactionSummaryResult,
   V4ConversationFileChangesParams,
   V4ConversationFileChangesResult,
   V4ConversationFileRewindPreviewParams,
@@ -78,6 +80,10 @@ export interface V4ConversationContextValue {
   workflowRunNodeResult(
     params: V4ConversationWorkflowRunNodeResultParams,
   ): Promise<V4ConversationWorkflowRunNodeResultResult>;
+  /** 一份压缩摘要的正文（展开压缩块时才取）。 */
+  compactionSummary(
+    params: V4ConversationCompactionSummaryParams,
+  ): Promise<V4ConversationCompactionSummaryResult>;
   /** UI 高层 put 语义；transport 内部只走 begin/chunk/commit/abort。 */
   attachmentPut(
     params: V4AttachmentPutParams,
@@ -149,6 +155,8 @@ function ReadyV4ConversationProvider({
       workflowRunNodeResult: (params: V4ConversationWorkflowRunNodeResultParams) =>
         transport.workflowRunNodeResult(params),
       workflowRuns: (params: V4ConversationWorkflowRunsParams) => transport.workflowRuns(params),
+      compactionSummary: (params: V4ConversationCompactionSummaryParams) =>
+        transport.compactionSummary(params),
       attachmentPut: (params: V4AttachmentPutParams, options?: AttachmentUploadOptions) =>
         transport.attachmentPut(params, options),
       attachmentRead: (params) => transport.attachmentRead(params),
@@ -314,6 +322,8 @@ function ReadyV4PaneConversationProvider({
           lease.transport.workflowRunNodeResult(params),
         workflowRuns: (params: V4ConversationWorkflowRunsParams) =>
           lease.transport.workflowRuns(params),
+        compactionSummary: (params: V4ConversationCompactionSummaryParams) =>
+          lease.transport.compactionSummary(params),
         attachmentPut: (params: V4AttachmentPutParams, options?: AttachmentUploadOptions) =>
           lease.transport.attachmentPut(params, options),
         attachmentRead: (params) => lease.transport.attachmentRead(params),

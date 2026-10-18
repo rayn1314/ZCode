@@ -14,6 +14,7 @@ import {
   SESSION_ENTRY_MODEL_SELECTION,
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
   SessionEventType,
+  activeSessionMessages,
   createCoreError,
   createMessageId,
   createPartId,
@@ -46,11 +47,13 @@ import {
 } from "../helpers/index.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { buildSyntheticUserNoticePartMetadata } from "./synthetic-notice-metadata.js";
+import { stableGoalSnapshot, verificationEntryIdsAtBoundary } from "./stable-fork-boundary.js";
 import type {
   StableConversationForkChildMetadata,
   StableConversationForkGoalBoundary,
   StableConversationForkOptions,
   ConversationBeforeInputForkOptions,
+  CurrentContextForkOptions,
   SelectionSideChatCreateOptions,
   StableConversationForkTarget,
   WorkspaceForkResult,
@@ -1084,6 +1087,73 @@ export async function forkStableConversationAtMessage(
     sourceCommandId: options.sourceCommandId,
     target: options.target,
     targetMessageId: options.target.boundaryMessageId as MessageId,
+    traceContext: options.traceContext ?? this.rootTraceContext,
+  });
+}
+
+/**
+ * 以当前上下文分叉：复制口径 = 当前**模型可见上下文**（`activeSessionMessages`），
+ * 而不是完整可见 transcript（`forkAssistant` 的 `activeForkTranscriptMessages` 口径）。
+ *
+ * 无压缩时两者在模型上下文层面等价（可见转录里多出的 hidden 消息本来就不进 provider）；
+ * 有压缩时本方法从最后一个 compact boundary 起复制（摘要消息 + 之后的对话 + 保留段），
+ * 子会话首次 provider 请求因此与父会话当前上下文一致 —— 这正是"压缩之后也能分叉"的语义。
+ *
+ * boundary 允许是非 assistant（例如手动 `/compact` 之后末尾就是 compact summary 的
+ * user 消息），所以这里刻意不复用 `stableForkHistoryMessages` 的"末尾必须是完成态
+ * assistant"校验；那条约束只属于按行回溯的 stable fork。
+ */
+export async function forkConversationAtCurrentContext(
+  this: AgentRuntimeInternal,
+  options: CurrentContextForkOptions,
+): Promise<WorkspaceForkResult> {
+  const store = this.sessionStore;
+  if (!store?.commitForkBundle) {
+    throw stableForkError("Fork requires a session adapter");
+  }
+  const parentSession = await store.getSession(this.sessionId);
+  if (!parentSession) throw stableForkError(`Session not found: ${this.sessionId}`);
+  const parentMessages = await store.messages({ sessionID: this.sessionId });
+  const contextMessages = activeSessionMessages(parentMessages, {
+    branchCutAfterMessageId: parentSession.revert?.branchCutAfterMessageID,
+    rewindCreatedMessageId: parentSession.revert?.createdMessageID,
+    rewindKeptMessageIds: parentSession.revert?.keptMessageIDs,
+    rewindTargetMessageId: parentSession.revert?.targetMessageID,
+  });
+  const boundary = contextMessages.at(-1);
+  if (!boundary) {
+    throw stableForkError("Fork at current context requires a non-empty context", {
+      messageCount: 0,
+    });
+  }
+
+  const target =
+    typeof store.readTarget === "function"
+      ? await store.readTarget({ sessionID: this.sessionId })
+      : null;
+  const goalBoundary: StableConversationForkGoalBoundary = target
+    ? {
+        kind: "snapshot",
+        target: stableGoalSnapshot(target),
+        // verifier 边界仍走 ledger（不是 anchor 汇总）：anchor 只在边界消息上写，
+        // 而 verifier 可能锚在上下文里的任意 assistant 消息上。
+        verificationEntryIds: await verificationEntryIdsAtBoundary(
+          this,
+          target,
+          new Set(contextMessages.map((message) => message.info.id)),
+        ),
+      }
+    : { kind: "none" };
+
+  return await commitAtomicConversationFork(this, {
+    modelSelection: options.modelSelection,
+    forkedSessionId: options.forkedSessionId,
+    goalBoundary,
+    messages: contextMessages,
+    parentSession,
+    revisionAtDecision: options.revisionAtDecision,
+    sourceCommandId: options.sourceCommandId,
+    targetMessageId: boundary.info.id,
     traceContext: options.traceContext ?? this.rootTraceContext,
   });
 }

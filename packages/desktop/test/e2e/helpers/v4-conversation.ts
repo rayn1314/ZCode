@@ -36,6 +36,7 @@ import {
   TID_V4_EDIT_WORKSPACE_CONFLICT_CONVERSATION_ONLY,
   TID_V4_EDIT_WORKSPACE_CONFLICT_DIALOG,
   TID_V4_FOLLOWUP_TOGGLE,
+  TID_V4_FORK_CURRENT_CONTEXT,
   TID_V4_MODEL_CONFIG,
   TID_V4_PAUSED_QUEUE_SEND_DIALOG,
   TID_V4_PANE_SHELL,
@@ -701,6 +702,17 @@ export async function clickFirstV4Fork() {
     return true;
   }
   return false;
+}
+
+/**
+ * 点击 pane 顶部的会话级「以当前状态分叉」入口。
+ * 入口不锚定任何消息行（与行内 fork 不同），所以不走 hover 工具栏定位。
+ */
+export async function clickV4ForkCurrentContext() {
+  await clickTestIdByDom(TID_V4_FORK_CURRENT_CONTEXT, {
+    timeout: 30000,
+    timeoutMsg: "v4 会话级分叉入口没有出现",
+  });
 }
 
 export async function waitForV4Fork(timeout = 60000) {

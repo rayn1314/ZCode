@@ -28,6 +28,8 @@ import { preemptActiveTurnAndWait } from "./session-flow.js";
 const CONVERSATION_COMMAND_LOG_MODULE = "bootstrap.zcode_protocol_v4.commands";
 const EDIT_USER_QUERY_COMPLETED_EVENT = "conversation.command.edit_user_query.completed";
 const FORK_ASSISTANT_COMPLETED_EVENT = "conversation.command.fork_assistant.completed";
+const FORK_CURRENT_CONTEXT_COMPLETED_EVENT =
+  "conversation.command.fork_current_context.completed";
 
 /** row target → messageId 翻译失败（非 assistant 行 / 迟到实体 / 会话无投影）。 */
 export class V4RowTranslationError extends Error {
@@ -380,8 +382,46 @@ async function forkAssistant(
   return result;
 }
 
+/**
+ * forkCurrentContext：以"当前上下文状态"开一条新分支，没有 row target 也没有锚点解析
+ * —— 复制什么由 core 的 `activeSessionMessages` 决定（有压缩时从最后一个 compact
+ * boundary 起）。与 forkAssistant 共用 conversation-only 语义：不 stop parent、
+ * 不 rewind workspace、不复制 active work/queue。
+ *
+ * 压缩进行中不在此处额外设闸：与 forkAssistant 同款，由投影侧的入口可用性
+ * （`activeWorks` 含 compact 时按钮不可点）兜住，core 侧不新增第二个判定源。
+ */
+async function forkCurrentContext(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult | undefined> {
+  const record = requireRecord(host, envelope.sessionId);
+  if (!host.forkCurrentContext) {
+    throw new Error("v4 forkCurrentContext requires host.forkCurrentContext capability");
+  }
+  const { forkedSessionId } = await host.forkCurrentContext(record.app.sessionId, {
+    sourceCommandId: envelope.commandId,
+    revisionAtDecision: envelope.baseRevision ?? 0,
+  });
+  host.logger?.info?.("v4 forkCurrentContext completed", {
+    ...traceContextToLogContext(record.traceContext),
+    childSessionId: forkedSessionId,
+    clientId: envelope.clientId,
+    commandId: envelope.commandId,
+    event: FORK_CURRENT_CONTEXT_COMPLETED_EVENT,
+    module: CONVERSATION_COMMAND_LOG_MODULE,
+    parentSessionId: record.app.sessionId,
+    revisionAtDecision: envelope.baseRevision ?? 0,
+    sessionId: record.app.sessionId,
+    status: "completed",
+  });
+  const result = { type: "forkCurrentContext" as const, sessionId: forkedSessionId };
+  return result;
+}
+
 export const forkEditRetryHandlers = {
   forkAssistant,
+  forkCurrentContext,
   editUserQuery,
   retryTurn,
 };

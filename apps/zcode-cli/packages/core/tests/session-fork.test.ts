@@ -30,6 +30,7 @@ import {
   deriveForkedGoalStatusFromCopiedVerifications,
   buildAtomicForkNotice,
   createSelectionSideConversation,
+  forkConversationAtCurrentContext,
   forkConversationBeforeMessage,
   forkStableConversationAtMessage,
   selectionSideChatHistoryMessages,
@@ -1675,6 +1676,105 @@ describe("session fork history", () => {
         .flatMap((message) => message.parts)
         .some((part) => part.type === "tool" && part.tool === "Read"),
     ).toBe(true);
+  });
+
+  it("以当前上下文分叉：有压缩从最后一个 compact boundary 起，无压缩复制全部 active 消息", async () => {
+    const preCompactUserText = "压缩前的旧用户输入";
+    const user = userMessage("msg_ctx_user" as MessageId, preCompactUserText, 1);
+    const oldAssistant = assistantMessage(
+      "msg_ctx_old_assistant" as MessageId,
+      user.info.id,
+      "压缩前的旧回复",
+      2,
+    );
+    const compact = compactSummaryMessage("msg_ctx_compact" as MessageId, 3);
+    compact.info.semantics = {
+      kind: "compact_summary",
+      origin: "agent_runtime",
+      providerVisibility: "visible",
+      transcriptVisibility: "hidden",
+      uiVisibility: "hidden",
+    };
+    const finalAssistant = assistantMessage(
+      "msg_ctx_final" as MessageId,
+      compact.info.id,
+      "压缩后的最终回复",
+      4,
+    );
+
+    type ForkBundle = Parameters<NonNullable<SessionStorePort["commitForkBundle"]>>[0];
+    const parentSession = {
+      directory: "/workspace",
+      id: SESSION_ID,
+      path: "/workspace",
+      projectID: "project-current-context",
+      slug: "parent-current-context",
+      taskType: "interactive",
+      time: { created: 1, updated: 1 },
+      title: "parent",
+      version: "test",
+    } as SessionInfo;
+    const runFork = async (messages: MessageWithParts[]) => {
+      let committed: ForkBundle | null = null;
+      const runtime = {
+        appendEvent: async () => undefined,
+        config: { agentName: "zcode-agent", mode: "build" },
+        createEvent: () => ({ type: "session.forked" }),
+        getSessionModelSelection: () => ({ modelId: "glm-4-air", providerId: "glm" }),
+        rootTraceContext: { traceId: "trace_current_context" },
+        sessionId: SESSION_ID,
+        sessionStore: {
+          async commitForkBundle(bundle: ForkBundle) {
+            committed = bundle;
+            return bundle.child as SessionInfo;
+          },
+          async getSession() {
+            return parentSession;
+          },
+          async messages() {
+            return messages;
+          },
+        } satisfies Partial<SessionStorePort>,
+        workingDirectory: "/workspace",
+        workspaceRoot: "/workspace",
+      };
+      const result = await forkConversationAtCurrentContext.call(runtime as never, {
+        sourceCommandId: "cmd-current-context",
+      });
+      return { committed: committed as ForkBundle | null, result };
+    };
+    const textsOf = (messages: readonly MessageWithParts[]) =>
+      messages.flatMap((message) =>
+        message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])),
+      );
+
+    // 有压缩：只复制最后一个 compact boundary 起（摘要消息 + boundary 之后的对话）。
+    const compacted = await runFork([user, oldAssistant, compact, finalAssistant]);
+    const compactedTexts = textsOf(compacted.committed!.messages);
+    expect(compactedTexts).toContain("compact summary context");
+    expect(compactedTexts).toContain("压缩后的最终回复");
+    expect(compactedTexts).not.toContain(preCompactUserText);
+    expect(compactedTexts).not.toContain("压缩前的旧回复");
+    // I4：摘要消息被复制时 hidden 语义逐位保持，不升级成可见气泡。
+    expect(
+      compacted.committed!.messages.find(
+        (message) => message.info.role === "user" && message.info.summary !== undefined,
+      )?.info.semantics,
+    ).toMatchObject({
+      kind: "compact_summary",
+      transcriptVisibility: "hidden",
+      uiVisibility: "hidden",
+    });
+    expect(compacted.result.parentSessionId).toBe(SESSION_ID);
+
+    // 无压缩：复制全部 active 消息（含真实用户输入），与按行分叉在模型上下文层面等价。
+    const plain = await runFork([user, oldAssistant]);
+    const plainTexts = textsOf(plain.committed!.messages);
+    expect(plainTexts).toContain(preCompactUserText);
+    expect(plainTexts).toContain("压缩前的旧回复");
+
+    // 空上下文：拒绝，不创建空子会话。
+    await expect(runFork([])).rejects.toThrow(/non-empty context/);
   });
 
   it("fork transcript 保留 rewind active branch 但不按 compact 截断", () => {
