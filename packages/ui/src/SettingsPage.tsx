@@ -76,6 +76,7 @@ import { SegmentPill } from "@/settings/PluginStoreListView.js";
 import { PluginsSection } from "@/settings/PluginsSection.js";
 import { HooksSection } from "@/settings/HooksSection.js";
 import { WorkspaceFileSearchSection } from "@/settings/WorkspaceFileSearchSection.js";
+import { InstructionFilesSection } from "@/settings/InstructionFilesSection.js";
 import { MemorySettingsSection } from "@/settings/MemorySettingsSection.js";
 import { ContextCompactionSection } from "@/settings/ContextCompactionSection.js";
 import { BrowserSettingsSection } from "@/settings/BrowserSettingsSection.js";
@@ -2069,6 +2070,14 @@ export function SettingsPage({
                           <WorkspaceFileSearchSection
                             workspacePath={activeWorkspacePath}
                             workspaceIdentity={activeWorkspaceIdentity}
+                          />
+                        ) : activeSection === "instructions" ? (
+                          // 指令文件是 host 机器上的真实文件：只有桌面端可管理，
+                          // Web Remote / 手机经 fileManagementAvailable 拿到零服务调用的提示态。
+                          <InstructionFilesSection
+                            workspacePath={activeWorkspacePath}
+                            workspaceIdentity={activeWorkspaceIdentity}
+                            fileManagementAvailable={Boolean(isDesktop)}
                           />
                         ) : activeSection === "browser" ? (
                           <BrowserSettingsSection

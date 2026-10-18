@@ -40,6 +40,7 @@ describe("settingsPageConfig", () => {
         id: "agentCapabilities",
         sections: [
           "memory",
+          "instructions",
           "contextCompaction",
           "subagents",
           "plugin",
@@ -60,6 +61,7 @@ describe("settingsPageConfig", () => {
       "appearance",
       "modelProvider",
       "memory",
+      "instructions",
       "contextCompaction",
       "subagents",
       "plugin",
@@ -83,6 +85,7 @@ describe("settingsPageConfig", () => {
       "appearance",
       "modelProvider",
       "memory",
+      "instructions",
       "contextCompaction",
       "subagents",
       "plugin",

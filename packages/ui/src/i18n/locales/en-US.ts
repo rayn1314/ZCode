@@ -5020,6 +5020,48 @@ const enUS: Record<string, string> = {
   "settings.workspaceFileSearch.unsaved": "Unsaved changes",
   "settings.workspaceFileSearch.noWorkspace":
     "No workspace is open, so search ignore rules cannot be configured.",
+  "settings.instructions.title": "Instructions",
+  "settings.instructions.description":
+    "AGENTS.md files hold your standing instructions to the agent. User-level applies to every workspace; repository-level applies only to the current workspace and takes priority.",
+  "settings.instructions.desktopOnly":
+    "Instruction files live on the machine running the agent. Open the desktop app to manage them.",
+  "settings.instructions.noWorkspace":
+    "No workspace is open, so instruction files cannot be managed.",
+  "settings.instructions.serviceUnavailable":
+    "The instruction file service is unavailable in this host. Update to the latest version and try again.",
+  "settings.instructions.loadFailed": "Could not read the instruction file; check the logs",
+  "settings.instructions.saveFailed": "Save failed; check the logs",
+  "settings.instructions.notWritable": "This file is not writable; check its permissions",
+  "settings.instructions.readonlyFallback": "This file is read-only",
+  "settings.instructions.saved": "Saved",
+  "settings.instructions.reload": "Reload",
+  "settings.instructions.edit": "Edit",
+  "settings.instructions.create": "Create from template",
+  "settings.instructions.save": "Save",
+  "settings.instructions.cancel": "Cancel",
+  "settings.instructions.unsaved": "Unsaved changes",
+  "settings.instructions.effectivePath": "Read from:",
+  "settings.instructions.notCreated": "Not created",
+  "settings.instructions.ignoredCandidate": "Ignored: {path} (exists but not read)",
+  "settings.instructions.lastModified": "Last modified",
+  "settings.instructions.truncated": "Over {size}; the agent reads only the first {size}",
+  "settings.instructions.remoteWorkspaceNote": "This file is on the remote machine",
+  "settings.instructions.scope.user.title": "User-level instructions",
+  "settings.instructions.scope.user.subtitle": "Applies to every workspace",
+  "settings.instructions.scope.workspace.title": "Repository instructions",
+  "settings.instructions.scope.workspace.subtitle":
+    "Applies only to the current workspace and takes priority over user-level",
+  "settings.instructions.editorLabel": "{scope} content editor",
+  "settings.instructions.template.overview": "Workspace overview",
+  "settings.instructions.template.commands": "Common commands",
+  "settings.instructions.template.conventions": "Code conventions",
+  "settings.instructions.template.acceptance": "Acceptance",
+  "settings.instructions.conflict.title": "The file changed on disk",
+  "settings.instructions.conflict.description":
+    "This file was modified outside this editor after it was loaded. Saving overwrites those changes.",
+  "settings.instructions.conflict.overwrite": "Overwrite disk content",
+  "settings.instructions.conflict.discard": "Discard my changes and reload",
+  "settings.instructions.conflict.cancel": "Cancel",
   "settings.hooks.description":
     "Manage task lifecycle hooks to automatically execute commands on specific events.",
   "settings.hooks.enabled": "Enabled",

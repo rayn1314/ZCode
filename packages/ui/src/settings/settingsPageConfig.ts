@@ -20,6 +20,7 @@ import {
   Keyboard,
   Layers,
   FileSearch,
+  FileText,
 } from "lucide-react";
 import { isSettingsSectionEnabled, type SettingsSectionId } from "@/lib/settingsNavigation.js";
 import type { Theme } from "@/useTheme.js";
@@ -81,7 +82,14 @@ const BASE_SETTINGS_SECTIONS: SettingsSectionDefinition[] = [
     titleId: "settings.memory",
     groupId: "agentCapabilities",
   },
-  // 「上下文压缩」紧跟「记忆」：两者都管"上下文里放什么、留多少"，相邻便于理解关系。
+  // 「指令」紧跟「记忆」：两者都管"上下文里放什么"（记忆放长期事实，指令放工作方式），相邻便于理解关系。
+  {
+    id: "instructions",
+    icon: FileText,
+    titleId: "settings.instructions.title",
+    groupId: "agentCapabilities",
+  },
+  // 「上下文压缩」紧随「指令」：三者都管"上下文里放什么、留多少"，同组相邻便于理解关系。
   {
     id: "contextCompaction",
     icon: Layers,
