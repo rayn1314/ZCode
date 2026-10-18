@@ -2433,6 +2433,135 @@ describe("AiSdkModelAdapter", () => {
     });
   });
 
+  it("logs the reasoning replay shape for a multi-turn request", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime: AiSdkModelRuntime = {
+      async generateText() {
+        return {
+          text: "ok",
+          finishReason: "stop",
+          usage: usage(2, 3),
+          totalUsage: usage(2, 3),
+        } as never;
+      },
+      streamText() {
+        throw new Error("not used");
+      },
+    };
+    const adapter = new AiSdkModelAdapter({
+      logger: capturingLogger(logs),
+      registry: registry(),
+      runtime,
+    });
+
+    await executeAdapterGenerateText(adapter, {
+      providerId: "test" as never,
+      modelId: "model-a" as never,
+      messages: [
+        { role: "user", content: "start" },
+        {
+          role: "assistant",
+          content: [
+            { type: "reasoning", text: "thought" },
+            { type: "text", text: "answer" },
+          ],
+        },
+        { role: "user", content: "next" },
+      ],
+    });
+
+    const entry = logs.find((log) => log.context?.event === "model.reasoning.replay.shape");
+    expect(entry).toMatchObject({
+      level: "info",
+      message: "Model reasoning replay shape inspected",
+      context: {
+        assistantMessages: 1,
+        assistantMessagesWithoutReasoning: 0,
+        emptyReasoningBlocks: 0,
+        reasoningBlocks: 1,
+      },
+    });
+  });
+
+  it("counts assistant messages that carry no reasoning block", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime: AiSdkModelRuntime = {
+      async generateText() {
+        return {
+          text: "ok",
+          finishReason: "stop",
+          usage: usage(2, 3),
+          totalUsage: usage(2, 3),
+        } as never;
+      },
+      streamText() {
+        throw new Error("not used");
+      },
+    };
+    const adapter = new AiSdkModelAdapter({
+      logger: capturingLogger(logs),
+      registry: registry(),
+      runtime,
+    });
+
+    await executeAdapterGenerateText(adapter, {
+      providerId: "test" as never,
+      modelId: "model-a" as never,
+      messages: [
+        { role: "user", content: "start" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [{ id: "call_1", name: "Read", input: { file_path: "README.md" } }],
+        },
+        { role: "tool", content: "result", toolCallId: "call_1", toolName: "Read" },
+        { role: "user", content: "next" },
+      ],
+    });
+
+    const entry = logs.find((log) => log.context?.event === "model.reasoning.replay.shape");
+    expect(entry).toMatchObject({
+      level: "info",
+      context: {
+        assistantMessages: 1,
+        assistantMessagesWithoutReasoning: 1,
+        reasoningBlocks: 0,
+      },
+    });
+  });
+
+  it("does not log the reasoning replay shape for a first-turn request", async () => {
+    const logs: CapturedLog[] = [];
+    const runtime: AiSdkModelRuntime = {
+      async generateText() {
+        return {
+          text: "ok",
+          finishReason: "stop",
+          usage: usage(2, 3),
+          totalUsage: usage(2, 3),
+        } as never;
+      },
+      streamText() {
+        throw new Error("not used");
+      },
+    };
+    const adapter = new AiSdkModelAdapter({
+      logger: capturingLogger(logs),
+      registry: registry(),
+      runtime,
+    });
+
+    await executeAdapterGenerateText(adapter, {
+      providerId: "test" as never,
+      modelId: "model-a" as never,
+      messages: [{ role: "user", content: "start" }],
+    });
+
+    expect(
+      logs.find((log) => log.context?.event === "model.reasoning.replay.shape"),
+    ).toBeUndefined();
+  });
+
   it("uses ten retries by default for HTTP 200 provider 1302 rate limits", async () => {
     const events: ModelNetworkStatusEvent[] = [];
     let attempts = 0;

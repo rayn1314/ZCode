@@ -37,6 +37,7 @@ import { DEFAULT_MODEL_STREAM_IDLE_TIMEOUT_MS } from "./stream-idle-timeout.js";
 import { runGenerateText } from "./runner-generate.js";
 import { runStreamText } from "./runner-stream.js";
 import { normalizeReasoningHistory } from "./reasoning-history-normalization.js";
+import { logReasoningReplayShape } from "./reasoning-replay-diagnostics.js";
 import {
   defaultRuntime,
   type AiSdkModelRuntime,
@@ -319,6 +320,12 @@ export class AiSdkModelAdapter {
     resolveModel: () => ResolvedAiSdkModel,
   ): Promise<ModelTextResult> {
     const projectedRequest = projectRequestHistory(request, resolved);
+    logReasoningReplayShape({
+      logger: this.logger,
+      messages: projectedRequest.messages,
+      modelId: resolved.modelId,
+      providerId: resolved.providerId,
+    });
     return runGenerateText({
       debugDir: this.debugDir,
       env: this.env,
@@ -339,6 +346,12 @@ export class AiSdkModelAdapter {
     resolveModel: () => ResolvedAiSdkModel,
   ): AsyncGenerator<ModelStreamEvent> {
     const projectedRequest = projectRequestHistory(request, resolved);
+    logReasoningReplayShape({
+      logger: this.logger,
+      messages: projectedRequest.messages,
+      modelId: resolved.modelId,
+      providerId: resolved.providerId,
+    });
     yield* runStreamText({
       debugDir: this.debugDir,
       env: this.env,
