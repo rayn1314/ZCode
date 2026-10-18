@@ -23,6 +23,8 @@ import {
   type PluginSubagentModelSelectionOverrides,
   type SubAgentConfig,
   type SubagentStateSnapshot,
+  type SubagentUserAgentFile,
+  type SubagentUserAgentFilesSnapshot,
   type SubagentsListMode,
   type ZCodeProvider,
 } from "@zcode/shared";
@@ -77,6 +79,12 @@ interface InstalledPluginRecord {
 
 interface SubagentsServiceOptions extends SubagentStorageOptions {
   isDesktopRuntime?: boolean;
+  /**
+   * 「本机权威已变」信号（spec `subagent-settings-sync.md` D1 时点 1）：桌面 Host 据此把整份
+   * 副本推给所有在线远端环境。只在权威侧（本机）装配传入；副本写入 `replace*` 不发这个信号，
+   * 否则副本每一轮都会被当成新权威再广播一次。
+   */
+  onAuthorityChanged?: () => void;
 }
 
 interface PluginAgentDiscovery {
@@ -285,6 +293,61 @@ async function collectAgentMarkdownPaths(rootPath: string, recursive = false): P
     }
   }
   return result.sort((left, right) => left.localeCompare(right));
+}
+
+/** 自定义 profile 只支持第一层，因此往返复制也只认单层 markdown 文件名。 */
+const USER_AGENT_FILE_NAME_PATTERN = /\.(md|markdown)$/iu;
+
+/**
+ * 副本侧的文件名白名单：带路径分隔符或层级跳转的名字会把内容写到用户 agent 目录之外，
+ * 所以按 basename 校验，而不是拼接后再判断路径前缀。反斜杠在两个平台都直接拒绝：
+ * Windows 上它是分隔符，POSIX 上会变成一个诡异字面名，行为不该随平台分叉。
+ */
+function assertReplicaUserAgentFileName(name: unknown): string {
+  if (typeof name !== "string") throw new Error("无效用户 agent 文件名");
+  if (
+    name.trim() !== name ||
+    name.includes("/") ||
+    name.includes("\\") ||
+    basename(name) !== name ||
+    !USER_AGENT_FILE_NAME_PATTERN.test(name)
+  ) {
+    throw new Error(`无效用户 agent 文件名：${name}`);
+  }
+  return name;
+}
+
+/** 权威侧取值：用户 agent 目录下的 markdown 原文，按文件名排序保证副本落盘顺序稳定。 */
+async function readUserAgentFilesFrom(rootPath: string): Promise<SubagentUserAgentFile[]> {
+  const paths = await collectAgentMarkdownPaths(rootPath);
+  const files = await Promise.all(
+    paths.map(async (path) => ({ name: basename(path), content: await readFile(path, "utf-8") })),
+  );
+  return files.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+/**
+ * 副本侧落盘：先写齐快照内的文件、再删掉快照外的 `*.md`/`*.markdown`，其它文件与子目录不动。
+ * 整份替换而非合并，才能表达「删除某个用户 agent」；先写后删避免中途两个文件都不存在。
+ */
+async function replaceUserAgentFilesAt(
+  rootPath: string,
+  snapshot: SubagentUserAgentFilesSnapshot,
+): Promise<SubagentUserAgentFile[]> {
+  const wanted = new Map<string, string>();
+  for (const file of snapshot?.files ?? []) {
+    // 载荷畸变时宁可整条拒绝，也不要把 profile 悄悄写成空文件（远端会当成有效但空的定义）。
+    if (typeof file?.content !== "string") throw new Error("无效用户 agent 文件内容");
+    wanted.set(assertReplicaUserAgentFileName(file.name), file.content);
+  }
+  await mkdir(rootPath, { recursive: true });
+  for (const [name, content] of wanted) {
+    await writeFile(join(rootPath, name), content, "utf-8");
+  }
+  for (const path of await collectAgentMarkdownPaths(rootPath)) {
+    if (!wanted.has(basename(path))) await rm(path, { force: true });
+  }
+  return readUserAgentFilesFrom(rootPath);
 }
 
 function resolveCapabilities(options?: SubagentsServiceOptions): AgentsCapability {
@@ -705,6 +768,21 @@ export function createSubagentsService(options?: SubagentsServiceOptions): ISuba
       return snapshotOf(await readAgentStateFile(storageOptions));
     },
 
+    async exportUserAgentFiles(): Promise<SubagentUserAgentFilesSnapshot> {
+      return { files: await readUserAgentFilesFrom(await resolveUserSubagentRoot(storageOptions)) };
+    },
+
+    async replaceUserAgentFiles(
+      snapshot: SubagentUserAgentFilesSnapshot,
+    ): Promise<SubagentUserAgentFilesSnapshot> {
+      return {
+        files: await replaceUserAgentFilesAt(
+          await resolveUserSubagentRoot(storageOptions),
+          snapshot,
+        ),
+      };
+    },
+
     async replaceSubagentState(state: SubagentStateSnapshot): Promise<SubagentStateSnapshot> {
       return writeAgentStateMutation((current) => ({
         ...current,
@@ -832,20 +910,33 @@ export function createSubagentsService(options?: SubagentsServiceOptions): ISuba
       });
     },
   };
+  /**
+   * 权威写入成功的信号（spec `subagent-settings-sync.md` D1 时点 1）。在写队列之外触发：
+   * 回调里重读当前盘，即使连续多次写入也只会把最新的那份推出去（前向单调，不会把旧值盖回去）。
+   */
+  const afterAuthorityWrite = <T>(result: T): T => {
+    options?.onAuthorityChanged?.();
+    return result;
+  };
   return {
     ...service,
     // 写操作统一在边界串行：整体（含文件操作与状态读改写）与其它写互斥，dispose 后拒绝新写。
-    createAgent: (params: AgentCreateParams) => mutate(() => service.createAgent(params)),
-    updateAgent: (params: AgentUpdateParams) => mutate(() => service.updateAgent(params)),
-    deleteAgent: (params: AgentDeleteParams) => mutate(() => service.deleteAgent(params)),
+    createAgent: (params: AgentCreateParams) =>
+      mutate(() => service.createAgent(params)).then(afterAuthorityWrite),
+    updateAgent: (params: AgentUpdateParams) =>
+      mutate(() => service.updateAgent(params)).then(afterAuthorityWrite),
+    deleteAgent: (params: AgentDeleteParams) =>
+      mutate(() => service.deleteAgent(params)).then(afterAuthorityWrite),
     setEnabled: (params: { agentId: string; enabled: boolean }) =>
-      mutate(() => service.setEnabled(params)),
+      mutate(() => service.setEnabled(params)).then(afterAuthorityWrite),
     replaceSubagentState: (state: SubagentStateSnapshot) =>
       mutate(() => service.replaceSubagentState(state)),
+    replaceUserAgentFiles: (snapshot: SubagentUserAgentFilesSnapshot) =>
+      mutate(() => service.replaceUserAgentFiles(snapshot)),
     setBuiltInModelOverride: (params: BuiltInSubagentModelOverrideParams) =>
-      mutate(() => service.setBuiltInModelOverride(params)),
+      mutate(() => service.setBuiltInModelOverride(params)).then(afterAuthorityWrite),
     setPluginAgentModelOverride: (params: PluginSubagentModelOverrideParams) =>
-      mutate(() => service.setPluginAgentModelOverride(params)),
+      mutate(() => service.setPluginAgentModelOverride(params)).then(afterAuthorityWrite),
   };
 }
 

@@ -1173,6 +1173,12 @@ export function createLocalServices(options: {
    * Desktop Host 把本机设置里的选择推给本窗口所有在线的 desktop-attached remote Host。
    */
   forwardDynamicWorkflowUserMode?: (mode: DynamicWorkflowMode | undefined) => void;
+  /**
+   * 本机子代理权威（`agents-state.json` 三项配置 + 用户级 agent markdown）发生写入后的信号：
+   * Desktop Host 据此把整份副本推给本窗口所有在线的 desktop-attached remote Host
+   * （spec `subagent-settings-sync.md` D1 时点 1）。只在本机权威侧装配时传入。
+   */
+  onSubagentAuthorityChanged?: () => void;
   /** Desktop Host 请求 Main 登记已校验的插件 UI HTML，换取沙箱句柄。 */
   registerPluginSandbox?: (input: PluginSandboxRegisterInput) => Promise<PluginSandboxHandle>;
   feedback?: Partial<
@@ -1614,6 +1620,7 @@ export function createLocalServices(options: {
   });
   const subagentsService = createSubagentsService({
     isDesktopRuntime: true,
+    onAuthorityChanged: options?.onSubagentAuthorityChanged,
   });
   const commandsService = createCommandsService({ isDesktopRuntime: true });
   const hooksService = createHooksService({

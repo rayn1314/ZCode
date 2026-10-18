@@ -6,6 +6,7 @@ import {
   type WindowHostAttachmentScope,
   type WindowHostRemoteWorkspaceDescriptor,
 } from "@zcode/shared";
+import type { IServiceAccessor } from "@zcode/services";
 
 export interface WindowRemoteAssetDirs {
   mockCdnDir?: string;
@@ -22,6 +23,13 @@ export interface WindowRemoteConnectionCloseEvent {
 
 export interface WindowRemoteConnectionHandle<TServices, TCapabilities = never> {
   services: TServices;
+  /**
+   * 远端连接**自身**的服务访问器。作用域集合（`services`）按产品语义会把个别服务换成本机实现
+   * ——子代理配置的权威在本机，作用域里的 `ISubagentsService` 就是本机实例；因此任何「写远端
+   * 环境」的操作必须用这一份真远端服务，否则会写回本机文件而看起来成功
+   * （spec `apps/zcode-cli/packages/core/spec/subagent-settings-sync.md` D1）。
+   */
+  remoteServices?: IServiceAccessor;
   capabilities?: TCapabilities;
   dispose(): void | Promise<void>;
   onDidClose?(listener: (event: WindowRemoteConnectionCloseEvent) => void): { dispose(): void };
@@ -710,12 +718,26 @@ export function createWindowRemoteConnectionRegistry<TServices, TCapabilities = 
     },
     /**
      * 已就绪、未释放的连接（按连接去重，同一 SSH 连接上的多个 logical session 只出现一次）。
-     * 供窗口级事实广播给每个远程 Host，例如动态工作流的用户选择（launch.md「The user's choice」）。
+     * 供窗口级事实广播给每个远程 Host，例如动态工作流的用户选择（launch.md「The user's choice」）
+     * 与子代理配置副本（spec `subagent-settings-sync.md` D1，只有它需要 `remoteServices`：
+     * 作用域集合里的子代理服务是本机实现，拿它复制等于把本机文件又写一遍）。
      */
-    listReadyConnections(): Array<{ target: RemoteTarget; services: TServices }> {
+    listReadyConnections(): Array<{
+      target: RemoteTarget;
+      services: TServices;
+      remoteServices?: IServiceAccessor;
+    }> {
       return Array.from(entriesByKey.values()).flatMap((entry) =>
         entry.handle && !entry.disposed
-          ? [{ target: entry.target, services: entry.handle.services }]
+          ? [
+              {
+                target: entry.target,
+                services: entry.handle.services,
+                ...(entry.handle.remoteServices
+                  ? { remoteServices: entry.handle.remoteServices }
+                  : {}),
+              },
+            ]
           : [],
       );
     },

@@ -44,6 +44,7 @@ import {
   IOnboardingRecordService,
   IWindowControllerService,
   IConversationShareService,
+  ISubagentsService,
   IZCodeAgentService,
   IZCodeTaskService,
   IZCodeSessionService,
@@ -157,6 +158,11 @@ import {
   type WindowRemoteConnectionHandle,
 } from "./windowRemoteConnectionRegistry.js";
 import { pushDynamicWorkflowUserModeToRemoteHosts } from "./remoteDynamicWorkflowUserMode.js";
+import {
+  pushSubagentConfigToRemoteHosts,
+  type SubagentConfigAuthority,
+  type SubagentConfigPushConnection,
+} from "./remoteSubagentConfig.js";
 import { createWindowHostControllerRuntime } from "./windowHostControllerService.js";
 import { resolveAutomationSubmissionModelSelection } from "./automationModelSelection.js";
 import { createRemoteConnectionProgressContext } from "@zcode/server/remote/remoteConnectionProgressContext.js";
@@ -1612,6 +1618,48 @@ let activeSessionRealtimePort: ReturnType<typeof createTaskRealtimeBridgeForHost
 let hasDisposedHostResources = false;
 let disposeHostResourcesInFlight: Promise<HostShutdownResult> | null = null;
 
+/**
+ * 本机权威的子代理配置副本载荷（spec `subagent-settings-sync.md` D1）：三项配置 + 用户级 agent
+ * markdown 原文。读的是设置页写的同一份本机文件。
+ */
+async function readLocalSubagentAuthority(): Promise<SubagentConfigAuthority> {
+  if (!activeServices) throw new Error("Local Host services are not initialized.");
+  const subagentsService = activeServices.get(ISubagentsService);
+  const [state, files] = await Promise.all([
+    subagentsService.getSubagentState(),
+    subagentsService.exportUserAgentFiles(),
+  ]);
+  return { state, files };
+}
+
+/**
+ * 把本机权威的子代理配置推给本窗口所有在线远端环境（spec D1 时点 1）。
+ *
+ * 用连接**自身**的服务（`remoteServices`），不能用作用域集合 `services`：那里的
+ * `ISubagentsService` 是本机实例（子代理权威在本机），拿它复制只会把本机文件再写一遍并返回成功。
+ */
+function pushSubagentConfigToReadyRemoteHosts(): void {
+  const connections: SubagentConfigPushConnection[] = windowRemoteConnectionRegistry
+    .listReadyConnections()
+    .flatMap(({ target, remoteServices }) =>
+      remoteServices
+        ? [
+            {
+              target,
+              subagentsService: remoteServices.subagentsService,
+              zcodeAgentService: remoteServices.zcodeAgentService,
+            },
+          ]
+        : [],
+    );
+  if (connections.length === 0) return;
+  void pushSubagentConfigToRemoteHosts({
+    connections,
+    readAuthority: readLocalSubagentAuthority,
+    onError: (error) => logger.warn("remote subagent config push failed", error),
+  });
+}
+
 function requireActiveHostApiNetworkTransport(): HostApiNetworkTransport {
   if (!activeHostApiNetworkTransport) {
     // Bug 原因：remote asset 若在 Host 网络策略就绪前回退 global fetch，会绕过设置页显式代理。
@@ -1773,6 +1821,20 @@ async function createWindowRemoteConnectionHandle(params: {
     );
   }
 
+  // 子代理配置副本（spec `subagent-settings-sync.md` D1 时点 2）：该环境读自己的数据根，本机设置页
+  // 写的是本机文件，因此连接就绪即补一次，覆盖「设置先于连接变更」的缺口；同样早于任何 workspace 请求。
+  await pushSubagentConfigToRemoteHosts({
+    connections: [
+      {
+        target: params.target,
+        subagentsService: connection.services.subagentsService,
+        zcodeAgentService: connection.services.zcodeAgentService,
+      },
+    ],
+    readAuthority: readLocalSubagentAuthority,
+    onError: (error) => logger.warn("remote subagent config push failed", error),
+  });
+
   peerServices = services;
   let disposed = false;
   // 远端 workspace 的 CLI 与 MCP 样本走与本地同一条路径：远端 zcode-server → 本地 Host → main。
@@ -1810,6 +1872,9 @@ async function createWindowRemoteConnectionHandle(params: {
           });
   return {
     services,
+    // 连接自身的服务：作用域集合按产品语义把个别服务换成本机实现（子代理配置的权威在本机），
+    // 需要写远端环境的窗口级操作（子代理配置副本）必须拿这一份，见 remoteSubagentConfig.ts。
+    remoteServices: connection.services,
     capabilities:
       "backend" in connection
         ? {
@@ -2098,10 +2163,6 @@ function exposeServicesOnMessagePort(
 ): ExposedServicePortHandle {
   const wrappedPort = wrapElectronPort(port);
   const protocol = new MessagePortProtocol(wrappedPort);
-  // remote 模式延迟发送 Initialize：远程建连需要时间，如果构造时就发 Initialize，
-  // renderer 会立即发请求但 channel 还没注册，导致 "Unknown channel" 超时错误。
-  // attach 模式复用已就绪服务，必须立即初始化新的 RPC MessagePort。
-  logger.info(`creating ChannelServer (deferInit=${deferInit})`);
   const rawServer = new ChannelServer(protocol, "host", 1000, deferInit);
   const loggedServer = new LoggingChannelServer(rawServer, logRpc);
   const server = new NetworkTelemetryChannelServer(loggedServer);
@@ -2977,6 +3038,9 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
                   (error) => logger.warn("remote dynamic workflow user mode forward failed", error),
                 );
               },
+              // spec `subagent-settings-sync.md` D1 时点 1：本机权威写入成功后，把整份副本推给
+              // 本窗口所有在线的 desktop-attached remote Host（设置页只写本机文件）。
+              onSubagentAuthorityChanged: pushSubagentConfigToReadyRemoteHosts,
               registerPluginSandbox: pluginSandboxRegistrationBridge.register,
               runtimeProcessEnvPatch: msg.runtimeProcessEnvPatch,
               agentTelemetry: {

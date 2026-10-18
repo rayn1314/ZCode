@@ -38,6 +38,20 @@ export interface SubagentStateSnapshot {
   disabledAgentIds: string[];
 }
 
+/**
+ * 用户级 agent 的 markdown **原文**（不是解析后的 config）：跨环境复制是文件副本而不是求值结果，
+ * 接收方自己按 md 解析，避免同一份 profile 语义实现两遍。见 spec `subagent-settings-sync.md` D1。
+ */
+export interface SubagentUserAgentFile {
+  /** 目录内文件名（单层、以 .md/.markdown 结尾；接收方据此落盘并确定删除范围）。 */
+  name: string;
+  content: string;
+}
+
+export interface SubagentUserAgentFilesSnapshot {
+  files: SubagentUserAgentFile[];
+}
+
 export type AgentPermissionMode =
   | "acceptEdits"
   | "auto"

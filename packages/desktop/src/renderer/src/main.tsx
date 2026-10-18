@@ -11,7 +11,6 @@ import {
   registerBaseWorkspaceServices,
   registerRemoteWorkspaceSession,
   createRemoteWorkspaceDisconnectedError,
-  replicateSubagentStateOnRemoteConnect,
   installDocumentHiddenMotionPause,
   playTaskNotificationSound,
   setStreamClientId,
@@ -239,14 +238,9 @@ function registerRemoteWorkspaceServicePort(params: RemoteWorkspaceServicePortRe
   // canonical workspace bind 会换代 remote-scoped port。
   // 只有 store 已注册新 services 后才能确认 ready，bind IPC 返回后的调用方才可重新读取并使用新代 services。
   notifyRemoteWorkspaceServicePortReady(params);
-  // 连接就绪即把本机权威的子代理配置（模型覆盖 + 启用状态）复制到该远端环境
-  // （尽力而为，失败下次重连补）：覆盖「设置先于连接变更」的缺口，远端 server 自己落盘、
-  // 其会话构造时读自己的盘（spec subagent-settings-sync.md D1 时点 2）。
-  void replicateSubagentStateOnRemoteConnect({
-    baseServices: baseServicesForRemoteSessions,
-    remoteServices,
-    sessionId: params.sessionId,
-  });
+  // 子代理配置副本不在 renderer 推：这里的作用域服务里 `ISubagentsService` 是本机实例，推了也只会
+  // 写回本机文件。改由 Host 在远端连接建立时用连接自身的服务推一次
+  // （spec apps/zcode-cli/packages/core/spec/subagent-settings-sync.md D1 时点 2）。
 }
 
 function flushPendingRemoteWorkspaceServicePorts(): void {

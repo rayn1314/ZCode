@@ -8,6 +8,7 @@ import type {
   BuiltInSubagentModelOverrideParams,
   PluginSubagentModelOverrideParams,
   SubagentStateSnapshot,
+  SubagentUserAgentFilesSnapshot,
   SubagentsListMode,
 } from "@zcode/shared";
 import { ServiceChannels } from "@zcode/shared";
@@ -38,6 +39,21 @@ export interface ISubagentsService {
    * 「改回继承 / 重新启用」等删除语义，不必逐键遍历（spec D2）。
    */
   replaceSubagentState(state: SubagentStateSnapshot): Promise<SubagentStateSnapshot>;
+
+  /**
+   * 读本数据根用户级 agent 目录下的 markdown 原文（**权威侧**取值用）：复制到远端环境时
+   * 连用户自定义子智能体一起带过去，否则远端认不到这些 `subagent_type`
+   * （spec `subagent-settings-sync.md` D1）。
+   */
+  exportUserAgentFiles(): Promise<SubagentUserAgentFilesSnapshot>;
+
+  /**
+   * 按快照整份替换本数据根用户级 agent 目录的 markdown（只用于**远端副本**写入）：
+   * 不在快照内的 `*.md` / `*.markdown` 一律删除，其它文件与子目录不动（spec D1）。
+   */
+  replaceUserAgentFiles(
+    snapshot: SubagentUserAgentFilesSnapshot,
+  ): Promise<SubagentUserAgentFilesSnapshot>;
 
   /**
    * 写盘并返回写盘后的**全量**快照：调用方据此原样推给本数据根的运行中会话做热重载
