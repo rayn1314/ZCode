@@ -1,9 +1,7 @@
 import type { ExecutionShellSelection } from "../deps.js";
 import type { BashShellSnapshotRestore } from "./bash-shell-snapshot.js";
 
-export type ShellEnvironmentResumeNoticeKind =
-  | "display_change"
-  | "windows_git_bash_auto_migration";
+export type ShellEnvironmentResumeNoticeKind = "display_change" | "windows_git_bash_auto_migration";
 
 export function getShellEnvironmentResumeNoticeKind(options: {
   persistedShell: string | undefined;

@@ -1,9 +1,4 @@
-import {
-  CompactPhase,
-  CompactReason,
-  CompactTrigger,
-  traceContextToLogContext,
-} from "../deps.js";
+import { CompactPhase, CompactReason, CompactTrigger, traceContextToLogContext } from "../deps.js";
 import type { Model, SessionEvent, TraceContext } from "../deps.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import { isTurnCancellationError } from "../helpers/index.js";

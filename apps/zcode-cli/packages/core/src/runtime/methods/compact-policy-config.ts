@@ -42,6 +42,7 @@ export function resolveLocalMicrocompactConfig(
     ...config.microcompact,
     enabled: config.microcompact?.enabled === true,
     thresholdTokens:
-      config.microcompact?.thresholdTokens ?? buildDefaultMicrocompactThreshold(fullCompactThreshold),
+      config.microcompact?.thresholdTokens ??
+      buildDefaultMicrocompactThreshold(fullCompactThreshold),
   };
 }

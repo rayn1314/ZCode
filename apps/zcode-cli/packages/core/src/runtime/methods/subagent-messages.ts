@@ -2,10 +2,7 @@ import { createMessageId, traceContextToLogContext } from "../deps.js";
 import type { MessageId } from "../deps.js";
 import { createRuntimeCommandId, type SubagentMessageRuntimeCommand } from "../command-queue.js";
 import type { AgentRuntimeInternal } from "../internal.js";
-import type {
-  EnqueueSubagentMessageInput,
-  EnqueueSubagentMessageResult,
-} from "../types.js";
+import type { EnqueueSubagentMessageInput, EnqueueSubagentMessageResult } from "../types.js";
 import { runtimeInputMetadata } from "../../agent/runtime-input-presentation.js";
 import { escapeXml } from "../../runtime-task/notification.js";
 import { isTerminalRuntimeTask } from "../../runtime-task/registry.js";
@@ -81,12 +78,7 @@ export function enqueueSubagentMessage(
   // 随后在 prompt command 之后的 drain / mid-turn 注入被消费。必须先入队再转后台，
   // 保证 Agent 结果返回时消息已经在队列里。
   const task = this.runtimeTaskRegistry.get(input.agentId);
-  if (
-    !task ||
-    task.type !== "local_agent" ||
-    task.isBackgrounded ||
-    isTerminalRuntimeTask(task)
-  ) {
+  if (!task || task.type !== "local_agent" || task.isBackgrounded || isTerminalRuntimeTask(task)) {
     return undefined;
   }
   if (task.foregroundModelOverride === true) {

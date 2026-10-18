@@ -7,12 +7,7 @@ import {
   createPartId,
   parseWorkspaceCheckpointArtifact,
 } from "../deps.js";
-import type {
-  MessageId,
-  SessionId,
-  TraceContext,
-  WorkspaceCheckpointArtifact,
-} from "../deps.js";
+import type { MessageId, SessionId, TraceContext, WorkspaceCheckpointArtifact } from "../deps.js";
 import {
   selectCheckpointsForMessages,
   formatWorkspaceForkAtMessageNoticeBody,

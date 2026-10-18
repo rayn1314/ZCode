@@ -57,9 +57,7 @@ export async function persistPendingModelChangeTimeline(
       module: "core.subagent",
       pendingToModel: formatModelSelectionLabel(pending.toModel),
       pendingToLabel: pending.toModelLabel,
-      currentModel: currentSelection
-        ? formatModelSelectionLabel(currentSelection)
-        : "<unset>",
+      currentModel: currentSelection ? formatModelSelectionLabel(currentSelection) : "<unset>",
     });
     return;
   }

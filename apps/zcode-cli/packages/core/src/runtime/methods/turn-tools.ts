@@ -229,7 +229,6 @@ export async function executeToolCallsForModelStep(
     streamedResultsById,
   });
 
-
   const stopTurnResult = results.find((result) => result.turnControl?.stopTurnAfterResult === true);
   if (stopTurnResult) {
     await persistToolModelStepFinish(this, state, options);
@@ -288,4 +287,3 @@ export async function executeToolCallsForModelStep(
   });
   return "continue";
 }
-

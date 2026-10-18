@@ -12,12 +12,7 @@ import {
   hasEnoughMessagesToCompact,
   shouldAutoCompact,
 } from "../deps.js";
-import type {
-  AutoCompactTokenOverride,
-  SessionEvent,
-  TraceContext,
-  TurnId,
-} from "../deps.js";
+import type { AutoCompactTokenOverride, SessionEvent, TraceContext, TurnId } from "../deps.js";
 import type { RuntimeMessageEntry } from "../../agent/message-history.js";
 import {
   throwIfTurnAborted,

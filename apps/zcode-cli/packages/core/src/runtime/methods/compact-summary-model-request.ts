@@ -338,7 +338,6 @@ function isCompactSummarySetupFailure(error: unknown): boolean {
   }
 
   if (streamFailurePhase === "request_setup") {
-
     // 其他同步 setup 或明确 HTTP 拒绝属于原请求错误，不能用第二种 transport 掩盖。
     return context?.httpResponseStatus !== 404;
   }
