@@ -367,6 +367,12 @@ function buildSearchSnippets(searchableText: string, search: string | null): str
 
 function rowToTaskListItem(row: TaskIndexRow, search: string | null): ZCodeTaskListItem {
   const meta = rowToMeta(row);
+  // 修复原因：全局任务搜索之前只匹配 title/searchable_text，用户按会话 ID（sess_xxx，即 task_id）
+  // 定位会话时搜不到。现在 queryTaskList 已把 LOWER(task_id) 纳入 LIKE 匹配；这里在 task_id 命中时
+  // 直接用会话 ID 作为摘要——此时正文摘要是无关 fallback，展示 ID 才能让用户确认命中原因并在 UI 高亮。
+  if (search && row.task_id.toLocaleLowerCase().includes(search.toLocaleLowerCase())) {
+    return { ...meta, searchSnippet: row.task_id, searchSnippets: [row.task_id] };
+  }
   const snippets = buildSearchSnippets(row.searchable_text, search);
   if (snippets.length === 0) {
     return meta;
@@ -2265,12 +2271,14 @@ export class TaskIndexRepo {
     }
     if (normalizedSearchLike) {
       // 之前只按 title 模糊匹配，没有命中聊天正文；TaskSearchDialog 长期搜不到内容。
-      // 现在 title 或 searchable_text 任一命中即视为匹配，正文摘要在结果阶段构建。
-      where.push("(LOWER(title) LIKE ? OR LOWER(searchable_text) LIKE ?)");
+      // 现在 title / searchable_text / task_id（会话 ID，如 sess_xxx）任一命中即视为匹配：
+      // 用户会直接输入会话 ID 定位任务，task_id 不匹配导致"搜 sess_xxx 搜不到"。
+      // 正文摘要在结果阶段构建；按 task_id 命中时摘要由 rowToTaskListItem 换成会话 ID 本身。
+      where.push("(LOWER(title) LIKE ? OR LOWER(searchable_text) LIKE ? OR LOWER(task_id) LIKE ?)");
     }
 
     if (normalizedSearchLike) {
-      args.push(normalizedSearchLike, normalizedSearchLike);
+      args.push(normalizedSearchLike, normalizedSearchLike, normalizedSearchLike);
     }
     const whereClause = where.join(" AND ");
     const totalRow = this.getDatabase()

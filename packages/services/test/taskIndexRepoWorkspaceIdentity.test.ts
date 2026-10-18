@@ -207,4 +207,85 @@ describe("TaskIndexRepo workspace identity normalization", () => {
       }),
     ]);
   });
+
+  it("queryTaskList 支持按会话 ID（task_id）搜索，摘要直接返回会话 ID", async () => {
+    const meta = task({
+      taskId: "sess_3e834f0b",
+      workspaceIdentity: "local",
+      title: "排查登录超时",
+    });
+    await repo.syncTaskMeta({
+      meta,
+      searchableText: "这段正文不包含会话标识，只靠 ID 定位",
+    });
+    const scopes = [
+      {
+        workspacePath: meta.workspacePath,
+        workspaceIdentity: meta.workspaceIdentity,
+      },
+    ];
+
+    // 完整会话 ID 可命中。
+    const byFullId = await repo.queryTaskList({
+      kind: "active",
+      workspaceScopes: scopes,
+      sortBy: "updated",
+      search: "sess_3e834f0b",
+    });
+    expect(byFullId.total).toBe(1);
+    expect(byFullId.items[0]).toMatchObject({
+      taskId: "sess_3e834f0b",
+      title: "排查登录超时",
+      searchSnippet: "sess_3e834f0b",
+    });
+    expect(byFullId.items[0].searchSnippets).toEqual(["sess_3e834f0b"]);
+
+    // 部分 ID 同样可命中。
+    const byPartialId = await repo.queryTaskList({
+      kind: "active",
+      workspaceScopes: scopes,
+      sortBy: "updated",
+      search: "3e834f0b",
+    });
+    expect(byPartialId.total).toBe(1);
+    expect(byPartialId.items[0].searchSnippet).toBe("sess_3e834f0b");
+
+    // 无关词不命中。
+    const unrelated = await repo.queryTaskList({
+      kind: "active",
+      workspaceScopes: scopes,
+      sortBy: "updated",
+      search: "完全不存在的关键词xyz",
+    });
+    expect(unrelated.total).toBe(0);
+  });
+
+  it("queryTaskList 按 ID 搜索时，正文命中但 task_id 不同仍返回正文摘要而不是 ID", async () => {
+    const meta = task({
+      taskId: "sess_aaaa1111",
+      workspaceIdentity: "local",
+      title: "另一场会话",
+    });
+    await repo.syncTaskMeta({
+      meta,
+      // 正文恰好提到了别的会话 ID，本任务自己的 task_id 不含它。
+      searchableText: "参考了 sess_3e834f0b 的排查过程",
+    });
+    const result = await repo.queryTaskList({
+      kind: "active",
+      workspaceScopes: [
+        {
+          workspacePath: meta.workspacePath,
+          workspaceIdentity: meta.workspaceIdentity,
+        },
+      ],
+      sortBy: "updated",
+      search: "sess_3e834f0b",
+    });
+    expect(result.total).toBe(1);
+    // 摘要来自正文（含匹配词），而不是被误换成其他任务的 task_id。
+    expect(result.items[0].taskId).toBe("sess_aaaa1111");
+    expect(result.items[0].searchSnippet).toContain("sess_3e834f0b");
+    expect(result.items[0].searchSnippet).not.toBe("sess_aaaa1111");
+  });
 });
