@@ -58,6 +58,7 @@ import {
   buildCompactSummaryRequestMessages,
   createCompactContextExceededFinishError,
   createCompactPromptTooLongError,
+  estimatePreCompactTokenCount,
   formatCompactSummaryOrThrow,
   persistCompactTimelineEvent,
 } from "./compact-active-helpers.js";
@@ -204,7 +205,10 @@ async function compactActiveConversationImpl(
   const initialEntriesForSummary = currentSelection.entriesForSummary;
   let entriesForSummary = initialEntriesForSummary;
   let entriesToSummarize = getRuntimeEntriesToSummarize(entriesForSummary);
-  const preCompactTokenCount = estimateRuntimeEntryTokens(activeEntries, {
+  // before 口径：真实最后一轮 provider 用量 + 本地估算的增量（与自动压缩门禁同源）。
+  // 无可用锚点时逐位退化为纯估算，见 `estimatePreCompactTokenCount` 的硬不变式。
+  const preCompactTokenCount = estimatePreCompactTokenCount({
+    entries: activeEntries,
     useMidConversationSystem,
   });
   const maxAttempts = trigger === CompactTrigger.Auto ? AUTO_COMPACT_MAX_ATTEMPTS : 1;

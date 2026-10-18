@@ -56,6 +56,7 @@ import { createInMemoryHookRunner } from "../src/hooks/index.js";
 import {
   buildPostCompactReadStateReminderEntries,
   buildPostCompactRuntimeEntries,
+  estimateRuntimeEntryTokens,
   selectCompactEntries,
   toTokenUsageInfo,
 } from "../src/runtime/helpers/index.js";
@@ -63,6 +64,7 @@ import { createToolRegistry } from "../src/tool/registry.js";
 import { createReadFileStateKey } from "../src/tool/read-file-state.js";
 import type { ReadFileStateMap } from "../src/tool/types.js";
 import { estimateCurrentModelInputTokens } from "../src/runtime/methods/compact.js";
+import { estimatePreCompactTokenCount } from "../src/runtime/methods/compact-active-helpers.js";
 import { resolveApprovedPlanFilePath } from "../src/runtime/helpers/plan-file-continuity.js";
 import { MemoryFileSystem } from "./memory-test-utils.js";
 import { createTestSessionEventStore } from "./test-event-store.js";
@@ -341,6 +343,72 @@ describe("runtime compact helpers", () => {
       ).toBe(100 + estimateMessageTokens(incrementalMessages));
     },
   );
+
+  it("uses the real provider anchor plus the local increment for the pre-compact count", () => {
+    const entries: RuntimeMessageEntry[] = [
+      { message: { role: "system", content: "system prompt" } },
+      { message: { role: "user", content: "old request" } },
+      { message: { role: "assistant", content: "old response" } },
+      {
+        message: { role: "assistant", content: "anchored response" },
+        tokens: {
+          input: 10_000,
+          output: 500,
+          reasoning: 0,
+          cache: { read: 0, write: 0 },
+          total: 10_500,
+        },
+      },
+      { message: { role: "user", content: "request sent after the anchor" } },
+    ];
+
+    // 锚点的 input+output 已覆盖它自己的输出，增量只算锚点之后的消息。
+    expect(estimatePreCompactTokenCount({ entries })).toBe(
+      10_500 + estimateMessageTokens([{ role: "user", content: "request sent after the anchor" }]),
+    );
+  });
+
+  it("degrades the pre-compact count to the pure local estimate when no anchor exists", () => {
+    const entries: RuntimeMessageEntry[] = [
+      { message: { role: "system", content: "system prompt" } },
+      { message: { role: "user", content: "first request" } },
+      { message: { role: "assistant", content: "first response" } },
+    ];
+
+    // 硬不变式：无锚点时必须与纯估算逐位相同，否则摘要块与 hook 载荷的数值语义被悄悄改掉。
+    expect(estimatePreCompactTokenCount({ entries })).toBe(estimateRuntimeEntryTokens(entries));
+  });
+
+  it("rejects the stale pre-compaction anchor left in the preserved tail", () => {
+    const entries: RuntimeMessageEntry[] = [
+      { message: { role: "system", content: "system prompt" } },
+      { message: { role: "user", content: "old request" } },
+      { message: { role: "assistant", content: "old response" } },
+      { message: { role: "user", content: "latest request" } },
+      {
+        message: { role: "assistant", content: "latest response" },
+        tokens: {
+          input: 10_000,
+          output: 500,
+          reasoning: 0,
+          cache: { read: 0, write: 0 },
+          total: 10_500,
+        },
+      },
+    ];
+    const selection = selectCompactEntries({ entries, trigger: CompactTrigger.Reactive });
+    const compactedEntries = buildPostCompactRuntimeEntries(
+      entries,
+      { message: { role: "user", content: "Summary: compacted" } },
+      { preservedEntries: selection.preservedEntries },
+    );
+
+    // preserved tail 的 usage 已被清零（属被替换的旧前缀），第二次压缩不能拿它当锚点，
+    // 否则 before 会按压缩前的巨大上下文报数。退化为纯估算才算通过。
+    expect(estimatePreCompactTokenCount({ entries: compactedEntries })).toBe(
+      estimateRuntimeEntryTokens(compactedEntries),
+    );
+  });
 
   it("does not advance the cursor when the provider response was not appended", () => {
     const committedAssistant = {

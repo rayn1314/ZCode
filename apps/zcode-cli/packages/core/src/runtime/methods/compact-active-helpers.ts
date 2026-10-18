@@ -19,6 +19,7 @@ import {
 import type { RuntimeModelTextResult, RunModelTextRequestOptions } from "../types.js";
 import type { AgentRuntimeInternal } from "../internal.js";
 import type { RuntimeMessageEntry } from "../../agent/message-history.js";
+import { estimateCurrentModelInputTokens } from "./compact.js";
 
 export const COMPACT_TOOL_USE_DENIAL_MESSAGE = "Tool use is not allowed during compaction";
 export const COMPACT_TOOL_USE_DENIAL_REASON = "compaction agent should only produce text summary";
@@ -75,6 +76,30 @@ export async function persistCompactTimelineEvent(
   const event = runtime.createEvent(type, payload, traceContext);
   await runtime.appendEvent(event, traceContext);
   events.push(event);
+}
+
+/**
+ * 压缩前上下文的 token 口径：**真实最后一轮 provider 用量 + 本地估算的增量**。
+ *
+ * 与自动压缩门禁（`buildProviderUsageTokenOverride`）同源，保证"为什么这次压了"和
+ * "摘要块显示压了多少"是同一把尺子。纯字符估算只数 provider 的消息体，数不到工具
+ * schema 等请求固定开销，会系统性偏低；实测可见估算值只有真实请求的六成上下。
+ *
+ * 硬不变式：**没有可用 provider 锚点时逐位退化为纯估算**。`estimateCurrentModelInputTokens`
+ * 的兜底分支与 `estimateRuntimeEntryTokens` 消费同一份 projection、同一套字符估算，所以
+ * 无锚点场景（新会话首压、刚压过还没跑过模型、锚点被 rewind 切除）与改造前完全一致。
+ * 别把它改成别的兜底口径——那会同时改掉摘要块和 hook 载荷的数值语义。
+ */
+export function estimatePreCompactTokenCount(input: {
+  entries: readonly RuntimeMessageEntry[];
+  useMidConversationSystem?: boolean;
+}): number {
+  const projection = buildProviderRequestMessages({
+    entries: input.entries,
+    applyCacheControl: false,
+    useMidConversationSystem: input.useMidConversationSystem,
+  });
+  return estimateCurrentModelInputTokens(projection.messages, projection.sourceEntries);
 }
 
 export function buildCompactSummaryRequestMessages(
