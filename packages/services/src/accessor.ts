@@ -41,6 +41,7 @@ import type { ISubagentsService } from "./subagents/subagents.js";
 import type { ICommandsService } from "./commands/commands.js";
 import type { IHooksService } from "./hooks/hooks.js";
 import type { IMemoryService } from "./memory/memory.js";
+import type { IInstructionsService } from "./instructions/instructions.js";
 import type { IOutputStyleService } from "./output-style/outputStyle.js";
 import type { ISettingsSyncService } from "./settings-sync/settingsSync.js";
 import type { IFeedbackService } from "./feedback/feedback.js";
@@ -109,6 +110,8 @@ export interface IServiceAccessor {
   readonly commandsService: ICommandsService;
   readonly hooksService: IHooksService;
   readonly memoryService: IMemoryService;
+  /** 指令文件（AGENTS.md）读写：远端/旧 host 可能未注册该通道，UI 按加载失败态降级。 */
+  readonly instructionsService?: IInstructionsService;
   readonly outputStyleService: IOutputStyleService;
   readonly settingsSyncService: ISettingsSyncService;
   readonly feedbackService: IFeedbackService;

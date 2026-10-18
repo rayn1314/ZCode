@@ -476,6 +476,8 @@ import { createSubagentsService } from "./subagents/subagentsService.js";
 import { createCommandsService } from "./commands/commandsService.js";
 import { createHooksService } from "./hooks/hooksService.js";
 import { createMemoryService } from "./memory/memoryService.js";
+// 合并导入（descriptor + 工厂）以减少对 node.ts 的落点：本文件同时被并行会话改动，单处插入便于按 hunk 择选提交。
+import { IInstructionsService, createInstructionsService } from "./instructions/index.js";
 import { createOutputStyleService } from "./output-style/outputStyleService.js";
 import { createSettingsSyncService } from "./settings-sync/settingsSyncService.js";
 import {
@@ -2712,6 +2714,7 @@ export function createLocalServices(options: {
       }),
     )
     .register(IMemoryService, createMemoryService())
+    .register(IInstructionsService, createInstructionsService())
     .register(IOutputStyleService, createOutputStyleService())
     .register(ISettingsSyncService, createSettingsSyncService({ settingService }))
     .register(

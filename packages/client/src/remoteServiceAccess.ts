@@ -44,6 +44,7 @@ import {
   ICommandsService,
   IHooksService,
   IMemoryService,
+  IInstructionsService,
   IOutputStyleService,
   ISettingsSyncService,
   IFeedbackService,
@@ -108,6 +109,8 @@ export class RemoteServiceAccess implements IServiceAccessor {
   readonly commandsService: ICommandsService;
   readonly hooksService: IHooksService;
   readonly memoryService: IMemoryService;
+  // 指令文件的读写永远发生在文件真正所在的机器：这里只是到目标 host 的通道代理。
+  readonly instructionsService: IInstructionsService;
   readonly outputStyleService: IOutputStyleService;
   readonly settingsSyncService: ISettingsSyncService;
   readonly feedbackService: IFeedbackService;
@@ -253,6 +256,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
     );
     this.memoryService = ProxyChannel.toService<IMemoryService>(
       channelClient.getChannel(IMemoryService.channelName),
+    );
+    this.instructionsService = ProxyChannel.toService<IInstructionsService>(
+      channelClient.getChannel(IInstructionsService.channelName),
     );
     this.outputStyleService = ProxyChannel.toService<IOutputStyleService>(
       channelClient.getChannel(IOutputStyleService.channelName),

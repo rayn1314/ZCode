@@ -6,10 +6,18 @@ ZCode should treat `~/.zcode/AGENTS.md` as the user's default instruction file a
 
 ## Resolution
 
-- Workspace instruction discovery keeps the current behavior: search from `workingDirectory` upward until the detected project root, or filesystem root when no project root is detected.
+- Workspace instruction discovery walks from `workingDirectory` upward until the detected project root, or filesystem root when no project root is detected.
+- At every directory level the candidates are tried in this order, and the first one that exists stops the search:
+  1. `AGENTS.md`
+  2. `.zcode/AGENTS.md`
+  3. `.agents/AGENTS.md`
+
+  `AGENTS.md` first means a plain `AGENTS.md` at the repository root wins over the same file kept inside the tool directories. At most one workspace instruction file is read per level, so the search never merges two candidates of the same level. When a level holds more than one existing candidate, only the first one is read; the others are "present but ignored" — the settings page lists them explicitly instead of hiding the shadowing.
+- The candidate list, the user-level relative path and the byte limit live in `@zcode/shared` (`instruction-files`): `WORKSPACE_INSTRUCTION_FILE_CANDIDATES`, `USER_INSTRUCTION_FILE_RELATIVE_PATH`, `INSTRUCTION_FILE_MAX_BYTES`. The reader (`@zcode/adapters`), the settings page and the host-side instruction file service all consume that single definition.
 - The user default instruction file is `~/.zcode/AGENTS.md`.
 - `HOME` resolves the user directory first. On Windows-style environments, `USERPROFILE` is used when `HOME` is absent. If neither is set, Node's `homedir()` is used.
 - The user default file is only considered when `priorityFiles` includes `AGENTS.md`. Custom priority sets that omit `AGENTS.md` must not load `~/.zcode/AGENTS.md`.
+- Reading stops at `INSTRUCTION_FILE_MAX_BYTES` (100 KiB) per file: the bytes beyond the limit are never injected into the prompt, which is why both the reader and the settings page report a `truncated` flag instead of silently dropping content.
 
 ## Merge Order
 

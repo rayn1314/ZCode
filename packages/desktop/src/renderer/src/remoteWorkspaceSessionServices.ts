@@ -43,6 +43,9 @@ export function buildRemoteWorkspaceSessionServices(
     // 设置页插件管理与 pluginsService 同理，必须打到远端（插件目录在远端文件系统）。
     pluginManagementService: remoteServices.pluginManagementService,
     commandsService: remoteServices.commandsService,
+    // 指令文件（AGENTS.md）是「Agent 真正读取的那台机器」上的文件：沿用本机 base service 会拿远端
+    // workspacePath 去本机读，设置页显示本机文件、保存还会写错机器。与 skills/plugins/commands 同理。
+    instructionsService: remoteServices.instructionsService,
     // SSH/Docker 工作区的 hooks 声明、信任状态与待审项都位于远端文件系统。
     // hooksService 必须覆盖 baseServices 中的本机服务，否则会用远端路径扫描本机文件系统，
     // 无法读取远端待审 Hook。

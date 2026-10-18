@@ -955,6 +955,70 @@ describe("Node file and context adapters", () => {
     }
   });
 
+  it("prefers the workspace root AGENTS.md over .zcode/AGENTS.md and ignores the shadowed candidate", async () => {
+    const home = await mkdtemp(join(tmpdir(), "zcode-context-candidates-"));
+    const workspace = join(home, "workspace");
+    const adapter = createNodeContextSourceAdapter({
+      env: { HOME: home, SHELL: "/bin/zsh" },
+    });
+
+    try {
+      await mkdir(join(workspace, ".git"), { recursive: true });
+      await mkdir(join(workspace, ".zcode"), { recursive: true });
+      await writeFile(join(workspace, "AGENTS.md"), "root instructions");
+      await writeFile(join(workspace, ".zcode", "AGENTS.md"), "tool dir instructions");
+
+      const snapshot = await adapter.resolveContextSources({
+        workingDirectory: workspace,
+        userInstructions: { workingDirectory: workspace },
+      });
+
+      // 每级目录只取第一个存在者：.zcode/AGENTS.md 既不入选也不参与合并。
+      expect(snapshot.userInstructions?.filePath).toBe(join(workspace, "AGENTS.md"));
+      expect(snapshot.userInstructions?.content).toBe("root instructions");
+      expect(snapshot.userInstructions?.sources).toEqual([
+        expect.objectContaining({
+          scope: "workspace",
+          filePath: join(workspace, "AGENTS.md"),
+          content: "root instructions",
+        }),
+      ]);
+    } finally {
+      await rm(home, { force: true, recursive: true });
+    }
+  });
+
+  it("reads .zcode/AGENTS.md when the workspace root AGENTS.md is absent", async () => {
+    const home = await mkdtemp(join(tmpdir(), "zcode-context-hidden-candidate-"));
+    const workspace = join(home, "workspace");
+    const adapter = createNodeContextSourceAdapter({
+      env: { HOME: home, SHELL: "/bin/zsh" },
+    });
+
+    try {
+      await mkdir(join(workspace, ".git"), { recursive: true });
+      await mkdir(join(workspace, ".zcode"), { recursive: true });
+      await writeFile(join(workspace, ".zcode", "AGENTS.md"), "tool dir instructions");
+
+      const snapshot = await adapter.resolveContextSources({
+        workingDirectory: workspace,
+        userInstructions: { workingDirectory: workspace },
+      });
+
+      expect(snapshot.userInstructions?.filePath).toBe(join(workspace, ".zcode", "AGENTS.md"));
+      expect(snapshot.userInstructions?.content).toBe("tool dir instructions");
+      expect(snapshot.userInstructions?.sources).toEqual([
+        expect.objectContaining({
+          scope: "workspace",
+          filePath: join(workspace, ".zcode", "AGENTS.md"),
+          content: "tool dir instructions",
+        }),
+      ]);
+    } finally {
+      await rm(home, { force: true, recursive: true });
+    }
+  });
+
   it("uses USERPROFILE for default user instructions when HOME is absent", async () => {
     const home = await mkdtemp(join(tmpdir(), "zcode-context-userprofile-"));
     const workspace = join(home, "workspace");

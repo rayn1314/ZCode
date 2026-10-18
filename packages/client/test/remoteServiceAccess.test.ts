@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IChannel, IChannelClient } from "@zcode/rpc";
-import { IMediaPreviewService, IClientConfigService } from "@zcode/services";
+import { IMediaPreviewService, IClientConfigService, IInstructionsService } from "@zcode/services";
 import { RemoteServiceAccess } from "../src/remoteServiceAccess.js";
 
 describe("RemoteServiceAccess", () => {
@@ -38,5 +38,24 @@ describe("RemoteServiceAccess", () => {
     expect(services.mediaPreviewService).toBeDefined();
     expect(channelNames).toContain(IClientConfigService.channelName);
     expect(services.clientConfigService).toBeDefined();
+  });
+  it("creates the instructions proxy so the settings page can reach the host that owns the file", () => {
+    const channelNames: string[] = [];
+    const channel: IChannel = {
+      call: vi.fn(),
+      listen: vi.fn(),
+    };
+    const channelClient: IChannelClient = {
+      getChannel: (channelName) => {
+        channelNames.push(channelName);
+        return channel;
+      },
+    };
+
+    const services = new RemoteServiceAccess(channelClient);
+
+    expect(channelNames).toContain(IInstructionsService.channelName);
+    expect(IInstructionsService.channelName).toBe("instructions");
+    expect(services.instructionsService).toBeDefined();
   });
 });

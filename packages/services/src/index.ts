@@ -230,6 +230,14 @@ export {
 } from "./memory/memory.js";
 export type { ProjectMemoryFileSummary, ProjectMemoryWorkspaceSummary } from "./memory/memory.js";
 
+// Instructions service — IInstructionsService is both a type (interface) and value (descriptor).
+// 工厂函数只从 ./node.js 导出：实现依赖 node:fs，根入口必须保持 browser-safe。
+export { IInstructionsService } from "./instructions/instructions.js";
+export type {
+  InstructionFileState,
+  InstructionFileWriteFailureReason,
+} from "./instructions/instructions.js";
+
 // OutputStyle service — IOutputStyleService is both a type (interface) and value (descriptor).
 export { IOutputStyleService } from "./output-style/outputStyle.js";
 export type { SessionRealtimePort } from "./session/sessionRealtimePort.js";

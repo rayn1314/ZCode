@@ -35,6 +35,7 @@ import {
   ICommandsService,
   IHooksService,
   IMemoryService,
+  IInstructionsService,
   IOutputStyleService,
   ISettingsSyncService,
   IGenUiService,
@@ -499,6 +500,12 @@ export function createRemoteWorkspaceServiceCollection(params: {
       ),
     )
     .register(IPromptAttachmentTransferService, params.promptAttachmentTransferService);
+  // 指令文件（AGENTS.md）的读写必须发生在文件真正所在的机器：这里只透传远端 host 的通道，
+  // 不能用本机服务拿远端 workspacePath 去读本机文件。远端 host 未注册该通道时（旧版本）
+  // 保持不注册，设置页按「服务不可用」降级而不是显示本机文件。
+  if (params.connectionServices.instructionsService) {
+    services.register(IInstructionsService, params.connectionServices.instructionsService);
+  }
   registerHostApiNetworkTransportForDispose(services, hostApiNetworkTransport);
   registerRemoteProviderProvisioningExecutor(services, remoteProviderProvisioningService);
   return services;
@@ -570,6 +577,11 @@ export function createServerRemoteWorkspaceServiceCollection(params: {
   // 保留 accessor 的可选能力约定；当前 RemoteServiceAccess 会提供此代理。
   if (params.connectionServices.onboardingRecordService) {
     services.register(IOnboardingRecordService, params.connectionServices.onboardingRecordService);
+  }
+  // 同 onboardingRecordService：指令文件的读写属于 workspace 所在的那台机器（这里是 Server），
+  // 未注册的旧 Server 直接不注册该通道，设置页据此降级。
+  if (params.connectionServices.instructionsService) {
+    services.register(IInstructionsService, params.connectionServices.instructionsService);
   }
   registerRemoteProviderProvisioningExecutor(services, remoteProviderProvisioningService);
   return services;

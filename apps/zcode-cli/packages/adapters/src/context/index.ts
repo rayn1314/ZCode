@@ -4,7 +4,7 @@
 
 import { readFile, stat } from "node:fs/promises";
 import { arch, homedir, release } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, normalize, resolve } from "node:path";
 import { formatLocalIsoDate } from "@zcode/contracts";
 import type {
   ContextSourceDiagnostic,
@@ -19,10 +19,19 @@ import type {
   ResolvedUserInstructions,
   UserInstructionsOptions,
 } from "@zcode/contracts";
+import {
+  INSTRUCTION_FILE_MAX_BYTES,
+  WORKSPACE_INSTRUCTION_FILE_CANDIDATES,
+  userInstructionFilePath,
+} from "@zcode/shared";
 import { resolveGitSnapshot } from "./git-snapshot.js";
 
-const DEFAULT_PRIORITY_FILES = ["AGENTS.md"];
-const DEFAULT_MAX_BYTES = 100 * 1024;
+/**
+ * 候选顺序、用户级相对路径与读取上限的唯一真相源是 `@zcode/shared` 的 `instruction-files`
+ * （设置页与 Host 侧指令文件服务消费同一份定义）。这里只把它落成 Node 侧的目录遍历。
+ */
+const DEFAULT_PRIORITY_FILES: readonly string[] = WORKSPACE_INSTRUCTION_FILE_CANDIDATES;
+const DEFAULT_MAX_BYTES = INSTRUCTION_FILE_MAX_BYTES;
 
 export interface NodeContextSourceAdapterOptions {
   env?: NodeJS.ProcessEnv;
@@ -201,10 +210,14 @@ function mergeInstructionSources(
   };
 }
 
+/**
+ * 自 `startDir` 向上逐级查找，每级按 `priorityFiles` 顺序取第一个存在者（命中即停）。
+ * 默认候选集就是 `WORKSPACE_INSTRUCTION_FILE_CANDIDATES`，与设置页展示的「实际读取 / 被忽略」同源。
+ */
 async function findInstructionFile(
   startDir: string,
   projectRoot: string | null,
-  priorityFiles: string[],
+  priorityFiles: readonly string[],
 ): Promise<{ filePath: string; fileName: string } | undefined> {
   let current = resolve(startDir);
 
@@ -227,16 +240,17 @@ async function findInstructionFile(
 }
 
 async function findDefaultUserInstructionFile(
-  priorityFiles: string[],
+  priorityFiles: readonly string[],
   env: NodeJS.ProcessEnv,
 ): Promise<{ filePath: string; fileName: string } | undefined> {
   if (!priorityFiles.includes("AGENTS.md")) {
     return undefined;
   }
 
-  const filePath = join(resolveUserHomeDir(env), ".zcode", "AGENTS.md");
+  // 用户级路径同样来自共享常量；shared 产出的是规范 `/` 分隔符，这里还原为平台分隔符再落盘。
+  const filePath = normalize(userInstructionFilePath(resolveUserHomeDir(env)));
   if (await isFile(filePath)) {
-    return { filePath, fileName: "AGENTS.md" };
+    return { filePath, fileName: basename(filePath) };
   }
 
   return undefined;
