@@ -9,7 +9,7 @@ describe("user action trace catalog", () => {
   it("固定 24 个 Core 与 15 个 Settings 叶子 feature", () => {
     expect(Object.keys(CORE_USER_ACTION_FEATURES)).toHaveLength(24);
     expect(Object.keys(SETTINGS_USER_ACTION_FEATURES)).toHaveLength(15);
-    expect(USER_ACTION_CATALOG.filter((entry) => entry.group === "core")).toHaveLength(94);
+    expect(USER_ACTION_CATALOG.filter((entry) => entry.group === "core")).toHaveLength(95);
     expect(USER_ACTION_CATALOG.filter((entry) => entry.group === "settings")).toHaveLength(46);
   });
 
