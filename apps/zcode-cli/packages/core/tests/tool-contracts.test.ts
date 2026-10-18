@@ -127,6 +127,12 @@ const SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION = [
   "",
   "Replies between two sessions are chain-limited: a message that would exceed 6 hops in one back-and-forth chain is rejected instead of delivered. If that happens, stop replying, summarize what you learned, and report to the user; a new human message resets the chain.",
   "",
+  "## Resuming a finished agent",
+  "",
+  "- For an agent that already finished, failed, or was stopped, this message is the **only** instruction it will read for the resumed turn. It keeps all its history; it does not know what you want now.",
+  '- Write the judgment in the message: what it already covered (from its completion notification\'s result/error), what is still missing, and what it must not redo. A bare "continue" wastes the resume.',
+  "- The result tells you whether it was `resumed_background`, `steered` into a running turn, or `queued` for its next tool round. After a resume, wait for its completion notification; do not dispatch the same work again.",
+  "",
   "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox.",
 ].join("\n");
 
@@ -157,6 +163,13 @@ const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "- A new Agent call starts fresh, so the prompt must be self-contained.",
   "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently (they all run in the background by default).",
   '- If the user explicitly asks for a workflow ("use a workflow", "使用 workflow", "用工作流", or any phrasing naming workflow/工作流 as the means), the CreateWorkflow tool is mandatory: do not use this tool instead, however small the task.',
+  "",
+  "## Continuing an agent",
+  "",
+  "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
+  "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
+  "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
+  "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
 ].join("\n");
 
 function getSchemaPath(schema: unknown, path: readonly string[]): unknown {

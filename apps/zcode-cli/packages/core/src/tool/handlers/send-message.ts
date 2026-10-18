@@ -53,6 +53,16 @@ const SEND_MESSAGE_PROVIDER_DESCRIPTION = [
   "",
   "Replies between two sessions are chain-limited: a message that would exceed 6 hops in one back-and-forth chain is rejected instead of delivered. If that happens, stop replying, summarize what you learned, and report to the user; a new human message resets the chain.",
   "",
+  "## Resuming a finished agent",
+  "",
+  // 2026-10-18 追记（spec `core/spec/subagent-continuation-copy.md` D5）：终态子代理的续跑把
+  // 这条消息作为新轮的输入 steer 进去（`resumeTerminalAgentInBackground` + coordinator guide），
+  // 子会话的历史都在，但它对你此刻想要什么一无所知。因此「continue」是空指令——父代理写的
+  // 这句就是续跑的全部意图，必须自带判断。此前没有任何一处这样写明，父代理于是重开子代理。
+  "- For an agent that already finished, failed, or was stopped, this message is the **only** instruction it will read for the resumed turn. It keeps all its history; it does not know what you want now.",
+  '- Write the judgment in the message: what it already covered (from its completion notification\'s result/error), what is still missing, and what it must not redo. A bare "continue" wastes the resume.',
+  "- The result tells you whether it was `resumed_background`, `steered` into a running turn, or `queued` for its next tool round. After a resume, wait for its completion notification; do not dispatch the same work again.",
+  "",
   "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox.",
 ].join("\n");
 

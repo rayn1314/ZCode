@@ -131,10 +131,19 @@ describe("ContextBuilder meta user context", () => {
     expect(
       result.systemMessages[2]?.content.indexOf("For actions that are hard to reverse"),
     ).toBeLessThan(result.systemMessages[2]?.content.indexOf("# Environment") ?? -1);
-    expect(result.systemMessages[2]?.content).not.toContain("# Session-specific guidance");
     expect(result.systemMessages[2]?.content).not.toContain("`! <command>`");
+    // 上游那句「Use the Agent tool with specialized agents…」在本 fork 已删，取而代之的是
+    // 三条协作规则（spec core/spec/subagent-continuation-copy.md）：派发即句柄、终态即续跑、
+    // 并发派发管不重叠范围。断「旧的死掉、新的在场」而不是断整段缺席。
     expect(result.systemMessages[2]?.content).not.toContain(
-      "Use the Agent tool with specialized agents when the task at hand matches the agent's description.",
+      "Use the Agent tool with specialized agents",
+    );
+    expect(result.systemMessages[2]?.content).toContain("# Session-specific guidance");
+    expect(result.systemMessages[2]?.content).toContain(
+      "SendMessage to its `agentId` resumes that same session",
+    );
+    expect(result.systemMessages[2]?.content).toContain(
+      "keep their scopes non-overlapping so they do not work on the same files",
     );
     expect(result.systemMessages[2]?.content).not.toContain(
       "spawn Agent with subagent_type=Explore",
@@ -317,7 +326,9 @@ describe("ContextBuilder meta user context", () => {
     expect(dynamicSystem.indexOf("For actions that are hard to reverse")).toBeLessThan(
       dynamicSystem.indexOf("# Environment"),
     );
-    expect(dynamicSystem).not.toContain("# Session-specific guidance");
+    // Agent 协作段现在真的输出（工具表含 Agent），所以由「整段缺席」改断「在场且不含上游旧句」。
+    expect(dynamicSystem).toContain("# Session-specific guidance");
+    expect(dynamicSystem).toContain("SendMessage to its `agentId` resumes that same session");
     expect(dynamicSystem).not.toContain("`! <command>`");
     expect(dynamicSystem).not.toContain("Use the Agent tool with specialized agents");
     expect(dynamicSystem).not.toContain("When the user types `/<skill-name>`");
@@ -467,7 +478,13 @@ describe("ContextBuilder meta user context", () => {
     expect(dynamic.indexOf("For actions that are hard to reverse")).toBeLessThan(
       dynamic.indexOf("# Memory"),
     );
-    expect(dynamic).not.toContain("# Session-specific guidance");
+    // guidance 段在场（Agent + Skill 都在工具表里），且排在 Memory 之前：顺序契约是
+    // 「编排 / 能力线索先于记忆」。
+    expect(dynamic).toContain("# Session-specific guidance");
+    expect(dynamic).toContain("SendMessage to its `agentId` resumes that same session");
+    expect(dynamic.indexOf("# Session-specific guidance")).toBeLessThan(
+      dynamic.indexOf("# Memory"),
+    );
     expect(dynamic).not.toContain("`! <command>`");
     expect(dynamic).not.toContain("spawn Agent with subagent_type=Explore");
     expect(dynamic.indexOf("# Memory")).toBeLessThan(dynamic.indexOf("# Environment"));
@@ -1609,5 +1626,24 @@ describe("context builder — workflow actor identity", () => {
       "\nYou are an interactive ZCode agent that helps users with software engineering tasks.\n\nIMPORTANT: Assist with authorized security testing",
     );
     expect(text).toContain("\n\n# Harness\n- Text you output outside of tool use");
+  });
+
+  it("emits the subagent collaboration rules only when the Agent tool is registered", () => {
+    // 子代理 runtime 不注册 Agent（不允许套娃），那它不该被「派发即句柄」这套规则念叨。
+    expect(
+      systemText({ workingDirectory: "/workspace", envInfo, guidanceToolNames: [] }),
+    ).not.toContain("# Session-specific guidance");
+    const withAgent = systemText({
+      workingDirectory: "/workspace",
+      envInfo,
+      guidanceToolNames: ["Agent", "Read"],
+    });
+    expect(withAgent).toContain("# Session-specific guidance");
+    // 续跑优先是本 fork 的核心口径：终态子代理不是没了，而是同一会话可续（spec
+    // core/spec/subagent-continuation-copy.md）。
+    expect(withAgent).toContain(
+      "is not gone: SendMessage to its `agentId` resumes that same session",
+    );
+    expect(withAgent).not.toContain("Use the Agent tool with specialized agents");
   });
 });

@@ -149,6 +149,20 @@ function buildAgentProviderDescription(
       : [
           '- If the user explicitly asks for a workflow ("use a workflow", "使用 workflow", "用工作流", or any phrasing naming workflow/工作流 as the means), the CreateWorkflow tool is mandatory: do not use this tool instead, however small the task.',
         ]),
+    "",
+    "## Continuing an agent",
+    "",
+    // 2026-10-18 追记（spec `core/spec/subagent-continuation-copy.md`）：本 fork 的 SendMessage
+    // 对**已终态**的子代理不是拒绝，而是用同一个 agentId、同一个子会话续跑（runner 的
+    // resumeTerminalAgentInBackground，resumeFromStore 恢复历史）。这件事此前只存在于实现里，
+    // 没有任何一处面向模型的表述提到它，于是父代理对「失败 / 空输出」的默认反应是重新派发——
+    // 实测一个跑了 315 次工具调用、3000 万 token 后丢了最终消息的子代理被直接重开，已花的
+    // token 与已产出的工作一起作废。写在这里的每条都对应父代理手里已有的字段（通知的
+    // status / agent-id / usage），不引入新概念。
+    "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
+    "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
+    "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
+    "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
   ].join("\n");
 }
 

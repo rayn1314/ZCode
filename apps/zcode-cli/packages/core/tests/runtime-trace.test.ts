@@ -865,7 +865,10 @@ describe("AgentRuntime trace propagation", () => {
     expect(requests[0]?.[4]?.content).toContain("hello");
     const providerText = providerMessagesToText(requests[0]);
     expect(providerText).not.toContain("# Session Guidance");
+    // customSystemPrompt 会跳过整条默认 system 段链（builder 的 hasCustomSystemPrompt 分支），
+    // guidance 段不在其中——这条契约对子代理协作规则同样成立。
     expect(providerText).not.toContain("# Session-specific guidance");
+    expect(providerText).not.toContain("Use the Agent tool with specialized agents");
     expect(providerText).not.toContain("## Current Environment");
     expect(providerText).not.toContain("# Environment");
     expect(providerText).not.toContain("# Context management");
@@ -918,7 +921,9 @@ describe("AgentRuntime trace propagation", () => {
 
     expect(requests[1]?.filter((message) => message.role === "system")).toHaveLength(3);
     const secondRequestText = providerMessagesToText(requests[1]);
-    expect(secondRequestText).not.toContain("# Session-specific guidance");
+    // guidance 段在同一 runtime 的第二个回合仍在场（它是 dynamic 段，每轮重建，不是一次性注入）。
+    expect(secondRequestText).toContain("# Session-specific guidance");
+    expect(secondRequestText).toContain("SendMessage to its `agentId` resumes that same session");
     expect(secondRequestText).not.toContain("`! <command>`");
     expect(secondRequestText).not.toContain(
       "Otherwise use `find` or `grep` via the Bash tool directly.",
@@ -1052,7 +1057,9 @@ describe("AgentRuntime trace propagation", () => {
     expect(dynamicSystem).toMatch(/^\n\n# Communicating with the user/);
     expect(dynamicSystem).toContain("Write code that reads like the surrounding code");
     expect(dynamicSystem).toContain("For actions that are hard to reverse");
-    expect(dynamicSystem).not.toContain("# Session-specific guidance");
+    // 子代理协作规则在 dynamic 段中输出（spec core/spec/subagent-continuation-copy.md）。
+    expect(dynamicSystem).toContain("# Session-specific guidance");
+    expect(dynamicSystem).toContain("SendMessage to its `agentId` resumes that same session");
     expect(dynamicSystem).not.toContain("`! <command>`");
     expect(dynamicSystem).toContain("# Environment");
     expect(dynamicSystem).toContain("# Context management");
@@ -1230,7 +1237,14 @@ describe("AgentRuntime trace propagation", () => {
     expect(requests[0]?.[2]?.content.indexOf("For actions that are hard to reverse")).toBeLessThan(
       requests[0]?.[2]?.content.indexOf("# Environment") ?? -1,
     );
-    expect(requests[0]?.[2]?.content).not.toContain("# Session-specific guidance");
+    // guidance 段在场，且排在 Environment 之前（编排线索先于环境信息）。
+    expect(requests[0]?.[2]?.content).toContain("# Session-specific guidance");
+    expect(requests[0]?.[2]?.content).toContain(
+      "SendMessage to its `agentId` resumes that same session",
+    );
+    expect(requests[0]?.[2]?.content.indexOf("# Session-specific guidance")).toBeLessThan(
+      requests[0]?.[2]?.content.indexOf("# Environment") ?? -1,
+    );
     expect(requests[0]?.[2]?.content).not.toContain("`! <command>`");
     expect(requests[0]?.[2]?.content).not.toContain("# Language");
     expect(requests[0]?.[2]?.content).not.toContain("# Function Result Clearing");

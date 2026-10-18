@@ -45,20 +45,20 @@ export function buildSessionGuidanceSection(toolNames: readonly string[], hasSki
   const tools = new Set(toolNames);
   const lines = ["# Session-specific guidance"];
 
-  // 当前不输出 Agent 指导段。
-  // if (tools.has("Agent")) {
-  //   lines.push("- Use the Agent tool with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or for protecting the main context window from excessive results, but they should not be used excessively when not needed. Importantly, avoid duplicating work that subagents are already doing - if you delegate research to a subagent, do not also perform the same searches yourself.");
-
-  //   let exploreGuide = "- For broad codebase exploration or research that'll take more than 3 queries, spawn Agent with subagent_type=Explore.";
-  //   const fallbackSearch = getDirectSearchGuidance(tools);
-  //   if (fallbackSearch) {
-  //     exploreGuide += ` Otherwise use ${fallbackSearch} directly.`;
-  //   }
-  //   lines.push(exploreGuide);
-  // }
+  // 子代理协作规则（spec `core/spec/subagent-continuation-copy.md` D1）：默认类型是
+  // general-purpose，所以不写上游那句「broad exploration 用 Explore」——那是错指引。
+  // 「终态即续跑」必须出现在系统提示词里而不只在工具描述里：父代理的默认反应曾经是
+  // 重开，根因之一就是这里整段被注释、没有任何反重开的表述。
+  if (tools.has("Agent")) {
+    lines.push(
+      "- The Agent tool returns a handle (agentId) while the agent keeps running; results come back through its completion notification. Use TaskOutput(task_id, block: true) when you need to wait inline.",
+      "- A subagent that reached a terminal state is not gone: SendMessage to its `agentId` resumes that same session with its tool results and context intact. Resume it instead of re-dispatching the same task — only dispatch a fresh agent when the scope changed, and stop the old one first.",
+      "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently, and keep their scopes non-overlapping so they do not work on the same files.",
+    );
+  }
 
   if (tools.has("Skill") && hasSkills) {
-    lines.push("- When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section \u2014 don't guess.");
+    lines.push("- When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess.");
   }
 
   // if (tools.has("AskUserQuestion")) {

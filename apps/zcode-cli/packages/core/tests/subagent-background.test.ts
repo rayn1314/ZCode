@@ -130,6 +130,88 @@ describe("subagent background notifications", () => {
     expect(stopped).not.toContain("Explore");
   });
 
+  it("points a lost-final-message completion at resume instead of a fresh dispatch", () => {
+    const notification = formatLocalAgentTaskNotification({
+      agentId: "agent_empty",
+      agentType: "general-purpose",
+      description: "Trace token accounting",
+      outputFile: "/tmp/agent_empty/output.txt",
+      parentToolCallId: "toolu_empty",
+      result: "   ",
+      status: "completed",
+      totalDurationMs: 900_000,
+      totalTokens: 30_000_000,
+      totalToolUseCount: 315,
+    });
+
+    expect(notification).toContain("<next-steps>");
+    expect(notification).toContain("its final message was lost");
+    expect(notification).toContain("Do NOT re-dispatch the same task");
+    // 指引落在闭合标签之前：父侧按 XML 节读内容，走到标签之外的散文会失联。
+    expect(notification.indexOf("<next-steps>")).toBeLessThan(
+      notification.indexOf("</task-notification>"),
+    );
+    // summary 是同义短句：通知可能被 120k 上限截断，summary 是至少还读得到的一行。
+    expect(notification).toContain(
+      "<summary>Agent general-purpose task &quot;Trace token accounting&quot; completed. It did the work but its final message was lost; resume it with SendMessage to its agentId instead of re-dispatching.</summary>",
+    );
+  });
+
+  it("treats a missing result as a lost final message, and a real one as nothing to resume", () => {
+    const missing = formatLocalAgentTaskNotification({
+      agentId: "agent_missing",
+      agentType: "general-purpose",
+      description: "Survey configs",
+      outputFile: "/tmp/agent_missing/output.txt",
+      parentToolCallId: "toolu_missing",
+      status: "completed",
+    });
+    expect(missing).toContain("<next-steps>");
+
+    const delivered = formatLocalAgentTaskNotification({
+      agentId: "agent_delivered",
+      agentType: "general-purpose",
+      description: "Survey configs",
+      outputFile: "/tmp/agent_delivered/output.txt",
+      parentToolCallId: "toolu_delivered",
+      result: "found three writers",
+      status: "completed",
+    });
+    expect(delivered).not.toContain("<next-steps>");
+    expect(delivered).toContain(
+      "<summary>Agent general-purpose task &quot;Survey configs&quot; completed.</summary>",
+    );
+  });
+
+  it("gives failed and stopped notifications a resume-first judgment instead of a taxonomy", () => {
+    const failed = formatLocalAgentTaskNotification({
+      agentId: "agent_failed",
+      agentType: "general-purpose",
+      description: "Long audit",
+      error: "Subagent was inactive for 600000ms",
+      outputFile: "/tmp/agent_failed/output.txt",
+      parentToolCallId: "toolu_failed",
+      status: "failed",
+      totalToolUseCount: 120,
+    });
+    expect(failed).toContain("<next-steps>");
+    expect(failed).toContain("resume it with SendMessage to its agentId instead of re-dispatching");
+    // 不构造失败分类真相：只说「看着像打断了已做的工作」，不声称自己能判断成因。
+    expect(failed).not.toContain("<reason>");
+    expect(failed).not.toContain("timeout_kind");
+
+    const stopped = formatLocalAgentTaskNotification({
+      agentId: "agent_stopped",
+      agentType: "general-purpose",
+      description: "Long audit",
+      outputFile: "/tmp/agent_stopped/output.txt",
+      parentToolCallId: "toolu_stopped",
+      status: "stopped",
+    });
+    expect(stopped).toContain("<next-steps>");
+    expect(stopped).toContain("resume it with SendMessage to its agentId");
+  });
+
   it("drains pending background notifications as strict snapshot batches", async () => {
     const sessionId = createSessionId("background-notification-idle-wake");
     const sessionStore = new RecordingSessionStore();
