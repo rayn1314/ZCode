@@ -11,26 +11,28 @@
 
 以下命令从仓库根目录执行；向脚本传参统一写成 `pnpm <script> -- <args>`（与 `verify:pre-push` 保持一致）：
 
-| 用途                     | 命令                                                                                        |
-| ------------------------ | ------------------------------------------------------------------------------------------- |
-| 类型检查（根 workspace） | `pnpm typecheck`                                                                            |
-| 类型检查（Agent CLI）    | `pnpm typecheck:cli`                                                                        |
-| Lint                     | `pnpm lint` / `pnpm lint:fix`                                                               |
-| 格式检查                 | `pnpm fmt:check`                                                                            |
-| 桌面开发                 | `pnpm dev:desktop`（test 环境：`pnpm dev:desktop:test`）                                    |
-| Web 开发                 | `pnpm dev:web`（只起服务端：`pnpm dev:server`）                                             |
-| 提交前检查               | `pnpm verify:pre-push`（Lint、架构检查、格式检查、类型检查）                                |
-| 架构检查（仅改动）       | `pnpm architecture:check -- --changed`                                                      |
-| 架构报告                 | `pnpm architecture:report`                                                                  |
-| 架构基线更新             | `pnpm architecture:baseline:update`（会改写 `.architecture-baseline.json`）                 |
-| 模块阅读包               | `pnpm architecture:context -- <module-id>`                                                  |
-| 依赖图                   | `pnpm dep:graph`                                                                            |
-| 未使用依赖与导出         | `pnpm knip`                                                                                 |
-| 导出引用查询             | `pnpm dep:refs <file>:<symbol>`；列出文件全部导出：`pnpm dep:refs -- --list-exports <file>` |
+| 用途                     | 命令                                                                                         |
+| ------------------------ | -------------------------------------------------------------------------------------------- |
+| 类型检查（根 workspace） | `pnpm typecheck`                                                                             |
+| 类型检查（Agent CLI）    | `pnpm typecheck:cli`                                                                         |
+| 致命类型错误检查         | `pnpm typecheck:critical`（desktop main/preload/renderer/scheduler；`-- --update` 收敛基线） |
+| Lint                     | `pnpm lint` / `pnpm lint:fix`                                                                |
+| 格式检查                 | `pnpm fmt:check`                                                                             |
+| 桌面开发                 | `pnpm dev:desktop`（test 环境：`pnpm dev:desktop:test`）                                     |
+| Web 开发                 | `pnpm dev:web`（只起服务端：`pnpm dev:server`）                                              |
+| 提交前检查               | `pnpm verify:pre-push`（Lint、架构检查、格式检查、类型检查、致命类型错误检查）               |
+| 架构检查（仅改动）       | `pnpm architecture:check -- --changed`                                                       |
+| 架构报告                 | `pnpm architecture:report`                                                                   |
+| 架构基线更新             | `pnpm architecture:baseline:update`（会改写 `.architecture-baseline.json`）                  |
+| 模块阅读包               | `pnpm architecture:context -- <module-id>`                                                   |
+| 依赖图                   | `pnpm dep:graph`                                                                             |
+| 未使用依赖与导出         | `pnpm knip`                                                                                  |
+| 导出引用查询             | `pnpm dep:refs <file>:<symbol>`；列出文件全部导出：`pnpm dep:refs -- --list-exports <file>`  |
 
 覆盖范围：
 
 - 根 `pnpm typecheck` 只覆盖其 `tsconfig` 列表内的项目（rpc / provider / provider-node / shared / services / client / server / zcode-server-cli / ui / web 与 desktop host），**不含** `packages/formal-proof`、`packages/zcode-cua` 与 `apps/zcode-cli`。
+- desktop 的 main / preload / renderer / scheduler 四个子工程不在上面的列表里，产物又由 esbuild 逐文件转译（不做类型检查）：未声明的标识符会被原样输出成自由变量引用，直到运行时才抛 `ReferenceError`。`pnpm typecheck:critical` 兜住这一类（只查 TS2304/TS2305/TS2306/TS2307/TS2459/TS2552，既存项记在 `scripts/critical-type-errors.baseline.json`，新增项会挡住提交）。
 - `apps/zcode-cli` 是独立的 pnpm + turbo workspace（自带 `pnpm-lock.yaml`、`turbo.json`）；根级 Lint 与类型检查不覆盖它，必须单独执行。
 - 架构检查以 `.architecture-baseline.json` 为基线，`--changed` 只检查改动范围；遇到基线内的既有违规，不要顺手改动无关代码。
 
