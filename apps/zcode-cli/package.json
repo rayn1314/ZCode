@@ -27,7 +27,7 @@
     "release": "node ../../node_modules/release-it/bin/release-it.js --config .release-it.json",
     "release:dry": "pnpm run release --release-version",
     "sea": "pnpm --filter @zcode/cli sea",
-    "test": "node --import tsx --test \"packages/core/test/*.test.ts\" && turbo run test",
+    "test": "node --import tsx --test \"packages/core/test/*.test.ts\" && turbo run test --concurrency=2",
     "test:e2e:memory": "pnpm --dir e2e/memory run e2e:build",
     "test:browser-headless": "pnpm --filter @zcode/browser-use-plugin... build && pnpm --filter @zcode/browser-use-plugin exec vitest run test/headless-browser.e2e.test.ts",
     "test:browser-headless:linux": "docker build --progress=plain -f packages/browser-use-plugin/e2e/headless-linux.Dockerfile ../..",
