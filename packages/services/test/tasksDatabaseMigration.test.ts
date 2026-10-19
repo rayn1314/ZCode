@@ -6,9 +6,26 @@ import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { build } from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
-import { runTasksDatabaseMigrations } from "../src/session/tasksDatabase/migrations.js";
+import {
+  TASKS_DATABASE_MIGRATION_IDS,
+  runTasksDatabaseMigrations,
+} from "../src/session/tasksDatabase/migrations.js";
 
 describe("DB109 App 库统一迁移", () => {
+  // 全仓唯一一处把迁移清单写死的地方：新增迁移必须在这里显式登记（顺带校验顺序与唯一性），
+  // 其余用例一律从 TASKS_DATABASE_MIGRATION_IDS 派生，避免「加了迁移改不全断言」。
+  it("DB109-01：迁移表就是这份冻结清单", () => {
+    expect(TASKS_DATABASE_MIGRATION_IDS).toEqual([
+      "0001_adopt_task_schema",
+      "0002_provider_selection",
+      "0003_official_glm_selection",
+      "0004_task_goal_merge",
+    ]);
+    // 账本判定末位迁移用的是字典序，id 必须与声明顺序一致地递增。
+    expect(TASKS_DATABASE_MIGRATION_IDS).toEqual([...TASKS_DATABASE_MIGRATION_IDS].sort());
+    expect(new Set(TASKS_DATABASE_MIGRATION_IDS).size).toBe(TASKS_DATABASE_MIGRATION_IDS.length);
+  });
+
   const databases: DatabaseSync[] = [];
   const open = () => {
     const db = new DatabaseSync(":memory:");
@@ -37,7 +54,7 @@ describe("DB109 App 库统一迁移", () => {
       "tasks_schema_migration",
     ]);
     const ledger = db.prepare("SELECT * FROM tasks_schema_migration").all();
-    expect(ledger).toHaveLength(3);
+    expect(ledger).toHaveLength(TASKS_DATABASE_MIGRATION_IDS.length);
     runTasksDatabaseMigrations(db);
     expect(db.prepare("SELECT * FROM tasks_schema_migration").all()).toEqual(ledger);
   });
@@ -257,7 +274,9 @@ describe("DB109 App 库统一迁移", () => {
       Atomics.store(new Int32Array(gate), 0, 1);
       Atomics.notify(new Int32Array(gate), 0);
       expect(await Promise.all(exits)).toEqual([[0], [0]]);
-      expect(db.prepare("SELECT * FROM tasks_schema_migration").all()).toHaveLength(3);
+      expect(db.prepare("SELECT * FROM tasks_schema_migration").all()).toHaveLength(
+        TASKS_DATABASE_MIGRATION_IDS.length,
+      );
       expect(db.prepare("SELECT * FROM migration_probe").all()).toHaveLength(1);
       expect(db.prepare("PRAGMA integrity_check").get()?.integrity_check).toBe("ok");
     } finally {

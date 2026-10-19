@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import { prepareTasksIndexStorage } from "../src/session/tasksDatabase/startup.js";
-import { runTasksDatabaseMigrations } from "../src/session/tasksDatabase/migrations.js";
+import {
+  TASKS_DATABASE_MIGRATION_IDS,
+  runTasksDatabaseMigrations,
+} from "../src/session/tasksDatabase/migrations.js";
+
+// 迁移条数与末位 id 一律从冻结清单派生：以前写死 3/"0003_..."，每次加迁移都会漏改断言。
+const MIGRATION_COUNT = TASKS_DATABASE_MIGRATION_IDS.length;
+const LATEST_MIGRATION_ID = TASKS_DATABASE_MIGRATION_IDS.at(-1);
 
 it("prepares the same frozen ledger as the old runner and preserves completed data", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zcode-startup-"));
@@ -94,8 +101,8 @@ it("SILENTDB-01/02: reports maintenance separately and no migration for a prepar
       expect.objectContaining({
         migration: {
           kind: "initialize",
-          executedCount: 3,
-          committedCount: 3,
+          executedCount: MIGRATION_COUNT,
+          committedCount: MIGRATION_COUNT,
           lastAppliedMigrationId: null,
         },
       }),
@@ -104,7 +111,7 @@ it("SILENTDB-01/02: reports maintenance separately and no migration for a prepar
     await prepareTasksIndexStorage(path, (phase, migration) => second.push({ phase, migration }));
     expect(second.some((s) => s.phase === "migrating")).toBe(false);
     expect(second.at(-1)).toMatchObject({
-      migration: { lastAppliedMigrationId: "0003_official_glm_selection" },
+      migration: { lastAppliedMigrationId: LATEST_MIGRATION_ID },
     });
     expect(second.some((s) => s.phase === "maintaining")).toBe(true);
     expect(second).toContainEqual(
@@ -135,8 +142,8 @@ it("retains committed facts if closing the migration connection fails", async ()
     expect(states.at(-1)).toMatchObject({
       migration: {
         kind: "initialize",
-        executedCount: 3,
-        committedCount: 3,
+        executedCount: MIGRATION_COUNT,
+        committedCount: MIGRATION_COUNT,
         lastAppliedMigrationId: null,
       },
     });
@@ -174,9 +181,13 @@ it("keeps the pre-upgrade task ledger ID after committing the remaining migratio
   const path = join(dir, "tasks.sqlite");
   try {
     await prepareTasksIndexStorage(path, () => {});
+    // 删掉最新一条迁移的账本行，制造“只剩一条待补”的升级场景：报出的
+    // lastAppliedMigrationId 必须是补迁移之前的账本基线（上一条），而不是本次补上的那一条。
+    const previousMigrationId = TASKS_DATABASE_MIGRATION_IDS.at(-2);
+    const latestMigrationId = TASKS_DATABASE_MIGRATION_IDS.at(-1);
     const db = new DatabaseSync(path);
     try {
-      db.exec("DELETE FROM tasks_schema_migration WHERE id='0003_official_glm_selection'");
+      db.prepare("DELETE FROM tasks_schema_migration WHERE id=?").run(latestMigrationId);
     } finally {
       db.close();
     }
@@ -188,7 +199,7 @@ it("keeps the pre-upgrade task ledger ID after committing the remaining migratio
         kind: "upgrade",
         executedCount: 1,
         committedCount: 1,
-        lastAppliedMigrationId: "0002_provider_selection",
+        lastAppliedMigrationId: previousMigrationId,
       },
     });
   } finally {

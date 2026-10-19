@@ -73,6 +73,14 @@ const definitions = [
     checksumInput: [TASK_GOAL_MERGE_MIGRATION_SQL],
   },
 ] as const;
+/**
+ * 已发布迁移的冻结顺序表。账本判定「最后应用的迁移」用的是 `ORDER BY id DESC LIMIT 1`，
+ * 因此顺序必须与 id 的字典序一致。测试从这里派生条数与末位 id，新增迁移时只需在本文件
+ * 登记一次，不必再去改散落在断言里的字面量（过去每次加迁移都会漏改一处）。
+ */
+export const TASKS_DATABASE_MIGRATION_IDS: readonly string[] = definitions.map(
+  (migration) => migration.id,
+);
 export function runTasksDatabaseMigrations(
   db: DatabaseSync,
   options: {
