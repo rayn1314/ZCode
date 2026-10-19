@@ -243,6 +243,7 @@ import {
 } from "@/v4/conversationProjectionStore.js";
 import type {
   ConversationFileChangesRequestOptions,
+  ConversationForkMode,
   ConversationRowRenderContext,
 } from "@/v4/conversationRowContext.js";
 import type { AssistantPreviewCardsAutoOpenRequest } from "@/lib/assistantPreviewCards.js";
@@ -2639,6 +2640,16 @@ export function SessionPane({
   const chatLoadingBlockedByActiveWork = hasChatLoadingBlockingActiveWork(
     snapshot?.control.activeWorks ?? [],
   );
+  // 分叉入口能否**点击**是会话级时点事实，只读投影裁决表 `availability.fork`（`computeAvailability`
+  // 的 compacting → compactOperationLock）。行侧 `row.actions.canFork` 只回答"这一行能不能当锚点"，
+  // 两者不同源；UI 也不得自己再算一遍 `activeWorks.some(kind === "compact")`。
+  // reasonCode 是 product-protocol guard id（见 snapshot schema 的 actionAvailabilitySchema）。
+  const forkDisabledReason =
+    snapshot?.availability.fork.allowed === false
+      ? snapshot.availability.fork.reasonCode === "compactOperationLock"
+        ? intl.formatMessage({ id: "chat.message.fork.blockedByCompacting" })
+        : intl.formatMessage({ id: "chat.message.fork.unavailableNow" })
+      : undefined;
   // 文件撤销恢复的是 workspace，与会话内容是否只读无关，所以它是独立能力而不是 readOnly 的补集；
   // observe 形态还要额外看 `allowWorkspaceFileRewind` 这个显式例外。
   const workspaceFileRewindEnabled =
@@ -2724,6 +2735,7 @@ export function SessionPane({
       compactForRemoteControl,
       chatLoadingBlockedByActiveWork,
       chatLoadingBlockedByInteraction,
+      forkDisabledReason,
       messageStreamShowReasoning,
       messageStreamShowTodos,
       toolGroupingExploreEnabled,
@@ -2798,6 +2810,7 @@ export function SessionPane({
       compactForRemoteControl,
       chatLoadingBlockedByActiveWork,
       chatLoadingBlockedByInteraction,
+      forkDisabledReason,
       messageStreamShowReasoning,
       messageStreamShowTodos,
       toolGroupingExploreEnabled,
@@ -3782,56 +3795,50 @@ export function SessionPane({
     setHighspeedActivationCardId((current) => (current === cardId ? null : current));
   }, []);
 
+  /**
+   * 消息行的分叉入口（`mode` 由行上是否出现菜单决定 —— 见 `row.actions.canForkCurrentContext`）：
+   * - `row`：`forkAssistant`，锚这一行、按轮回溯完整可见转录；
+   * - `currentContext`：`forkCurrentContext`，无 row target，复制口径由 CLI 决定（当前模型可见上下文）。
+   * 两者都是 CAS 命令。
+   */
   const handleFork = useCallback(
-    (target: ConversationRowTarget) => {
+    (target: ConversationRowTarget, mode: ConversationForkMode) => {
       const current = snapshotRef.current;
       if (!sessionId || current === null) return;
-      // forkAssistant 是 CAS 命令：baseRevision 取当前投影 revision。
-      void dispatchCommand(
-        "forkAssistant",
-        { target },
-        sessionId,
-        current.revision,
-        current.logEpoch,
-      ).then((ack) => {
-        if (ack.status !== "accepted" && ack.status !== "duplicate") {
-          logger.warn(`[v4-pane] fork 被拒绝: ${ack.status} ${ack.reasonCode ?? ""}`);
+      const ack =
+        mode === "row"
+          ? dispatchCommand(
+              "forkAssistant",
+              { target },
+              sessionId,
+              current.revision,
+              current.logEpoch,
+            )
+          : dispatchCommand(
+              "forkCurrentContext",
+              {},
+              sessionId,
+              current.revision,
+              current.logEpoch,
+            );
+      void ack.then((result) => {
+        if (result.status !== "accepted" && result.status !== "duplicate") {
+          logger.warn(`[v4-pane] fork 被拒绝: ${mode} ${result.status} ${result.reasonCode ?? ""}`);
+          if (mode === "currentContext") {
+            toast(intl.formatMessage({ id: "chat.message.forkCurrentContextFailed" }));
+          }
           return;
         }
-        if (ack.result?.type === "forkAssistant") {
-          // 原地切到 child session（与新建会话同一选择路径）。
-          onSessionCreated?.(ack.result.sessionId);
-        }
+        // 原地切到 child session（与新建会话同一选择路径）。
+        const childSessionId =
+          result.result?.type === "forkAssistant" || result.result?.type === "forkCurrentContext"
+            ? result.result.sessionId
+            : undefined;
+        if (childSessionId) onSessionCreated?.(childSessionId);
       });
     },
-    [dispatchCommand, onSessionCreated, sessionId],
+    [dispatchCommand, intl, onSessionCreated, sessionId],
   );
-
-  /**
-   * 会话级「以当前状态分叉」：无 row target，复制口径由 CLI 决定（当前模型可见上下文，
-   * 有压缩时从最后一个 compact boundary 起）。与 handleFork 一样是 CAS 命令。
-   */
-  const handleForkCurrentContext = useCallback(() => {
-    const current = snapshotRef.current;
-    if (!sessionId || current === null) return;
-    void dispatchCommand(
-      "forkCurrentContext",
-      {},
-      sessionId,
-      current.revision,
-      current.logEpoch,
-    ).then((ack) => {
-      if (ack.status !== "accepted" && ack.status !== "duplicate") {
-        logger.warn(`[v4-pane] forkCurrentContext 被拒绝: ${ack.status} ${ack.reasonCode ?? ""}`);
-        toast(intl.formatMessage({ id: "chat.message.forkCurrentContextFailed" }));
-        return;
-      }
-      if (ack.result?.type === "forkCurrentContext") {
-        // 原地切到 child session（与新建会话同一选择路径）。
-        onSessionCreated?.(ack.result.sessionId);
-      }
-    });
-  }, [dispatchCommand, intl, onSessionCreated, sessionId]);
 
   const handleEdit = useCallback(
     async (
@@ -4554,17 +4561,6 @@ export function SessionPane({
   // fork 可用性完全由 row.actions.canFork（CLI stable resolver 投影）裁决；pane 只提供命令回调。
   // fork 与 edit/retry **不是**同一件事：子代理子会话保留行内 edit/retry，但不做 fork（spec 矩阵）。
   const forkActionsEnabled = capabilities.fork && Boolean(sessionId);
-  // 会话级入口的**时点**可用性同样只读投影裁决表：`availability.fork` 的 `compacting` 就是
-  // `activeWorks` 含 compact（product-projection 的 computeAvailability 入参），UI 原先自己再算一遍
-  // `activeWorks.some(kind === "compact")` 属于第二个判定源，已删除。draft 下 forkActionsEnabled
-  // 为假、入口不渲染，所以这里只剩"会话存在但被 guard 挡住"这一种情况。
-  const forkAvailability = snapshot?.availability.fork;
-  // reasonCode 是 product-protocol guard id（见 snapshot schema 的 actionAvailabilitySchema），
-  // 驱动禁用态 tooltip。会话存在时入口只会被 compactOperationLock 挡住；未知 guard 回落通用文案。
-  const forkBlockedReason =
-    forkAvailability?.allowed === false && forkAvailability.reasonCode === "compactOperationLock"
-      ? intl.formatMessage({ id: "chat.message.forkCurrentContextCompacting" })
-      : undefined;
   // editUserQuery 已由 command 层防御 latest real user query，并在 running
   // 提交时先 stop barrier 再 rewind/rerun；UI 不应再用 completed gate 把入口整轮隐藏。
   const editActionsEnabled = capabilities.editRetry && Boolean(sessionId);
@@ -5562,9 +5558,6 @@ export function SessionPane({
           onSplitDown={onSplitDown}
           onClosePane={onClosePane}
           workspaceBadge={workspaceBadge}
-          onForkCurrentContext={forkActionsEnabled ? handleForkCurrentContext : undefined}
-          forkCurrentContextDisabled={forkAvailability?.allowed === false}
-          forkCurrentContextDisabledReason={forkBlockedReason}
         />
 
         <div

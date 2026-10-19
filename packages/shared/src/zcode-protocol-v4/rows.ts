@@ -27,6 +27,11 @@ const rowBaseFields = {
   actions: z
     .object({
       canFork: z.literal(true).optional(),
+      // 在 canFork 之上追加「以当前状态分叉」这一方式：本行分叉时**还可以**复制模型现在
+      // 可见的上下文（从最后一个压缩边界起），而不只是按行回溯完整可见转录。只有两种方式
+      // 产出确不同（活动上下文起点是未被切掉的压缩边界）时才下发 —— 没被压缩过时两者等价，
+      // 多给一个选项就是让用户做无谓的选择。缺省 = 只有按行回溯。
+      canForkCurrentContext: z.literal(true).optional(),
       canEdit: z.literal(true).optional(),
       canRetry: z.literal(true).optional(),
       canRewindFiles: z.literal(true).optional(),

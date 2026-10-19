@@ -59,6 +59,15 @@ export interface ConversationRowRenderContext {
   chatLoadingBlockedByActiveWork?: boolean;
   /** 当前 session 正在等待权限确认或 AskUserQuestion 回答，隐藏底部 ChatLoading。 */
   chatLoadingBlockedByInteraction?: boolean;
+  /**
+   * 会话级分叉闸门（`snapshot.availability.fork`）被拒时下发的说明文案；在场即消息行的分叉入口
+   * 整体不可点（留原地，不忽隐忽现）。
+   *
+   * 这是分叉入口**可用性**的唯一来源：`computeAvailability` 已把「压缩进行中」算成
+   * `compactOperationLock`，行侧的 `row.actions.canFork` 只说明「这一行能不能当锚点」，
+   * 与「此刻能不能分叉」是两件事，UI 不得用后者反推前者。
+   */
+  forkDisabledReason?: string;
   /** 常规设置：是否在对话消息流中渲染 reasoning / thought 行。 */
   messageStreamShowReasoning?: boolean;
   /** 当前 assistant 轮次的第一条 reasoning row；关闭完整思考时仍需展示。 */
@@ -215,6 +224,16 @@ export interface ConversationRowRenderContext {
     messageId: string;
   }) => Promise<{ summary: string }>;
 }
+
+/**
+ * 消息行分叉入口的两种方式（同一排 **同一个** 按钮，点开后才分岔）：
+ * - `row`：按轮回溯（`forkAssistant`，锚这一行，复制完整可见转录）；
+ * - `currentContext`：按当前上下文（`forkCurrentContext`，从最后一个压缩边界起复制）。
+ *
+ * 两者只在活动上下文被压缩过时产出不同，所以菜单只有在行动作带 `canForkCurrentContext`
+ * 时才出现；没有压缩时两者等价，直接分叉不弹菜单（见 core spec `fork-at-current-context.md`）。
+ */
+export type ConversationForkMode = "row" | "currentContext";
 
 export interface ConversationFileChangesRequestOptions {
   /**

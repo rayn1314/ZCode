@@ -29,14 +29,9 @@ const timelineState = vi.hoisted(() => ({
   backgroundScrollLocked: false,
   selectionActionsEnabled: null as boolean | null,
   scrollToQueryActionRef: null as { current: unknown } | null,
-}));
-
-// 会话级分叉入口的可用性由 SessionPane 决定（形态列 + 投影 availability），断言必须落在
-// 它真正传给 ConversationHeader 的 props 上，不能只信 header 自己的单测。
-const headerState = vi.hoisted(() => ({
-  forkCurrentContext: undefined as (() => void) | undefined,
-  forkCurrentContextDisabled: false,
-  forkCurrentContextDisabledReason: undefined as string | undefined,
+  // 分叉入口已并入消息行 hover 工具栏：断言必须落在 SessionPane 真正下发给 timeline 的
+  // `onFork`（两道闸门）+ rowContext.forkDisabledReason（可用性）上。
+  onFork: undefined as unknown,
 }));
 
 // SSR 渲染不执行 effect，因此 zustand 的 getServerSnapshot（= 初始 state）看不到真实 store
@@ -144,6 +139,7 @@ vi.mock("@/v4/ConversationTimeline.js", async () => {
       apiRetry,
       backgroundScrollLocked,
       bottomDock,
+      onFork,
       rowContext,
       selectionActions,
       scrollToQueryActionRef,
@@ -151,6 +147,7 @@ vi.mock("@/v4/ConversationTimeline.js", async () => {
       apiRetry?: ConversationSnapshot["control"]["apiRetry"];
       backgroundScrollLocked?: boolean;
       bottomDock?: ReactNode;
+      onFork?: unknown;
       rowContext?: ConversationRowRenderContext;
       selectionActions?: { enabled: boolean };
       scrollToQueryActionRef?: { current: unknown };
@@ -160,6 +157,7 @@ vi.mock("@/v4/ConversationTimeline.js", async () => {
       timelineState.backgroundScrollLocked = backgroundScrollLocked ?? false;
       timelineState.selectionActionsEnabled = selectionActions?.enabled ?? null;
       timelineState.scrollToQueryActionRef = scrollToQueryActionRef ?? null;
+      timelineState.onFork = onFork ?? null;
       return React.createElement("div", { "data-testid": "mock-timeline" }, bottomDock);
     },
   };
@@ -168,16 +166,7 @@ vi.mock("@/v4/ConversationTimeline.js", async () => {
 vi.mock("@/v4/ConversationHeader.js", async () => {
   const React = await import("react");
   return {
-    ConversationHeader: (props: {
-      onForkCurrentContext?: () => void;
-      forkCurrentContextDisabled?: boolean;
-      forkCurrentContextDisabledReason?: string;
-    }) => {
-      headerState.forkCurrentContext = props.onForkCurrentContext;
-      headerState.forkCurrentContextDisabled = props.forkCurrentContextDisabled ?? false;
-      headerState.forkCurrentContextDisabledReason = props.forkCurrentContextDisabledReason;
-      return React.createElement("div", { "data-testid": "mock-header" });
-    },
+    ConversationHeader: () => React.createElement("div", { "data-testid": "mock-header" }),
   };
 });
 
@@ -435,49 +424,58 @@ describe("SessionPane read-only mode", () => {
 });
 
 /**
- * 会话级「以当前状态分叉」入口有两道闸门，都在 SessionPane 落地：
- * 形态列 `capabilities.fork`（不渲染）与投影裁决表 `availability.fork`（渲染但禁用）。
+ * 分叉入口（已并入消息行 hover 工具栏）有两道闸门，都在 SessionPane 落地：
+ * 形态列 `capabilities.fork`（不下发 `onFork`，行上不渲染）与投影裁决表 `availability.fork`
+ * （下发 `rowContext.forkDisabledReason`，行上渲染但不可点）。
  *
  * 背景：入口曾漏读形态列，于是在辅助对话（`selectionSideChat`）与子代理面板里也出现了——
  * 而这两格与 `observe` 在矩阵里都是 `fork: false`，命令层（input-role-policy）也拒绝，
- * 点下去只会拿到 guard 错误。同时它自己算了一遍 `activeWorks.some(kind === "compact")`，
+ * 点下去只会拿到 guard 错误。它也曾自己算了一遍 `activeWorks.some(kind === "compact")`，
  * 与 `computeAvailability` 的 `compacting` 是同一个事实，属第二个判定源。
  */
-describe("SessionPane 会话级分叉入口的闸门", () => {
+describe("SessionPane 分叉入口的两道闸门", () => {
+  afterEach(() => {
+    timelineState.rowContext = null;
+    timelineState.onFork = null;
+  });
+
   const renderForShape = (shape: SessionPaneShape, forkReasonCode?: string): void => {
     renderReadOnlyPane({ shape, ...(forkReasonCode ? { forkReasonCode } : {}) });
   };
 
   it.each(["observe", "selectionSideChat", "subagentChild"] as const)(
-    "%s 形态不下发会话级分叉入口",
+    "%s 形态不下发分叉入口",
     (shape) => {
       renderForShape(shape);
 
-      expect(headerState.forkCurrentContext).toBeUndefined();
+      expect(timelineState.onFork).toBeNull();
     },
   );
 
-  it("interactive 形态下发入口，且投影允许时可用", () => {
+  it("interactive 形态下发入口，且投影允许时不停用", () => {
     renderForShape("interactive");
 
-    expect(typeof headerState.forkCurrentContext).toBe("function");
-    expect(headerState.forkCurrentContextDisabled).toBe(false);
-    expect(headerState.forkCurrentContextDisabledReason).toBeUndefined();
+    expect(typeof timelineState.onFork).toBe("function");
+    expect((timelineState.rowContext as ConversationRowRenderContext).forkDisabledReason).toBe(
+      undefined,
+    );
   });
 
   it("投影裁决 compactOperationLock 时入口留在原地但不可点，并给出对应文案", () => {
     renderForShape("interactive", "compactOperationLock");
 
-    expect(typeof headerState.forkCurrentContext).toBe("function");
-    expect(headerState.forkCurrentContextDisabled).toBe(true);
-    expect(headerState.forkCurrentContextDisabledReason).toContain("压缩");
+    expect(typeof timelineState.onFork).toBe("function");
+    expect((timelineState.rowContext as ConversationRowRenderContext).forkDisabledReason).toContain(
+      "压缩",
+    );
   });
 
-  it("未知 guard id 只禁用入口，不编造原因文案", () => {
+  it("未知 guard id 只停用入口，不编造具体原因", () => {
     renderForShape("interactive", "someFutureGuard");
 
-    expect(headerState.forkCurrentContextDisabled).toBe(true);
-    expect(headerState.forkCurrentContextDisabledReason).toBeUndefined();
+    const reason = (timelineState.rowContext as ConversationRowRenderContext).forkDisabledReason;
+    expect(reason).toBeTruthy();
+    expect(reason).not.toContain("压缩");
   });
 });
 

@@ -6,6 +6,7 @@ import { ConnectedBotGroupDeliveryAction } from "@/v4/BotGroupDeliveryAction.js"
 import { useIsOfficeMode } from "@/hooks/useInterfaceMode.js";
 import {
   type ComponentProps,
+  type ReactNode,
   memo,
   useCallback,
   useEffect,
@@ -40,6 +41,8 @@ import {
   TID_V4_FEEDBACK_DISLIKE,
   TID_V4_FEEDBACK_LIKE,
   TID_V4_FORK,
+  TID_V4_FORK_BY_TURN,
+  TID_V4_FORK_CURRENT_CONTEXT,
   TID_V4_ROW,
   TID_V4_ROW_ATTACHMENTS,
   parseAutomationRunId,
@@ -85,6 +88,12 @@ import {
 import { cn } from "@/components/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Collapsible, CollapsibleContent } from "@/components/ui/collapsible.js";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { WorkflowToolSummary } from "@/v4/WorkflowToolSummary.js";
 import {
@@ -124,6 +133,7 @@ import { ChatPromptEditor } from "@/prompt-editor/ChatPromptEditor.js";
 import { resolveToolCallIdentity } from "@/lib/toolIdentity.js";
 import {
   isConversationReasoningRowVisible,
+  type ConversationForkMode,
   type ConversationRowRenderContext,
 } from "@/v4/conversationRowContext.js";
 import { toolCallRowToLegacyNode } from "@/v4/toolCallRowAdapter.js";
@@ -261,8 +271,8 @@ export interface ConversationRowViewProps {
   row: ConversationRow;
   /** 渲染上下文（theme/codePreviewSettings/workspacePath）；宿主保证引用稳定。 */
   context: ConversationRowRenderContext;
-  /** 完成态 assistant 行的 fork 入口（forkAssistant command）。 */
-  onFork?: (target: ConversationRowTarget) => void;
+  /** 完成态 assistant 行的分叉入口：`mode` 区分按轮回溯（forkAssistant）与按当前上下文。 */
+  onFork?: (target: ConversationRowTarget, mode: ConversationForkMode) => void;
   /** assistant entity 反馈 CAS；UI 先乐观更新，命令失败时回滚。 */
   onFeedbackChange?: AssistantFeedbackHandler;
   /** 协议兼容：上层仍可提供 retryTurn capability，但产品 UI 不渲染普通重试入口。 */
@@ -1498,6 +1508,8 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   turnId,
   sourceCommandIds = EMPTY_SOURCE_COMMAND_IDS,
   onFork,
+  forkCurrentContext = false,
+  forkDisabledReason,
   onFeedbackChange,
   className,
 }: {
@@ -1511,7 +1523,11 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
   sessionId?: string | null;
   turnId?: string;
   sourceCommandIds?: readonly string[];
-  onFork?: (target: ConversationRowTarget) => void;
+  onFork?: (target: ConversationRowTarget, mode: ConversationForkMode) => void;
+  /** 本行的活动上下文起点是压缩边界：按轮回溯与按当前上下文不再等价，入口改为二级菜单。 */
+  forkCurrentContext?: boolean;
+  /** 会话级分叉闸门拒绝的原因；在场即整组分叉动作不可点。 */
+  forkDisabledReason?: string;
   onRetry?: (target: ConversationRowTarget) => void;
   onFeedbackChange?: AssistantFeedbackHandler;
   className?: string;
@@ -1527,9 +1543,47 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
     id: localFeedback === "dislike" ? "chat.message.disliked" : "chat.message.dislike",
   });
   const forkLabel = intl.formatMessage({ id: "chat.message.fork" });
+  const forkFromTurnLabel = intl.formatMessage({ id: "chat.message.forkFromTurn" });
+  const forkFromTurnHint = intl.formatMessage({ id: "chat.message.forkFromTurnHint" });
+  const forkCurrentContextLabel = intl.formatMessage({ id: "chat.message.forkCurrentContext" });
+  const forkCurrentContextHint = intl.formatMessage({
+    id: "chat.message.forkCurrentContextHint",
+  });
   const timeLabel = formatMessageTimeLabel(createdAt, locale, intl);
   const resolveTooltip = (label: string): string | undefined =>
     compactForRemoteControl ? undefined : label;
+  // 会话级闸门拒绝时理由优先于入口自身的名字；远端紧凑模式照旧不显示悬停提示，
+  // 但"为什么不能分叉"属于必须可见的信息，不跟着一起关。
+  const forkTooltip = forkDisabledReason ?? resolveTooltip(forkLabel);
+  const forkMenuTrigger = (
+    <DropdownMenuTrigger asChild>
+      <MessageAction
+        aria-label={forkLabel}
+        label={forkLabel}
+        data-testid={testId(TID_V4_FORK, String(rowId))}
+        disabled={forkDisabledReason !== undefined}
+      >
+        <TrendingUpDownIcon className="size-3.5" />
+      </MessageAction>
+    </DropdownMenuTrigger>
+  );
+  // 场景与编辑框的 rewind 按钮同源：Button disabled 会应用 pointer-events-none，
+  // TooltipTrigger 直接落在按钮上时收不到 hover。禁用态用外层 span 承接 hover，
+  // 「为什么现在不能分叉」才看得见，实际按钮仍保持 disabled。
+  const withForkTooltip = (control: ReactNode): ReactNode =>
+    forkTooltip === undefined ? (
+      control
+    ) : (
+      <ControlHintTooltip title={forkTooltip} side="bottom">
+        {forkDisabledReason === undefined ? (
+          control
+        ) : (
+          <span className="inline-flex" data-disabled-tooltip-trigger="true">
+            {control}
+          </span>
+        )}
+      </ControlHintTooltip>
+    );
 
   useEffect(() => {
     setLocalFeedback(feedback);
@@ -1577,16 +1631,23 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
     },
     [entityId, localFeedback, onFeedbackChange, platform, rowId, sessionId],
   );
-  const handleFork = useCallback(() => {
-    if (entityId) {
-      runUserAction({
-        input: { featureId: "conversation.history.branch", action: "fork", trigger: "button" },
-        operation: () => onFork?.({ rowId, entityId }),
-        completed: { resultSource: "optimistic_projection" },
-        failureStage: "fork",
-      });
-    }
-  }, [entityId, onFork, rowId]);
+  const handleFork = useCallback(
+    (mode: ConversationForkMode) => {
+      if (entityId) {
+        runUserAction({
+          input: {
+            featureId: "conversation.history.branch",
+            action: mode === "row" ? "fork" : "fork_current_context",
+            trigger: "button",
+          },
+          operation: () => onFork?.({ rowId, entityId }, mode),
+          completed: { resultSource: "optimistic_projection" },
+          failureStage: "fork",
+        });
+      }
+    },
+    [entityId, onFork, rowId],
+  );
   return (
     <MessageActions className={cn(className, "has-[[data-bot-group-delivery]]:opacity-100")}>
       <CopyRowAction
@@ -1636,15 +1697,51 @@ export const ConversationAssistantTextActions = memo(function ConversationAssist
         </>
       ) : null}
       {onFork && entityId ? (
-        <MessageAction
-          aria-label={forkLabel}
-          label={forkLabel}
-          tooltip={resolveTooltip(forkLabel)}
-          data-testid={testId(TID_V4_FORK, String(rowId))}
-          onClick={handleFork}
-        >
-          <TrendingUpDownIcon className="size-3.5" />
-        </MessageAction>
+        forkCurrentContext ? (
+          /* 分叉的两种方式会给出不同结果（活动上下文起点是压缩边界）：入口留在原位，点开才分岔。
+             tooltip 与禁用态都挂在触发器上，行为与下面那个直接分叉的按钮一致。 */
+          <DropdownMenu>
+            {withForkTooltip(forkMenuTrigger)}
+            <DropdownMenuContent align="start" className="w-64">
+              <DropdownMenuItem
+                data-testid={testId(TID_V4_FORK_CURRENT_CONTEXT, String(rowId))}
+                disabled={forkDisabledReason !== undefined}
+                onSelect={() => handleFork("currentContext")}
+              >
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span>{forkCurrentContextLabel}</span>
+                  <span className="text-ui-xs/relaxed text-foreground-subtlest">
+                    {forkCurrentContextHint}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                data-testid={testId(TID_V4_FORK_BY_TURN, String(rowId))}
+                disabled={forkDisabledReason !== undefined}
+                onSelect={() => handleFork("row")}
+              >
+                <span className="flex min-w-0 flex-col gap-0.5">
+                  <span>{forkFromTurnLabel}</span>
+                  <span className="text-ui-xs/relaxed text-foreground-subtlest">
+                    {forkFromTurnHint}
+                  </span>
+                </span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        ) : (
+          withForkTooltip(
+            <MessageAction
+              aria-label={forkLabel}
+              label={forkLabel}
+              data-testid={testId(TID_V4_FORK, String(rowId))}
+              disabled={forkDisabledReason !== undefined}
+              onClick={() => handleFork("row")}
+            >
+              <TrendingUpDownIcon className="size-3.5" />
+            </MessageAction>,
+          )
+        )
       ) : null}
       {turnId && hookInvocations ? (
         <ConversationHookDetailsAction rows={hookInvocations} turnId={turnId} />
@@ -1677,7 +1774,7 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
 }: {
   row: AssistantTextRow;
   context: ConversationRowRenderContext;
-  onFork?: (target: ConversationRowTarget) => void;
+  onFork?: (target: ConversationRowTarget, mode: ConversationForkMode) => void;
   onRetry?: (target: ConversationRowTarget) => void;
   onFeedbackChange?: AssistantFeedbackHandler;
   hideActions?: boolean;
@@ -1768,6 +1865,10 @@ const AssistantTextRowView = memo(function AssistantTextRowView({
           feedback={readAssistantFeedback(row)}
           sessionId={context.sessionId}
           onFork={onFork}
+          /* 两者的产出是否不同由投影下发（`row.actions.canForkCurrentContext`），UI 不自己判断
+             "有没有被压缩过"；分叉能不能点则由会话级闸门 `availability.fork` 派生。 */
+          forkCurrentContext={row.actions?.canForkCurrentContext === true}
+          forkDisabledReason={context.forkDisabledReason}
           onRetry={onRetry}
           onFeedbackChange={onFeedbackChange}
           className={cn(

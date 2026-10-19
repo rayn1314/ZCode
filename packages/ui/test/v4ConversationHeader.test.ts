@@ -67,24 +67,16 @@ describe("ConversationHeader split chrome", () => {
   });
 });
 
-describe("ConversationHeader fork at current context", () => {
-  it("renders the session-level fork entry only when the host provides it", () => {
-    expect(renderHeader()).not.toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
-
-    const html = renderHeader({ onForkCurrentContext: vi.fn() });
-    expect(html).toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
-    expect(html).toContain("以当前状态分叉");
-  });
-
-  it("keeps the entry in place but disabled while compaction runs", () => {
+describe("ConversationHeader 不再承载分叉入口", () => {
+  it("pane chrome 里没有分叉按钮（入口已并入消息行 hover 工具栏）", () => {
+    // 传入旧的分叉 props 也不该再渲染出任何入口：pane chrome 只留 workspace 徽标与关闭。
     const html = renderHeader({
       onForkCurrentContext: vi.fn(),
       forkCurrentContextDisabled: true,
       forkCurrentContextDisabledReason: "压缩进行中，暂不能以当前状态分叉",
     });
 
-    expect(html).toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
-    expect(html).toContain("disabled");
-    expect(html).toContain("压缩进行中，暂不能以当前状态分叉");
+    expect(html).not.toContain(`data-testid="${TID_V4_FORK_CURRENT_CONTEXT}"`);
+    expect(html).not.toContain("以当前状态分叉");
   });
 });

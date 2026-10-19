@@ -5362,13 +5362,16 @@ const enUS: Record<string, string> = {
   "chat.message.disliked": "Disliked",
   "chat.message.fork": "Fork",
   "chat.message.forkCurrentContext": "Fork at current state",
-  "chat.message.forkCurrentContextTitle":
-    "Fork at current state (copies the current context, including the compaction summary)",
-  "chat.message.forkCurrentContextCompacting":
-    "Compaction is running; forking at current state is unavailable",
+  "chat.message.forkCurrentContextHint":
+    "Carry only the context the model can see now (from the last compaction)",
+  "chat.message.forkFromTurn": "Fork by replaying this turn",
+  "chat.message.forkFromTurnHint":
+    "Carry this turn and every message before it, including compacted-away text",
   "chat.message.forkCurrentContextFailed": "Forking at current state failed. Try again shortly.",
   "chat.message.forking": "Forking...",
   "chat.message.fork.unavailable": "Fork after task finishes",
+  "chat.message.fork.unavailableNow": "Forking is unavailable right now",
+  "chat.message.fork.blockedByCompacting": "Compaction is running; forking is unavailable",
   "chat.message.fork.unsupported": "The current agent does not support forking yet",
   "chat.message.fork.failed": "Could not fork session: {error}",
   "chat.message.fork.derivedFrom": "Forked from conversation",

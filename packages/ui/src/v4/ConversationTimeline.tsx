@@ -48,7 +48,10 @@ import { ConversationPendingGuideList } from "@/v4/ConversationPendingGuideList.
 import type { AssistantFeedbackHandler } from "@/v4/ConversationRowView.js";
 import { ConversationTurnNavigator } from "@/v4/ConversationTurnNavigator.js";
 import { syncConversationShareSelectionPanelLayout } from "@/v4/conversationShareSelectionPanelLayout.js";
-import type { ConversationRowRenderContext } from "@/v4/conversationRowContext.js";
+import type {
+  ConversationForkMode,
+  ConversationRowRenderContext,
+} from "@/v4/conversationRowContext.js";
 import { splitConversationTimelineLiveTail } from "@/v4/conversationTimelineLiveTail.js";
 import { armHighspeedFooterExpiryClock } from "@/highspeed/highspeedFooterExpiryClock.js";
 import {
@@ -284,7 +287,7 @@ export interface ConversationTimelineProps {
   scrollMemoryKey?: string | null;
   /** 行渲染上下文（theme/codePreviewSettings/workspacePath）；宿主保证引用稳定。 */
   rowContext: ConversationRowRenderContext;
-  onFork?: (target: ConversationRowTarget) => void;
+  onFork?: (target: ConversationRowTarget, mode: ConversationForkMode) => void;
   onRetry?: (target: ConversationRowTarget) => void;
   onFeedbackChange?: AssistantFeedbackHandler;
   onEdit?: (

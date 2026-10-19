@@ -12,14 +12,17 @@ import type {
   AssistantFeedbackHandler,
   EditWorkspaceRewindAvailability,
 } from "@/v4/ConversationRowView.js";
-import type { ConversationRowRenderContext } from "@/v4/conversationRowContext.js";
+import type {
+  ConversationForkMode,
+  ConversationRowRenderContext,
+} from "@/v4/conversationRowContext.js";
 import type { ConversationTurnRenderUnit } from "@/v4/conversationTurnRenderUnits.js";
 import { toolCallRowToLegacyNode } from "@/v4/toolCallRowAdapter.js";
 
 interface ConversationTurnRowProps {
   row: ConversationRow;
   context: ConversationRowRenderContext;
-  onFork?: (target: ConversationRowTarget) => void;
+  onFork?: (target: ConversationRowTarget, mode: ConversationForkMode) => void;
   onRetry?: (target: ConversationRowTarget) => void;
   onFeedbackChange?: AssistantFeedbackHandler;
   onEdit?: (

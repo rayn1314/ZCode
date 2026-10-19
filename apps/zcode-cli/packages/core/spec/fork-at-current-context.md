@@ -5,8 +5,8 @@
 涉及的其他包：
 
 - `apps/zcode-cli/packages/bootstrap`：命令面（`forkCurrentContext`）、投影可见性与网关接线；与相邻能力 `forkStableConversation` 的边界。
-- `packages/shared`：v4 命令 schema、命令结果 schema。
-- `packages/ui`：会话工具栏入口与子会话首屏。
+- `packages/shared`：v4 命令 schema、命令结果 schema、行行动作字段（`row.actions.canForkCurrentContext`）与测试 id。
+- `packages/ui`：消息行分叉入口（两种方式的二级菜单）与子会话首屏。
 
 本文与 `packages/ui/spec/compact-summary-block.md` 是**两件正交的事**：本文只管"分叉复制什么"，那份只管"摘要怎么显示"。两者共用"压缩摘要"这个实体，但互不依赖：摘要块开不开、展不展开，都不改变本文的复制口径。
 
@@ -43,7 +43,7 @@ ZCode 的分叉只有一种语义：**回到某条消息那一刻**。它由 `fo
 
 **D4 闸门沿用现有语义，不引入新的停止语义。**
 - **形态闸门（渲染级）**：入口只在 `capabilities.fork` 为真的 pane 形态下发（`@/v4/sessionPaneCapabilities` 的 4×13 矩阵：`observe` / `selectionSideChat` / `subagentChild` 三格为 `false`）。这三格不做会话分叉是既有矩阵裁决（与 `input-role-policy` 对 `selection_side_chat` / `subagent_child` 的拒绝一致），所以入口**不渲染**而不是渲染成禁用——只读视图与子会话里没有可用的分叉语义，摆一个永远灰的按钮是噪音。
-- **时点闸门（可用级）**：入口的可用性读投影裁决表 `snapshot.availability.fork`（`computeAvailability`：`compacting` → `compactOperationLock`、`phase === "draft"` → `forkTargetNotStable`），禁用时 tooltip 取该 `reasonCode` 对应文案。**UI 不得自行推导**——`availability.fork` 的 `compacting` 与 UI 原先写的 `activeWorks.some(kind === "compact")` 是同一个事实（`product-projection` 里 `compacting: activeWorks.some(...)`），自己再算一次就是第二个判定源。压缩中入口**留在原地但不可点**（不忽隐忽现），core 不新增"是否正在压缩"的运行时标志；
+- **时点闸门（可用级）**：入口的可用性读投影裁决表 `snapshot.availability.fork`（`computeAvailability`：`compacting` → `compactOperationLock`、`phase === "draft"` → `forkTargetNotStable`），由宿主换算成一行文案挂在 `ConversationRowRenderContext.forkDisabledReason` 上；行侧只读它，**UI 不得自行推导**——`availability.fork` 的 `compacting` 与 UI 原先写的 `activeWorks.some(kind === "compact")` 是同一个事实（`product-projection` 里 `compacting: activeWorks.some(...)`），自己再算一次就是第二个判定源。它与「这一行能不能当锚点」（`row.actions.canFork`）**不同源**，一个不能反推另一个。压缩中入口**留在原地但不可点**（不忽隐忽现），core 不新增"是否正在压缩"的运行时标志；
 - 父会话有未完成 turn 时按现有 CAS（`envelope.baseRevision`）裁决；
 - 本命令不读 `activeAbortController`、不 stop 父 runtime、不复制 workspace checkpoint（与 `forkStableConversation` 同款"conversation-only fork"）。
 
@@ -56,11 +56,22 @@ ZCode 的分叉只有一种语义：**回到某条消息那一刻**。它由 `fo
 - core 里 `stableForkHistoryMessages` 的"segment 末尾必须是完成态 assistant"校验。
 新命令自己构造 segment（`activeSessionMessages` 的结果），因此不复用该校验；`forkAssistant` 路径保持原样。
 
+**D7 两种方式共用一个入口，只有产出不同时才展开成二级菜单。**
+
+产品上分叉是**一件事**（"从这里开个新分支"），不是两个平级功能：`forkAssistant` 与 `forkCurrentContext` 只在"活动上下文被压缩过"时才产出不同（没有被压缩时两者等价：可见转录就是模型上下文）。因此：
+
+- 入口 = 完成态 assistant 行 hover 工具栏上**原本那个**分叉按钮，位置、图标、tooltip 一律不变；
+- 是否让用户选方式由投影下发：`row.actions.canForkCurrentContext` 在场 ⟺ `canFork` 且活动上下文起点是压缩边界。在场时点开是二级菜单（「以当前状态分叉」/「从这一轮完整回溯分叉」，两条各带一句复制口径），缺席时点击直接按轮回溯、不弹菜单；
+- 判据住在投影（`hasActiveCompactBoundary()`：行存储里还有成功的 compact marker），UI 不自己判断"有没有被压缩过"——那是第二个判定源。rewind / branch-cut 都是后缀移除，被切掉的 marker 随行一起消失，所以按 rowId 查存储即可，不需要额外维护失效标记；
+- 已知边界：冷打开只水合窗口内的行，压缩边界落在窗口外时投影暂时读不到，会**少**给一个菜单（随补全恢复），不会凭空多给。
+
+原本的独立会话级入口（pane chrome 上的悬浮按钮）已删除：同一个能力摆两个位置，用户要先猜"这两个按钮有什么区别"，而其中一个还不在消息旁边。
+
 ## 3. 行为
 
 | 环节        | 行为                                                                         |
 | ----------- | ---------------------------------------------------------------------------- |
-| 入口        | 会话工具栏独立按钮（非消息行 hover 工具栏）；不在压缩分隔线上重复提供入口。   |
+| 入口        | 完成态 assistant 行 hover 工具栏的分叉按钮（与按轮回溯同一个位置）；活动上下文起点是压缩边界时点开为二级菜单，否则直接分叉。 |
 | 命令载荷    | 仅 `baseRevision` / `logEpoch` 等 CAS 字段，无 row target。                  |
 | 解析        | 读父会话消息 → `activeSessionMessages` → segment = 结果全体，boundary = 末条。 |
 | 复制        | `commitAtomicConversationFork`，`messages = segment`，`targetMessageId = 末条 id`。 |
@@ -75,6 +86,7 @@ ZCode 的分叉只有一种语义：**回到某条消息那一刻**。它由 `fo
 - **I3**：segment 必须是 active branch 上的连续段，且必须整体落在最后一个 compact boundary 之内（不允许"跨压缩点拼接"）。
 - **I4**：压缩摘要消息被复制时，其 `semantics`（hidden/provider-visible）逐位保持，不因复制而升级为可见气泡。
 - **I5**：`forkAssistant` 的全部既有约束不变（锚点是最新轮尾 assistant、需 `canFork`、需 stable anchor）。
+- **I6**：入口的三个事实各只有一个判定源 —— 渲不渲染读形态列 `capabilities.fork`；这一行能不能当锚点、要不要给方式菜单读行动作（`canFork` / `canForkCurrentContext`）；此刻能不能点读裁决表 `availability.fork`（经 `forkDisabledReason` 下发）。三者互不可反推。
 
 ## 5. 失败语义
 
@@ -89,4 +101,4 @@ ZCode 的分叉只有一种语义：**回到某条消息那一刻**。它由 `fo
 
 - **旧会话（无 compact boundary）**：复制结果与"在最后一条 assistant 上分叉"在模型上下文层面等价（可见转录里多出的 hidden 消息本来就不进 provider）。因此这个入口对新旧会话都成立，不需要数据迁移。
 - **远端链路**：命令走 v4 命令面，`web-remote-replayable` 与 `desktop-continuous` 均无新增业务状态；子会话由既有 fork commit 路径原子创建。
-- **回滚**：入口只是 UI 按钮 + 一条命令，去掉按钮即回落现状，无数据格式变更。
+- **回滚**：入口是"行动作字段 + 一条命令"；投影不再下发 `row.actions.canForkCurrentContext` 即回落成单一按轮回溯按钮，无数据格式变更。

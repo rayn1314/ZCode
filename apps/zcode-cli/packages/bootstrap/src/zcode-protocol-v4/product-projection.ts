@@ -1366,6 +1366,10 @@ export class ProductProjection {
           this.messageIdByRowId.has(row.rowId);
         if (canFork) nextActions.canFork = true;
         else delete nextActions.canFork;
+        // 入口点开后要不要让用户选「方式」，只取决于两种方式会不会给出不同结果：
+        // 活动上下文起点是压缩边界时，按行回溯会连被压缩掉的旧内容一起复制，两者分叉。
+        if (canFork && this.hasActiveCompactBoundary()) nextActions.canForkCurrentContext = true;
+        else delete nextActions.canForkCurrentContext;
       }
       const actions = Object.keys(nextActions).length > 0 ? nextActions : undefined;
       if (JSON.stringify(actions) === JSON.stringify(row.actions)) continue;
@@ -5650,21 +5654,37 @@ export class ProductProjection {
       break;
     }
     if (!row || !this.messageIdByRowId.has(row.rowId)) return [];
-    return [
-      {
-        op: "row.upserted",
-        row: {
-          ...row,
-          state: "complete",
-          actions: { ...row.actions, canFork: true },
-        },
-      },
-    ];
+    // 与 materialize 里的 canFork 重算保持一致：两个键同进同出（该处会按同一组条件清除）。
+    const canForkActions = { ...row.actions, canFork: true as const };
+    const actions = this.hasActiveCompactBoundary()
+      ? { ...canForkActions, canForkCurrentContext: true as const }
+      : canForkActions;
+    return [{ op: "row.upserted", row: { ...row, state: "complete", actions } }];
   }
 
   private isRunning(): boolean {
     const phase = this.snapshot.control.phase;
     return phase === "running" || phase === "prewarming";
+  }
+
+  /**
+   * 活动上下文的起点是不是「未被切掉的压缩边界」——即分叉的两种方式会不会给出不同结果。
+   *
+   * 判据是行存储里仍存在成功的 compact marker。rewind / branch-cut 都是**后缀移除**
+   * （`row.removed` 带 `fromRowId`），被切掉的 marker 会随行一起从存储消失，所以这里直接
+   * 按 rowId 查存储即可，不需要另外维护失效标记，也不会被 state 里的其它字段带偏。
+   *
+   * 边界：冷打开只水合窗口内的行，压缩边界落在窗口外时这里暂时读不到（随补全恢复）；
+   * 这个方向只会**少**给一个选项，不会凭空多给。
+   */
+  private hasActiveCompactBoundary(): boolean {
+    for (const rowId of this.compactMarkerRowIdByOperationId.values()) {
+      const row = this.findRow(rowId);
+      if (row?.kind !== "timelineMarker" || row.marker.type !== "compact") continue;
+      // 无 status 的是历史载荷（早于 status 字段），按成功处理，与 UI 的显示门槛一致。
+      if (row.marker.status === undefined || row.marker.status === "success") return true;
+    }
+    return false;
   }
 
   private isMirroredSubagentToolEvent(event: SessionEvent): boolean {

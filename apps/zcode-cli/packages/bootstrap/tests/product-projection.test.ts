@@ -714,6 +714,77 @@ describe("ProductProjection 黄金测试（L1）", () => {
     expect(projection.getSnapshot().control.phase).toBe("running");
   });
 
+  it("只有活动上下文起点是压缩边界时，分叉入口才追加「以当前状态分叉」", () => {
+    const pushTurn = (log: EventLog, turnId: string): void => {
+      log.push(
+        SessionEventType.TurnStarted,
+        { turnNumber: 1, input: `问 ${turnId}`, messageId: `user-${turnId}` },
+        { turnId },
+      );
+      log.push(
+        SessionEventType.ModelStreaming,
+        { kind: "text_start", delta: "", done: false, assistantMessageId: `assistant-${turnId}` },
+        { turnId },
+      );
+      log.push(
+        SessionEventType.ModelStreaming,
+        { kind: "text_end", delta: "", done: false },
+        { turnId },
+      );
+      log.push(
+        SessionEventType.TurnComplete,
+        { response: "答", tokenCount: 1, toolCallCount: 0, duration: 1, resultType: "success" },
+        { turnId },
+      );
+    };
+    // 只看分叉相关的两个键：这一行的其它动作（canRetry 等）与本用例无关。
+    const forkEntryActions = (log: EventLog, turnId: string) => {
+      const { projection } = runAll(log.events);
+      const entry = projection
+        .getSnapshot()
+        .rows.window.find((row) => row.kind === "assistantText" && row.turnId === turnId);
+      const actions = entry?.kind === "assistantText" ? entry.actions : undefined;
+      return {
+        canFork: actions?.canFork,
+        canForkCurrentContext: actions?.canForkCurrentContext,
+      };
+    };
+    const build = (compact: boolean): EventLog => {
+      const log = new EventLog();
+      log.push(SessionEventType.SessionCreated, { mode: "default", contextWindow: 200_000 });
+      pushTurn(log, "turn-1");
+      if (compact) {
+        log.push(SessionEventType.CompactStarted, {
+          operationId: "op-1",
+          messageId: "compact-1",
+          status: "started",
+          trigger: "manual",
+          display: "separator",
+          sourceCommandId: "command-compact",
+        });
+        log.push(SessionEventType.CompactCompleted, {
+          operationId: "op-1",
+          messageId: "compact-1",
+          status: "completed",
+          trigger: "manual",
+          display: "separator",
+          preCompactTokenCount: 150,
+          postCompactTokenCount: 50,
+        });
+      }
+      pushTurn(log, "turn-2");
+      return log;
+    };
+
+    // 没压缩过：按行回溯与按当前上下文产出等价，多给一个选项只是让用户做无谓的选择。
+    expect(forkEntryActions(build(false), "user-turn-1")).toEqual({ canFork: true });
+    // 压缩成功后活动上下文起点成了压缩边界：按行回溯会连被压缩掉的旧内容一起复制，两者分叉。
+    expect(forkEntryActions(build(true), "user-turn-1")).toEqual({
+      canFork: true,
+      canForkCurrentContext: true,
+    });
+  });
+
   it("PV4-08：成功轮固化 fork 能力时不复制并反转完整 rows 窗口", () => {
     const log = new EventLog();
     log.push(SessionEventType.SessionCreated, { mode: "default", contextWindow: 200_000 });

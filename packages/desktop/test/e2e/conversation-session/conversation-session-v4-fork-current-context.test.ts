@@ -1,8 +1,8 @@
-// 会话级「以当前状态分叉」门禁（复制口径 = 当前模型可见上下文）。
-// 证据层 L3：父会话完成一轮 → `/compact` 产出 compact marker → 点 pane 顶部的会话级
-// 分叉入口（不锚定任何消息行）→ forkCurrentContext 命令 → 子会话首屏含 compact 边界，
-// 且**不含**被压缩掉的旧用户输入。证明复制口径是 activeSessionMessages（压缩从最后一个
-// compact boundary 起），而不是按行回溯分叉所用的完整可见转录。
+// 消息行分叉菜单里的「以当前状态分叉」门禁（复制口径 = 当前模型可见上下文）。
+// 证据层 L3：父会话完成一轮 → `/compact` 产出 compact marker → 点 assistant 行 hover 工具栏的
+// 分叉按钮（压缩过上下文时它是二级菜单）→ 菜单里选「以当前状态分叉」→ forkCurrentContext 命令 →
+// 子会话首屏含 compact 边界，且**不含**被压缩掉的旧用户输入。证明复制口径是 activeSessionMessages
+// （压缩从最后一个 compact boundary 起），而不是菜单里另一条「从这一轮完整回溯分叉」的完整可见转录。
 import { TID_V4_COMPOSER_INPUT } from "@zcode/shared";
 import { clearAppData, setInputValueByTestIdDom } from "../helpers/desktop-app.js";
 import {
@@ -25,7 +25,7 @@ describe("v4 会话级分叉：以当前状态分叉", () => {
     await clearAppData();
   });
 
-  it("压缩后点会话级分叉 → child 复制的是压缩后的上下文", async () => {
+  it("压缩后点行级分叉菜单的「以当前状态分叉」→ child 复制的是压缩后的上下文", async () => {
     await prepareV4ConversationE2E();
 
     // 首轮：形成一段可被压缩的历史。
@@ -47,7 +47,7 @@ describe("v4 会话级分叉：以当前状态分叉", () => {
     await waitForV4CompactMarker({ origin: "manual", status: "success" }, 90000);
     await waitForV4Pane((s) => !s.canStop, "compact 后父会话没有回到空闲态", 60000);
 
-    // 会话级分叉入口：pane chrome 上的独立按钮，不依赖消息行 hover。
+    // 分叉入口：assistant 行 hover 工具栏的分叉按钮；压缩过上下文时它是「两种方式」的二级菜单。
     await clickV4ForkCurrentContext();
     const child = await waitForV4Pane(
       (s) => s.sessionId !== null && s.sessionId !== "draft" && s.sessionId !== parentSessionId,

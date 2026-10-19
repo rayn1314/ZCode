@@ -705,13 +705,19 @@ export async function clickFirstV4Fork() {
 }
 
 /**
- * 点击 pane 顶部的会话级「以当前状态分叉」入口。
- * 入口不锚定任何消息行（与行内 fork 不同），所以不走 hover 工具栏定位。
+ * 点击分叉菜单里的「以当前状态分叉」。
+ *
+ * 入口已并入 assistant 行 hover 工具栏的那个分叉按钮：**只有活动上下文起点是压缩边界**时
+ * 它才展开二级菜单（此时按轮回溯与按当前上下文产出不同），所以这里先点行级按钮再点菜单项。
+ * 没有压缩过时菜单不会出现、两种方式等价，那种场景直接用 `clickFirstV4Fork`。
  */
 export async function clickV4ForkCurrentContext() {
+  if (!(await clickFirstV4Fork())) {
+    throw new Error("v4 行级分叉按钮没有出现（assistant 行未完成？）");
+  }
   await clickTestIdByDom(TID_V4_FORK_CURRENT_CONTEXT, {
     timeout: 30000,
-    timeoutMsg: "v4 会话级分叉入口没有出现",
+    timeoutMsg: "v4 分叉菜单里没有「以当前状态分叉」（活动上下文起点不是压缩边界？）",
   });
 }
 
