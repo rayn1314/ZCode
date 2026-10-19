@@ -161,10 +161,23 @@ export class ZCodeStdioTransport implements ZCodeProtocolTransport {
         process.env.ZCODE_E2E_COVERAGE === "1"
           ? E2E_COVERAGE_STDIO_EOF_EXIT_WAIT_MS
           : STDIO_EOF_EXIT_WAIT_MS;
-      const remainingCleanupMs =
+      // Bug 原因：EOF 等待与「强杀 + 退出观察」共用同一个绝对 deadline，但前者没有为后者预留窗口。
+      // 高负载下快照 CIM 查询会吃掉大半预算（实测 25 次 cleanup 里 23 次 waiter 只拿到 0ms），
+      // waiter 于是在 force 定时器触发前就按 deadline 结算残留：整轮只发出必然失败的 graceful
+      // taskkill（实测 23 次 taskkill 全 force=false、0 次 /F，而该 graceful 对无窗口的 agent
+      // 必然返回 255），把本可强杀掉的进程报成清理失败并触发无意义重试。
+      // 修复：EOF 只是让 agent 自然收尾的礼貌窗口，最多用到 deadline 减去强杀窗口，
+      // 保证每个 attempt 都真的执行到强杀阶段；总时长上界（force + taskkill + 宽限）不变。
+      const killWindowMs =
+        PROCESS_TREE_WINDOWS_TASKKILL_TIMEOUT_MS + PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS;
+      const eofWaitDeadlineAtMs =
         windowsCleanupDeadlineAtMs === undefined
+          ? undefined
+          : windowsCleanupDeadlineAtMs - killWindowMs;
+      const remainingCleanupMs =
+        eofWaitDeadlineAtMs === undefined
           ? configuredEofWaitMs
-          : Math.max(windowsCleanupDeadlineAtMs - Date.now(), 0);
+          : Math.max(eofWaitDeadlineAtMs - Date.now(), 0);
       await this.waitForChildExit(Math.min(configuredEofWaitMs, remainingCleanupMs));
     }
     // app 关闭时 host 必须等进程树的 SIGTERM/SIGKILL 兜底跑完；
