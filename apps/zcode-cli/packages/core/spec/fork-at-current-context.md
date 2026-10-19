@@ -42,7 +42,8 @@ ZCode 的分叉只有一种语义：**回到某条消息那一刻**。它由 `fo
 摘要消息的 `uiVisibility: hidden` 与 `transcriptVisibility: hidden` 不变（它仍不是用户气泡），它以压缩分隔线上的可折叠块呈现，见 `packages/ui/spec/compact-summary-block.md`。本文不定义该块的形态。
 
 **D4 闸门沿用现有语义，不引入新的停止语义。**
-- 压缩进行中（投影 `activeWorks` 含 `compact`）时**入口不可用**：这一层判定留在 UI/投影侧（与 `forkAssistant` 的 `canFork` 同款），core 不新增"是否正在压缩"的运行时标志 —— 运行时没有这个事实，硬造一个就是第二个判定源；
+- **形态闸门（渲染级）**：入口只在 `capabilities.fork` 为真的 pane 形态下发（`@/v4/sessionPaneCapabilities` 的 4×13 矩阵：`observe` / `selectionSideChat` / `subagentChild` 三格为 `false`）。这三格不做会话分叉是既有矩阵裁决（与 `input-role-policy` 对 `selection_side_chat` / `subagent_child` 的拒绝一致），所以入口**不渲染**而不是渲染成禁用——只读视图与子会话里没有可用的分叉语义，摆一个永远灰的按钮是噪音。
+- **时点闸门（可用级）**：入口的可用性读投影裁决表 `snapshot.availability.fork`（`computeAvailability`：`compacting` → `compactOperationLock`、`phase === "draft"` → `forkTargetNotStable`），禁用时 tooltip 取该 `reasonCode` 对应文案。**UI 不得自行推导**——`availability.fork` 的 `compacting` 与 UI 原先写的 `activeWorks.some(kind === "compact")` 是同一个事实（`product-projection` 里 `compacting: activeWorks.some(...)`），自己再算一次就是第二个判定源。压缩中入口**留在原地但不可点**（不忽隐忽现），core 不新增"是否正在压缩"的运行时标志；
 - 父会话有未完成 turn 时按现有 CAS（`envelope.baseRevision`）裁决；
 - 本命令不读 `activeAbortController`、不 stop 父 runtime、不复制 workspace checkpoint（与 `forkStableConversation` 同款"conversation-only fork"）。
 

@@ -27,7 +27,7 @@ export interface SessionPaneCapabilities {
   dropTarget: boolean;
   /** 行内 `editUserQuery` / `retryTurn`。 */
   editRetry: boolean;
-  /** 行内 fork（把一轮分叉成新会话）。 */
+  /** 会话分叉：行内按轮回溯（`forkAssistant`）与会话级「以当前状态分叉」两个入口共用本列。 */
   fork: boolean;
   /**
    * 助手消息的 👍/👎 反馈。真值向量与 `goalCommands` / `selectionActions` 目前一致（只有

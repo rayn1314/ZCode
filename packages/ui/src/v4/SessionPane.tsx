@@ -4554,6 +4554,17 @@ export function SessionPane({
   // fork 可用性完全由 row.actions.canFork（CLI stable resolver 投影）裁决；pane 只提供命令回调。
   // fork 与 edit/retry **不是**同一件事：子代理子会话保留行内 edit/retry，但不做 fork（spec 矩阵）。
   const forkActionsEnabled = capabilities.fork && Boolean(sessionId);
+  // 会话级入口的**时点**可用性同样只读投影裁决表：`availability.fork` 的 `compacting` 就是
+  // `activeWorks` 含 compact（product-projection 的 computeAvailability 入参），UI 原先自己再算一遍
+  // `activeWorks.some(kind === "compact")` 属于第二个判定源，已删除。draft 下 forkActionsEnabled
+  // 为假、入口不渲染，所以这里只剩"会话存在但被 guard 挡住"这一种情况。
+  const forkAvailability = snapshot?.availability.fork;
+  // reasonCode 是 product-protocol guard id（见 snapshot schema 的 actionAvailabilitySchema），
+  // 驱动禁用态 tooltip。会话存在时入口只会被 compactOperationLock 挡住；未知 guard 回落通用文案。
+  const forkBlockedReason =
+    forkAvailability?.allowed === false && forkAvailability.reasonCode === "compactOperationLock"
+      ? intl.formatMessage({ id: "chat.message.forkCurrentContextCompacting" })
+      : undefined;
   // editUserQuery 已由 command 层防御 latest real user query，并在 running
   // 提交时先 stop barrier 再 rewind/rerun；UI 不应再用 completed gate 把入口整轮隐藏。
   const editActionsEnabled = capabilities.editRetry && Boolean(sessionId);
@@ -5551,13 +5562,9 @@ export function SessionPane({
           onSplitDown={onSplitDown}
           onClosePane={onClosePane}
           workspaceBadge={workspaceBadge}
-          onForkCurrentContext={isDraft ? undefined : handleForkCurrentContext}
-          forkCurrentContextDisabled={(snapshot?.control.activeWorks ?? []).some(
-            (work) => work.kind === "compact",
-          )}
-          forkCurrentContextDisabledReason={intl.formatMessage({
-            id: "chat.message.forkCurrentContextCompacting",
-          })}
+          onForkCurrentContext={forkActionsEnabled ? handleForkCurrentContext : undefined}
+          forkCurrentContextDisabled={forkAvailability?.allowed === false}
+          forkCurrentContextDisabledReason={forkBlockedReason}
         />
 
         <div
