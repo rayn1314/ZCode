@@ -82,7 +82,11 @@ import {
   resolveDynamicWorkflowJournalStore,
 } from "./dynamic-workflow-run-service.js";
 import { getWorkflowConcurrencyGovernor } from "./workflow-concurrency-governor.js";
-import { getProviderRateLimiter, withProviderRateLimit } from "./provider-rate-limiter.js";
+import {
+  createRateLimitOnlyAdmission,
+  getProviderRateLimiter,
+  withProviderRateLimit,
+} from "./provider-rate-limiter.js";
 import { createDynamicWorkflowSnippetService } from "./dynamic-workflow-snippet-service.js";
 import { createModelCatalogPort } from "./model-catalog-port.js";
 import { createDynamicWorkflowRunProgressSink } from "./dynamic-workflow-run-progress-sink.js";
@@ -605,7 +609,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // 不排队、不看冷却，但计入在飞并喂信号。进程级单例——配额本就在账号上，不按会话分。
     // 不再经 adapter 级 addStatusSink 喂信号：同一事件只能沿 ticket 喂一次。
     const workflowConcurrencyGovernor = getWorkflowConcurrencyGovernor();
-// per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
+    // per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
     // 已解析策略的地方就是这个 Registry。限速器自己也是进程单例（配额在账号上，跨会话共享），
     // 每次请求重读配置——用户在设置里改完立刻生效。
     const providerRateLimit = getProviderRateLimiter({
@@ -613,6 +617,11 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
         options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.requestsPerMinute ??
         undefined,
     });
+    // legacy workflow 的子代理（`Workflow` 工具与 expert workflow facade）不进进程级并发治理，
+    // 没有治理器端口可装饰；但它们发的是同一个 provider 账号的请求，配额必须与主代理、dwf actor
+    // 共用——否则它们会在主代理看不见的地方把配额吃光。给它们一个只带配额、不设并发闸门的端口，
+    // 并发语义逐字不变（见 provider-rate-limiter.ts 的 createRateLimitOnlyAdmission）。
+    const legacyWorkflowModelAdmission = createRateLimitOnlyAdmission(providerRateLimit);
     // 差异清单 1：子会话不建第二份模型适配器与 ApiProviderModelRuntime（各自都是进程级资源的
     // 第二份）；模型工厂取覆盖包里父派生的继承工厂（绑定本次派发选型，含调用级覆盖）。
     let modelAdapter: AiSdkModelAdapter | undefined;
@@ -660,6 +669,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           logger,
           mcpPort,
           modelFactory,
+          modelRequestAdmission: legacyWorkflowModelAdmission,
           permissionService,
           pluginSkillRoots: pluginOutcome.skillRoots,
           prepareUserExecutionBoundary,
@@ -851,7 +861,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           currentSelection: () => getRuntime().getSessionModelSelection(),
         });
     runtime = new AgentRuntime(sessionId, runtimeConfig, {
-...(options.readSubagentRuntimeConfig
+      ...(options.readSubagentRuntimeConfig
         ? {
             loadAgentDefinitions: async (input) => {
               const snapshot = await options.readSubagentRuntimeConfig!(input);
@@ -961,7 +971,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       modelCatalogPort,
       automationPort: options.automationPort,
       offPeakPort: options.offPeakPort,
-// 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走同一条构造入口创建子会话。
+      // 子代理派发端口（spec D1 / S1b-2）：core 的 Agent 工具经它走同一条构造入口创建子会话。
       // 子会话的 App 不拿到它（D8 结构性防套娃），配置侧另写死 `subagents.enabled: false`。
       subagentChildHost: options.subagentChildHost,
       topicResourcePort: options.topicResourcePort,
@@ -1043,6 +1053,7 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       logger,
       mcpPort,
       modelFactory,
+      modelRequestAdmission: legacyWorkflowModelAdmission,
       permissionService,
       prepareUserExecutionBoundary,
       runtime,

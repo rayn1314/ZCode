@@ -2,7 +2,8 @@
 // per-provider 请求速率限制（进程级，按 providerId 分桶，令牌桶）
 // ============================================================
 // 「这个 provider 每分钟最多发 N 个模型请求」，N 可空（不限制）。配额长在**账号**上，不在会话
-// 上，所以桶是进程级的：主代理、workflow 的所有 run、工具内部的模型调用共用同一份额度。
+// 上，所以桶是进程级的：主代理、workflow 的所有 run、legacy Workflow 工具的子代理、工具内部的
+// 模型调用共用同一份额度。
 //
 // 为什么只有这一个旋钮：服务商侧的约束本来就是「每分钟 N 次」。按它限速后并发自然被压住——
 // N=15/min 意味着每 4 秒一个令牌，单次请求约 3 秒，同一时刻最多 1 个在飞，并发上限是冗余的。
@@ -16,7 +17,12 @@
 // 代价是「一分钟内最多 N 次」在突发边界上略有出入（桶满时 N 次可立刻发出，随后按 N/60000 每毫秒
 // 匀速补），对配额约束而言这正是想要的语义——用户配的是**节奏**，不是精确的窗口计数。
 
-import type { Logger, ModelRequestAdmission, ModelRequestTarget } from "@zcode/contracts";
+import type {
+  Logger,
+  ModelRequestAdmission,
+  ModelRequestAdmissionTicket,
+  ModelRequestTarget,
+} from "@zcode/contracts";
 
 /** 限速端口：与并发闸门正交的一层，由 bootstrap 装到各处构造的 `ModelRequestAdmission` 上。 */
 export interface ProviderRateLimitPort {
@@ -257,4 +263,31 @@ export function withProviderRateLimit(
 ): ModelRequestAdmission | undefined {
   if (inner === undefined) return undefined;
   return { ...inner, awaitRateLimit: rateLimit.awaitRateLimit };
+}
+
+/** 直通票：不占任何并发槽，`release` 幂等。 */
+const PASS_THROUGH_TICKET: ModelRequestAdmissionTicket = {
+  publish() {},
+  release() {},
+};
+
+/**
+ * 只带速率配额、不设并发闸门的准入端口。
+ *
+ * 给「本来就不参与进程级并发治理」的调用方用——legacy `Workflow` 工具与 expert workflow facade
+ * 的子代理是各自独立的执行体，不排队、不喂治理器信号。但它们发的是**同一个 provider 账号**的
+ * 请求，配额必须与主代理、dwf actor 共用；否则它们会在主代理看不见的地方把配额吃光，用户只看到
+ * 「限了速还在撞 429」。
+ *
+ * 刻意不给 `tryAcquire`：runner 据此不发并发那一条 `model_request_queued` / `model_request_admitted`
+ * （没有快路径就分不清「排了队」与「立即放行」，见 contracts 的 `ModelRequestAdmission` 约定）。
+ * 限速那一条不受影响——它由 `awaitRateLimit` 的返回时长单独决定。
+ */
+export function createRateLimitOnlyAdmission(
+  rateLimit: ProviderRateLimitPort,
+): ModelRequestAdmission {
+  return {
+    awaitRateLimit: rateLimit.awaitRateLimit,
+    acquire: () => Promise.resolve(PASS_THROUGH_TICKET),
+  };
 }

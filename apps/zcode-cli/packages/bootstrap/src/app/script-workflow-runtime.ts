@@ -2,6 +2,7 @@ import {
   WorkflowAgentCallInputSchema,
   createChildTraceContext,
   createSessionId,
+  type ModelRequestAdmission,
   type ScriptWorkflowActivityRecord,
   type ScriptWorkflowRunRecord,
   type ScriptWorkflowRunStats,
@@ -44,6 +45,12 @@ import {
 const MAX_WORKFLOW_AGENT_CALLS = 1000;
 
 export interface ScriptWorkflowRuntimeDeps extends ScriptWorkflowAgentRuntimeDeps {
+  /**
+   * 子代理的模型请求准入端口。legacy `Workflow` 工具的子代理不参与进程级并发治理，但发的是同一个
+   * provider 账号的请求：装配侧给的是只带速率配额、不设并发闸门的端口
+   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`），配额与主代理共用。
+   */
+  modelRequestAdmission?: ModelRequestAdmission;
   prepareUserExecutionBoundary: PrepareUserExecutionBoundary;
   traceContext: TraceContext;
 }
@@ -298,6 +305,11 @@ export class ScriptWorkflowRuntime {
       deps: this.deps,
       request: input,
       traceContext: childTraceContext,
+      // 显式转交（`deps` 与 `modelRequestAdmission` 是同级入参，不会自动透传）：子代理的模型请求
+      // 与主代理共享 provider 配额。
+      ...(this.deps.modelRequestAdmission === undefined
+        ? {}
+        : { modelRequestAdmission: this.deps.modelRequestAdmission }),
     });
     const agentPrompt = buildAgentPrompt(input);
 

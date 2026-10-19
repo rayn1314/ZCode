@@ -94,9 +94,12 @@ export function createScriptWorkflowAgentRuntime(input: {
    */
   workflowEscalatePort?: WorkflowEscalatePort;
   /**
-   * 模型请求准入端口。dwf actor 由 driver
-   * 给出（每次模型请求尝试先过进程级闸门）；legacy `Workflow` 工具的子代理不传——不受闸门约束、
-   * 不喂信号。与两个工具端口同路进 runtime deps。
+   * 模型请求准入端口，与两个工具端口同路进 runtime deps。
+   *
+   * dwf actor 由 driver 给出（每次模型请求尝试先过进程级**并发**闸门）；legacy `Workflow` 工具的
+   * 子代理由 `script-workflow-runtime.ts` 转交装配侧给的**只带速率配额**的端口——它们不进并发
+   * 治理、不喂治理器信号，但发的是同一个 provider 账号的请求，每分钟配额必须与主代理共用
+   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`）。
    */
   modelRequestAdmission?: ModelRequestAdmission;
   /**
@@ -183,9 +186,7 @@ export function createScriptWorkflowAgentRuntime(input: {
       ...(input.workflowSubmitPort && input.workflowSubmitSchema
         ? { workflowSubmitSchema: input.workflowSubmitSchema }
         : {}),
-      ...(input.workflowEscalatePort
-        ? { workflowEscalatePort: input.workflowEscalatePort }
-        : {}),
+      ...(input.workflowEscalatePort ? { workflowEscalatePort: input.workflowEscalatePort } : {}),
       ...(input.modelRequestAdmission
         ? { modelRequestAdmission: input.modelRequestAdmission }
         : {}),

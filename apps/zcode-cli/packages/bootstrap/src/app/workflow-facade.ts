@@ -31,6 +31,7 @@ import {
   type PdfDocumentPort,
   type Logger,
   type McpPort,
+  type ModelRequestAdmission,
   type SessionEventSink,
   type SessionId,
   type SessionStorePort,
@@ -60,6 +61,12 @@ interface CreateWorkflowFacadeDeps {
   mcpPort?: McpPort;
   /** 父会话的 model factory（与 script-workflow-child-runtime.ts 同一约定）。 */
   modelFactory: NonNullable<AgentRuntimeDeps["modelFactory"]>;
+  /**
+   * expert workflow 子 runtime 的模型请求准入端口。这个子 runtime 不进进程级并发治理，但发的是
+   * 同一个 provider 账号的请求：装配侧给的是只带速率配额、不设并发闸门的端口
+   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`），配额与主代理共用。
+   */
+  modelRequestAdmission?: ModelRequestAdmission;
   permissionService: PermissionService;
   prepareUserExecutionBoundary: PrepareUserExecutionBoundary;
   runtime: AgentRuntime;
@@ -346,6 +353,10 @@ function createWorkflowChildRuntime(
       mcpPort: deps.mcpPort,
       eventSink: deps.eventSink,
       modelFactory: deps.modelFactory,
+      // 与主代理共享 provider 每分钟配额；并发上依旧不设闸门（端口刻意没有 tryAcquire）。
+      ...(deps.modelRequestAdmission === undefined
+        ? {}
+        : { modelRequestAdmission: deps.modelRequestAdmission }),
       resolveEffectiveModelSelection: deps.appOptions.resolveEffectiveModelSelection,
       // 对外交互端口由父 runtime 派生（permissionBroker + providerRuntimeHeadersPort）：
       // 子会话不是协议客户端认识的身份，直接透传 appOptions 的端口会让反向请求发到一个
