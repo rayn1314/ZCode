@@ -14,7 +14,7 @@ import { configDefaults, defineConfig } from "vitest/config";
  * 用例），别往这张表里放。
  *
  * 本文件的 `maxWorkers` 只管住「一次 vitest 运行」；工作区级入口 `pnpm test` 会再乘一层并行包数，
- * 所以 package.json 里给 `turbo run test` 加了 `--concurrency=2`（单包 4 worker × 并行包数）。
+ * 所以 package.json 里给 `turbo run test` 加了 `--concurrency=2`（单包 2 worker × 并行包数）。
  * 两条一起才是完整的上限。
  */
 const processOwningTests = [
@@ -53,11 +53,12 @@ const include = [
   "packages/*/tests/**/*.test.ts",
 ];
 
-// 4 是本仓库的既有口径（根 vitest.config.ts 同值）。机器更强时用环境变量临时放宽，别改这里：
+// CLI 用例的进程密度比根工作区高（单 bootstrap 就 200+ 文件，其中一批起真 ZCode app + 原生模块），
+// 所以默认比根 vitest.config.ts 的 4 更保守，取 2。机器更强时用环境变量临时放宽，别改这里：
 // 上限的意义是「保住开发机」，不是「榨满 CPU」。
 const configuredWorkers = Number.parseInt(process.env.ZCODE_CLI_TEST_MAX_WORKERS ?? "", 10);
 const maxWorkers =
-  Number.isFinite(configuredWorkers) && configuredWorkers > 0 ? configuredWorkers : 4;
+  Number.isFinite(configuredWorkers) && configuredWorkers > 0 ? configuredWorkers : 2;
 
 export default defineConfig({
   test: {
