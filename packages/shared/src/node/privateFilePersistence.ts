@@ -7,7 +7,14 @@ import { acquireFileLock } from "./atomicFileLock.js";
 const DEFAULT_LOCK_RETRY_DELAYS_MS = [25, 50, 100, 200, 400] as const;
 const DEFAULT_LOCK_OWNERLESS_GRACE_MS = 100;
 const DEFAULT_LOCK_MAX_WAIT_MS = 8_000;
-const DEFAULT_RENAME_RETRY_DELAYS_MS = [50, 100, 200, 400, 800] as const;
+// Windows 无法把文件 rename 覆盖到任何被打开（未带 FILE_SHARE_DELETE）的目标上：并发 reader、
+// 索引器或杀毒扫描都会让 rename 返回 EPERM/EACCES。这不是瞬时抖动，而是必须等对方释放句柄，
+// 所以用「时间预算 + 指数退避 + 抖动」代替固定几次重试：早期密集抢短窗口，后期拉开间隔等慢扫描。
+// 预算刻意小于跨进程文件锁的 8s 上限，避免单次写入把对端顶到锁超时。
+const DEFAULT_RENAME_RETRY_BUDGET_MS = 3_000;
+const RENAME_RETRY_BASE_DELAY_MS = 25;
+const RENAME_RETRY_MAX_DELAY_MS = 500;
+const RENAME_RETRY_JITTER_RATIO = 0.25;
 const processFileLockTails = new Map<string, Promise<void>>();
 
 export interface SharedFileLockOptions {
@@ -32,15 +39,24 @@ function isRetryableRenameError(error: unknown): boolean {
 async function renameWithRetry(
   tempFile: string,
   filePath: string,
-  retryDelaysMs: readonly number[],
+  retryBudgetMs: number,
 ): Promise<void> {
+  const deadlineMs = Date.now() + Math.max(retryBudgetMs, 0);
   for (let attempt = 0; ; attempt += 1) {
     try {
       await rename(tempFile, filePath);
       return;
     } catch (error) {
-      const delayMs = retryDelaysMs[attempt];
-      if (delayMs === undefined || !isRetryableRenameError(error)) {
+      // 早期密集重试抢短窗口，触顶后按 500ms 间隔等慢扫描；抖动按 pid + 次数派生，
+      // 让同机多个进程的重试错开节拍、不会同时撞同一个句柄（这里只是调度抖动，不引入随机源）。
+      const backoffMs = Math.min(
+        RENAME_RETRY_BASE_DELAY_MS * 2 ** Math.min(attempt, 10),
+        RENAME_RETRY_MAX_DELAY_MS,
+      );
+      const jitterMs =
+        backoffMs * (((process.pid + attempt * 17) % 100) / 100) * RENAME_RETRY_JITTER_RATIO;
+      const delayMs = backoffMs + jitterMs;
+      if (!isRetryableRenameError(error) || Date.now() + delayMs > deadlineMs) {
         throw error;
       }
       await sleep(delayMs);
@@ -88,7 +104,7 @@ export async function withFileLock<T>(
 export async function atomicWritePrivateTextFile(
   filePath: string,
   content: string,
-  renameRetryDelaysMs: readonly number[] = DEFAULT_RENAME_RETRY_DELAYS_MS,
+  renameRetryBudgetMs: number = DEFAULT_RENAME_RETRY_BUDGET_MS,
 ): Promise<void> {
   const directory = dirname(filePath);
   const tempPath = join(
@@ -98,7 +114,7 @@ export async function atomicWritePrivateTextFile(
   await mkdir(directory, { recursive: true });
   try {
     await writeFile(tempPath, content, { encoding: "utf-8", mode: 0o600 });
-    await renameWithRetry(tempPath, filePath, renameRetryDelaysMs);
+    await renameWithRetry(tempPath, filePath, renameRetryBudgetMs);
   } catch (error) {
     await rm(tempPath, { force: true }).catch(() => undefined);
     throw error;
