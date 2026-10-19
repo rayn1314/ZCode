@@ -6,6 +6,8 @@ import {
   withProviderRateLimit,
   type ProviderRateLimiterOptions,
 } from "../src/app/provider-rate-limiter.js";
+import { msUntilNextQuotaToken, refillQuotaState } from "../src/app/provider-quota-math.js";
+import type { ProviderQuotaSharedStore } from "../src/app/provider-quota-shared-store.js";
 
 const MODEL: ModelRequestTarget = { providerId: "provider-a", modelId: "model-a" };
 
@@ -43,18 +45,63 @@ function createTestClock() {
   };
 }
 
-/** 默认把 provider-a 配成 1/min——桶容量 1，第二次请求必须等满 60 秒。 */
-function createLimiterHarness(overrides: Partial<ProviderRateLimiterOptions> = {}) {
+/**
+ * 共享路径天然是异步的（要跨文件边界），所以「它到底排没排定时器」必须等微任务跑完再断言；
+ * 同步断言只会看到「还没开始等」。
+ */
+async function flushMicrotasks(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) await Promise.resolve();
+}
+
+/** 默认把 provider-a 配成 1/min——桶容量 1，第二次请求必须等满 60 秒。 */ function createLimiterHarness(
+  overrides: Partial<ProviderRateLimiterOptions> = {},
+) {
   const clock = createTestClock();
   const info = vi.fn();
+  const warn = vi.fn();
   const limiter = createProviderRateLimiter({
     resolveRequestsPerMinute: (providerId) => (providerId === MODEL.providerId ? 1 : undefined),
     now: clock.now,
     schedule: clock.schedule,
-    logger: { info },
+    logger: { info, warn },
     ...overrides,
   });
-  return { clock, limiter, info };
+  return { clock, limiter, info, warn };
+}
+
+/**
+ * 共享账本的测试替身：用**真实**的桶数学（`provider-quota-math`）在两个限速器实例之间共享余额，
+ * 就是「两个进程摸到同一份账本」的语义。文件版账本自己的读写与加锁由
+ * provider-quota-shared-store.test.ts 覆盖。
+ */
+function createInMemorySharedStore() {
+  const buckets = new Map<
+    string,
+    { requestsPerMinute: number; tokens: number; updatedAtMs: number }
+  >();
+  const calls: string[] = [];
+  const store: ProviderQuotaSharedStore = {
+    tryConsume: ({ key, requestsPerMinute, atMs }) => {
+      calls.push(key);
+      const bucket = buckets.get(key) ?? {
+        requestsPerMinute,
+        tokens: requestsPerMinute,
+        updatedAtMs: atMs,
+      };
+      bucket.requestsPerMinute = requestsPerMinute;
+      refillQuotaState(bucket, atMs);
+      buckets.set(key, bucket);
+      if (bucket.tokens >= 1) {
+        bucket.tokens -= 1;
+        return Promise.resolve({ kind: "granted" as const });
+      }
+      return Promise.resolve({
+        kind: "exhausted" as const,
+        retryInMs: msUntilNextQuotaToken(bucket),
+      });
+    },
+  };
+  return { calls, store };
 }
 
 /** 主代理那一侧：治理器 observer 式的准入端口，经装饰拿到限速层。 */
@@ -189,5 +236,86 @@ describe("限速器是进程单例", () => {
     const first = getProviderRateLimiter({ resolveRequestsPerMinute: () => undefined });
     const second = getProviderRateLimiter({ resolveRequestsPerMinute: () => undefined });
     expect(second).toBe(first);
+  });
+});
+
+describe("跨进程共享账本（同机多端）", () => {
+  it("两个限速器实例共用一个账本：合计才是额度，不是各算一份", async () => {
+    const { store } = createInMemorySharedStore();
+    const clock = createTestClock();
+    const shared = {
+      resolveSharedBucketKey: () => "provider-a--fingerprint",
+      now: clock.now,
+      schedule: clock.schedule,
+      sharedStore: store,
+    };
+    const first = createLimiterHarness(shared);
+    const second = createLimiterHarness(shared);
+
+    await expect(first.limiter.awaitRateLimit({ model: MODEL })).resolves.toBe(0);
+    // 第二个进程（同机另一端）接着发：额度已被用掉，必须等。
+    const waiting = second.limiter.awaitRateLimit({ model: MODEL });
+    await flushMicrotasks();
+    expect(clock.pending()).toBe(1);
+    clock.advanceBy(60_000);
+    await expect(waiting).resolves.toBe(60_000);
+  });
+
+  it("算不出账号指纹（key 为 undefined）就不走账本，退回进程内桶", async () => {
+    const { store, calls } = createInMemorySharedStore();
+    const { limiter } = createLimiterHarness({
+      resolveSharedBucketKey: () => undefined,
+      sharedStore: store,
+    });
+    await expect(limiter.awaitRateLimit({ model: MODEL })).resolves.toBe(0);
+    expect(calls).toEqual([]);
+  });
+
+  it("账本不可达时降级为进程内限速：仍然限速，绝不 fail-open", async () => {
+    const broken: ProviderQuotaSharedStore = {
+      tryConsume: () => Promise.reject(new Error("shared store offline")),
+    };
+    const { clock, limiter, warn } = createLimiterHarness({
+      resolveSharedBucketKey: () => "provider-a--fingerprint",
+      sharedStore: broken,
+    });
+    // 第一次：账本挂了，退回进程内桶 —— 桶里有一个令牌，立即放行。
+    await expect(limiter.awaitRateLimit({ model: MODEL })).resolves.toBe(0);
+    // 第二次：进程内桶也空了 —— 依然要等，说明降级不是「放行」。
+    const waiting = limiter.awaitRateLimit({ model: MODEL });
+    await flushMicrotasks();
+    expect(clock.pending()).toBe(1);
+    clock.advanceBy(60_000);
+    await expect(waiting).resolves.toBe(60_000);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain("falling back to process-local limit");
+  });
+
+  it("降级告警会节流，不刷屏", async () => {
+    const broken: ProviderQuotaSharedStore = {
+      tryConsume: () => Promise.reject(new Error("shared store offline")),
+    };
+    // 本地配额给足，让三次请求都即刻放行——不同时刻的降级才会各记一条，节流看的是同一个窗口内。
+    const { limiter, warn } = createLimiterHarness({
+      resolveRequestsPerMinute: () => 3,
+      resolveSharedBucketKey: () => "provider-a--fingerprint",
+      sharedStore: broken,
+    });
+    await limiter.awaitRateLimit({ model: MODEL });
+    await limiter.awaitRateLimit({ model: MODEL });
+    await limiter.awaitRateLimit({ model: MODEL });
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("共享模式不影响不限速的 provider", async () => {
+    const { store, calls } = createInMemorySharedStore();
+    const { limiter } = createLimiterHarness({
+      resolveSharedBucketKey: () => "provider-b--fingerprint",
+      sharedStore: store,
+    });
+    await expect(
+      limiter.awaitRateLimit({ model: { providerId: "provider-b", modelId: "model-a" } }),
+    ).resolves.toBe(0);
+    expect(calls).toEqual([]);
   });
 });

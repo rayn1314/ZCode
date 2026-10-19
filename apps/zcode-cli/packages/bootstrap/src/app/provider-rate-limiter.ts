@@ -1,5 +1,5 @@
 // ============================================================
-// per-provider 请求速率限制（进程级，按 providerId 分桶，令牌桶）
+// per-provider 请求速率限制（令牌桶；进程内默认，可选跨进程共享）
 // ============================================================
 // 「这个 provider 每分钟最多发 N 个模型请求」，N 可空（不限制）。配额长在**账号**上，不在会话
 // 上，所以桶是进程级的：主代理、workflow 的所有 run、legacy Workflow 工具的子代理、工具内部的
@@ -16,6 +16,10 @@
 // 令牌桶而不是滑动窗口：滑动窗口要保留每个请求的时间戳、状态随在飞量线性增长，而桶是三个标量。
 // 代价是「一分钟内最多 N 次」在突发边界上略有出入（桶满时 N 次可立刻发出，随后按 N/60000 每毫秒
 // 匀速补），对配额约束而言这正是想要的语义——用户配的是**节奏**，不是精确的窗口计数。
+//
+// 跨进程共享（同机多端，见 provider-quota-shared-store.ts）：进程内的桶只能管住自己这个进程，
+// 于是「Windows 限 20/min、WSL 限 20/min」合计能到 40/min。给定共享账本时改走账本、由文件锁
+// 保证两端共用一个余额；账本不可达则**降级为进程内限速**，绝不 fail-open。
 
 import type {
   Logger,
@@ -23,6 +27,13 @@ import type {
   ModelRequestAdmissionTicket,
   ModelRequestTarget,
 } from "@zcode/contracts";
+import {
+  normalizeRequestsPerMinute,
+  msUntilNextQuotaToken,
+  refillQuotaState,
+  type QuotaState,
+} from "./provider-quota-math.js";
+import type { ProviderQuotaSharedStore } from "./provider-quota-shared-store.js";
 
 /** 限速端口：与并发闸门正交的一层，由 bootstrap 装到各处构造的 `ModelRequestAdmission` 上。 */
 export interface ProviderRateLimitPort {
@@ -37,9 +48,19 @@ export interface ProviderRateLimitPort {
  */
 export type ProviderRequestsPerMinuteResolver = (providerId: string) => number | undefined;
 
+/**
+ * 读某个 provider 的共享配额键（账号指纹，见 `computeSharedQuotaKey`）。
+ * 答 undefined = 这个 provider 不参与共享，走进程内桶。
+ */
+export type ProviderSharedQuotaKeyResolver = (providerId: string) => string | undefined;
+
 export interface ProviderRateLimiterOptions {
   /** 每分钟请求数的查询（可注入）。 */
   resolveRequestsPerMinute: ProviderRequestsPerMinuteResolver;
+  /** 跨进程共享账本；缺席则一切照旧（各进程各限各的）。 */
+  sharedStore?: ProviderQuotaSharedStore;
+  /** 共享配额键的查询；缺席则共享模式下不生效。 */
+  resolveSharedBucketKey?: ProviderSharedQuotaKeyResolver;
   /** 时钟（可注入）：毫秒。 */
   now?: () => number;
   /** 定时器（可注入）：令牌补齐时唤醒等待者。返回取消函数。 */
@@ -55,12 +76,8 @@ interface Waiter {
   enqueuedAtMs: number;
 }
 
-interface Bucket {
-  requestsPerMinute: number;
-  /** 令牌余额（浮点，按经过时间补齐）。 */
-  tokens: number;
-  /** 上次补算的时刻。 */
-  updatedAtMs: number;
+/** 进程内的桶 = 令牌桶状态 + 等待者与定时器（那两样是纯数学里没有的）。 */
+interface Bucket extends QuotaState {
   /** 等待者 FIFO：先进先出，避免密集流量下有人被永久跳过。 */
   waiters: Waiter[];
   /** 已排定的唤醒定时器；同一时刻至多一个（惊群会让 N 个等待者抢同一个令牌）。 */
@@ -69,7 +86,8 @@ interface Bucket {
   wakeAtMs?: number;
 }
 
-const MINUTE_MS = 60_000;
+/** 降级告警的节流窗口：账本长期不可达时别再刷屏，一次说清就够。 */
+const DEGRADE_LOG_INTERVAL_MS = 60_000;
 
 const defaultSchedule = (callback: () => void, delayMs: number): (() => void) => {
   const timer = setTimeout(callback, delayMs);
@@ -78,41 +96,13 @@ const defaultSchedule = (callback: () => void, delayMs: number): (() => void) =>
   return () => clearTimeout(timer);
 };
 
-/** 配出来的值是否可用。0 与负数会让配额永远补不满——那不是限速，是把所有请求永久挂起。 */
-function normalizeRequestsPerMinute(value: number | undefined): number | undefined {
-  if (value === undefined || !Number.isFinite(value)) return undefined;
-  const floored = Math.floor(value);
-  return floored >= 1 ? floored : undefined;
-}
-
-/** 按经过时间补令牌。桶容量 = 每分钟请求数（满桶即允许一次 N 连发）。 */
-function refill(bucket: Bucket, nowMs: number): void {
-  const elapsed = nowMs - bucket.updatedAtMs;
-  // 时钟回拨（系统改时间、NTP 校正）不该凭空造出令牌：负的时间差当作没经过。
-  if (elapsed <= 0) {
-    bucket.updatedAtMs = nowMs;
-    return;
-  }
-  bucket.updatedAtMs = nowMs;
-  bucket.tokens = Math.min(
-    bucket.requestsPerMinute,
-    bucket.tokens + (elapsed * bucket.requestsPerMinute) / MINUTE_MS,
-  );
-}
-
-/** 距下一个令牌还有多少毫秒（至少 1ms，向上取整——0 会让定时器空转烧 CPU）。 */
-function msUntilNextToken(bucket: Bucket): number {
-  const missing = 1 - bucket.tokens;
-  if (missing <= 0) return 1;
-  return Math.max(1, Math.ceil((missing * MINUTE_MS) / bucket.requestsPerMinute));
-}
-
 export function createProviderRateLimiter(
   options: ProviderRateLimiterOptions,
 ): ProviderRateLimitPort {
   const now = options.now ?? Date.now;
   const schedule = options.schedule ?? defaultSchedule;
   const buckets = new Map<string, Bucket>();
+  let lastDegradeLoggedAtMs: number | undefined;
 
   const cancelWake = (bucket: Bucket): void => {
     bucket.cancelWake?.();
@@ -136,7 +126,7 @@ export function createProviderRateLimiter(
 
   /** 排下一次唤醒；已有更早的排定就不动（否则抬高上限也救不了已在等的那批人）。 */
   const scheduleWake = (bucket: Bucket, atMs: number): void => {
-    const delayMs = msUntilNextToken(bucket);
+    const delayMs = msUntilNextQuotaToken(bucket);
     if (bucket.cancelWake !== undefined) {
       if (bucket.wakeAtMs !== undefined && bucket.wakeAtMs <= atMs + delayMs) return;
       cancelWake(bucket);
@@ -151,7 +141,7 @@ export function createProviderRateLimiter(
 
   /** 把能立刻拿到令牌的等待者按 FIFO 放行；剩下的排下一次唤醒。 */
   const drain = (bucket: Bucket, atMs: number): void => {
-    refill(bucket, atMs);
+    refillQuotaState(bucket, atMs);
     while (bucket.waiters.length > 0 && bucket.tokens >= 1) {
       const waiter = bucket.waiters.shift()!;
       releaseWaiter(waiter);
@@ -165,6 +155,129 @@ export function createProviderRateLimiter(
     scheduleWake(bucket, atMs);
   };
 
+  /** 进程内限速：也是共享账本不可达时的退路。 */
+  const awaitLocalQuota = async (
+    providerId: string,
+    requestsPerMinute: number,
+    signal: AbortSignal | undefined,
+  ): Promise<number> => {
+    const atMs = now();
+    let bucket = buckets.get(providerId);
+    if (bucket === undefined) {
+      bucket = { requestsPerMinute, tokens: requestsPerMinute, updatedAtMs: atMs, waiters: [] };
+      buckets.set(providerId, bucket);
+    } else {
+      // 配置是每次请求重读的：改了上限立刻生效。**不重置余额**——抬高上限只放宽「最多还要
+      // 等多久」，已经累积的令牌不该被抹掉；调低则由 refill 的容量钳制自然收紧。
+      bucket.requestsPerMinute = requestsPerMinute;
+    }
+    const current = bucket;
+    // 先放行既有等待者，再考虑自己：新来的不能插队到已经排队的请求前面。
+    drain(current, atMs);
+    if (current.tokens >= 1) {
+      current.tokens -= 1;
+      return 0;
+    }
+    if (signal?.aborted === true) throw signal.reason;
+    return await new Promise<number>((resolve, reject) => {
+      const waiter: Waiter = {
+        enqueuedAtMs: atMs,
+        reject,
+        resolve,
+        ...(signal === undefined ? {} : { signal }),
+      };
+      if (signal !== undefined) {
+        const onAbort = (): void => {
+          // abort 必须**立刻**返回且不留残余：等待者摘掉后若队列空了，定时器也一并撤掉，
+          // 否则用户取消之后进程还会被一个无主的 setTimeout 拖住。
+          if (!removeWaiter(current, waiter)) return;
+          if (current.waiters.length === 0) cancelWake(current);
+          reject(signal.reason);
+        };
+        waiter.onAbort = onAbort;
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+      current.waiters.push(waiter);
+      if (current.cancelWake === undefined) scheduleWake(current, atMs);
+    });
+  };
+
+  /** 睡一小段（等账本说的下一个令牌时刻）。与进程内的等待一样，abort 立刻生效。 */
+  const waitForDelay = (delayMs: number, signal: AbortSignal | undefined): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const cancel = schedule(() => {
+        if (settled) return;
+        settled = true;
+        if (signal !== undefined) signal.removeEventListener("abort", abort);
+        resolve();
+      }, delayMs);
+      const abort = (): void => {
+        if (settled) return;
+        settled = true;
+        cancel();
+        reject(signal?.reason);
+      };
+      if (signal === undefined) return;
+      if (signal.aborted) {
+        abort();
+        return;
+      }
+      signal.addEventListener("abort", abort, { once: true });
+    });
+
+  /**
+   * 跨进程限速：每次尝试都由账本在文件锁下原子扣一个令牌。拿不到令牌就按账本说的间隔重试；
+   * 账本不可达则退回进程内限速（**不是**放行）。
+   *
+   * 与进程内那套的差别只在公平性：账本说不出「谁先到」，两端同时醒来时谁抢到算谁的。跨进程的
+   * FIFO 要么做不到、要么得把排序状态也搬进文件，不划算——配额约束要的是节奏，不是先后。
+   */
+  const awaitSharedQuota = async (
+    providerId: string,
+    requestsPerMinute: number,
+    bucketKey: string,
+    signal: AbortSignal | undefined,
+  ): Promise<number> => {
+    const store = options.sharedStore;
+    if (store === undefined) return awaitLocalQuota(providerId, requestsPerMinute, signal);
+    const startedAtMs = now();
+    for (;;) {
+      if (signal?.aborted === true) throw signal.reason;
+      let outcome;
+      try {
+        outcome = await store.tryConsume({
+          key: bucketKey,
+          requestsPerMinute,
+          atMs: now(),
+        });
+      } catch (error) {
+        const atMs = now();
+        if (
+          lastDegradeLoggedAtMs === undefined ||
+          atMs - lastDegradeLoggedAtMs >= DEGRADE_LOG_INTERVAL_MS
+        ) {
+          lastDegradeLoggedAtMs = atMs;
+          options.logger?.warn?.(
+            "Provider quota shared store unavailable; falling back to process-local limit",
+            {
+              event: "model.rate_limit.shared_unavailable",
+              module: "bootstrap.app",
+              providerId,
+              requestsPerMinute,
+              bucketKey,
+              reason: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+        // 退回进程内桶：账本读不到时至少还按本进程的额度限着，绝不能一次挂载失败变成完全不限速。
+        return await awaitLocalQuota(providerId, requestsPerMinute, signal);
+      }
+      if (outcome.kind === "granted") return Math.max(0, now() - startedAtMs);
+      await waitForDelay(outcome.retryInMs, signal);
+    }
+  };
+
   return {
     awaitRateLimit: async (input) => {
       const providerId = String(input.model.providerId);
@@ -173,46 +286,11 @@ export function createProviderRateLimiter(
       );
       // 不限速：不建桶、不排定时器、不留任何状态。绝大多数 provider 走这条路。
       if (requestsPerMinute === undefined) return 0;
-      const atMs = now();
-      let bucket = buckets.get(providerId);
-      if (bucket === undefined) {
-        bucket = { requestsPerMinute, tokens: requestsPerMinute, updatedAtMs: atMs, waiters: [] };
-        buckets.set(providerId, bucket);
-      } else {
-        // 配置是每次请求重读的：改了上限立刻生效。**不重置余额**——抬高上限只放宽「最多还要
-        // 等多久」，已经累积的令牌不该被抹掉；调低则由 refill 的容量钳制自然收紧。
-        bucket.requestsPerMinute = requestsPerMinute;
-      }
-      const current = bucket;
-      // 先放行既有等待者，再考虑自己：新来的不能插队到已经排队的请求前面。
-      drain(current, atMs);
-      if (current.tokens >= 1) {
-        current.tokens -= 1;
-        return 0;
-      }
-      const signal = input.signal;
-      if (signal?.aborted === true) throw signal.reason;
-      const waitedMs = await new Promise<number>((resolve, reject) => {
-        const waiter: Waiter = {
-          enqueuedAtMs: atMs,
-          reject,
-          resolve,
-          ...(signal === undefined ? {} : { signal }),
-        };
-        if (signal !== undefined) {
-          const onAbort = (): void => {
-            // abort 必须**立刻**返回且不留残余：等待者摘掉后若队列空了，定时器也一并撤掉，
-            // 否则用户取消之后进程还会被一个无主的 setTimeout 拖住。
-            if (!removeWaiter(current, waiter)) return;
-            if (current.waiters.length === 0) cancelWake(current);
-            reject(signal.reason);
-          };
-          waiter.onAbort = onAbort;
-          signal.addEventListener("abort", onAbort, { once: true });
-        }
-        current.waiters.push(waiter);
-        if (current.cancelWake === undefined) scheduleWake(current, atMs);
-      });
+      const sharedKey = options.resolveSharedBucketKey?.(providerId);
+      const waitedMs =
+        options.sharedStore !== undefined && sharedKey !== undefined
+          ? await awaitSharedQuota(providerId, requestsPerMinute, sharedKey, input.signal)
+          : await awaitLocalQuota(providerId, requestsPerMinute, input.signal);
       // 每分钟配额是「攒出来的一分钟里的一小段等待」，值得一条 info 让用户知道转圈是在等什么；
       // 只报真正等了的那次（>0），不限速的 provider 不会刷屏。
       if (waitedMs > 0) {
@@ -235,17 +313,26 @@ let processRateLimiter: ProviderRateLimitPort | undefined;
  * 间接层：进程里的多个 app 先后取用单例时，后一个要能把 resolver 换成自己的 Registry。
  */
 let processResolver: ProviderRequestsPerMinuteResolver | undefined;
+/** 同上，共享账本的键查询也是「进程级一份、跟着 app 换」。 */
+let processSharedKeyResolver: ProviderSharedQuotaKeyResolver | undefined;
 
 /**
  * 进程级单例：配额长在账号上，同一进程里的多个会话（app）必须共用一份桶，否则每个会话各发 N 次，
  * 加起来照样撞墙。取用时重新绑定 resolver，让桶始终读**当前** app 背后的 Provider Registry。
+ *
+ * 共享账本只在首次构造时采纳：它读环境变量定位置，而环境在进程内是常量；换 app 只换 resolver。
  */
 export function getProviderRateLimiter(options: {
   readonly resolveRequestsPerMinute: ProviderRequestsPerMinuteResolver;
+  readonly sharedStore?: ProviderQuotaSharedStore;
+  readonly resolveSharedBucketKey?: ProviderSharedQuotaKeyResolver;
 }): ProviderRateLimitPort {
   processResolver = options.resolveRequestsPerMinute;
+  processSharedKeyResolver = options.resolveSharedBucketKey;
   processRateLimiter ??= createProviderRateLimiter({
     resolveRequestsPerMinute: (providerId) => processResolver?.(providerId),
+    resolveSharedBucketKey: (providerId) => processSharedKeyResolver?.(providerId),
+    ...(options.sharedStore === undefined ? {} : { sharedStore: options.sharedStore }),
   });
   return processRateLimiter;
 }

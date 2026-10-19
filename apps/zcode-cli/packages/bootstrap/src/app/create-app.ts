@@ -82,6 +82,7 @@ import {
   resolveDynamicWorkflowJournalStore,
 } from "./dynamic-workflow-run-service.js";
 import { getWorkflowConcurrencyGovernor } from "./workflow-concurrency-governor.js";
+import { createProviderQuotaSharing } from "./provider-quota-wiring.js";
 import {
   createRateLimitOnlyAdmission,
   getProviderRateLimiter,
@@ -612,10 +613,24 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
     // per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
     // 已解析策略的地方就是这个 Registry。限速器自己也是进程单例（配额在账号上，跨会话共享），
     // 每次请求重读配置——用户在设置里改完立刻生效。
+    //
+    // 同机跨端（Windows 桌面 + WSL 远端）还要共用**同一份额度**：两端数据根虽隔离，但摸得到同一块
+    // 磁盘，于是把余额落到一个共享文件，由文件锁保证两端原子扣减。位置算不出来（非 Windows / 非
+    // WSL）就不共享，各限各的；账本不可达时降级为进程内限速，绝不 fail-open。
+    // 「账本落在哪、桶按什么键分」在 provider-quota-wiring.ts 里（可单测）。
+    const providerQuotaSharing = createProviderQuotaSharing({
+      readProviderConfig: (providerId) => options.providerRegistry.getProvider(providerId)?.config,
+      env: options.env,
+      logger,
+    });
     const providerRateLimit = getProviderRateLimiter({
       resolveRequestsPerMinute: (providerId) =>
         options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.requestsPerMinute ??
         undefined,
+      resolveSharedBucketKey: providerQuotaSharing.resolveSharedBucketKey,
+      ...(providerQuotaSharing.sharedStore === undefined
+        ? {}
+        : { sharedStore: providerQuotaSharing.sharedStore }),
     });
     // legacy workflow 的子代理（`Workflow` 工具与 expert workflow facade）不进进程级并发治理，
     // 没有治理器端口可装饰；但它们发的是同一个 provider 账号的请求，配额必须与主代理、dwf actor
