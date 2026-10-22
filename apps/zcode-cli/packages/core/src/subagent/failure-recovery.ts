@@ -113,24 +113,12 @@ export function formatSubagentFailureGuidance(
   const handle = `SendMessage with to: '${agentId}'`;
   switch (recovery.kind) {
     case "transient":
-      return [
-        `Failure kind: transient provider error${describeFailure(recovery)}. The task itself did not fail — this agent's session, its completed tool calls, and everything it already produced are preserved.`,
-        `Resume it instead of dispatching a new agent: call ${handle} and tell it to pick up where it stopped and report what it has. Re-dispatching repeats the work it already did.`,
-      ].join(" ");
+      return `Failure kind: transient provider error${describeFailure(recovery)} — the provider request failed, not the agent's work. Resume it with ${handle}; do not re-dispatch.`;
     case "configuration":
-      return [
-        `Failure kind: configuration error${describeFailure(recovery)}. Resuming the same agent will hit the same error — this is not a transient fault.`,
-        "Fix what the error names (provider, credentials, model, or context size) or ask the user. Do not dispatch a new agent for the same task, and do not simply retry.",
-      ].join(" ");
+      return `Failure kind: configuration error${describeFailure(recovery)} — a resume hits the same wall. Fix what the error names or ask the user; do not retry or re-dispatch.`;
     case "cancelled":
-      return [
-        `Failure kind: cancelled${describeFailure(recovery)}. The agent was stopped rather than broken.`,
-        `If the work is still wanted, resume it with ${handle}; otherwise leave it stopped and do not dispatch a replacement.`,
-      ].join(" ");
+      return `Failure kind: cancelled${describeFailure(recovery)} — cancelled, not broken. Resume it with ${handle} only if that cancellation was not the user's.`;
     case "unknown":
-      return [
-        `Failure kind: unclassified${describeFailure(recovery)}.`,
-        `If this looks like it interrupted work the agent had already done, resume it with ${handle} instead of re-dispatching; otherwise fix what the error names, or change the scope and dispatch a new agent.`,
-      ].join(" ");
+      return `Failure kind: unclassified${describeFailure(recovery)}. If it interrupted work the agent already did, resume it with ${handle} instead of re-dispatching; otherwise fix what the error names or re-scope.`;
   }
 }

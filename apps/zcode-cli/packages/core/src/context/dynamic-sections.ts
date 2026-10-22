@@ -41,24 +41,28 @@ const CONTEXT_MANAGEMENT_PROMPTS = {
   ].join("\n"),
 } as const;
 
-export function buildSessionGuidanceSection(toolNames: readonly string[], hasSkills = false): ContextSection | null {
+export function buildSessionGuidanceSection(
+  toolNames: readonly string[],
+  hasSkills = false,
+): ContextSection | null {
   const tools = new Set(toolNames);
   const lines = ["# Session-specific guidance"];
 
   // 子代理协作规则（spec `core/spec/subagent-continuation-copy.md` D1）：默认类型是
   // general-purpose，所以不写上游那句「broad exploration 用 Explore」——那是错指引。
-  // 「终态即续跑」必须出现在系统提示词里而不只在工具描述里：父代理的默认反应曾经是
-  // 重开，根因之一就是这里整段被注释、没有任何反重开的表述。
+  // 这里只留一句指针：机制与写法分别由 Agent / SendMessage 的工具描述承担，四处复述
+  // 只会稀释注意力（常驻成本曾到过 ~850 tokens）。但「终态即续跑」必须出现在系统提示词
+  // 里而不只在工具描述里：父代理的默认反应曾经是重开，根因之一就是这里整段被注释。
   if (tools.has("Agent")) {
     lines.push(
-      "- The Agent tool returns a handle (agentId) while the agent keeps running; results come back through its completion notification. Use TaskOutput(task_id, block: true) when you need to wait inline.",
-      "- A subagent that reached a terminal state is not gone: SendMessage to its `agentId` resumes that same session with its tool results and context intact. Resume it instead of re-dispatching the same task — only dispatch a fresh agent when the scope changed, and stop the old one first.",
-      "- When you launch multiple agents for independent work, send them in a single message with multiple tool uses so they run concurrently, and keep their scopes non-overlapping so they do not work on the same files.",
+      "- Subagents run in the background; a terminal one can be resumed with SendMessage to its `agentId`. Resume it instead of re-dispatching the same task.",
     );
   }
 
   if (tools.has("Skill") && hasSkills) {
-    lines.push("- When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess.");
+    lines.push(
+      "- When the user types `/<skill-name>`, invoke it via Skill. Only use skills listed in the user-invocable skills section — don't guess.",
+    );
   }
 
   // if (tools.has("AskUserQuestion")) {

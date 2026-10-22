@@ -47,9 +47,18 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 
 - **D1 表述只在三个点收口，不新增「协作技能」文档层。** Agent 工具描述、SendMessage 工具描述、
   Session guidance 段。模型在这三处读到的口径必须一致，且都由同一批常量导出，避免第四份副本。
-- **D2 续跑语义写成三句可执行规则，而不是一段散文。** 判据是父代理手里已有的三个字段：
-  通知的 `agent-id`、`status`、`<usage>` 里的 `tool_uses` / `subagent_tokens`。规则：
-  「终态即可续跑」；「有 usage 说明它做过工，先续跑」；「续跑也要像重派一样给判断，不是空喊 continue」。
+- **D1b 同一件事只讲一次；常驻表述有预算。** 这三处是每次请求常驻的，第一版把「终态可续跑、
+  别重派」在四处各讲了一遍（Agent 5 条 / SendMessage 3 条 / guidance 3 条，合计约 850 tokens），
+  注意力被稀释。收敛后的分工：
+  - **Agent 描述**讲机制与取舍（2 条）；
+  - **SendMessage 描述**讲续跑消息该怎么写（1 条）；
+  - **Session guidance**只留一句指针（1 条）；
+  - **失败分类与具体动作**只在失败回执的 `<next-steps>` 里出现——那是动作发生的那一刻，
+    也是唯一知道 `reason` / `retryable` / `statusCode` 的地方。
+    预算：三处常驻合计不超过约 350 tokens；单条失败指引不超过 240 字符。
+- **D2 续跑语义写成可执行规则，而不是一段散文。** 判据是父代理手里已有的字段：
+  `agentId` 与 `<next-steps>`。规则只有两条：「终态即可续跑，优先于重派」；
+  「续跑消息要自带判断，不是空喊 continue」。
 - **D3 空 result 是「丢了结论」，不是「没干活」。** 通知侧为 completed ∧ 空 result 增加一句
   明示（见 D5），父侧规则写明这种情形首选续跑。空 result 的真实成因是 `modelResponse` 为空
   （`turn-model-step.ts` 的 `state.modelResponse = result.text`，provider 截断时不置位），
@@ -93,37 +102,32 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 
 ### 1. Agent 工具描述（`buildAgentProviderDescription`）
 
-在既有 bullet 之后追加一段 `## Continuing an agent`（标题与措辞见实现，要点固定为三条）：
+在既有 bullet 之后追加一段 `## Continuing an agent`，**只留两条**：
 
-- 一个子代理进入终态后**不要重新派发同样的任务**：`SendMessage` 到它的 `agentId` 会用同一个
-  会话续跑，它此前的工具结果与上下文都还在，成本远低于重开；
-- 若通知给出了 `tool_uses` 或 `subagent_tokens`，说明它已经做过工，默认续跑；
-- 只有你改变了任务范围时才新派发，并且先 `TaskStop` 停掉旧的那个；
-- 前台失败的错误文本会给出失败类型与 `agentId`：`transient` 就续跑，`configuration`
-  就别重试。
+- 终态子代理不是没了：`SendMessage` 到它的 `agentId` 会用同一会话续跑，上下文都在；
+  优先续跑，只有范围变了才新派发，并且先停掉旧的；
+- 失败回执与完成通知都会给出失败类型与 `agentId`，按它们的 `<next-steps>` 做。
 
-同时把「默认后台派发」那条里已经写过的 `SendMessage` 指引保持原样（不重复、不改写），
-只在这一段把「续跑」与「重开」的取舍讲清楚。
+具体分类处置不写在这里——那是失败现场才知道的事实，写在回执里（见 §4）。两条都对应父代理
+手里已有的字段（`agentId`、`<next-steps>`），不引入新概念。
 
 ### 2. SendMessage 工具描述（`SEND_MESSAGE_PROVIDER_DESCRIPTION`）
 
-在 `agent_*` 那条 recipient 行之后追加一段 `## Resuming a finished agent`：
+在 `agent_*` 那条 recipient 行之后追加一段 `## Resuming a finished agent`，**只留一条**：
 
-- 对已终态的子代理，本条消息就是它续跑时读到的**唯一**指令——它带着全部历史，但不知道你
-  现在想要什么。写清：它已经做到哪（通知的 result/error 结尾）、还差什么、哪些不要再做；
-- 不要写「continue」这类空指令；
-- 回执里会说明它是 resumed 还是 steered；resumed 之后等它的完成通知，不要重复派发。
+- 续跑的子代理保留全部历史，但只看得到这条消息：写清它已覆盖什么、还差什么、不要再做什么；
+  只写「continue」是浪费这次续跑。
+
+三态（steered / queued / resumed）在描述上半部分已经讲过，不再重复。
 
 ### 3. Session guidance 段（`buildSessionGuidanceSection`）
 
-把 `tools.has("Agent")` 那一段从注释里恢复成真实输出，但内容按本 fork 的口径重写（不复用上游
-那句「spawn Agent with subagent_type=Explore for broad codebase exploration」——本仓库默认类型是
-`general-purpose`，写 Explore 是错指引）。固定三条：
+把 `tools.has("Agent")` 那一段从注释里恢复成真实输出，但只留**一句指针**：
 
-1. 派发即句柄：默认后台，结果经完成通知回来，前台等待用 `TaskOutput`；
-2. 终态子代理优先用 `SendMessage(agentId)` 续跑，不重开同样任务的子代理；
-3. 并口派发时一条消息里多个工具调用并行发出，且各管互不重叠的范围。
+- 子代理默认后台运行；终态子代理可用 `SendMessage` 到它的 `agentId` 续跑，优先续跑而不是重派。
 
+机制细节归工具描述，动作归 `<next-steps>`，这里不复述。不复用上游那句
+「spawn Agent with subagent_type=Explore」——本仓库默认类型是 `general-purpose`，那是错指引。
 门仍是 `tools.has("Agent")`（子代理 runtime 不注册 Agent，故不会注入这段）。
 
 ### 4. 终态通知与前台失败回执的自愈指引
@@ -137,7 +141,12 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   拿不到 error 对象），按四档给动作，并把 `reason` / `retryable` / `statusCode` 如实写进
   文案（`Failure kind: transient provider error (server_error, retryable, HTTP 503)`）。
   没有分类时退回条件式文案。
-- **stopped**：`This agent was stopped; resume it with SendMessage to its agentId if the work is still wanted.`
+- **stopped**：`This agent was stopped — that is not a failure. Do not resume it or dispatch a replacement unless you know the stop was not the user's decision.`
+  **刻意不劝续跑**：`stopTask` 没有「谁停的」这个事实，UI 的 `session/cancelBackgroundTask`
+  与模型自己的 `TaskStop` 走同一条路、同一个 `finalizeBackgroundStopped`。对用户刚停掉的
+  子代理说「还想要就续跑」，正是工作流 `deliveryGuidance` 注释里点名的反模式。等
+  `SubagentStopOptions` 带上发起方（`user` / `model` / `parent`）后，再照工作流的
+  `stopReason` 分支给动作。
 - completed 且 result 非空：不加。
 
 `<next-steps>` 是新增节，放在 `</task-notification>` **之前**（与 result/error 同层），
@@ -152,8 +161,9 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 ## 所有权与不变式
 
 - **口径唯一来源**：续跑语义的表述分布在 Agent 描述、SendMessage 描述、Session guidance 三处，
-  但它们描述的是同一条运行时事实（`runner.ts` 的 `sendMessageToLocalAgent` 三态）。任何一处
-  改动都要同时看另外两处；golden 测试保证前两处不漂移，guidance 段由本 spec 的用例保证存在。
+  但它们描述的是同一条运行时事实（`runner.ts` 的 `sendMessageToLocalAgent` 三态）。三处按 D1b
+  分工，不得把分类与动作再抄回去；golden 测试保证前两处不漂移，guidance 段由本 spec 的用例
+  保证存在，单条指引长度由 D1b 的预算用例兜住。
 - **不新增发送通道**：续跑只经 `SendMessage(agent_*)`，不为「自愈」新增自动化重试。
   runner 的重试/看门狗保持不变。
 - **不碰终态所有权**：通知的 `notified` 幂等闸、复活时的 `notified: false` 重置、
@@ -182,18 +192,21 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - 不改 runner 的三态分派、不改 ready gate、不改 Seat Gate。
 - 不改 workflow / bash 的通知文案。
 - 遗留（有意不做）：通知不带结构化失败分类字段；空 result 的成因（provider 截断）未根治；
-  跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）。
+  跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）；
+  `stopped` 的发起方（user / model / parent）未进 `SubagentStopOptions`，因此该支只做中性表述。
 
 ## 验收场景
 
 - A1 一个子代理 315 次工具调用后空 result：通知含 `<next-steps>` 续跑指引、summary 含同义短句，
   且**不含**任何「重新派发」的字样；Agent 描述与 SendMessage 描述里都能找到续跑优先的规则。
-- A2 failed 通知带分类：`transient` 明说「任务没失败、续跑」并给出 `agentId`；`configuration`
-  明说「续跑会撞同一堵墙」；无分类时退回条件式判据，且不声称自己能判断成因。
+- A2 failed 通知带分类：`transient` 明说「provider 请求失败、不是 agent 的活失败」并给出
+  `agentId`；`configuration` 明说「续跑会撞同一堵墙」；无分类时退回条件式判据，且不声称
+  自己能判断成因。
 - A2b 前台失败的工具结果里同时出现根因文案、`Failure kind: …` 与 `SendMessage with to: 'agent_x'`
   ——父代理不再因为拿不到句柄而只能重开。
 - A2c 分类来自错误链：wrapper → cause 两层时仍能读出 `server_error` / `retryable`。
-- A3 stopped 通知指引用 SendMessage 续跑。
+- A3 stopped 通知**不劝续跑**：只说「不是失败」，并要求在确认停止不是用户决定时才续跑。
+- A3b 常驻表述预算：三处合计约 350 tokens 以内，单条失败指引 240 字符以内。
 - A4 completed 且 result 非空：不加 `<next-steps>`（不打扰正常收尾）。
 - A5 `buildSessionGuidanceSection` 在工具表含 Agent 时输出三段协作规则；不含 Agent 时仍返回 null。
 - A6 golden：`core/tests/tool-contracts.test.ts` 的两份逐字断言与源一致（跑测试保证）。

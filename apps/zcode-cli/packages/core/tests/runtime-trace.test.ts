@@ -923,7 +923,9 @@ describe("AgentRuntime trace propagation", () => {
     const secondRequestText = providerMessagesToText(requests[1]);
     // guidance 段在同一 runtime 的第二个回合仍在场（它是 dynamic 段，每轮重建，不是一次性注入）。
     expect(secondRequestText).toContain("# Session-specific guidance");
-    expect(secondRequestText).toContain("SendMessage to its `agentId` resumes that same session");
+    expect(secondRequestText).toContain(
+      "a terminal one can be resumed with SendMessage to its `agentId`",
+    );
     expect(secondRequestText).not.toContain("`! <command>`");
     expect(secondRequestText).not.toContain(
       "Otherwise use `find` or `grep` via the Bash tool directly.",
@@ -1059,7 +1061,9 @@ describe("AgentRuntime trace propagation", () => {
     expect(dynamicSystem).toContain("For actions that are hard to reverse");
     // 子代理协作规则在 dynamic 段中输出（spec core/spec/subagent-continuation-copy.md）。
     expect(dynamicSystem).toContain("# Session-specific guidance");
-    expect(dynamicSystem).toContain("SendMessage to its `agentId` resumes that same session");
+    expect(dynamicSystem).toContain(
+      "a terminal one can be resumed with SendMessage to its `agentId`",
+    );
     expect(dynamicSystem).not.toContain("`! <command>`");
     expect(dynamicSystem).toContain("# Environment");
     expect(dynamicSystem).toContain("# Context management");
@@ -1240,7 +1244,7 @@ describe("AgentRuntime trace propagation", () => {
     // guidance 段在场，且排在 Environment 之前（编排线索先于环境信息）。
     expect(requests[0]?.[2]?.content).toContain("# Session-specific guidance");
     expect(requests[0]?.[2]?.content).toContain(
-      "SendMessage to its `agentId` resumes that same session",
+      "a terminal one can be resumed with SendMessage to its `agentId`",
     );
     expect(requests[0]?.[2]?.content.indexOf("# Session-specific guidance")).toBeLessThan(
       requests[0]?.[2]?.content.indexOf("# Environment") ?? -1,

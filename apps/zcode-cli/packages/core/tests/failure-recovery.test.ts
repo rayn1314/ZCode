@@ -84,10 +84,11 @@ describe("formatSubagentFailureGuidance", () => {
     expect(text).toContain(
       "Failure kind: transient provider error (server_error, retryable, HTTP 503)",
     );
-    expect(text).toContain("did not fail");
-    expect(text).toContain("preserved");
+    expect(text).toContain("the provider request failed, not the agent's work");
     expect(text).toContain("SendMessage with to: 'agent_abc'");
-    expect(text).toContain("instead of dispatching a new agent");
+    expect(text).toContain("do not re-dispatch");
+    // 一句话说清：同一件事不再正反说两遍（旧文案 448 字符 → 现在一条）。
+    expect(text.length).toBeLessThan(240);
   });
 
   it("tells the parent not to resume a configuration failure", () => {
@@ -96,8 +97,8 @@ describe("formatSubagentFailureGuidance", () => {
       "agent_abc",
     );
     expect(text).toContain("Failure kind: configuration error");
-    expect(text).toContain("will hit the same error");
-    expect(text).toContain("Do not dispatch a new agent");
+    expect(text).toContain("a resume hits the same wall");
+    expect(text).toContain("do not retry or re-dispatch");
   });
 
   it("does not push a resume when the agent was cancelled", () => {
@@ -106,12 +107,15 @@ describe("formatSubagentFailureGuidance", () => {
       "agent_abc",
     );
     expect(text).toContain("Failure kind: cancelled");
-    expect(text).toContain("resume it with SendMessage with to: 'agent_abc'");
+    // 取消可能来自用户：只在确认不是用户决定时才续跑。
+    expect(text).toContain(
+      "Resume it with SendMessage with to: 'agent_abc' only if that cancellation was not the user's",
+    );
   });
 
   it("admits when it cannot classify", () => {
     const text = formatSubagentFailureGuidance({ kind: "unknown" }, "agent_abc");
     expect(text).toContain("Failure kind: unclassified");
-    expect(text).toContain("If this looks like it interrupted work");
+    expect(text).toContain("If it interrupted work the agent already did");
   });
 });

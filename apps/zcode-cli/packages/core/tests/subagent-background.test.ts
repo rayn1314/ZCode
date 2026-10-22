@@ -209,7 +209,11 @@ describe("subagent background notifications", () => {
       status: "stopped",
     });
     expect(stopped).toContain("<next-steps>");
-    expect(stopped).toContain('resume it with SendMessage with to: "agent_stopped"');
+    // 停止通知刻意不劝续跑：stopTask 还不知道是谁停的，UI 停止与模型 TaskStop 同路。
+    // 对用户刚停掉的子代理说「还想要就续跑」正是工作流注释里点名的反模式。
+    expect(stopped).toContain("This agent was stopped — that is not a failure");
+    expect(stopped).toContain("Do not resume it or dispatch a replacement");
+    expect(stopped).not.toContain("If the work is still wanted");
   });
 
   it("names the failure kind and the resume handle when the failure site classified it", () => {
@@ -232,9 +236,9 @@ describe("subagent background notifications", () => {
     });
     expect(transient).toContain("Failure kind: transient provider error");
     expect(transient).toContain("server_error, retryable, HTTP 503");
-    expect(transient).toContain("did not fail");
+    expect(transient).toContain("the provider request failed, not the agent's work");
     expect(transient).toContain("SendMessage with to: 'agent_transient'");
-    expect(transient).toContain("instead of dispatching a new agent");
+    expect(transient).toContain("do not re-dispatch");
 
     const configuration = formatLocalAgentTaskNotification({
       agentId: "agent_auth",
@@ -247,7 +251,7 @@ describe("subagent background notifications", () => {
       status: "failed",
     });
     expect(configuration).toContain("Failure kind: configuration error");
-    expect(configuration).toContain("will hit the same error");
+    expect(configuration).toContain("a resume hits the same wall");
   });
 
   it("drains pending background notifications as strict snapshot batches", async () => {

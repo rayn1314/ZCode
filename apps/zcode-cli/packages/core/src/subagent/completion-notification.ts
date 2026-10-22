@@ -94,8 +94,8 @@ function isBlankResult(result: string | undefined): boolean {
  * 工具结果与上下文都还在。父代理此前没有任何地方被告知这一点，于是「一个返回空输出 /
  * 一个失败」的默认反应是重新派发，把已花的 token 与已产出的工作一起作废。
  *
- * 只按 status 分三支，不构造失败分类真相：本函数的输入里没有「为什么失败」的可靠信号，
- * 编一个 taxonomy 出来只会让父代理照着不存在的字段做决策。
+ * failed 支优先用失败现场算好的 `failureRecovery` 说清类型与处置；拿不到分类时才退回
+ * 条件式判据，不凭空编一个 taxonomy。
  */
 function formatLocalAgentNextSteps(
   input: Pick<
@@ -121,9 +121,10 @@ function formatLocalAgentNextSteps(
     ].join("\n");
   }
   if (input.status === "stopped") {
-    return [
-      `This agent was stopped. If the work is still wanted, resume it with SendMessage with to: "${input.agentId}" rather than dispatching a fresh one.`,
-    ].join("\n");
+    // 刻意不劝续跑：stopTask 目前没有「谁停的」这个事实，UI 停止与模型 TaskStop 走同一条路。
+    // 对用户刚停掉的子代理说「还想要就续跑」，正是工作流代码注释里点名的反模式。
+    // 等 SubagentStopOptions 带上发起方后再按 user/model 分支。
+    return "This agent was stopped — that is not a failure. Do not resume it or dispatch a replacement unless you know the stop was not the user's decision.";
   }
   return undefined;
 }

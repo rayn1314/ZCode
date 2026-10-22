@@ -134,16 +134,16 @@ describe("ContextBuilder meta user context", () => {
     expect(result.systemMessages[2]?.content).not.toContain("`! <command>`");
     // 上游那句「Use the Agent tool with specialized agents…」在本 fork 已删，取而代之的是
     // 三条协作规则（spec core/spec/subagent-continuation-copy.md）：派发即句柄、终态即续跑、
-    // 并发派发管不重叠范围。断「旧的死掉、新的在场」而不是断整段缺席。
+    // 子代理协作只留一句指针（机制与写法由工具描述承担），断「旧句死掉、指针在场」。
     expect(result.systemMessages[2]?.content).not.toContain(
       "Use the Agent tool with specialized agents",
     );
     expect(result.systemMessages[2]?.content).toContain("# Session-specific guidance");
     expect(result.systemMessages[2]?.content).toContain(
-      "SendMessage to its `agentId` resumes that same session",
+      "a terminal one can be resumed with SendMessage to its `agentId`",
     );
     expect(result.systemMessages[2]?.content).toContain(
-      "keep their scopes non-overlapping so they do not work on the same files",
+      "Resume it instead of re-dispatching the same task",
     );
     expect(result.systemMessages[2]?.content).not.toContain(
       "spawn Agent with subagent_type=Explore",
@@ -328,7 +328,9 @@ describe("ContextBuilder meta user context", () => {
     );
     // Agent 协作段现在真的输出（工具表含 Agent），所以由「整段缺席」改断「在场且不含上游旧句」。
     expect(dynamicSystem).toContain("# Session-specific guidance");
-    expect(dynamicSystem).toContain("SendMessage to its `agentId` resumes that same session");
+    expect(dynamicSystem).toContain(
+      "a terminal one can be resumed with SendMessage to its `agentId`",
+    );
     expect(dynamicSystem).not.toContain("`! <command>`");
     expect(dynamicSystem).not.toContain("Use the Agent tool with specialized agents");
     expect(dynamicSystem).not.toContain("When the user types `/<skill-name>`");
@@ -481,7 +483,7 @@ describe("ContextBuilder meta user context", () => {
     // guidance 段在场（Agent + Skill 都在工具表里），且排在 Memory 之前：顺序契约是
     // 「编排 / 能力线索先于记忆」。
     expect(dynamic).toContain("# Session-specific guidance");
-    expect(dynamic).toContain("SendMessage to its `agentId` resumes that same session");
+    expect(dynamic).toContain("a terminal one can be resumed with SendMessage to its `agentId`");
     expect(dynamic.indexOf("# Session-specific guidance")).toBeLessThan(
       dynamic.indexOf("# Memory"),
     );
@@ -1641,9 +1643,7 @@ describe("context builder — workflow actor identity", () => {
     expect(withAgent).toContain("# Session-specific guidance");
     // 续跑优先是本 fork 的核心口径：终态子代理不是没了，而是同一会话可续（spec
     // core/spec/subagent-continuation-copy.md）。
-    expect(withAgent).toContain(
-      "is not gone: SendMessage to its `agentId` resumes that same session",
-    );
+    expect(withAgent).toContain("a terminal one can be resumed with SendMessage to its `agentId`");
     expect(withAgent).not.toContain("Use the Agent tool with specialized agents");
   });
 });

@@ -155,15 +155,11 @@ function buildAgentProviderDescription(
     // 2026-10-18 追记（spec `core/spec/subagent-continuation-copy.md`）：本 fork 的 SendMessage
     // 对**已终态**的子代理不是拒绝，而是用同一个 agentId、同一个子会话续跑（runner 的
     // resumeTerminalAgentInBackground，resumeFromStore 恢复历史）。这件事此前只存在于实现里，
-    // 没有任何一处面向模型的表述提到它，于是父代理对「失败 / 空输出」的默认反应是重新派发——
-    // 实测一个跑了 315 次工具调用、3000 万 token 后丢了最终消息的子代理被直接重开，已花的
-    // token 与已产出的工作一起作废。写在这里的每条都对应父代理手里已有的字段（通知的
-    // status / agent-id / usage），不引入新概念。
-    "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
-    "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
-    "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
-    "- A failed Agent call's error text names the failure kind (transient / configuration / cancelled / unclassified) and the `agentId` to resume. A transient provider error means the task did not fail: resume that agent instead of retrying with a new one. A configuration error means a resume hits the same wall — fix it or ask the user.",
-    "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
+    // 于是父代理对「失败 / 空输出」的默认反应是重新派发——实测一个跑了 315 次工具调用、
+    // 3000 万 token 后丢了最终消息的子代理被直接重开，已花的 token 与工作一起作废。
+    // 只留两条：机制说一次，具体动作交给失败回执里的 `<next-steps>`，不在这里复述。
+    "- A finished, failed, or stopped subagent is not gone: SendMessage to its `agentId` resumes the same session with its context intact. Prefer that over re-dispatching; dispatch a fresh agent only when the scope changed, and stop the old one first.",
+    "- A failed Agent call and a completion notification both state the failure kind and the `agentId`: follow their `<next-steps>`.",
   ].join("\n");
 }
 

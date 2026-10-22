@@ -129,9 +129,7 @@ const SOURCE_DERIVED_SEND_MESSAGE_DESCRIPTION = [
   "",
   "## Resuming a finished agent",
   "",
-  "- For an agent that already finished, failed, or was stopped, this message is the **only** instruction it will read for the resumed turn. It keeps all its history; it does not know what you want now.",
-  '- Write the judgment in the message: what it already covered (from its completion notification\'s result/error), what is still missing, and what it must not redo. A bare "continue" wastes the resume.',
-  "- The result tells you whether it was `resumed_background`, `steered` into a running turn, or `queued` for its next tool round. After a resume, wait for its completion notification; do not dispatch the same work again.",
+  '- A resumed agent keeps its history but sees only this message: say what it already covered, what is still missing, and what not to redo. A bare "continue" wastes the resume.',
   "",
   "Your plain text output is NOT visible to other agents — to communicate, you MUST call this tool. Messages from agents are delivered automatically; you don't check an inbox.",
 ].join("\n");
@@ -166,11 +164,8 @@ const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "",
   "## Continuing an agent",
   "",
-  "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
-  "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
-  "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
-  "- A failed Agent call's error text names the failure kind (transient / configuration / cancelled / unclassified) and the `agentId` to resume. A transient provider error means the task did not fail: resume that agent instead of retrying with a new one. A configuration error means a resume hits the same wall — fix it or ask the user.",
-  "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
+  "- A finished, failed, or stopped subagent is not gone: SendMessage to its `agentId` resumes the same session with its context intact. Prefer that over re-dispatching; dispatch a fresh agent only when the scope changed, and stop the old one first.",
+  "- A failed Agent call and a completion notification both state the failure kind and the `agentId`: follow their `<next-steps>`.",
 ].join("\n");
 
 function getSchemaPath(schema: unknown, path: readonly string[]): unknown {
