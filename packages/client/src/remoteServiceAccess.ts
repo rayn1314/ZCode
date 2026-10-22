@@ -24,6 +24,7 @@ import {
   IProviderProvisioningTargetService,
   IUsageStatsService,
   IUsageLedgerService,
+  IMigrationService,
   ICodingPlanSubscriptionService,
   IClientConfigService,
   IClientScenesService,
@@ -88,6 +89,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
   // 用量账本只在桌面本地 host 注册；远端 workspace 的 host 没有此 descriptor，
   // 代理调用会 reject，账本面板需捕获并显示「当前环境不支持」。
   readonly usageLedgerService: IUsageLedgerService;
+  // 迁移服务由 createLocalServices 统一注册，本地与远端 host 都有此 descriptor；
+  // 设置页固定用本地 host 渲染迁移面板（见 packages/services/spec/identity-data-migration.md）。
+  readonly migrationService: IMigrationService;
   readonly codingPlanSubscriptionService: ICodingPlanSubscriptionService;
   readonly clientConfigService: IClientConfigService;
   readonly clientScenesService: IClientScenesService;
@@ -193,6 +197,9 @@ export class RemoteServiceAccess implements IServiceAccessor {
     );
     this.usageLedgerService = ProxyChannel.toService<IUsageLedgerService>(
       channelClient.getChannel(IUsageLedgerService.channelName),
+    );
+    this.migrationService = ProxyChannel.toService<IMigrationService>(
+      channelClient.getChannel(IMigrationService.channelName),
     );
     this.codingPlanSubscriptionService = ProxyChannel.toService<ICodingPlanSubscriptionService>(
       channelClient.getChannel(ICodingPlanSubscriptionService.channelName),

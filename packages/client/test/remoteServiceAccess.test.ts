@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IChannel, IChannelClient } from "@zcode/rpc";
-import { IMediaPreviewService, IClientConfigService, IInstructionsService } from "@zcode/services";
+import {
+  IMediaPreviewService,
+  IClientConfigService,
+  IInstructionsService,
+  IMigrationService,
+} from "@zcode/services";
 import { RemoteServiceAccess } from "../src/remoteServiceAccess.js";
 
 describe("RemoteServiceAccess", () => {
@@ -57,5 +62,24 @@ describe("RemoteServiceAccess", () => {
     expect(channelNames).toContain(IInstructionsService.channelName);
     expect(IInstructionsService.channelName).toBe("instructions");
     expect(services.instructionsService).toBeDefined();
+  });
+  it("creates the identity data migration proxy so the settings page can reach the local host", () => {
+    const channelNames: string[] = [];
+    const channel: IChannel = {
+      call: vi.fn(),
+      listen: vi.fn(),
+    };
+    const channelClient: IChannelClient = {
+      getChannel: (channelName) => {
+        channelNames.push(channelName);
+        return channel;
+      },
+    };
+
+    const services = new RemoteServiceAccess(channelClient);
+
+    expect(channelNames).toContain(IMigrationService.channelName);
+    expect(IMigrationService.channelName).toBe("migration");
+    expect(services.migrationService).toBeDefined();
   });
 });

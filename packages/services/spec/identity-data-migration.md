@@ -1,7 +1,7 @@
 # 身份数据迁移（spec）
 
 涉及包：`packages/services`（主责：来源根探测、迁移服务、逐域实现）、`packages/shared`（服务频道名）、
-`packages/ui`（设置节与引导入口）。
+`packages/client`（渲染端服务代理通道）、`packages/ui`（设置节与引导入口）。
 
 身份归属总表见 `packages/desktop/spec/product-identity-data-root.md`；本节只描述"把另一个身份
 数据根里的数据搬进当前身份"的规则。
@@ -112,6 +112,7 @@
 | 工作流迁移 | `domains/workflows.ts`                              | 逐文件 `copyFile`，同名（含扩展名归一后重名）跳过                                          |
 | hooks 迁移 | `domains/hookDeclarations.ts`                       | 按事件 + matcher 键合并进目标 `cli/config.json`，同名跳过，保留目标其它字段                |
 | 服务注册   | `services/src/node.ts`、`services/src/accessor.ts`  | 注入 `settingService` / `credentialService` / 密文 provider / `homeDir`                    |
+| 渲染端接入 | `client/src/remoteServiceAccess.ts`                 | 显式代理 `IMigrationService` 通道；代理类按服务逐项手写，漏列即等于界面拿不到服务          |
 
 ## 所有权与不变式
 
@@ -128,6 +129,9 @@
   **本地 Host** 的 services 渲染（照 `modelProvider` / `memory` 两个设置节的先例
   `<ServiceProvider services={localHostServices}>`），远端 workspace 激活时不注入远端 Host——
   否则面板会列出远端机器的数据根，与「从官方版 ZCode 迁移本机数据」的语义不符。
+- **渲染端代理是白名单**：`RemoteServiceAccess` 按服务逐项构造 channel 代理，而 `IServiceAccessor`
+  上的该字段是可选的，漏写不会触发类型错误。新增宿主服务时必须同步补齐代理，否则设置页会把
+  「客户端漏代理」误报成「服务端未注册（远端 host 或旧版本）」。
 - **不变式**：官方身份（空后缀）数据根本身在迁移中只作目标或来源之一，其路径规则不变；
   迁移成功后目标身份能读到迁移的数据（凭据可 `load` 出明文、设置生效、工作流可列出）。
 
@@ -164,5 +168,7 @@
   6. hooks 合并后目标 `cli/config.json` 其它字段不变；
   7. `providerConfig` / `sessions` 目标已存在 → 整域跳过，目标字节不变；
   8. 源文件损坏 → 该域 `failed` 且目标不变。
+- `packages/client/test/remoteServiceAccess.test.ts`：渲染端代理能拿到 `migration` 通道，
+  防止再次「宿主已注册、界面看不见」。
 - 手工验收路径：设置 → 数据与统计 → 数据迁移 → 选来源根 → 勾域 → 开始迁移 → 逐域状态与结果汇总；
   引导欢迎页的次级按钮能直接跳到该节。
