@@ -161,6 +161,8 @@ export const ServiceChannels = {
   Hooks: "hooks",
   /** Memory 管理服务 */
   Memory: "memory",
+  /** 指令文件（AGENTS.md）读写服务 */
+  Instructions: "instructions",
   /** OutputStyle 管理服务 */
   OutputStyle: "output-style",
   /** 首次启动设置同步服务 */
