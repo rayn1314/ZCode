@@ -140,6 +140,7 @@ import { toolCallRowToLegacyNode } from "@/v4/toolCallRowAdapter.js";
 import { CodeCommentAttachmentChip } from "@/v4/composer/CodeCommentAttachmentChip.js";
 import {
   countComposerPromptContexts,
+  hasInlineComposerPromptContextPills,
   parseComposerPromptContexts,
   serializeComposerPromptContexts,
 } from "@/v4/composer/composerPromptContexts.js";
@@ -1026,20 +1027,16 @@ const SingleUserInputRowView = memo(function SingleUserInputRowView({
   const pluginUiContexts = parsedPrompt.pluginUiContexts;
   // nudge 轮整条都是引擎文本：正文为空但气泡仍要画，里面只有那一枚披露。
   const hasBubble = hasVisibleText || epilogue !== undefined;
-  const hasContextReferences =
-    codeCommentContexts.length > 0 ||
-    webElementContexts.length > 0 ||
-    pptxElementReferences.length > 0 ||
-    conversationSelections.length > 0 ||
-    sessionMessages.length > 0 ||
-    pluginUiContexts.length > 0;
+  // pill 行渲染哪些类别由 composerPromptContexts 单点定义。这里曾内联成逐项枚举，
+  // 合入上游 v3.15.1 时漏掉 sessionMessages 与 pluginUiContexts：只含这两类引用的
+  // 消息行既没有正文（信封被剥掉）也没有 pill，整行空白。
+  const hasInlineContextPills = hasInlineComposerPromptContextPills(parsedPrompt);
+  const hasContextReferences = hasInlineContextPills || conversationSelections.length > 0;
   const hasAttachmentArea = hasAttachments || hasContextReferences;
-  const hasAttachmentPills =
-    hasFileAttachments ||
-    codeCommentContexts.length > 0 ||
-    webElementContexts.length > 0 ||
-    pptxElementReferences.length > 0 ||
-    (!row.botGroupSource && conversationSelections.length > 0);
+  // 群来源的对话引用在材料区顶部单独渲染，不进 pill 行，否则会出现空行。
+  const hasContextPills =
+    hasInlineContextPills || (!row.botGroupSource && conversationSelections.length > 0);
+  const hasAttachmentPills = hasFileAttachments || hasContextPills;
   // Bug 根因：旧逻辑只接受 schedule runId，导致用户点击「立即运行」产生的 manual run
   // 没有来源标识。两种合法 automation runId 都应展示；普通会话输入仍因解析失败而不展示。
   const isScheduledAutomationPrompt = parseAutomationRunId(row.sourceCommandId ?? "") !== null;

@@ -1786,6 +1786,44 @@ describe("ConversationRowView user query editing", () => {
     await act(async () => root.unmount());
   });
 
+  it("renders a session-message pill for a row that only contains a delivery envelope", async () => {
+    const envelope = [
+      '<session-message source="session-message" message_id="msg-1" from_session="sess-other" sender_kind="session" hop="1" origin="msg-0" created_at="2026-10-22T12:00:00.000Z">',
+      "另一会话发来的内容",
+      "</session-message>",
+    ].join("\n");
+    const container = installMinimalDom();
+    const root: Root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        createElement(
+          ZCodeIntlProvider,
+          { initialLocale: "zh-CN" },
+          createElement(ConversationRowView, {
+            context: rowContext,
+            row: userInputRow({ attachments: [], text: envelope }),
+          }),
+        ),
+      );
+    });
+
+    // 回归根因：pill 行的开关曾漏掉会话消息这一类。信封被剥掉后正文为空，
+    // 开关再判 false 就整行空白——模型收到了消息，用户却什么都看不到。
+    const pillRow = findElementByAttribute(
+      container,
+      "data-v4-user-input-attachment-pills",
+      "true",
+    );
+    expect(pillRow).not.toBeNull();
+    const chip = findElementByAttribute(container, "data-session-message-envelope-count", "1");
+    expect(chip).not.toBeNull();
+    expect(chip?.parentNode).toBe(pillRow);
+    expect(collectAttributeValues(chip, "aria-label")).toContain("来自另一个会话的消息");
+    expect(findElementByAttribute(container, "data-v4-user-input-bubble", "true")).toBeNull();
+    await act(async () => root.unmount());
+  });
+
   it("renders an authoritative goal query without the slash", async () => {
     const row = userInputRow({
       attachments: [],

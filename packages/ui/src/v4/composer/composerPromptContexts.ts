@@ -59,6 +59,33 @@ export function countComposerPromptContexts(contexts: {
 }
 
 /**
+ * 对话流 pill 行实际渲染的上下文类别。
+ *
+ * 单独成函数是为了让「哪些类别会变成 pill」只有一份定义：2026-10-22 的回归里，
+ * `ConversationRowView` 把这套判断内联成逐项枚举，合入上游 v3.15.1 时漏掉了
+ * `sessionMessages` 与 `pluginUiContexts`，只含这两类引用的消息行会整行空白
+ * （信封被剥掉后没有正文，pill 行又被开关关掉）。
+ *
+ * 会话引用不在其中：群来源的引用由材料区顶部单独渲染，是否进 pill 行由调用方
+ * 按 `botGroupSource` 决定。
+ */
+export function hasInlineComposerPromptContextPills(
+  contexts: Pick<
+    ComposerPromptContexts,
+    "codeComments" | "webElements" | "pptxElements" | "sessionMessages" | "pluginUiContexts"
+  >,
+): boolean {
+  return (
+    contexts.codeComments.length +
+      contexts.webElements.length +
+      contexts.pptxElements.length +
+      contexts.sessionMessages.length +
+      (contexts.pluginUiContexts?.length ?? 0) >
+    0
+  );
+}
+
+/**
  * 五类 context parser 都只识别 prompt 尾块，而信封 parser 是全局扫描，因此序列化顺序和解析顺序必须严格相反：
  * 会话消息信封排在序列化最后一步（最外层），解析时就必须最先跑，否则尾块会被当成可见正文拼在信封之后；
  * 插件上下文次外层，紧随其后剥离。

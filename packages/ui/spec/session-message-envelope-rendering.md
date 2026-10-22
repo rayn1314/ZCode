@@ -69,7 +69,7 @@
 | 引用结构 | 同上                                                         | `{ raw, source?, messageId, fromSessionId?, senderKind?, hop?, origin?, createdAt?, requestId?, body }`   |
 | 序列化   | 同上                                                         | `buildPromptWithSessionMessageEnvelopes(visibleContent, messages)` 按 `raw` 原样拼回，保证编辑 round-trip |
 | 管道接入 | `packages/ui/src/v4/composer/composerPromptContexts.ts`      | 作为第五类 `sessionMessages` 参与 count / serialize / parse                                               |
-| 渲染     | `packages/ui/src/v4/ConversationRowView.tsx`                 | pill 与悬浮详情；进入 `hasContextReferences`                                                              |
+| 渲染     | `packages/ui/src/v4/ConversationRowView.tsx`                 | pill 与悬浮详情；pill 行开关由 `hasInlineComposerPromptContextPills` 统一判定                             |
 | 卡片     | `packages/ui/src/v4/composer/SessionMessageEnvelopeChip.tsx` | 复用 `ContextAttachmentPill`；label 按 `source` 区分消息/回执；只读无删除入口                             |
 | 文案     | `packages/ui/src/i18n/locales/{zh-CN,en-US}.ts`              | `chat.sessionMessage.*`（消息 / 多条计数 / 回执 / 第 {hop} 跳）                                           |
 
@@ -83,6 +83,11 @@ sessionMessages），因此解析时**最先**跑信封解析，再按原顺序�
 - **round-trip 保真**：对任意文本，`build(parse(text).visibleContent, parse(text).messages)`
   与原文等价（信封本身逐字节相同，位置统一归到可见正文之后）。
 - **不吞正文**：解析失败 / 半截信封 / 只有正文 → `visibleContent` 原样返回，`messages` 为空。
+- **pill 行开关必须覆盖全部类别**：`hasInlineComposerPromptContextPills`
+  （`composerPromptContexts.ts`）是「哪些上下文变成 pill」的单一定义，`ConversationRowView` 不得再内联
+  逐项枚举。只含信封的消息行没有可见正文，开关一旦漏掉 `sessionMessages`，整行就完全空白——模型收到了
+  消息，用户却什么都看不到（2026-10-22 回归：合入上游 v3.15.1 的枚举同时漏掉 `sessionMessages` 与
+  `pluginUiContexts`）。
 - **正文只读**：`body` 只用于展示与测试，回写一律用 `raw`，因此剔英文样板句不会造成数据丢失。
 
 ## 失败语义
@@ -109,6 +114,10 @@ sessionMessages），因此解析时**最先**跑信封解析，再按原顺序�
   6. **round-trip**：`build(parse(text))` 与原文等价（含整条信封与混排两种）；
   7. 纯用户文本 / 半截信封 / 缺 `message_id` → 一律原样保留、`messages` 为空；
   8. 与既有四类上下文共存时，`parseComposerPromptContexts` 的可见正文与各类引用数量正确。
+- `packages/ui/test/composerPromptContextPills.test.ts`：五类上下文各自单独存在都计入 pill 行、
+  全空为 false、会话引用不计入（由调用方按 `botGroupSource` 决定）。
+- `packages/ui/test/v4ConversationRowViewUserEdit.test.ts`：只有信封的消息行必须渲染出 pill 行与
+  「来自另一个会话的消息」pill，且不产生空气泡（本轮回归的渲染级防线）。
 - 手工验收路径：让另一个会话给当前会话发一条消息，对话流里应显示「来自另一个会话的消息」
   pill，正文在悬浮卡片里可读，且不再出现 XML 属性与英文样板句；对该行点编辑再提交，信封仍在
   （round-trip 未丢协议字段）。
