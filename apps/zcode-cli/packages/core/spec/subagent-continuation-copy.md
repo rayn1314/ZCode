@@ -97,6 +97,26 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - **D7 golden 逐字约束。** Agent 与 SendMessage 的 provider 描述已有 golden 测试
   （`core/tests/tool-contracts.test.ts` 的 `SOURCE_DERIVED_*`），本轮改动必须同步更新那份
   golden——它就是「两处同口径」的机械化守卫。
+- **D8 `stopped` 必须说清「谁停的」，因为这个事实在运行时是已知的。** `local_agent` 进入
+  `stopped` 只有三条真实路径，每条都知道发起方：
+
+  | 路径 | 发起方 | 依据 |
+  | --- | --- | --- |
+  | 模型调 `TaskStop` | `"model"` | `task-stop.ts` 显式传 `initiator: "model"` |
+  | 用户点 GUI / 面板 / 远端的停止 | `"user"` | `runtime.cancelBackgroundTask` 的唯一调用者就是用户的手 |
+  | rewind 丢弃分支时的清扫 | 不填（系统） | `cancelRemovedBranchBackgroundTasks` 不传发起方 |
+
+  运行时层早已有 `RuntimeBackgroundStopOptions.initiator`（workflow 分支据此措辞），缺口只在
+  `stopLocalAgentBackgroundTask` 没把它转交给 `subagentPort.stopTask`。因此不是「加一个新事实」，
+  而是把已有事实接到通知上：`SubagentStopOptions.initiator` → registry 的 `stopInitiator` →
+  终态通知。三档动作：
+  - `user`：这是一个决定，不是故障；不要续跑、不要重派，除非用户开口；
+  - `model`：是你自己停的，不是失败；要它继续就续跑，范围变了就按新范围重派；
+  - 未填（系统）：分支已被丢弃之类的系统清扫，**不要续跑**——它的工作属于一个已不存在的分支。
+
+  没有发起方的中性文案（「除非你确认不是用户停的」）被否决：它把运行时已经知道的事实又交回
+  给模型猜，而模型没有判断依据，只会两种错法——对用户刚停的代理续跑，或对系统清扫的代理
+  重派。
 
 ## 行为
 
@@ -141,12 +161,11 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   拿不到 error 对象），按四档给动作，并把 `reason` / `retryable` / `statusCode` 如实写进
   文案（`Failure kind: transient provider error (server_error, retryable, HTTP 503)`）。
   没有分类时退回条件式文案。
-- **stopped**：`This agent was stopped — that is not a failure. Do not resume it or dispatch a replacement unless you know the stop was not the user's decision.`
-  **刻意不劝续跑**：`stopTask` 没有「谁停的」这个事实，UI 的 `session/cancelBackgroundTask`
-  与模型自己的 `TaskStop` 走同一条路、同一个 `finalizeBackgroundStopped`。对用户刚停掉的
-  子代理说「还想要就续跑」，正是工作流 `deliveryGuidance` 注释里点名的反模式。等
-  `SubagentStopOptions` 带上发起方（`user` / `model` / `parent`）后，再照工作流的
-  `stopReason` 分支给动作。
+- **stopped**：按发起方（D8）分三支，且 summary 同一句话里点名发起方
+  （`… stopped by the user.` / `… stopped by you (TaskStop).` / `… was stopped by the system.`）：
+  - `user`：`The user stopped this agent on purpose. That is a decision, not a failure: do not resume it and do not dispatch a replacement unless the user asks you to.`
+  - `model`：`You stopped this agent with TaskStop, so it did not fail. Resume it with SendMessage to its agentId if it should keep working, or dispatch a new agent if the scope changed.`
+  - 未填（系统）：`This agent was stopped by the system, not by you and not by the user — for example because its conversation branch was discarded. Do not resume it or dispatch a replacement for that branch.`
 - completed 且 result 非空：不加。
 
 `<next-steps>` 是新增节，放在 `</task-notification>` **之前**（与 result/error 同层），
@@ -172,6 +191,13 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - **不构造失败分类真相**：分类只读 adapter 写进错误链的 `reason` / `retryable` /
   `statusCode`，读不到就落 `unknown` 并给条件式判据；不根据文案关键词猜、不新增
   contracts schema 字段。
+- **停止发起方的写入顺序**：`stopInitiator` 必须在铸造终态快照**之前**写进 registry——
+  通知是在 `finalizeBackgroundStopped` 里现铸的，registry 是两者之间唯一的共享状态
+  （与 `background-stop-dynamic-workflow.ts` 同一理由）。续跑注册的是全新快照
+  （`createRuntimeTaskSnapshot`），不继承上一条命的 `stopInitiator`，因此「上一轮被用户停」
+  不会污染下一轮的系统清扫。
+- **不改停止判定**：`stopped` 仍由 `stopTask` 单点落定，`initiator` 只影响文案，
+  不参与任何分支判定或权限判断。
 - **空 result 的真实成因不在本 spec 修复**：那是 `modelResponse` 为空（provider 截断）的展示面
   问题，本 spec 只保证父代理拿到一句「这是丢了结论、去续跑」。
 
@@ -192,8 +218,9 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - 不改 runner 的三态分派、不改 ready gate、不改 Seat Gate。
 - 不改 workflow / bash 的通知文案。
 - 遗留（有意不做）：通知不带结构化失败分类字段；空 result 的成因（provider 截断）未根治；
-  跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）；
-  `stopped` 的发起方（user / model / parent）未进 `SubagentStopOptions`，因此该支只做中性表述。
+  跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）；`stopped` 只有 `user` /
+  `model` / 系统三档，**没有 `parent` 档**——父代理停子代理只经 `TaskStop`，与模型自己停是
+  同一只手，硬分出来是伪区分。
 
 ## 验收场景
 
@@ -205,8 +232,16 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - A2b 前台失败的工具结果里同时出现根因文案、`Failure kind: …` 与 `SendMessage with to: 'agent_x'`
   ——父代理不再因为拿不到句柄而只能重开。
 - A2c 分类来自错误链：wrapper → cause 两层时仍能读出 `server_error` / `retryable`。
-- A3 stopped 通知**不劝续跑**：只说「不是失败」，并要求在确认停止不是用户决定时才续跑。
-- A3b 常驻表述预算：三处合计约 350 tokens 以内，单条失败指引 240 字符以内。
+- A3 stopped 通知按发起方分三档：`user` 明说「用户的决定、不要续跑/重派」；`model` 明说
+  「你自己停的、不是失败」并给出续跑与改范围重派两条路；未填（系统）明说「系统停的、
+  不要续跑」——三档都不得出现「如果还想要就续跑」这类交给模型猜的措辞。
+- A3b 发起方来自调用链：`TaskStop` → `stopLocalAgentBackgroundTask` → `stopTask` 的
+  `initiator` 在 registry 的 `stopInitiator` 上可见，并原样出现在终态通知里；
+  GUI 的 `cancelBackgroundTask` 得到 `user`；rewind 清扫得到未填。
+- A3c 续跑不继承旧发起方：被用户停掉的代理经 `SendMessage` 续跑后，再被系统清扫时通知
+  说的是「系统停的」，而不是沿用上一命的 `user`。
+- A3d 常驻表述预算：三处合计约 350 tokens 以内，单条失败/停止指引 240 字符以内。
 - A4 completed 且 result 非空：不加 `<next-steps>`（不打扰正常收尾）。
-- A5 `buildSessionGuidanceSection` 在工具表含 Agent 时输出三段协作规则；不含 Agent 时仍返回 null。
+- A5 `buildSessionGuidanceSection` 在工具表含 Agent 时输出那句指针（终态可续跑、优先续跑
+  而不是重派）；不含 Agent 时仍返回 null。
 - A6 golden：`core/tests/tool-contracts.test.ts` 的两份逐字断言与源一致（跑测试保证）。

@@ -1,4 +1,4 @@
-import type { ModelUsage } from "@zcode/contracts";
+import type { ModelUsage, SubagentStopInitiator } from "@zcode/contracts";
 import { formatTaskNotification } from "../runtime-task/notification.js";
 import type { SubagentFailureRecovery } from "./failure-recovery.js";
 import { formatSubagentFailureGuidance } from "./failure-recovery.js";
@@ -19,6 +19,12 @@ export interface LocalAgentTaskNotificationInput {
   parentToolCallId: string;
   result?: string;
   status: LocalAgentTaskNotificationStatus;
+  /**
+   * 谁停的（`stopped` 才有意义）。由 `subagentPort.stopTask` 的调用方转交：
+   * `TaskStop` → `"model"`，GUI / 面板 / 远端的停止按钮 → `"user"`，系统清扫不填。
+   * 通知据此给不同动作，而不是把已知事实交回给模型猜（spec D8）。
+   */
+  stopInitiator?: SubagentStopInitiator;
   totalDurationMs?: number;
   totalTokens?: number;
   totalToolUseCount?: number;
@@ -65,13 +71,17 @@ function insertBeforeTaskNotificationClose(notification: string, nextSteps: stri
 function formatLocalAgentNotificationSummary(
   input: Pick<
     LocalAgentTaskNotificationInput,
-    "agentType" | "description" | "error" | "result" | "status"
+    "agentType" | "description" | "error" | "result" | "status" | "stopInitiator"
   >,
 ): string {
+  // 谁停的是运行时已知的事实，写进 summary：通知被 120k 截断后，父代理至少还读得到这一行。
+  if (input.status === "stopped") {
+    return `Agent ${input.agentType} task "${input.description}" ${stoppedSummaryPhrase(input.stopInitiator)}`;
+  }
   const summary = `Agent ${input.agentType} task "${input.description}" ${input.status}.`;
   const error = input.status === "failed" && input.error?.trim() ? input.error : undefined;
   // 修复原因：失败 summary 是 Agent 卡“子智能体输出”的来源，必须保留原前缀并
-  // 直接追加与 <error> 相同的失败原因；completed/stopped 文案保持不变。
+  // 直接追加与 <error> 相同的失败原因；completed 文案保持不变。
   if (error) return `${summary} ${error}`;
   // 空 result 的同义短句：终态通知可能被 120k 上限截断，summary 是父代理至少还能
   // 读到的一行。丢了结论的子代理要被告知去续跑，而不是重开一个同任务的（spec
@@ -87,6 +97,18 @@ function isBlankResult(result: string | undefined): boolean {
   return result === undefined || result.trim().length === 0;
 }
 
+/** stopped 的 summary 短语，与 workflow 的 `buildWorkflowTaskSummary` 同一口径。 */
+function stoppedSummaryPhrase(initiator: SubagentStopInitiator | undefined): string {
+  switch (initiator) {
+    case "user":
+      return "was stopped by the user.";
+    case "model":
+      return "was stopped by you (TaskStop).";
+    default:
+      return "was stopped by the system.";
+  }
+}
+
 /**
  * 终态通知的下一步指引（spec `subagent-continuation-copy.md` D4/D5）。
  *
@@ -100,7 +122,7 @@ function isBlankResult(result: string | undefined): boolean {
 function formatLocalAgentNextSteps(
   input: Pick<
     LocalAgentTaskNotificationInput,
-    "agentType" | "description" | "error" | "failureRecovery" | "result" | "status"
+    "agentType" | "description" | "error" | "failureRecovery" | "result" | "status" | "stopInitiator"
   > & { agentId: string },
 ): string | undefined {
   if (input.status === "completed" && isBlankResult(input.result)) {
@@ -121,10 +143,16 @@ function formatLocalAgentNextSteps(
     ].join("\n");
   }
   if (input.status === "stopped") {
-    // 刻意不劝续跑：stopTask 目前没有「谁停的」这个事实，UI 停止与模型 TaskStop 走同一条路。
-    // 对用户刚停掉的子代理说「还想要就续跑」，正是工作流代码注释里点名的反模式。
-    // 等 SubagentStopOptions 带上发起方后再按 user/model 分支。
-    return "This agent was stopped — that is not a failure. Do not resume it or dispatch a replacement unless you know the stop was not the user's decision.";
+    // 「谁停的」是运行时已知的事实（spec D8）：三档给不同动作，不让模型猜。
+    // 对用户刚停掉的代理说「还想要就续跑」，正是工作流 deliveryGuidance 点名的反模式。
+    switch (input.stopInitiator) {
+      case "user":
+        return "The user stopped this agent on purpose. That is a decision, not a failure: do not resume it and do not dispatch a replacement unless the user asks you to.";
+      case "model":
+        return "You stopped this agent with TaskStop, so it did not fail. Resume it with SendMessage to its agentId if it should keep working, or dispatch a new agent if the scope changed.";
+      default:
+        return "This agent was stopped by the system, not by you and not by the user — for example because its conversation branch was discarded. Do not resume it or dispatch a replacement for that branch.";
+    }
   }
   return undefined;
 }

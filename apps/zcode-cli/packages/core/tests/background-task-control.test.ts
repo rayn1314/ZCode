@@ -460,6 +460,66 @@ describe("background task control", () => {
     });
   });
 
+  it("forwards who stopped a local agent to the subagent port", async () => {
+    // 终态通知要按发起方给不同动作，前提是这一位真的穿过了 runtime → port 这一跳。
+    // 三条入口分别对应用户的手、模型自己的 TaskStop、系统清扫。
+    const sessionId = createSessionId("background-control-agent-initiator");
+    const eventStore = createTestSessionEventStore();
+    const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
+    runtimeTaskRegistry.register({
+      agentId: "agent_initiator",
+      agentType: "general-purpose",
+      description: "Stop me",
+      isBackgrounded: true,
+      startedAt: new Date(0),
+      status: "running",
+      taskId: "agent_initiator",
+      taskType: "local_agent",
+      type: "local_agent",
+    } as never);
+    const calls: Array<{ initiator: string | undefined; taskId: string }> = [];
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { mode: "build" },
+      {
+        eventStore,
+        runtimeTaskRegistry,
+        subagentPort: {
+          async launch() {
+            throw new Error("launch should not be called");
+          },
+          async run() {
+            throw new Error("run should not be called");
+          },
+          async stopTask(taskId, options) {
+            calls.push({ initiator: options?.initiator, taskId });
+            return {
+              agentId: taskId,
+              agentType: "general-purpose",
+              description: "Stop me",
+              startedAt: new Date(0),
+              status: "killed",
+              taskId,
+            };
+          },
+        },
+      },
+    );
+
+    await (runtime as any).stopBackgroundTask("agent_initiator", {
+      initiator: "model",
+      strict: true,
+    });
+    await (runtime as any).cancelBackgroundTask("agent_initiator");
+    await (runtime as any).stopBackgroundTask("agent_initiator", {});
+
+    expect(calls).toEqual([
+      { initiator: "model", taskId: "agent_initiator" },
+      { initiator: "user", taskId: "agent_initiator" },
+      { initiator: undefined, taskId: "agent_initiator" },
+    ]);
+  });
+
   it("aborts a running background subagent and enqueues one stopped notification", async () => {
     const sessionId = createSessionId("background-control-agent-port");
     const turnId = createTurnId("turn_background_control_agent_port");
@@ -675,6 +735,7 @@ describe("background task control", () => {
     const agentOutputDir = join(outputRootDir, sessionId, "agent_resume");
     const aborted = deferred();
     const parentEvents: SessionEvent[] = [];
+    const notifications: string[] = [];
     const registry = new InMemoryRuntimeTaskRegistry();
     registry.register({
       agentId: "agent_resume",
@@ -703,7 +764,9 @@ describe("background task control", () => {
       emitParentEvent: async (event) => {
         parentEvents.push(event);
       },
-      enqueueParentTaskNotification: () => {},
+      enqueueParentTaskNotification: (notification) => {
+        notifications.push(notification.text);
+      },
       outputRootDir,
       runtimeTaskRegistry: registry,
       async runExploreAgent(request, options) {
@@ -772,8 +835,11 @@ describe("background task control", () => {
         resumed: true,
         status: "running",
       });
+      // 续跑注册的是全新快照：上一命的停止发起方不得跟到这一命（否则这一轮被系统清扫时
+      // 通知会说成「用户停的」）。
+      expect(registry.get("agent_resume")?.stopInitiator).toBeUndefined();
 
-      const stopped = await port.stopTask?.("agent_resume");
+      const stopped = await port.stopTask?.("agent_resume", { initiator: "user" });
       await Promise.race([
         aborted.promise,
         new Promise((_, reject) =>
@@ -787,7 +853,12 @@ describe("background task control", () => {
       });
       expect(registry.get("agent_resume")).toMatchObject({
         status: "killed",
+        // 「谁停的」在铸造终态之前就落 registry：通知是在 finalize 里现铸的。
+        stopInitiator: "user",
       });
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]).toContain("was stopped by the user.");
+      expect(notifications[0]).toContain("The user stopped this agent on purpose.");
     } finally {
       await rm(outputRootDir, { force: true, recursive: true });
     }

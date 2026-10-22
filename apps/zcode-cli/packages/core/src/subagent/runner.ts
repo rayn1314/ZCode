@@ -732,6 +732,15 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       if (!task || task.type !== "local_agent") return task;
       if (isTerminalRuntimeTask(task)) return task;
 
+      // 「谁停的」先落 registry 再铸造终态：通知在 finalizeBackgroundStopped 里现铸，
+      // registry 是两者之间唯一的共享状态（与 workflow 停止分支同一顺序理由）。
+      // 不填即系统清扫，通知会说「系统停的」。
+      if (stopOptions?.initiator !== undefined) {
+        registry.update(taskId, (current) => ({
+          ...current,
+          stopInitiator: stopOptions.initiator,
+        }));
+      }
       const stopped = createBackgroundStoppedTask(registry, task);
       if (!stopped) return undefined;
       return finalizeBackgroundStopped(options, registry, stopped, () => {
@@ -2025,6 +2034,7 @@ async function finalizeBackgroundStopped(
     outputFile: stopped.task.outputFile ?? "",
     parentToolCallId: String(stopped.task.parentToolCallId ?? stopped.task.taskId),
     status: BACKGROUND_AGENT_STOPPED_STATE.notificationStatus,
+    stopInitiator: stopped.task.stopInitiator,
     totalDurationMs: stopped.totalDurationMs,
   });
   await writeStoppedAgentArtifacts(stopped.task);

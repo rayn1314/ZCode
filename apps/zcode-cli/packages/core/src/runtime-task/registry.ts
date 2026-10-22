@@ -1,6 +1,7 @@
 import type {
   ModelUsage,
   SessionId,
+  SubagentStopInitiator,
   SubagentTaskSnapshot,
   TraceContext,
   TurnId,
@@ -63,10 +64,11 @@ export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
    */
   resultText?: string;
   /**
-   * 是谁请求停止这个任务（"user" = GUI / 后台面板，"model" = TaskStop）。dwf 停止分支在调
-   * 端口 cancel 之前写下它；终态通知稍后由 waiter 结算时读它。重臂（resume 新生命）随结算面复位。
+   * 是谁请求停止这个任务（"user" = GUI / 后台面板，"model" = TaskStop）。dwf 与 local_agent
+   * 的停止分支都在铸造终态之前写下它；终态通知读它，系统清扫不填。
+   * 重臂（resume 新生命）随结算面复位。
    */
-  stopInitiator?: "user" | "model";
+  stopInitiator?: SubagentStopInitiator;
   /**
    * 本条 running 快照由输入复活注册（spec `subagent-input-revival.md` D3）：这轮没有
    * runner 执行体持有，轮末由 turn 挂钩结算；派发轮与 SendMessage 复活轮恒缺席该标记，

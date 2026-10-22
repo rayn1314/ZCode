@@ -9,6 +9,7 @@ import type {
 import type { AgentRuntimeInternal } from "../internal.js";
 import { stopDynamicWorkflowBackgroundTask } from "./background-stop-dynamic-workflow.js";
 import type {
+  RuntimeBackgroundStopInitiator,
   RuntimeBackgroundStopOptions,
   RuntimeBackgroundStopResult,
   RuntimeBackgroundStopStatus,
@@ -107,7 +108,7 @@ export async function stopBackgroundTask(
   }
 
   if (target.taskType === "local_agent") {
-    return stopLocalAgentBackgroundTask.call(this, target);
+    return stopLocalAgentBackgroundTask.call(this, target, options.initiator);
   }
 
   if (target.taskType === "local_bash") {
@@ -182,11 +183,14 @@ function unsupportedBackgroundStopResult(
 async function stopLocalAgentBackgroundTask(
   this: AgentRuntimeInternal,
   target: TypedRuntimeBackgroundStopTarget,
+  initiator?: RuntimeBackgroundStopInitiator,
 ): Promise<RuntimeBackgroundStopResult> {
   if (!this.subagentPort?.stopTask) {
     return unsupportedBackgroundStopResult(target);
   }
-  const snapshot = await this.subagentPort.stopTask(target.taskId);
+  // 发起方必须原样转交：终态通知靠它区分「用户停的」与「模型自己停的」。
+  // 缺席即系统清扫（rewind 丢弃分支等），通知据此说「系统停的」而不是让模型猜。
+  const snapshot = await this.subagentPort.stopTask(target.taskId, { initiator });
   if (!snapshot) {
     return {
       ok: false,

@@ -87,7 +87,14 @@ export interface SubagentWaitOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * 谁发起的停止。`"model"` 是模型自己的 `TaskStop`，`"user"` 是 GUI / 面板 / 远端的停止按钮。
+ * 系统清扫（rewind 丢弃分支等）不填——终态通知据此措辞，不让模型猜。
+ */
+export type SubagentStopInitiator = "user" | "model";
+
 export interface SubagentStopOptions {
+  initiator?: SubagentStopInitiator;
   signal?: AbortSignal;
 }
 

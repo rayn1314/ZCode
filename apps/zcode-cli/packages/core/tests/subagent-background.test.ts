@@ -124,7 +124,7 @@ describe("subagent background notifications", () => {
     expect(failed).toContain("<error>child failed</error>");
     expect(stopped).toContain("<status>stopped</status>");
     expect(stopped).toContain(
-      "<summary>Agent custom-reviewer task &quot;Review changes&quot; stopped.</summary>",
+      "<summary>Agent custom-reviewer task &quot;Review changes&quot; was stopped by the system.</summary>",
     );
     expect(stopped).not.toContain("<error>");
     expect(stopped).not.toContain("Explore");
@@ -209,11 +209,47 @@ describe("subagent background notifications", () => {
       status: "stopped",
     });
     expect(stopped).toContain("<next-steps>");
-    // 停止通知刻意不劝续跑：stopTask 还不知道是谁停的，UI 停止与模型 TaskStop 同路。
-    // 对用户刚停掉的子代理说「还想要就续跑」正是工作流注释里点名的反模式。
-    expect(stopped).toContain("This agent was stopped — that is not a failure");
+    // 系统清扫（rewind 丢弃分支）没有发起方：说清「不是你、也不是用户停的」，且不劝续跑。
+    expect(stopped).toContain("was stopped by the system, not by you and not by the user");
     expect(stopped).toContain("Do not resume it or dispatch a replacement");
     expect(stopped).not.toContain("If the work is still wanted");
+  });
+
+  it("names who stopped the agent and gives the action that matches that initiator", () => {
+    // 三档来自运行时已知的事实（spec D8）：用户的手、模型自己的 TaskStop、系统清扫。
+    // 中性文案被否决：模型没有判断依据，只会对用户刚停的续跑、或对系统清扫的重派。
+    const base = {
+      agentId: "agent_stopped_by",
+      agentType: "general-purpose",
+      description: "Long audit",
+      outputFile: "/tmp/agent_stopped_by/output.txt",
+      parentToolCallId: "toolu_stopped_by",
+      status: "stopped" as const,
+    };
+
+    const byUser = formatLocalAgentTaskNotification({ ...base, stopInitiator: "user" });
+    expect(byUser).toContain(
+      "<summary>Agent general-purpose task &quot;Long audit&quot; was stopped by the user.</summary>",
+    );
+    expect(byUser).toContain("The user stopped this agent on purpose.");
+    expect(byUser).toContain("do not resume it and do not dispatch a replacement");
+    // 不得给「要不要续跑」的判断题：那是运行时已经知道的事实。
+    expect(byUser).not.toContain("unless you know the stop was not the user");
+
+    const byModel = formatLocalAgentTaskNotification({ ...base, stopInitiator: "model" });
+    expect(byModel).toContain(
+      "<summary>Agent general-purpose task &quot;Long audit&quot; was stopped by you (TaskStop).</summary>",
+    );
+    expect(byModel).toContain("You stopped this agent with TaskStop, so it did not fail.");
+    expect(byModel).toContain("Resume it with SendMessage to its agentId");
+    expect(byModel).toContain("dispatch a new agent if the scope changed");
+
+    const bySystem = formatLocalAgentTaskNotification(base);
+    expect(bySystem).toContain(
+      "<summary>Agent general-purpose task &quot;Long audit&quot; was stopped by the system.</summary>",
+    );
+    expect(bySystem).toContain("not by you and not by the user");
+    expect(bySystem).not.toContain("SendMessage");
   });
 
   it("names the failure kind and the resume handle when the failure site classified it", () => {

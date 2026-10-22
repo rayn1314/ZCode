@@ -8,6 +8,7 @@
 // background.ts 继续对外 re-export 这些名字，所以 agent-runtime.ts /
 // internal-turn-methods.ts 的既有 import 路径不变。
 
+import type { SubagentStopInitiator } from "@zcode/contracts";
 import type { BackgroundTaskInfo, BackgroundTaskInfoStatus } from "../deps.js";
 import type { RuntimeTaskSnapshot, RuntimeTaskType } from "../../runtime-task/registry.js";
 import type { TraceContext } from "../deps.js";
@@ -40,9 +41,11 @@ export type RuntimeBackgroundStopResult =
  * GUI / 后台面板经
  * `runtime.cancelBackgroundTask` 进来的是 `"user"`，模型的 `TaskStop` 是 `"model"`；运行时
  * 清扫等系统路径不填。dwf 分支把它记到 registry 条目上，终态通知据此告诉模型「这是用户的
- * 决定，不要自行恢复」。
+ * 决定，不要自行恢复」；local_agent 分支同样把它转交给 `subagentPort.stopTask`。
+ *
+ * 与 `SubagentStopOptions.initiator` 同一个词表：单一来源在 contracts。
  */
-export type RuntimeBackgroundStopInitiator = "user" | "model";
+export type RuntimeBackgroundStopInitiator = SubagentStopInitiator;
 
 export interface RuntimeBackgroundStopOptions {
   initiator?: RuntimeBackgroundStopInitiator;
