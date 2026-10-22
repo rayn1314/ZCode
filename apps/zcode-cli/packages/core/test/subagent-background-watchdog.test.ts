@@ -183,6 +183,12 @@ test(
       assert.equal((completedEvent.payload as { status?: string }).status, "failed");
       assert.equal(harness.notifications.length, 1);
       assert.match(harness.notifications[0]?.text ?? "", /failed/);
+      // 归因必须是真的：看门狗停的是「没活动」，不是 provider 请求失败。
+      assert.match(
+        harness.notifications[0]?.text ?? "",
+        /Failure kind: inactivity timeout \(no activity for 1000ms\)/,
+      );
+      assert.doesNotMatch(harness.notifications[0]?.text ?? "", /provider request failed/);
 
       // settle 必停表：结算后再推进任意时长也不会二次开火。
       t.mock.timers.tick(60 * INACTIVITY_MS);

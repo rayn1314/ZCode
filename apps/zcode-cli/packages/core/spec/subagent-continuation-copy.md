@@ -63,21 +63,32 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   明示（见 D5），父侧规则写明这种情形首选续跑。空 result 的真实成因是 `modelResponse` 为空
   （`turn-model-step.ts` 的 `state.modelResponse = result.text`，provider 截断时不置位），
   与看门狗超时、provider 失败是不同形态——但父代理不需要区分成因，处置动作相同：续跑。
-- **D4 失败分类只用 adapter 已经给出的三个事实，不新造 taxonomy。** 分类输入是
+- **D4 失败分类只用错误链上已有的事实，不新造 taxonomy。** 分类输入是
   `projectExecutionErrorPayload(error).attribution` 里的 `reason` / `retryable` / `statusCode`
-  ——它们由 `toAdapterError` 在归一化边界写进错误链，本来就存在，只是此前没有任何一处
-  把它们转成父代理能执行的动作。输出只有四档（`transient` / `configuration` / `cancelled` /
-  `unknown`），每档一句话动作：
+  与错误链上的 `CoreErrorType`，输出只有五档，每档一句话动作：
   - `transient`（adapter 标 retryable，或 reason ∈ rate_limited / provider_overloaded /
     server_error / network_error / timeout / stream_idle_timeout / stale_connection /
-    proxy_error / offpeak_queued）：任务本身没失败，续跑；
+    proxy_error / offpeak_queued，或 type ∈ model_rate_limited / model_timeout）：任务本身
+    没失败，续跑；
   - `configuration`（auth_failed / provider_not_configured / invalid_request /
-    context_exceeded / tls_error）：续跑会撞同一堵墙，修配置或问用户，别重派；
-  - `cancelled`：是被停掉的，不是坏掉的；
+    context_exceeded / tls_error，或 type = model_context_exceeded）：续跑会撞同一堵墙，
+    修配置或问用户，别重派；
+  - `cancelled`（reason = cancelled，或 type ∈ turn_cancelled / tool_cancelled / cancelled）：
+    是被停掉的，不是坏掉的；
+  - `inactive`（看门狗写的 `ToolTimeout` + `context.idleMs` 标记）：跑着跑着十分钟没动静被切断，
+    不是失败。文案里的时长用配置阈值 `timeoutMs`，与 `<error>` 那句「inactive for Nms」同源；
   - `unknown`：给条件式判据，不假装知道成因。
 
   `context_exceeded` 刻意归 `configuration` 而不是 `transient`：续跑会立刻再次超窗，
   正确动作是收窄范围，不是「再试一次」。
+
+  **`inactive` 必须最先判定。** 看门狗构造的 CoreError 带 `retryable: true`（「允许再跑」
+  的授权），不先拦下来，`retryable === true` 会把「十分钟没活动」说成
+  `transient provider error — the provider request failed, not the agent's work`：
+  动作对了，原因却是假的。这与 D8 同一条原则——只说运行时真正知道的事。
+
+  **`retryable: false` 不展示。** `createCoreError` 把未指定的 `retryable` 默认成 `false`，
+  那不是 adapter 的判断；文案只在 `retryable === true` 时写出来，否则就是假精确。
 
 - **D4b 前台与后台两条失败路径必须同口径。** 前台 Agent 调用失败时抛 CoreError，工具结果
   只把根因 `message` 交给模型（`stringifyToolResultOutput` 的失败分支），`detail` 与
@@ -158,7 +169,7 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   `This agent did the work but its final message was lost; do not re-dispatch the same task. SendMessage to its agentId to have it finish and report — say what it already covered and what is still missing.`
   并在 summary 里补一句同义短句（父代理可能只读 summary 一行）。
 - **failed**：失败现场用 `classifySubagentFailure(error)` 现算分类（通知本身只拿得到字符串，
-  拿不到 error 对象），按四档给动作，并把 `reason` / `retryable` / `statusCode` 如实写进
+  拿不到 error 对象），按五档给动作，并把 `reason` / `retryable` / `statusCode` 如实写进
   文案（`Failure kind: transient provider error (server_error, retryable, HTTP 503)`）。
   没有分类时退回条件式文案。
 - **stopped**：按发起方（D8）分三支，且 summary 同一句话里点名发起方
@@ -232,6 +243,10 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - A2b 前台失败的工具结果里同时出现根因文案、`Failure kind: …` 与 `SendMessage with to: 'agent_x'`
   ——父代理不再因为拿不到句柄而只能重开。
 - A2c 分类来自错误链：wrapper → cause 两层时仍能读出 `server_error` / `retryable`。
+- A2d 意外中断按真实成因分类：看门狗无活动 → `Failure kind: inactivity timeout (no activity
+  for Nms)` 且**不出现**「provider 请求失败」；父轮取消（`turn_cancelled` / `tool_cancelled`）
+  → `Failure kind: cancelled`；上下文超窗 → `configuration`。默认的 `retryable: false`
+  不出现在文案里。
 - A3 stopped 通知按发起方分三档：`user` 明说「用户的决定、不要续跑/重派」；`model` 明说
   「你自己停的、不是失败」并给出续跑与改范围重派两条路；未填（系统）明说「系统停的、
   不要续跑」——三档都不得出现「如果还想要就续跑」这类交给模型猜的措辞。

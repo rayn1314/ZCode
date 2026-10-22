@@ -58,6 +58,52 @@ describe("classifySubagentFailure", () => {
     expect(classifySubagentFailure(new Error("boom")).kind).toBe("unknown");
   });
 
+  it("names an inactivity timeout as inactivity, not as a provider failure", () => {
+    // 看门狗的超时错误带 retryable: true（允许再跑），但那不是「供应商抖动」的事实。
+    // 不先拦下来，父代理会读到一句原因错误的文案：动作对、归因错。
+    const watchdog = createCoreError(
+      CoreErrorType.ToolTimeout,
+      "Subagent was inactive for 600000ms",
+      {
+        context: { code: "CHILD_RUNTIME_FAILED", idleMs: 600000, timeoutMs: 600000 },
+        recoverable: true,
+        retryable: true,
+      },
+    );
+    expect(classifySubagentFailure(watchdog)).toEqual({ kind: "inactive", timeoutMs: 600000 });
+
+    const text = formatSubagentFailureGuidance(classifySubagentFailure(watchdog), "agent_abc");
+    expect(text).toContain("Failure kind: inactivity timeout (no activity for 600000ms)");
+    expect(text).not.toContain("provider request failed");
+    expect(text).toContain("the run was cut off mid-work, not failed");
+    expect(text).toContain("SendMessage with to: 'agent_abc'");
+    expect(text.length).toBeLessThan(240);
+  });
+
+  it("recognizes cancellation from the CoreError type, not only from the adapter reason", () => {
+    // 父轮取消走 turn/tool 层的 CoreError，没有 adapter 的 reason。此前会掉进 unknown，
+    // 还会把 createCoreError 默认的 retryable: false 当事实展示。
+    const cancelled = createCoreError(
+      CoreErrorType.ToolCancelled,
+      "Agent was cancelled before the subagent returned findings or background launch completed",
+      { recoverable: true },
+    );
+    expect(classifySubagentFailure(cancelled)).toMatchObject({ kind: "cancelled" });
+    const text = formatSubagentFailureGuidance(classifySubagentFailure(cancelled), "agent_abc");
+    expect(text).toContain("Failure kind: cancelled");
+    expect(text).not.toContain("not retryable");
+  });
+
+  it("treats a CoreError context overflow as configuration, not as a transient blip", () => {
+    expect(
+      classifySubagentFailure(
+        createCoreError(CoreErrorType.ModelContextExceeded, "Context window exceeded", {
+          recoverable: true,
+        }),
+      ),
+    ).toMatchObject({ kind: "configuration" });
+  });
+
   it("reads the classification through a wrapper cause chain", () => {
     // 子代理前台失败会被包一层生命周期 wrapper，真实分类在 cause 上——这是运行时
     // 的实际形态，不是测试虚构。
