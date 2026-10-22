@@ -72,6 +72,32 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 | `ledgerDumpScript.ts`（WSL Python）  | 同一套算法用 Python 重写，输出字段名与 TS 侧一致（`parentSessionId` / `taskType` / `childCount`）                          |
 | `ledgerMerge.ts`                     | 合并后对 sessions 再跑一次 `selectLedgerSessionRows(rows, 500)`（跨源无父子关系，但重排后仍可能切掉父行）                  |
 
+## 价格管理与别名
+
+价格表原本只有「改文件」这一条路：用户想给未计价模型补价，或把中转站的模型别名指向官方模型，只能手改 `<数据根>/v2/usage-prices.json`。本节把手动定价变成 UI 可操作的能力，并把别名从「复制两份价」升级成真正的引用。
+
+**数据模型（三层不变，只加两样东西）**
+
+1. 用户覆盖层 `usage-prices.json` 新增 `_aliases` 段：`{ "<别名>": "<目标模型>" }`。`_` 开头仍是元信息命名空间，旧版本读到 `_aliases` 会当元信息跳过，不会把别名误当价格。
+2. `LedgerPriceTable` 增加三个可选溯源字段：`sources`（每个键来自哪一层：`builtin` / `synced` / `user`）、`aliases`（用户声明的原始映射）、`aliasTargets`（展开后每个别名最终命中的目标键）。可选是因为测试与外部构造的裸表（只喂 `calcLedgerCost`）不需要溯源；loader 产出永远带齐。
+
+**行为**
+
+- **别名只在 `LedgerPriceLoader.load()` 展开**：合并三层后，对每个别名沿映射链找目标键的最终价，找到就把它设为别名键的价格。WSL dump 用的价格表就是 loader 合并后序列化的产物（`ledgerReader.ensureDumpAssets`），所以费用公式、Windows 聚合、Python `calc_cost` 与两侧对拍全部零改动。
+- **显式定价优先于别名**：别名键自己有任何一层的价格时，别名不覆盖它。这样「先补了价、后配别名」不会让价格凭空消失。
+- **防环**：链式查找带访问集合与深度上限（8 层），成环即中断，别名保持未定价，不抛错。
+- **来源标注**：别名展开出来的键标 `source: "user"`（键的存在由用户声明决定），并带 `aliasOf` 指向最终目标；来源层只影响 UI 展示与「恢复默认」可用性，不影响计价。
+- **写操作只动用户覆盖层**：`setLedgerPrice` / `deleteLedgerPrice` / `setLedgerPriceAlias` 全部读-改-写 `usage-prices.json`，保留文件里其它未知键与 `_meta` 原样。同步按钮仍只写中间层，两者互不覆盖。
+- **写入语义**：`set` 写小写模型名的三价（input/output/cacheRead，非负有限数）；`delete` 只删用户覆盖键，等于「恢复默认」（回落到同步层或内置基准）；`setAlias` 传 `target=null` 即删除别名。设置别名时若同名键有用户显式定价，一并删除该定价，让别名真正生效；设置价格时若同名键是别名，一并删除该别名。
+- **每次成功写入后 `priceLoader.invalidate()`**，下一次快照即用新价；失败原样保留旧文件并回传错误文案。
+- **UI**：页脚「价格管理」打开对话框。搜索框按模型 id 子串过滤（服务端过滤 + `limit` 截断，默认 200 条，返回 `total` 用于提示）；表格每行显示模型、来源徽标、三价与操作（编辑 / 恢复默认）；顶部列出快照里的未计价模型，点击直达编辑；底部别名区可增删映射，目标未定价的别名显式标「未解析」。
+
+**所有权与不变式**
+
+- 价格表唯一写入方是 `IUsageLedgerService` 的三个变更方法（host 进程内），UI 不直接碰文件。
+- 用户覆盖文件损坏时：读取层继续忽略（现有行为不变）；写入层拒绝覆盖并返回错误——否则一次「改价」会把用户手写的整份文件抹成只剩一条。
+- 别名不改变 `calcLedgerCost` 的输入契约：它拿到的仍是「模型 id → 三价」的扁平表。
+
 ## 只读不变式（硬约束）
 
 - SQLite 全程 `readOnly: true` + 短连接，每请求用完即关；**绝不持有长连接**——长读事务会阻碍主程序 WAL checkpoint。
@@ -90,6 +116,7 @@ LedgerPanel (ui/settings/usage-stats/ledger/)
 | WSL 发行版停止 / 探测瞬态失败       | 已知源按 stale 保留在 sources（`ok=false`，注明「未在运行」），30 分钟后移除；不重探停止的发行版（避免把 WSL 拉起）                |
 | 价格表缺失/损坏                     | `pricesLoaded=false`，费用相关输出为 null，UI 显示「未加载价格表」                                                                 |
 | 价格基准同步失败                    | 旧基准原样保留，页脚按钮旁显示「同步失败」，错误详情挂 tooltip                                                                     |
+| 用户覆盖文件损坏后改价              | 拒绝写入并回传错误（不覆盖原文件），避免把用户手写的整份价格表抹掉                                                                 |
 | 远端 workspace                      | 服务不存在，UI 展示不可用空态                                                                                                      |
 
 **源可见性不变式**（`ledgerWslVisibility.ts`，纯函数 + 单测守护）：任何「暂时不可聚合」的 WSL 源都必须继续出现在 `snapshot.sources` 里灰显，绝不允许从来源列表凭空消失——否则用户看到的是统计无声丢失且无从排查。规则：退避窗口（60s）内跳过聚合但保留源；发行版停止/探测未确认的源保留 30 分钟。

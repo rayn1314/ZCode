@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "vitest";
@@ -58,6 +58,92 @@ test("内置基准含连字符别名 deepseek-v4-1-flash（中转站模型命名
     assert.equal(price.input, 0.15);
     assert.equal(price.output, 0.6);
     assert.equal(price.cacheRead, 0.003);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+async function writeUserPrices(dir: string, payload: unknown): Promise<void> {
+  await mkdir(path.join(dir, "v2"), { recursive: true });
+  await writeFile(path.join(dir, "v2", "usage-prices.json"), JSON.stringify(payload), "utf8");
+}
+
+test("用户覆盖层的 _aliases 在加载时展开为目标价格", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ledger-prices-"));
+  try {
+    await writeUserPrices(dir, {
+      "custom-model": { input: 1, output: 2, cacheRead: 0.1 },
+      _aliases: { "relay-model": "custom-model" },
+    });
+    const table = await new LedgerPriceLoader({ dataRootDir: dir }).load();
+    assert.deepEqual(table.prices.get("relay-model"), {
+      input: 1,
+      output: 2,
+      cacheRead: 0.1,
+    });
+    // 别名键由用户声明决定存在，来源记 user；价格本身来自同层
+    assert.equal(table.sources?.get("relay-model"), "user");
+    assert.equal(table.aliasTargets?.get("relay-model"), "custom-model");
+    assert.equal(table.aliases?.get("relay-model"), "custom-model");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("别名键自己的显式定价优先于别名展开", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ledger-prices-"));
+  try {
+    await writeUserPrices(dir, {
+      "custom-model": { input: 1, output: 2, cacheRead: 0.1 },
+      "relay-model": { input: 9, output: 9, cacheRead: 9 },
+      _aliases: { "relay-model": "custom-model" },
+    });
+    const table = await new LedgerPriceLoader({ dataRootDir: dir }).load();
+    assert.deepEqual(table.prices.get("relay-model"), { input: 9, output: 9, cacheRead: 9 });
+    assert.equal(table.aliasTargets?.has("relay-model"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("别名链按最终目标展开，成环时中断且不抛错", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ledger-prices-"));
+  try {
+    await writeUserPrices(dir, {
+      "final-model": { input: 2, output: 4, cacheRead: 0.2 },
+      _aliases: {
+        "alias-a": "alias-b",
+        "alias-b": "final-model",
+        "cycle-x": "cycle-y",
+        "cycle-y": "cycle-x",
+      },
+    });
+    const table = await new LedgerPriceLoader({ dataRootDir: dir }).load();
+    assert.deepEqual(table.prices.get("alias-a"), { input: 2, output: 4, cacheRead: 0.2 });
+    assert.equal(table.aliasTargets?.get("alias-a"), "final-model");
+    assert.equal(table.prices.has("cycle-x"), false);
+    assert.equal(table.prices.has("cycle-y"), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("来源标注按层：内置 / 同步 / 用户覆盖依次覆盖", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "ledger-prices-"));
+  try {
+    await mkdir(path.join(dir, "v2"), { recursive: true });
+    await writeFile(
+      path.join(dir, "v2", "usage-prices-baseline.json"),
+      JSON.stringify({ "deepseek-flash": { input: 9, output: 9, cacheRead: 9 } }),
+      "utf8",
+    );
+    await writeUserPrices(dir, {
+      "custom-model": { input: 1, output: 2, cacheRead: 0.1 },
+    });
+    const table = await new LedgerPriceLoader({ dataRootDir: dir }).load();
+    assert.equal(table.sources?.get("deepseek-flash"), "synced");
+    assert.equal(table.sources?.get("deepseek-v4.1-flash"), "builtin");
+    assert.equal(table.sources?.get("custom-model"), "user");
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

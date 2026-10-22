@@ -20,6 +20,7 @@ import { LedgerFixedKpiStrip, LedgerHourlyStrip, LedgerKpiCards } from "./Ledger
 import { LedgerRecentTable, LedgerErrorSummary } from "./LedgerTables.js";
 import { LedgerSessionsTable } from "./LedgerSessionsTable.js";
 import { LedgerModelsTable } from "./LedgerModelsTable.js";
+import { LedgerPriceDialog } from "./LedgerPriceDialog.js";
 
 // Recharts 初始化会在 Linux 容器阻断 renderer 启动（与 App Usage 相同的按需加载边界）。
 const LedgerTrendChart = lazy(() =>
@@ -68,6 +69,7 @@ export function LedgerPanel() {
     "idle",
   );
   const [priceSyncError, setPriceSyncError] = useState<string | null>(null);
+  const [priceDialogOpen, setPriceDialogOpen] = useState(false);
   const handleSyncPrices = () => {
     if (priceSyncState === "syncing") {
       return;
@@ -353,6 +355,9 @@ export function LedgerPanel() {
                 ? intl.formatMessage({ id: "settings.usage.ledger.pricesSync.success" })
                 : intl.formatMessage({ id: "settings.usage.ledger.pricesSync.button" })}
           </Button>
+          <Button type="button" variant="ghost" size="xs" onClick={() => setPriceDialogOpen(true)}>
+            {intl.formatMessage({ id: "settings.usage.ledger.prices.button" })}
+          </Button>
           {priceSyncState === "error" ? (
             <span className="text-destructive" title={priceSyncError ?? undefined}>
               {intl.formatMessage({ id: "settings.usage.ledger.pricesSync.failed" })}
@@ -383,6 +388,14 @@ export function LedgerPanel() {
           )}
         </div>
       ) : null}
+      <LedgerPriceDialog
+        open={priceDialogOpen}
+        onOpenChange={setPriceDialogOpen}
+        unpricedModelIds={overview.unpricedModelIds ?? []}
+        onChanged={() => {
+          void refresh();
+        }}
+      />
     </div>
   );
 }

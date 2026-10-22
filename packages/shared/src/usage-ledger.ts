@@ -168,6 +168,77 @@ export const ledgerPriceSyncResultSchema = z.object({
 });
 export type LedgerPriceSyncResult = z.infer<typeof ledgerPriceSyncResultSchema>;
 
+// ── 手动定价（用户覆盖层 + 别名）───────────────────────────────────
+// 写操作只动 <数据根>/v2/usage-prices.json；同步层与内置基准不受影响。
+// 别名在 LedgerPriceLoader 合并后展开，费用公式与 WSL 侧对拍零改动。
+
+export const LEDGER_PRICE_SOURCES = ["builtin", "synced", "user"] as const;
+export type LedgerPriceSource = (typeof LEDGER_PRICE_SOURCES)[number];
+
+export const ledgerPriceEntrySchema = z.object({
+  modelId: z.string(),
+  input: z.number(),
+  output: z.number(),
+  cacheRead: z.number(),
+  /** 该键的最终来源层：内置基准 / 同步基准 / 用户覆盖（别名展开出来的键记 user）。 */
+  source: z.enum(LEDGER_PRICE_SOURCES),
+  /** 该键由别名展开得到时，指向最终命中的目标模型；显式定价为 null。 */
+  aliasOf: z.string().nullish(),
+});
+export type LedgerPriceEntry = z.infer<typeof ledgerPriceEntrySchema>;
+
+export const ledgerPriceAliasSchema = z.object({
+  alias: z.string(),
+  target: z.string(),
+  /** 目标当前是否解析到价格；false 时该别名不产生任何计价效果。 */
+  resolved: z.boolean(),
+});
+export type LedgerPriceAlias = z.infer<typeof ledgerPriceAliasSchema>;
+
+export const ledgerPriceListRequestSchema = z.object({
+  /** 按模型 id 子串过滤（小写匹配）；空/缺省返回全部。 */
+  query: z.string().nullish(),
+  /** 返回条数上限，缺省 200；total 始终是过滤后的总数。 */
+  limit: z.number().int().positive().max(500).nullish(),
+});
+export type LedgerPriceListRequest = z.infer<typeof ledgerPriceListRequestSchema>;
+
+export const ledgerPriceListResultSchema = z.object({
+  entries: z.array(ledgerPriceEntrySchema),
+  /** 过滤后的总条数（entries 可能被 limit 截断）。 */
+  total: z.number(),
+  aliases: z.array(ledgerPriceAliasSchema),
+  meta: ledgerPriceMetaSchema.nullable(),
+});
+export type LedgerPriceListResult = z.infer<typeof ledgerPriceListResultSchema>;
+
+export const ledgerPriceSetRequestSchema = z.object({
+  modelId: z.string().trim().min(1),
+  input: z.number().finite().nonnegative(),
+  output: z.number().finite().nonnegative(),
+  cacheRead: z.number().finite().nonnegative(),
+});
+export type LedgerPriceSetRequest = z.infer<typeof ledgerPriceSetRequestSchema>;
+
+export const ledgerPriceDeleteRequestSchema = z.object({
+  modelId: z.string().trim().min(1),
+});
+export type LedgerPriceDeleteRequest = z.infer<typeof ledgerPriceDeleteRequestSchema>;
+
+export const ledgerPriceAliasSetRequestSchema = z.object({
+  alias: z.string().trim().min(1),
+  /** null/空串表示删除该别名。 */
+  target: z.string().trim().min(1).nullish(),
+});
+export type LedgerPriceAliasSetRequest = z.infer<typeof ledgerPriceAliasSetRequestSchema>;
+
+/** 价格写操作结果；失败时旧文件原样保留。 */
+export const ledgerPriceMutationResultSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().nullish(),
+});
+export type LedgerPriceMutationResult = z.infer<typeof ledgerPriceMutationResultSchema>;
+
 export const ledgerOverviewSchema = z.object({
   calls: z.number(),
   completed: z.number(),

@@ -1,4 +1,4 @@
-import type { LedgerPriceMeta } from "@zcode/shared";
+import type { LedgerPriceMeta, LedgerPriceSource } from "@zcode/shared";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -7,6 +7,8 @@ import path from "node:path";
 // 同步基准 <数据根>/v2/usage-prices-baseline.json 由界面「同步价格」按钮手动写入；
 // 用户覆盖文件位于 <数据根>/v2/usage-prices.json，键为小写模型名，永远优先。
 // `_` 开头的键是元信息，不算模型价格；文件缺失或损坏一律视为空，不影响出数。
+// 用户覆盖文件可用 `_aliases` 声明「别名 → 目标模型」，合并后统一在这里展开：
+// WSL dump 用的就是展开后的扁平表，费用公式与 Python 对拍无需感知别名。
 
 export interface ModelPrice {
   input: number;
@@ -17,6 +19,12 @@ export interface ModelPrice {
 export interface LedgerPriceTable {
   prices: Map<string, ModelPrice>;
   meta: LedgerPriceMeta | null;
+  /** 每个键的最终来源层；loader 产出必带，裸表（只喂 calcLedgerCost）可省略。 */
+  sources?: Map<string, LedgerPriceSource>;
+  /** 用户声明的别名映射（未展开）。 */
+  aliases?: Map<string, string>;
+  /** 别名 → 展开后最终命中的目标键。 */
+  aliasTargets?: Map<string, string>;
 }
 
 export const LEDGER_USER_PRICES_FILE_NAME = "usage-prices.json";
@@ -62,18 +70,29 @@ function toPrice(value: unknown): ModelPrice | null {
   };
 }
 
-function parsePriceJson(raw: string): {
+interface ParsedPriceLayer {
   prices: Map<string, ModelPrice>;
   meta: LedgerPriceMeta | null;
-} {
+  aliases: Map<string, string>;
+}
+
+function parsePriceJson(raw: string): ParsedPriceLayer {
   const parsed: unknown = JSON.parse(raw);
   if (typeof parsed !== "object" || parsed === null) {
-    return { prices: new Map(), meta: null };
+    return { prices: new Map(), meta: null, aliases: new Map() };
   }
   const prices = new Map<string, ModelPrice>();
+  const aliases = new Map<string, string>();
   let meta: LedgerPriceMeta | null = null;
   for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
     if (key.startsWith("_")) {
+      if (key === "_aliases" && typeof value === "object" && value !== null) {
+        for (const [alias, target] of Object.entries(value as Record<string, unknown>)) {
+          if (typeof target === "string" && target.trim().length > 0) {
+            aliases.set(alias.toLowerCase(), target.trim().toLowerCase());
+          }
+        }
+      }
       if (key === "_meta" && typeof value === "object" && value !== null) {
         const m = value as Record<string, unknown>;
         meta = {
@@ -90,7 +109,44 @@ function parsePriceJson(raw: string): {
       prices.set(key.toLowerCase(), price);
     }
   }
-  return { prices, meta };
+  return { prices, meta, aliases };
+}
+
+/** 别名链最多跟 8 层；成环即中断，别名保持未定价，不抛错。 */
+const MAX_ALIAS_DEPTH = 8;
+
+/**
+ * 展开别名：把目标键的最终价复制到别名键。
+ * 显式定价优先——别名键自己有任何一层的价格时不动它（否则「先补价、后配别名」会丢价）。
+ */
+export function expandLedgerPriceAliases(
+  prices: Map<string, ModelPrice>,
+  aliases: Map<string, string>,
+): { prices: Map<string, ModelPrice>; aliasTargets: Map<string, string> } {
+  const expanded = new Map(prices);
+  const aliasTargets = new Map<string, string>();
+  for (const alias of aliases.keys()) {
+    if (expanded.has(alias)) {
+      continue;
+    }
+    const seen = new Set<string>([alias]);
+    let current = alias;
+    for (let depth = 0; depth < MAX_ALIAS_DEPTH; depth += 1) {
+      const next = aliases.get(current);
+      if (!next || seen.has(next)) {
+        break;
+      }
+      seen.add(next);
+      const price = expanded.get(next);
+      if (price) {
+        expanded.set(alias, price);
+        aliasTargets.set(alias, aliasTargets.get(next) ?? next);
+        break;
+      }
+      current = next;
+    }
+  }
+  return { prices: expanded, aliasTargets };
 }
 
 /**
@@ -140,29 +196,48 @@ export class LedgerPriceLoader {
       return this.cache.table;
     }
     const readFileFn = this.options.readFile ?? readFile;
-    const readLayer = async (fileName: string) => {
+    const readLayer = async (fileName: string): Promise<ParsedPriceLayer> => {
       try {
         return parsePriceJson(
           await readFileFn(path.join(this.options.dataRootDir, "v2", fileName), "utf8"),
         );
       } catch {
         // 层文件缺失或损坏视为空，不影响出数
-        return { prices: new Map<string, ModelPrice>(), meta: null } as {
-          prices: Map<string, ModelPrice>;
-          meta: LedgerPriceMeta | null;
-        };
+        return { prices: new Map<string, ModelPrice>(), meta: null, aliases: new Map() };
       }
     };
-    let baseline: { prices: Map<string, ModelPrice>; meta: LedgerPriceMeta | null };
+    let baseline: ParsedPriceLayer;
     try {
       baseline = parsePriceJson(JSON.stringify(BASELINE_LEDGER_PRICES));
     } catch {
-      baseline = { prices: new Map(), meta: null };
+      baseline = { prices: new Map(), meta: null, aliases: new Map() };
     }
     const synced = await readLayer(LEDGER_SYNCED_PRICES_FILE_NAME);
     const user = await readLayer(LEDGER_USER_PRICES_FILE_NAME);
-    const prices = new Map([...baseline.prices, ...synced.prices, ...user.prices]);
-    const table: LedgerPriceTable = { prices, meta: user.meta ?? synced.meta ?? baseline.meta };
+    const merged = new Map<string, ModelPrice>();
+    const sources = new Map<string, LedgerPriceSource>();
+    const applyLayer = (layer: ParsedPriceLayer, source: LedgerPriceSource) => {
+      for (const [key, price] of layer.prices) {
+        merged.set(key, price);
+        sources.set(key, source);
+      }
+    };
+    applyLayer(baseline, "builtin");
+    applyLayer(synced, "synced");
+    applyLayer(user, "user");
+    const aliases = new Map([...baseline.aliases, ...synced.aliases, ...user.aliases]);
+    const { prices, aliasTargets } = expandLedgerPriceAliases(merged, aliases);
+    // 别名展开出来的键由用户声明决定其存在，来源统一记 user（价格本身可能来自内置层）。
+    for (const alias of aliasTargets.keys()) {
+      sources.set(alias, "user");
+    }
+    const table: LedgerPriceTable = {
+      prices,
+      meta: user.meta ?? synced.meta ?? baseline.meta,
+      sources,
+      aliases,
+      aliasTargets,
+    };
     this.cache = { at: now, table };
     return table;
   }
