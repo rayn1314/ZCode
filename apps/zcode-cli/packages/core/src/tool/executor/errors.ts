@@ -36,6 +36,13 @@ export function createErrorResult(
     reasonSource !== undefined || options?.preserveReasonFormatting === true
       ? error.message
       : projectedError.message;
+  // 有些工具失败时知道「下一步该做什么」（例如子代理失败后该续跑而不是重派），
+  // 但工具结果默认只把根因 message 交给模型，detail/context 都到不了模型面。
+  // 这里给错误一个通用的模型面指引槽位：只有显式设置了才追加，其余工具逐字节不变。
+  const modelGuidance =
+    isCoreError(error) && typeof error.context?.modelGuidance === "string"
+      ? error.context.modelGuidance
+      : undefined;
   return {
     toolCallId: toolCall.id,
     toolName: toolCall.name,
@@ -53,7 +60,9 @@ export function createErrorResult(
       ...(reasonSource ? { reasonSource } : {}),
       stack: error.stack,
     },
-    ...(modelContent === undefined ? {} : { modelContent }),
+    ...(modelContent === undefined && modelGuidance === undefined
+      ? {}
+      : { modelContent: modelContent ?? `${message}\n\n${modelGuidance}` }),
     durationMs: durationMs ?? 0,
     startedAt: new Date(),
     completedAt: new Date(),

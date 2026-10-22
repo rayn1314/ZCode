@@ -1,16 +1,20 @@
 import type { ModelUsage } from "@zcode/contracts";
-import { escapeXml, formatTaskNotification } from "../runtime-task/notification.js";
+import { formatTaskNotification } from "../runtime-task/notification.js";
+import type { SubagentFailureRecovery } from "./failure-recovery.js";
+import { formatSubagentFailureGuidance } from "./failure-recovery.js";
 
-export type LocalAgentTaskNotificationStatus =
-  | "completed"
-  | "failed"
-  | "stopped";
+export type LocalAgentTaskNotificationStatus = "completed" | "failed" | "stopped";
 
 export interface LocalAgentTaskNotificationInput {
   agentId: string;
   agentType: string;
   description: string;
   error?: string;
+  /**
+   * 失败的「可续跑性」分类，由失败现场用 `classifySubagentFailure(error)` 现算。
+   * 缺省（例如测试或非 model 失败）时退回条件式指引，不假装知道原因。
+   */
+  failureRecovery?: SubagentFailureRecovery;
   outputFile: string;
   parentToolCallId: string;
   result?: string;
@@ -21,9 +25,7 @@ export interface LocalAgentTaskNotificationInput {
   usage?: ModelUsage;
 }
 
-export function formatLocalAgentTaskNotification(
-  input: LocalAgentTaskNotificationInput,
-): string {
+export function formatLocalAgentTaskNotification(input: LocalAgentTaskNotificationInput): string {
   const notification = formatTaskNotification({
     agentId: input.agentId,
     description: input.description,
@@ -43,8 +45,7 @@ export function formatLocalAgentTaskNotification(
       totalTokens: input.totalTokens,
     },
   });
-  const nextSteps = formatLocalAgentNextSteps(input);
-  // next-steps 必须落在 `</task-notification>` **之前**：父侧按 XML 节读内容，闭合标签之外的
+  const nextSteps = formatLocalAgentNextSteps(input); // next-steps 必须落在 `</task-notification>` **之前**：父侧按 XML 节读内容，闭合标签之外的
   // 散文会失联。usage 之后是 local_agent 分支内唯一的追加位（未越界到外部）。
   return nextSteps ? insertBeforeTaskNotificationClose(notification, nextSteps) : notification;
 }
@@ -54,9 +55,11 @@ const TASK_NOTIFICATION_CLOSE = "</task-notification>";
 function insertBeforeTaskNotificationClose(notification: string, nextSteps: string): string {
   const close = notification.lastIndexOf(TASK_NOTIFICATION_CLOSE);
   if (close < 0) return notification;
-  // 用通知模块唯一的转义器，保持与 `<summary>` 同一套实体；引号原样（模板串里要出现
-  // "<agent-id>"，转义成 &quot; 会让父代理多绕一步）。同 bash 通知的策略。
-  return `${notification.slice(0, close)}<next-steps>\n${escapeXml(nextSteps)}\n</next-steps>\n${notification.slice(close)}`;
+  // 只转义会破坏 XML 结构的三个字符：引号必须原样保留。指引里带着
+  // `SendMessage with to: 'agent_x'`，转成 &apos;/&quot; 会让父代理多绕一步、
+  // 甚至把实体当 id 抄进 to 字段。
+  const escaped = nextSteps.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;");
+  return `${notification.slice(0, close)}<next-steps>\n${escaped}\n</next-steps>\n${notification.slice(close)}`;
 }
 
 function formatLocalAgentNotificationSummary(
@@ -66,8 +69,7 @@ function formatLocalAgentNotificationSummary(
   >,
 ): string {
   const summary = `Agent ${input.agentType} task "${input.description}" ${input.status}.`;
-  const error =
-    input.status === "failed" && input.error?.trim() ? input.error : undefined;
+  const error = input.status === "failed" && input.error?.trim() ? input.error : undefined;
   // 修复原因：失败 summary 是 Agent 卡“子智能体输出”的来源，必须保留原前缀并
   // 直接追加与 <error> 相同的失败原因；completed/stopped 文案保持不变。
   if (error) return `${summary} ${error}`;
@@ -98,23 +100,29 @@ function isBlankResult(result: string | undefined): boolean {
 function formatLocalAgentNextSteps(
   input: Pick<
     LocalAgentTaskNotificationInput,
-    "agentType" | "description" | "error" | "result" | "status"
-  >,
+    "agentType" | "description" | "error" | "failureRecovery" | "result" | "status"
+  > & { agentId: string },
 ): string | undefined {
   if (input.status === "completed" && isBlankResult(input.result)) {
     return [
       "This agent did the work but its final message was lost. Do NOT re-dispatch the same task.",
-      `Call SendMessage with to: "<agent-id>" to have it finish and report: say what it already covered, what is still missing, and what not to redo.`,
+      `Call SendMessage with to: "${input.agentId}" to have it finish and report: say what it already covered, what is still missing, and what not to redo.`,
     ].join("\n");
   }
   if (input.status === "failed") {
+    // 有分类就照实说类型与处置；没有分类（非 model 失败、旧调用点）才退回条件式文案。
+    // 父代理拿到的 <error> 只是根因字符串，它读不出「瞬时抖动」还是「配置错了」，
+    // 这正是上一轮它把 provider 抖动当成任务失败、直接重派的原因。
+    if (input.failureRecovery) {
+      return formatSubagentFailureGuidance(input.failureRecovery, input.agentId);
+    }
     return [
       "This agent failed; the <error> above is the cause. If it looks like something interrupted work the agent had already done (a timeout, a provider failure, a truncated stream), resume it with SendMessage to its agentId instead of re-dispatching; otherwise fix what the error names, or change the scope and dispatch a new agent.",
     ].join("\n");
   }
   if (input.status === "stopped") {
     return [
-      "This agent was stopped. If the work is still wanted, resume it with SendMessage to its agentId rather than dispatching a fresh one.",
+      `This agent was stopped. If the work is still wanted, resume it with SendMessage with to: "${input.agentId}" rather than dispatching a fresh one.`,
     ].join("\n");
   }
   return undefined;

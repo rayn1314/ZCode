@@ -61,6 +61,7 @@ import {
   formatLocalAgentTaskNotification,
   formatLocalAgentTaskRevivedNotification,
 } from "./completion-notification.js";
+import { classifySubagentFailure, formatSubagentFailureGuidance } from "./failure-recovery.js";
 import { createSubagentMessageSink } from "./message-steering.js";
 import {
   getInputRevivalBinding,
@@ -555,8 +556,24 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           failedPayload,
         );
 
+        // 前台失败只有这一次机会把「续跑句柄 + 失败类型」交给父代理：工具结果的
+        // modelContent 只取根因 message，agentId 原本压根没出现在模型可见文本里，
+        // 父代理就算想续跑也没有 to 可用，只能重开（spec `subagent-continuation-copy.md`）。
+        const recoveryGuidance = formatSubagentFailureGuidance(
+          classifySubagentFailure(error),
+          lifecycle.agentId,
+        );
         if (isCoreError(error)) {
-          throw error;
+          // 保留原 type（ModelContextExceeded 等上游判据依赖它），只把指引挂到外层 context。
+          throw createCoreError(error.type, error.message, {
+            cause: error,
+            context: withErrorPayloadRole(
+              { ...error.context, modelGuidance: recoveryGuidance },
+              ErrorPayloadRole.Wrapper,
+            ),
+            recoverable: error.recoverable,
+            retryable: error.retryable,
+          });
         }
 
         throw createCoreError(CoreErrorType.ToolExecutionFailed, "Explore subagent failed", {
@@ -568,6 +585,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
               code: AgentErrorCode.CHILD_RUNTIME_FAILED,
               agentId: lifecycle.agentId,
               agentType: request.agentType,
+              modelGuidance: recoveryGuidance,
               parentToolCallId: request.parentToolCallId,
             },
             ErrorPayloadRole.Wrapper,
@@ -1894,6 +1912,8 @@ async function finalizeBackgroundFailure(
     agentType: request.agentType,
     description: request.description,
     error: errorMessage,
+    // 失败分类必须在这里算：只有这一层还握着原始 error 对象，通知本身只拿得到字符串。
+    failureRecovery: classifySubagentFailure(error),
     outputFile: lifecycle.outputFile,
     parentToolCallId: String(request.parentToolCallId),
     status: "failed",

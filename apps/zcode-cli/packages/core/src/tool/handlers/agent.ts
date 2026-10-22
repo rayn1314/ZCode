@@ -123,7 +123,7 @@ function buildAgentProviderDescription(
     "",
     "Reach for this when the task matches an available agent type, when you have independent work to run in parallel, or when answering would mean reading across several files — delegate it and you keep the conclusion, not the file dumps. For a single-fact lookup where you already know the file, symbol, or value, search directly. Once you've delegated a search, don't also run it yourself — wait for the result.",
     "",
-"- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
+    "- By default the call returns immediately with a handle (agentId + childSessionId) while the agent keeps running in the background. Keep steering it with SendMessage using the returned agentId, or wait for the result with TaskOutput(task_id, block:true); you are notified automatically when it finishes.",
     "- Pass `wait: true` when you want the agent's final message inline in this same tool result and are willing to block until it finishes — the typical case for a one-shot delegation you consume right away.",
     // 调用级 model 的口径照 ListModels / CreateWorkflow：只在用户要求时设，且只动这个子代理。
     // 三态必须**拆开写**：`override(turn) > 调用级 > profile(该类型的设置页) > 会话模型`，所以
@@ -162,6 +162,7 @@ function buildAgentProviderDescription(
     "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
     "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
     "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
+    "- A failed Agent call's error text names the failure kind (transient / configuration / cancelled / unclassified) and the `agentId` to resume. A transient provider error means the task did not fail: resume that agent instead of retrying with a new one. A configuration error means a resume hits the same wall — fix it or ask the user.",
     "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
   ].join("\n");
 }

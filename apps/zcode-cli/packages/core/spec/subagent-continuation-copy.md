@@ -38,7 +38,7 @@
 - **没有反重开的显式约束。** `buildSessionGuidanceSection` 的 Agent 指导整段被注释，等于把
   「不要重开一个重复子代理」这条不变式从提示词里删掉了；同时 revive 通知
   （`formatLocalAgentTaskRevivedNotification`：`status: running` + `do not dispatch a duplicate
-  agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那句是唯一的防线。
+agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那句是唯一的防线。
 
 后果不只是浪费 token：**重开会让同一份工作在同一会话里跑两遍**，两个子代理同时改同一批文件
 时还会互相覆盖；而续跑天然带着已持久化的工具结果与上下文，成本低一个量级。
@@ -54,10 +54,30 @@
   明示（见 D5），父侧规则写明这种情形首选续跑。空 result 的真实成因是 `modelResponse` 为空
   （`turn-model-step.ts` 的 `state.modelResponse = result.text`，provider 截断时不置位），
   与看门狗超时、provider 失败是不同形态——但父代理不需要区分成因，处置动作相同：续跑。
-- **D4 失败分类只做「可续跑」一维，不引入 taxonomy 字段。** 通知里不新增 `<reason>` 之类的
-  结构化枚举（那会要求改 contracts schema 与 UI 投影，超出本轮）。改为在既有 `<error>` /
-  `<summary>` 的文案末尾追加一句面向动作的指引，按 status 分三支：
-  completed ∧ 空 result、failed、stopped。分类依据写在 spec 里，实现只有三条字符串。
+- **D4 失败分类只用 adapter 已经给出的三个事实，不新造 taxonomy。** 分类输入是
+  `projectExecutionErrorPayload(error).attribution` 里的 `reason` / `retryable` / `statusCode`
+  ——它们由 `toAdapterError` 在归一化边界写进错误链，本来就存在，只是此前没有任何一处
+  把它们转成父代理能执行的动作。输出只有四档（`transient` / `configuration` / `cancelled` /
+  `unknown`），每档一句话动作：
+  - `transient`（adapter 标 retryable，或 reason ∈ rate_limited / provider_overloaded /
+    server_error / network_error / timeout / stream_idle_timeout / stale_connection /
+    proxy_error / offpeak_queued）：任务本身没失败，续跑；
+  - `configuration`（auth_failed / provider_not_configured / invalid_request /
+    context_exceeded / tls_error）：续跑会撞同一堵墙，修配置或问用户，别重派；
+  - `cancelled`：是被停掉的，不是坏掉的；
+  - `unknown`：给条件式判据，不假装知道成因。
+
+  `context_exceeded` 刻意归 `configuration` 而不是 `transient`：续跑会立刻再次超窗，
+  正确动作是收窄范围，不是「再试一次」。
+
+- **D4b 前台与后台两条失败路径必须同口径。** 前台 Agent 调用失败时抛 CoreError，工具结果
+  只把根因 `message` 交给模型（`stringifyToolResultOutput` 的失败分支），`detail` 与
+  `context` 都到不了模型面——**连 `agentId` 都没有**，父代理想续跑也无处可发。因此：
+  runner 在前台 catch 里把 `classifySubagentFailure` + `formatSubagentFailureGuidance`
+  的结果写进 CoreError 的 `context.modelGuidance`；`createErrorResult` 见到这个字段就把它
+  追加到模型可见的 `modelContent`（只有显式设置才追加，其余工具逐字节不变）。这是通用能力，
+  不在执行器里写子代理特判。
+
 - **D5 续跑的消息内容由父代理写，且必须包含判断。** 复用 `SendMessage(agent_*)`：
   终态走 `resumeTerminalAgentInBackground`，消息以 `coordinator` 身份 steer 进新轮的输入
   （`message-steering.ts` 的 guide 投递），子会话 `resumeFromStore` 恢复历史。因此父代理写的
@@ -78,7 +98,9 @@
 - 一个子代理进入终态后**不要重新派发同样的任务**：`SendMessage` 到它的 `agentId` 会用同一个
   会话续跑，它此前的工具结果与上下文都还在，成本远低于重开；
 - 若通知给出了 `tool_uses` 或 `subagent_tokens`，说明它已经做过工，默认续跑；
-- 只有你改变了任务范围时才新派发，并且先 `TaskStop` 停掉旧的那个。
+- 只有你改变了任务范围时才新派发，并且先 `TaskStop` 停掉旧的那个；
+- 前台失败的错误文本会给出失败类型与 `agentId`：`transient` 就续跑，`configuration`
+  就别重试。
 
 同时把「默认后台派发」那条里已经写过的 `SendMessage` 指引保持原样（不重复、不改写），
 只在这一段把「续跑」与「重开」的取舍讲清楚。
@@ -104,14 +126,17 @@
 
 门仍是 `tools.has("Agent")`（子代理 runtime 不注册 Agent，故不会注入这段）。
 
-### 4. 终态通知的自愈指引（`formatLocalAgentNotificationSummary` / 通知尾部）
+### 4. 终态通知与前台失败回执的自愈指引
 
-在既有 `<summary>` 之后、`</task-notification>` 之前追加一段 `<next-steps>`，按 status 分三支：
+**后台**：在既有 `<summary>` 之后、`</task-notification>` 之前追加 `<next-steps>`，按 status 分三支：
 
 - **completed 且 result 为空**（`result?.trim() === ""` 或全空白）：
   `This agent did the work but its final message was lost; do not re-dispatch the same task. SendMessage to its agentId to have it finish and report — say what it already covered and what is still missing.`
   并在 summary 里补一句同义短句（父代理可能只读 summary 一行）。
-- **failed**：区分不了成因就不猜。`This agent failed; its <error> above is the cause. If the error looks like it interrupted work it had already done (timeout, provider failure, truncated stream), SendMessage to its agentId to resume it instead of re-dispatching; otherwise fix what the error names, or re-scope and dispatch a new agent.`
+- **failed**：失败现场用 `classifySubagentFailure(error)` 现算分类（通知本身只拿得到字符串，
+  拿不到 error 对象），按四档给动作，并把 `reason` / `retryable` / `statusCode` 如实写进
+  文案（`Failure kind: transient provider error (server_error, retryable, HTTP 503)`）。
+  没有分类时退回条件式文案。
 - **stopped**：`This agent was stopped; resume it with SendMessage to its agentId if the work is still wanted.`
 - completed 且 result 非空：不加。
 
@@ -119,6 +144,10 @@
 不进 `<usage>` 之后——usage 之后的位置留给 workflow 的呈现指引，local_agent 不产生歧义即可。
 所有新增文案只走 `formatLocalAgentTaskNotification` 一支，不影响 bash / workflow 通知。
 文本仍受 `truncateTaskNotification` 的 120k 上限约束。
+
+**前台**：失败抛 CoreError 时挂 `context.modelGuidance`，由 `createErrorResult` 追加到模型面
+（见 D4b）。内容与后台同源，都由 `formatSubagentFailureGuidance` 生成，只是多带一句
+「工具结果里没有 agentId，所以这里给你」的语义。
 
 ## 所有权与不变式
 
@@ -130,8 +159,9 @@
 - **不碰终态所有权**：通知的 `notified` 幂等闸、复活时的 `notified: false` 重置、
   `isSupersededTaskNotificationRuntimeCommand` 的消解规则全部不变——新增的 `<next-steps>`
   只是文案，不参与消解判定（无 `taskId` 语义变化）。
-- **不构造失败分类真相**：本 spec 不要求 runner 区分子代理为什么失败，只要求文案在两种
-  处置之间给出可执行判据（「看着像打断了已做的工作」→ 续跑；否则按 error 修或重派）。
+- **不构造失败分类真相**：分类只读 adapter 写进错误链的 `reason` / `retryable` /
+  `statusCode`，读不到就落 `unknown` 并给条件式判据；不根据文案关键词猜、不新增
+  contracts schema 字段。
 - **空 result 的真实成因不在本 spec 修复**：那是 `modelResponse` 为空（provider 截断）的展示面
   问题，本 spec 只保证父代理拿到一句「这是丢了结论、去续跑」。
 
@@ -158,7 +188,11 @@
 
 - A1 一个子代理 315 次工具调用后空 result：通知含 `<next-steps>` 续跑指引、summary 含同义短句，
   且**不含**任何「重新派发」的字样；Agent 描述与 SendMessage 描述里都能找到续跑优先的规则。
-- A2 failed 通知（error 为空与非空两种）带可执行判据，且不声称自己能判断失败成因。
+- A2 failed 通知带分类：`transient` 明说「任务没失败、续跑」并给出 `agentId`；`configuration`
+  明说「续跑会撞同一堵墙」；无分类时退回条件式判据，且不声称自己能判断成因。
+- A2b 前台失败的工具结果里同时出现根因文案、`Failure kind: …` 与 `SendMessage with to: 'agent_x'`
+  ——父代理不再因为拿不到句柄而只能重开。
+- A2c 分类来自错误链：wrapper → cause 两层时仍能读出 `server_error` / `retryable`。
 - A3 stopped 通知指引用 SendMessage 续跑。
 - A4 completed 且 result 非空：不加 `<next-steps>`（不打扰正常收尾）。
 - A5 `buildSessionGuidanceSection` 在工具表含 Agent 时输出三段协作规则；不含 Agent 时仍返回 null。

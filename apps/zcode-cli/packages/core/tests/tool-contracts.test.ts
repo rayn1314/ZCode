@@ -169,6 +169,7 @@ const SOURCE_DERIVED_AGENT_DESCRIPTION = [
   "- A subagent that reached a terminal state is NOT gone. SendMessage to its `agentId` resumes that same session with its tool results and context intact — do not re-dispatch a task it already ran.",
   "- If its completion notification reports `tool_uses` or `subagent_tokens`, it already did work: resume it rather than starting over.",
   "- Only dispatch a fresh agent when the *scope* changed (your decision, not its failure), and stop the old one first with TaskStop so the two do not run the same work concurrently.",
+  "- A failed Agent call's error text names the failure kind (transient / configuration / cancelled / unclassified) and the `agentId` to resume. A transient provider error means the task did not fail: resume that agent instead of retrying with a new one. A configuration error means a resume hits the same wall — fix it or ask the user.",
   "- The completion notification carries a `<next-steps>` block for failed, stopped, and empty-output cases: follow it before deciding anything else.",
 ].join("\n");
 
@@ -481,7 +482,9 @@ describe("tool contract declarations", () => {
     expect(agentDescription).toContain(
       "so they run concurrently (they all run in the background by default)",
     );
-    expect(agentDescription).toContain("Available agent types are listed in <system-reminder> messages in the conversation.");
+    expect(agentDescription).toContain(
+      "Available agent types are listed in <system-reminder> messages in the conversation.",
+    );
     expect(agentDescription).not.toContain("- general-purpose:");
     expect(agentDescription).not.toContain("- Explore:");
     expect(agentDescription).not.toContain("model:");
@@ -1253,7 +1256,9 @@ describe("tool contract declarations", () => {
 
     const agentDescription = byName.get("Agent")?.description ?? "";
     expect(agentDescription).not.toContain("Tools: Glob, Grep");
-    expect(agentDescription).toContain("Available agent types are listed in <system-reminder> messages in the conversation.");
+    expect(agentDescription).toContain(
+      "Available agent types are listed in <system-reminder> messages in the conversation.",
+    );
     expect(agentDescription).not.toContain("(Tools:");
     expect(agentDescription).not.toContain("<system-reminder>\n");
 

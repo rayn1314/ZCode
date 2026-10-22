@@ -196,9 +196,9 @@ describe("subagent background notifications", () => {
     });
     expect(failed).toContain("<next-steps>");
     expect(failed).toContain("resume it with SendMessage to its agentId instead of re-dispatching");
-    // 不构造失败分类真相：只说「看着像打断了已做的工作」，不声称自己能判断成因。
+    // 没有分类事实时只给条件式判据，不假装知道成因。
+    expect(failed).not.toContain("Failure kind:");
     expect(failed).not.toContain("<reason>");
-    expect(failed).not.toContain("timeout_kind");
 
     const stopped = formatLocalAgentTaskNotification({
       agentId: "agent_stopped",
@@ -209,7 +209,45 @@ describe("subagent background notifications", () => {
       status: "stopped",
     });
     expect(stopped).toContain("<next-steps>");
-    expect(stopped).toContain("resume it with SendMessage to its agentId");
+    expect(stopped).toContain('resume it with SendMessage with to: "agent_stopped"');
+  });
+
+  it("names the failure kind and the resume handle when the failure site classified it", () => {
+    // 用户实测：供应商瞬时错误被父代理当成任务失败，直接重开一个子代理，已花的
+    // 3000 万 token 作废。分类来自 adapter 的既有事实，通知只负责如实转述。
+    const transient = formatLocalAgentTaskNotification({
+      agentId: "agent_transient",
+      agentType: "Coder",
+      description: "技术债务",
+      error: "Model request failed.",
+      failureRecovery: {
+        kind: "transient",
+        reason: "server_error",
+        retryable: true,
+        statusCode: 503,
+      },
+      outputFile: "/tmp/agent_transient/output.txt",
+      parentToolCallId: "toolu_transient",
+      status: "failed",
+    });
+    expect(transient).toContain("Failure kind: transient provider error");
+    expect(transient).toContain("server_error, retryable, HTTP 503");
+    expect(transient).toContain("did not fail");
+    expect(transient).toContain("SendMessage with to: 'agent_transient'");
+    expect(transient).toContain("instead of dispatching a new agent");
+
+    const configuration = formatLocalAgentTaskNotification({
+      agentId: "agent_auth",
+      agentType: "Coder",
+      description: "技术债务",
+      error: "Model request failed.",
+      failureRecovery: { kind: "configuration", reason: "auth_failed", retryable: false },
+      outputFile: "/tmp/agent_auth/output.txt",
+      parentToolCallId: "toolu_auth",
+      status: "failed",
+    });
+    expect(configuration).toContain("Failure kind: configuration error");
+    expect(configuration).toContain("will hit the same error");
   });
 
   it("drains pending background notifications as strict snapshot batches", async () => {
@@ -2132,16 +2170,13 @@ describe("subagent background notifications", () => {
     // 的 `background: "deny"` 不能报错——否则闲时每一发 Agent 都会失败——而是降级为前台
     // （等同 wait:true），并把降级说明追加在子代理正文之后（`runner.ts:167-179`）。
     // 硬失败只保留给「profile 显式要求后台」的情形，见下一个用例。
-    const output = await port.launch(
-      createSubagentRunRequest({ sessionId, turnId }),
-      {
-        signal: new AbortController().signal,
-        modelOverride: {
-          selection: { providerId: "account:zai-offpeak-idle-plan", modelId: "GLM-5.2" },
-          background: "deny",
-        },
+    const output = await port.launch(createSubagentRunRequest({ sessionId, turnId }), {
+      signal: new AbortController().signal,
+      modelOverride: {
+        selection: { providerId: "account:zai-offpeak-idle-plan", modelId: "GLM-5.2" },
+        background: "deny",
       },
-    );
+    });
 
     expect(childRan).toBe(true);
     expect(output.status).toBe("completed");

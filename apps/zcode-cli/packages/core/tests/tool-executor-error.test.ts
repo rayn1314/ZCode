@@ -106,6 +106,40 @@ describe("tool executor error projection", () => {
     );
   });
 
+  it("appends model guidance so the parent can resume a failed subagent", () => {
+    // 前台失败时工具结果只取根因 message，agentId 与失败类型原本都到不了模型面；
+    // 父代理于是只能重开（spec core/spec/subagent-continuation-copy.md）。
+    const providerError = Object.assign(new Error("Model request failed."), {
+      code: "model_request_failed",
+      context: { reason: "server_error", retryable: true, statusCode: 503 },
+      name: "AiSdkModelAdapterError",
+    });
+    const subagentError = createCoreError(
+      CoreErrorType.ToolExecutionFailed,
+      "Explore subagent failed",
+      {
+        cause: providerError,
+        context: withErrorPayloadRole(
+          {
+            code: "agent_child_runtime_failed",
+            agentId: "agent_transient",
+            modelGuidance: "Failure kind: transient provider error. Resume with SendMessage.",
+          },
+          ErrorPayloadRole.Wrapper,
+        ),
+        recoverable: true,
+      },
+    );
+
+    const result = createErrorResult(agentToolCall(), subagentError);
+    const modelText = stringifyToolResultOutput(result);
+
+    expect(modelText).toContain("Model request failed.");
+    expect(modelText).toContain("Failure kind: transient provider error");
+    // 指引只进模型面，不进 UI 用的 detail。
+    expect(result.error?.detail).not.toContain("Failure kind");
+  });
+
   it("keeps invalid subagent model context in failed parent Agent tool calls", () => {
     const parseError = new Error("Model ref is missing model id");
     const configurationError = createCoreError(
