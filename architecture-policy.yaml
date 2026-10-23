@@ -28,7 +28,9 @@ modules:
       - packages/services/src/session/offPeakTaskRepo.ts
       - packages/services/src/session/tasksDatabase/migrations.ts
       - packages/services/src/session/tasksDatabase/prepared.ts
+      - packages/services/src/session/sessionMailbox.ts
     owner: conversation
+
   - id: storage
     roots: [packages/services/src/storage]
     managed: true
@@ -268,9 +270,16 @@ modules:
     owner: conversation
 
   - id: gen-ui
-    roots: [packages/ui/src/gen-ui]
+    roots: [packages/ui/src/gen-ui, packages/ui/src/hooks/useGenUiRemoteIdentity.ts]
     managed: true
-    requires: [ui, services, gen-ui-service, gen-ui-protocol, mcp-apps-protocol, plugin-ui]
+    requires:
+      - gen-ui-protocol
+      - gen-ui-service
+      - mcp-apps-protocol
+      - plugin-ui
+      - services
+      - shared
+      - ui
     publicEntrypoints:
       [
         packages/ui/src/gen-ui/index.ts,
@@ -761,6 +770,412 @@ modules:
     layers:
       ui: .
     owner: conversation
+  # usage-ledger：由 architecture:adopt 登记
+  - id: usage-ledger
+    roots:
+      - packages/services/src/usage-ledger
+      - packages/shared/src/usage-ledger.ts
+      - packages/ui/src/hooks/useLedgerPrices.ts
+      - packages/ui/src/hooks/useLedgerStats.ts
+      - packages/ui/src/settings/usage-stats/ledger
+    managed: true
+    requires:
+      - data-roots
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/services/src/usage-ledger/index.ts
+      - packages/services/src/usage-ledger/contract.ts
+    layers:
+      adapters: .
+    owner: conversation
+  # provider-request-policy：由 architecture:adopt 登记
+  - id: provider-request-policy
+    roots:
+      - apps/zcode-cli/packages/bootstrap/src/provider-request-policy
+      - apps/zcode-cli/packages/bootstrap/tests/provider-request-policy
+      - apps/zcode-cli/packages/bootstrap/src/app/provider-quota-math.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/provider-quota-shared-store.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/provider-quota-wiring.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/provider-rate-limiter.ts
+    managed: true
+    requires:
+      - provider
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/bootstrap/src/provider-request-policy/contract.ts
+    layers:
+      app: .
+    owner: agent
+  # context-compaction：由 architecture:adopt 登记
+  - id: context-compaction
+    roots:
+      - apps/zcode-cli/packages/bootstrap/src/context-compaction
+      - apps/zcode-cli/packages/bootstrap/tests/context-compaction
+      - apps/zcode-cli/packages/bootstrap/src/compaction-policy.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/compaction-preferences.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/compact-decision.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/compact-policy-config.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/model-downshift-compact.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/post-turn-compact.ts
+      - packages/shared/src/app-compaction-preferences.ts
+      - packages/shared/src/compaction-preferences.ts
+      - packages/shared/src/zcode-protocol-v4/compaction-summary.ts
+      - packages/ui/src/hooks/useCompactionSummary.ts
+      - packages/ui/src/lib/contextCompactionSettings.ts
+      - packages/ui/src/settings/CompactionPostTurnRows.tsx
+      - packages/ui/src/settings/CompactionThresholdRows.tsx
+      - packages/ui/src/settings/ContextCompactionSection.tsx
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/bootstrap/src/context-compaction/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # session-messaging：由 architecture:adopt 登记
+  - id: session-messaging
+    roots:
+      - apps/zcode-cli/packages/bootstrap/src/session-messaging
+      - apps/zcode-cli/packages/bootstrap/tests/session-messaging
+      - apps/zcode-cli/packages/contracts/src/interfaces/session-message.port.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/session-message-chain.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/session-message-port.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/session-message-wiring.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/session-tree.ts
+      - packages/shared/src/session-message.ts
+      - packages/shared/src/zcode-protocol-v4/input-role-policy.ts
+      - packages/services/src/session/sessionMailboxStore.ts
+      - packages/ui/src/lib/sessionMessageEnvelope.ts
+      - packages/ui/src/v4/composer/SessionMessageEnvelopeChip.tsx
+      - packages/ui/src/v4/composer/useComposerDeliveryModifiers.ts
+      - packages/ui/src/v4/inputRejectionMessage.ts
+    managed: true
+    requires:
+      - data-roots
+      - services
+      - session
+      - shared
+      - ui
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/bootstrap/src/session-messaging/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # subagent-runtime：由 architecture:adopt 登记
+  - id: subagent-runtime
+    roots:
+      - apps/zcode-cli/packages/core/src/subagent-runtime
+      - apps/zcode-cli/packages/core/tests/subagent-runtime
+      - apps/zcode-cli/packages/contracts/src/interfaces/subagent-roster.port.ts
+      - apps/zcode-cli/packages/contracts/src/tools/list-agents.ts
+      - apps/zcode-cli/packages/core/src/subagent/child-session-host.ts
+      - apps/zcode-cli/packages/core/src/subagent/failure-recovery.ts
+      - apps/zcode-cli/packages/core/src/subagent/input-revival-bridge.ts
+      - apps/zcode-cli/packages/core/src/subagent/launch-spec.ts
+      - apps/zcode-cli/packages/core/src/subagent/seat-gate.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/subagent-lifecycle-persistence.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/subagent-lifecycle-reconciliation.ts
+      - apps/zcode-cli/packages/core/src/tool/handlers/list-agents.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/subagent-child-scope.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/subagent-launch-spec.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/subagent-roster.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/reload-subagents.ts
+    managed: true
+    requires:
+      - cli-startup-inputs
+      - shared
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/core/src/subagent-runtime/contract.ts
+    layers:
+      app: .
+    owner: agent
+  # cold-open-window：由 architecture:adopt 登记
+  - id: cold-open-window
+    roots:
+      - apps/zcode-cli/packages/bootstrap/src/cold-open-window
+      - apps/zcode-cli/packages/bootstrap/tests/cold-open-window
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol/cold-open-config-seed.ts
+      - apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/cold-window-rows.ts
+    managed: true
+    requires:
+      - shared
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/bootstrap/src/cold-open-window/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # cli-startup-inputs：由 architecture:adopt 登记
+  - id: cli-startup-inputs
+    roots:
+      - apps/zcode-cli/packages/bootstrap/src/cli-startup-inputs
+      - apps/zcode-cli/packages/bootstrap/tests/cli-startup-inputs
+      - apps/zcode-cli/packages/bootstrap/src/app/startup-inputs.ts
+    managed: true
+    requires:
+      - shared
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/bootstrap/src/cli-startup-inputs/contract.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/startup-inputs.ts
+    layers:
+      app: .
+    owner: agent
+  # event-exhaustiveness：由 architecture:adopt 登记
+  - id: event-exhaustiveness
+    roots:
+      - apps/zcode-cli/packages/contracts/src/hooks/event-exhaustiveness
+      - apps/zcode-cli/packages/contracts/tests/event-exhaustiveness
+      - apps/zcode-cli/packages/contracts/src/hooks/event-exhaustiveness.ts
+      - apps/zcode-cli/packages/core/src/hooks/assertNever.ts
+    managed: true
+    requires:
+      - shared
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/contracts/src/hooks/event-exhaustiveness/contract.ts
+    layers:
+      app: .
+    owner: agent
+  # selection-side-chat：由 architecture:adopt 登记
+  - id: selection-side-chat
+    roots:
+      - apps/zcode-cli/packages/core/src/context/selection-side-chat
+      - apps/zcode-cli/packages/core/tests/selection-side-chat
+      - apps/zcode-cli/packages/core/src/context/sections/selection-side-chat.ts
+    managed: true
+    requires:
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/core/src/context/selection-side-chat/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # model-replay-diagnostics：由 architecture:adopt 登记
+  - id: model-replay-diagnostics
+    roots:
+      - apps/zcode-cli/packages/adapters/src/model/reasoning-replay-diagnostics
+      - apps/zcode-cli/packages/adapters/tests/reasoning-replay-diagnostics
+      - apps/zcode-cli/packages/adapters/src/model/reasoning-replay-diagnostics.ts
+    managed: true
+    requires:
+      - zcode-cli
+    publicEntrypoints:
+      - apps/zcode-cli/packages/adapters/src/model/reasoning-replay-diagnostics/contract.ts
+    layers:
+      app: .
+    owner: agent
+  # instructions：由 architecture:adopt 登记
+  - id: instructions
+    roots:
+      - packages/services/src/instructions
+      - packages/shared/src/instruction-files.ts
+      - packages/ui/src/settings/InstructionConflictDialog.tsx
+      - packages/ui/src/settings/InstructionFilesSection.tsx
+      - packages/ui/src/settings/InstructionScopeCard.tsx
+      - packages/ui/src/settings/instructionFiles.ts
+      - packages/ui/src/settings/useInstructionFileCard.ts
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/services/src/instructions/contract.ts
+    layers:
+      app: .
+    owner: configuration
+  # data-migration：由 architecture:adopt 登记
+  - id: data-migration
+    roots:
+      - packages/services/src/migration
+      - packages/ui/src/settings/identity/DataMigrationDomainRow.tsx
+      - packages/ui/src/settings/identity/DataMigrationNotMigratable.tsx
+      - packages/ui/src/settings/identity/DataMigrationPanel.tsx
+      - packages/ui/src/settings/identity/DataMigrationSourcePicker.tsx
+      - packages/ui/src/settings/identity/formatBytes.ts
+      - packages/ui/src/hooks/useIdentityDataMigration.ts
+    managed: true
+    requires:
+      - data-roots
+      - provider-node
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/services/src/migration/contract.ts
+    layers:
+      app: .
+    owner: configuration
+  # data-roots：由 architecture:adopt 登记
+  - id: data-roots
+    roots:
+      - packages/services/src/data-roots
+      - packages/shared/src/identity-paths-node.ts
+      - apps/zcode-cli/packages/contracts/src/path/userDataRoot.ts
+      - packages/shared/src/session-mailbox.ts
+    managed: true
+    requires:
+      - shared
+    publicEntrypoints:
+      - packages/services/src/data-roots/contract.ts
+      - packages/services/src/data-roots/machineDataRoots.ts
+      - packages/shared/src/identity-paths-node.ts
+      - packages/shared/src/session-mailbox.ts
+    layers:
+      app: .
+    owner: configuration
+  # goal-task-panel：由 architecture:adopt 登记
+  - id: goal-task-panel
+    roots:
+      - packages/ui/src/settings/goal-task-panel
+      - packages/ui/src/app-shell/GoalEditView.tsx
+      - packages/ui/src/app-shell/GoalFormField.tsx
+      - packages/ui/src/app-shell/GoalProjectField.tsx
+      - packages/ui/src/app-shell/GoalResumeDialog.tsx
+      - packages/ui/src/app-shell/GoalRow.tsx
+      - packages/ui/src/app-shell/GoalSessionField.tsx
+      - packages/ui/src/app-shell/GoalsPanel.tsx
+      - packages/ui/src/app-shell/goalDisplay.ts
+      - packages/ui/src/settings/AutomationGoalBadge.tsx
+      - packages/ui/src/settings/GoalsMainBreadcrumbFrame.tsx
+      - packages/ui/src/settings/LegacyGoalRow.tsx
+      - packages/ui/src/settings/taskShapeFilter.ts
+      - packages/ui/src/store/goalManagementStore.ts
+      - packages/services/src/session/automationErrors.ts
+      - packages/services/src/session/automationTaskShape.ts
+      - packages/services/src/session/tasksDatabase/task-goal-merge-v4.ts
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/settings/goal-task-panel/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # provider-model-fetch：由 architecture:adopt 登记
+  - id: provider-model-fetch
+    roots:
+      - packages/services/src/model-provider/provider-model-fetch
+      - packages/services/src/model-provider/providerModelFetch.ts
+      - packages/ui/src/settings/model-provider-section/ProviderModelFetchCategory.tsx
+      - packages/ui/src/settings/model-provider-section/ProviderModelFetchDialog.tsx
+      - packages/ui/src/settings/model-provider-section/providerModelFetchCategories.ts
+    managed: true
+    requires:
+      - provider
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/services/src/model-provider/provider-model-fetch/contract.ts
+    layers:
+      app: .
+    owner: configuration
+  # api-key-preset：由 architecture:adopt 登记
+  - id: api-key-preset
+    roots:
+      - packages/ui/src/settings/model-provider-section/api-key-preset
+      - packages/ui/src/settings/model-provider-section/ApiKeyPresetManagerDialog.tsx
+      - packages/ui/src/settings/model-provider-section/ApiKeyPresetSwitcher.tsx
+      - packages/ui/src/settings/model-provider-section/apiKeyPreset.ts
+    managed: true
+    requires:
+      - provider
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/settings/model-provider-section/api-key-preset/contract.ts
+    layers:
+      ui: .
+    owner: configuration
+  # tool-partial-read-notice：由 architecture:adopt 登记
+  - id: tool-partial-read-notice
+    roots:
+      - packages/ui/src/ToolCallBlocks/tool-partial-read-notice
+      - packages/ui/src/ToolCallBlocks/TruncationNoticeChip.tsx
+      - packages/ui/src/ToolCallBlocks/truncationNotice.ts
+    managed: true
+    requires:
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/ToolCallBlocks/tool-partial-read-notice/contract.ts
+    layers:
+      ui: .
+    owner: conversation
+  # saved-workflow-launch：由 architecture:adopt 登记
+  - id: saved-workflow-launch
+    roots:
+      - packages/ui/src/settings/saved-workflow-launch
+      - packages/ui/src/settings/saved-workflows/SavedWorkflowLaunchModelFields.tsx
+    managed: true
+    requires:
+      - provider
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/settings/saved-workflow-launch/contract.ts
+    layers:
+      ui: .
+    owner: conversation
+  # subagent-pane-ui：由 architecture:adopt 登记
+  - id: subagent-pane-ui
+    roots:
+      - packages/ui/src/v4/subagent-pane
+      - packages/ui/src/v4/SubagentStatusIcon.tsx
+      - packages/ui/src/v4/SubagentSubBlock.tsx
+      - packages/ui/src/v4/subagentLifecycleStatus.ts
+      - packages/ui/src/v4/subagentOpenContext.tsx
+      - packages/ui/src/v4/subagentSubBlockModel.ts
+      - packages/ui/src/v4/sessionPaneCapabilities.ts
+      - packages/ui/src/v4/conversationRowIdentitySpace.ts
+      - packages/desktop/src/host/remoteSubagentConfig.ts
+    managed: true
+    requires:
+      - services
+      - shared
+      - ui
+    publicEntrypoints:
+      - packages/ui/src/v4/subagent-pane/contract.ts
+    layers:
+      app: .
+    owner: conversation
+  # ws-backpressure：由 architecture:adopt 登记
+  - id: ws-backpressure
+    roots:
+      - packages/server/src/ws-backpressure
+      - packages/server/src/websocketBackpressure.ts
+    managed: true
+    requires:
+      - rpc
+      - services
+    publicEntrypoints:
+      - packages/server/src/ws-backpressure/contract.ts
+    layers:
+      app: .
+    owner: remote
+  # desktop-diagnostics：由 architecture:adopt 登记
+  - id: desktop-diagnostics
+    roots:
+      - packages/desktop/src/main/desktop-diagnostics
+      - packages/desktop/src/main/desktopProcessErrorCapture.ts
+      - packages/desktop/src/main/exportLogArchivePolicy.ts
+    managed: true
+    requires: []
+    publicEntrypoints:
+      - packages/desktop/src/main/desktop-diagnostics/contract.ts
+    layers:
+      app: .
+    owner: desktop
 
 global:
   # 临时时间戳（2026-09-10）：unmanaged-new-file 只约束此日期之后首次入库的文件。
@@ -915,3 +1330,47 @@ exceptions:
       - packages/ui/src/settings/DynamicWorkflowModeSetting.tsx
       - packages/ui/src/store/dynamicWorkflowAvailabilityStore.ts
     reason: Admitted upstream files edited only to let the user's dynamic workflow mode choice always win and keep the settings row visible; adopting packages/shared/src and packages/ui/src needs a separate module boundary refactor.
+  - id: upstream-provider-rate-limit-and-genui-remote-edit
+    rule: unmanaged-new-file
+    paths:
+      - apps/zcode-cli/packages/bootstrap/src/app/dynamic-workflow-run-roster-events.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/workflow-driver-types.ts
+      - apps/zcode-cli/packages/bootstrap/src/app/workflow-seat-gate.ts
+      - apps/zcode-cli/packages/contracts/src/interfaces/dynamic-workflow-run-roster.port.ts
+      - apps/zcode-cli/packages/contracts/src/tools/get-workflow-run-roster.ts
+      - apps/zcode-cli/packages/core/src/runtime/methods/dynamic-workflow-run-settings.ts
+      - apps/zcode-cli/packages/core/src/tool/handlers/get-workflow-run-format-roster.ts
+      - packages/ui/src/ToolCallBlocks/renderers/get-workflow-run-roster.tsx
+      - packages/ui/src/hooks/useGenUi.ts
+    reason: 已有上游文件承载 fork 的两项功能：provider 每分钟配额接入动态工作流 roster（新增 rate_limit 等待原因贯穿契约 schema、roster 事件与排队文案，ProviderRateLimitPort 原样透传，model 选择解析换用 parseSubagentModelSelection），以及 Gen UI 远端身份回退与上报通道同源（spec core/spec/gen-ui-cross-host-render.md）。改动落在上游目录内，接管这些目录不在本次范围；后续再改这些文件须重新核对模块治理。
+  - id: upstream-oxfmt-normalization-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/desktop/src/main/embeddedBrowserPermissionUiBridge.ts
+      - packages/desktop/src/main/embeddedBrowserSitePermissionStore.ts
+      - packages/services/src/file/workspaceFileIgnore.ts
+      - packages/ui/src/browser-use/BrowserSitePermissionsPage.tsx
+      - packages/ui/src/lib/workflowRunLine.ts
+      - packages/ui/src/workspace-file-search/workspaceFileSearchFilterBackend.ts
+      - packages/services/src/source-server-workspace/sourceServerWorkspace.ts
+      - packages/ui/src/store/sourceServerDisplayNameRegistry.ts
+      - packages/ui/src/hooks/useSourceServerManagementSnapshot.ts
+      - packages/shared/src/source-server/errorCodes.ts
+      - packages/ui/src/settings/SourceServerMigrationReportPanel.tsx
+      - packages/zcode-server-cli/src/packaging/stageArchives.ts
+      - packages/desktop/src/host/sourceServerOperationLogs.ts
+      - packages/ui/src/WorkspaceSidebar/RemoteProjectDetailsPopover.tsx
+    reason: 已有上游文件仅在本仓 oxfmt（printWidth 100、尾逗号、去冗余括号）下重排：去掉空白、逗号与括号后与上游逐字相同，逻辑与模块边界不变，故不接管目录。
+  - id: cua-bridge-placeholder-package-files
+    rule: unmanaged-new-file
+    paths:
+      - packages/zcode-cua/bridge-mcp-client.js
+      - packages/zcode-cua/bridge-runtime.js
+    reason: Computer Use 桥接（路线 B）的两个实现文件位于开源占位包 packages/zcode-cua：该包 tsconfig 只含 *.d.ts、vitest 只跑 test/**，登记 managed 模块会产出既不编译也不运行的死契约，且该包不在根类型检查范围内。待该包接入类型检查与测试入口时改为登记 managed 模块。
+  - id: upstream-remote-runtime-env-injection-edit
+    rule: unmanaged-new-file
+    paths:
+      - packages/server/src/source-server/transportAdapter.ts
+      - packages/server/src/source-server/sourceServerTransportRuntime.ts
+      - packages/desktop/src/host/sourceServerConnectionManager.ts
+    reason: 已有上游文件承载 fork 的远端运行环境与网络策略注入：桌面 Host 把 runtimeEnv/runtimeNetwork（代理、baseURL、灰度开关）透传到 serve --daemon 启动命令与每次重连，并把 shell 命令拼装收敛到 buildShellEnvAssignment / buildSourceServerShellCommand 两个唯一入口。改动落在上游目录内，接管这些目录不在本次范围；后续再改这些文件须重新核对模块治理。
