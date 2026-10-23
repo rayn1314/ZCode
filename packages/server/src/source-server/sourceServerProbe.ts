@@ -16,9 +16,12 @@ import type {
   SourceServerProbeResult,
   TransportContext,
 } from "@zcode/server/source-server/transportAdapter.js";
+import { ZCODE_DATA_ROOT_SUFFIX } from "@zcode/shared";
 
-const SERVER_ROOT_SHELL = '"$HOME/.zcode/server"';
-const SERVER_BIN_SHELL = '"$HOME/.zcode/server/bin/zcode"';
+// 与 transportAdapter 的 SERVER_ROOT_SHELL 同源按产品身份派生：探测必须对准本产品
+// 的 server 代码根（自建 -rayn → ~/.zcode/server-rayn），否则永远误判「未安装」。
+const SERVER_ROOT_SHELL = `"$HOME/.zcode/server${ZCODE_DATA_ROOT_SUFFIX}"`;
+const SERVER_BIN_SHELL = `"$HOME/.zcode/server${ZCODE_DATA_ROOT_SUFFIX}/bin/zcode"`;
 const SERVER_CURRENT_SHELL = `${SERVER_ROOT_SHELL}/current.json`;
 const SERVER_STATUS_SHELL = `${SERVER_ROOT_SHELL}/run/status.json`;
 const SOURCE_SERVER_PROBE_MARKER_PREFIX = "__ZCODE_PROBE_";

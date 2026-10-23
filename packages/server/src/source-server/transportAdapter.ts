@@ -1,6 +1,7 @@
 /* eslint-disable max-lines -- Source Server transport 在同一适配器内汇合安装、daemon、channel 与 target 生命周期，继续拆分会割裂取消边界。 */
 import { Duplex } from "node:stream";
 import {
+  ZCODE_DATA_ROOT_SUFFIX,
   ZCODE_REMOTE_HTTP_PROXY_ENV_KEY,
   ZCODE_REMOTE_NO_PROXY_ENV_KEY,
   ZCODE_REMOTE_RUNTIME_NETWORK_AUTHORITY_ENV_KEY,
@@ -143,9 +144,12 @@ export interface CreateSourceServerTransportAdapterOptions {
   createBackend?: (target: RemoteTarget) => Promise<IRemoteBackend>;
 }
 
-const SERVER_ROOT_READ_PATH = "~/.zcode/server";
-const SERVER_ROOT_SHELL = '"$HOME/.zcode/server"';
-const SERVER_BIN_SHELL = '"$HOME/.zcode/server/bin/zcode"';
+// Server 代码根必须与旧 deploy 链（remote/deployShared.ts 的 REMOTE_BASE）同源按产品身份派生：
+// 自建（-rayn）写 ~/.zcode/server-rayn，官方写 ~/.zcode/server。硬编码官方路径会让自建与
+// 官方客户端互相顶替同一份 bin/releases/current.json，等于放弃数据根隔离之外的代码隔离。
+const SERVER_ROOT_READ_PATH = `~/.zcode/server${ZCODE_DATA_ROOT_SUFFIX}`;
+const SERVER_ROOT_SHELL = `"$HOME/.zcode/server${ZCODE_DATA_ROOT_SUFFIX}"`;
+const SERVER_BIN_SHELL = `"$HOME/.zcode/server${ZCODE_DATA_ROOT_SUFFIX}/bin/zcode"`;
 const STALE_BOOTSTRAP_AGE_MS = 30 * 60 * 1_000;
 const INSTALL_PROGRESS_MESSAGES: Record<SourceServerInstallProgress["phase"], string> = {
   "verify-archive": "Verifying Source Server archive",
@@ -235,7 +239,7 @@ class BackendSourceServerTransportAdapter implements SourceServerTransportAdapte
     const operationId = `${process.pid}-${Date.now()}`;
     const bootstrapRootShell = `${SERVER_ROOT_SHELL}/.bootstrap-${operationId}`;
     const bootstrapDirShell = `${bootstrapRootShell}/extract`;
-    const remoteArchive = `~/.zcode/server/.bootstrap-${operationId}/zcode-server.tar.gz`;
+    const remoteArchive = `${SERVER_ROOT_READ_PATH}/.bootstrap-${operationId}/zcode-server.tar.gz`;
     const remoteArchiveShell = `${bootstrapRootShell}/zcode-server.tar.gz`;
     const cleanupCommand = `rm -rf ${bootstrapRootShell}`;
     const cleanupStaleBootstrapRootsCommand =
@@ -337,6 +341,10 @@ class BackendSourceServerTransportAdapter implements SourceServerTransportAdapte
       `rm -rf ${bootstrapDirShell}`,
       `mkdir -p ${bootstrapDirShell}`,
       `tar -xzf ${remoteArchiveShell} -C ${bootstrapDirShell} --strip-components=1`,
+      // Windows 宿主上 bsdtar（NTFS 无 POSIX 执行位）打出的归档不保留执行位，解压产物
+      // bin/zcode 与 runtime/node 均为 0666，bootstrap 下一步 exec 会直接 Permission denied；
+      // Linux CI 归档自带执行位，此 chmod 幂等无害。
+      `chmod +x ${bootstrapDirShell}/bin/zcode ${bootstrapDirShell}/runtime/node`,
       // Bug 原因：update 现在会重启完整 daemon；若不把既有 transport 能力边界传给目标
       // bootstrap CLI，WSL/Docker 会在 handoff 时误尝试注册不可用的 systemd user service。
       `${this.kind === "ssh" ? "" : "ZCODE_SERVER_SKIP_SERVICE_REGISTRATION=1 "}${bootstrapDirShell}/bin/zcode update --from-archive ${remoteArchiveShell}${options.force ? " --force" : ""} --server-root ${SERVER_ROOT_SHELL} --json --progress`,

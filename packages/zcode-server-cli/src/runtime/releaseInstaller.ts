@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { mkdtemp, readdir, readFile, rename, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, readFile, rename, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { SourceServerInstallProgress } from "@zcode/shared";
 import { releaseManifestSchema, type ReleaseManifest } from "../contracts.js";
@@ -38,6 +38,32 @@ async function flattenArchiveRoot(extractDir: string): Promise<void> {
   }
 }
 
+// Windows 宿主（bsdtar + NTFS 无 POSIX 执行位）打出的归档所有文件均为 0666，解压原样落盘；
+// release 树中会被 exec 的固定入口（bin 启动器、runtime/node、tools 二进制、agent wrapper）
+// 必须恢复 0755，否则 stable launcher 启动即 EACCES。Linux CI 归档自带执行位，幂等无害。
+async function restoreReleaseExecutableBits(releaseRoot: string): Promise<void> {
+  const executablePaths: string[] = [];
+  const binDir = join(releaseRoot, "bin");
+  for (const entry of await readdir(binDir, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isFile()) executablePaths.push(join(binDir, entry.name));
+  }
+  executablePaths.push(join(releaseRoot, "runtime", "node"));
+  const toolsDir = join(releaseRoot, "tools");
+  for (const tool of await readdir(toolsDir, { withFileTypes: true }).catch(() => [])) {
+    if (!tool.isDirectory()) continue;
+    const toolDir = join(toolsDir, tool.name);
+    for (const entry of await readdir(toolDir, { withFileTypes: true })) {
+      if (entry.isFile()) executablePaths.push(join(toolDir, entry.name));
+    }
+  }
+  await Promise.all(executablePaths.map((path) => chmod(path, 0o755)));
+  const agentsDir = join(releaseRoot, "agents");
+  for (const agent of await readdir(agentsDir, { withFileTypes: true }).catch(() => [])) {
+    if (!agent.isDirectory()) continue;
+    await chmod(join(agentsDir, agent.name, "zcode-agent"), 0o755).catch(() => undefined);
+  }
+}
+
 export interface InstallArchiveOptions {
   archivePath: string;
   target: ServerTarget;
@@ -70,6 +96,7 @@ export class ReleaseInstaller {
       options.onProgress?.("extract");
       await extractArchiveSafely(resolve(options.archivePath), incomingRoot);
       await flattenArchiveRoot(incomingRoot);
+      await restoreReleaseExecutableBits(incomingRoot);
       const runtimeManifest = serverRuntimeManifestSchema.parse(
         JSON.parse(await readFile(join(incomingRoot, "manifest.json"), "utf8")),
       );
