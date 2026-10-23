@@ -19,9 +19,8 @@ describe("Collapsible", () => {
     );
 
     expect(html).toContain("data-[state=closed]:[animation-fill-mode:forwards]");
-    expect(html).toContain(
-      "group-data-[state=closed]/collapsible-content:[animation-fill-mode:forwards]",
-    );
+    expect(html).toContain("data-[state=closed]:[&amp;&gt;div]:fade-out-0");
+    expect(html).toContain("data-[state=closed]:[&amp;&gt;div]:[animation-fill-mode:forwards]");
     expect(html).toContain('data-slot="collapsible-content"');
     expect(html).toContain('data-state="closed"');
     const contentTag = html.match(/<div[^>]*data-slot="collapsible-content"[^>]*>/)?.[0];
@@ -40,8 +39,10 @@ describe("Collapsible", () => {
     );
 
     expect(html).toContain("transition-none");
-    expect(html).toContain(
-      "transition-none duration-300 ease-in-out group-data-[state=open]/collapsible-content:animate-in",
-    );
+    // 上游把透明度动画改绑到直接子层（[&>div]），避免嵌套 content 的同名 group
+    // 匹配到祖先 open 状态、覆盖当前 closed 的淡出。
+    expect(html).toContain("data-[state=open]:[&amp;&gt;div]:animate-in");
+    expect(html).toContain("data-[state=open]:[&amp;&gt;div]:fade-in-0");
+    expect(html).toContain("transition-none duration-300 ease-in-out");
   });
 });

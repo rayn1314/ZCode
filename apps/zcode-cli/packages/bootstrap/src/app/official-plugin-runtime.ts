@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, normalize, resolve } from "node:path";
 import {
   ZCODE_OFFICIAL_PLUGIN_MARKETPLACE,
   ZCODE_PLUGIN_HOST_COMMAND,
@@ -43,6 +43,7 @@ export function createBundledMcpRuntimeConfig(input: {
 }
 
 interface OfficialRuntimeManifestInput {
+  sourceManifestContents?: string;
   pluginName: string;
   retryBudget?: OfficialPluginCacheRetryBudget;
   rootPath: string;
@@ -51,7 +52,11 @@ interface OfficialRuntimeManifestInput {
 export function writeOfficialPluginRuntimeManifest(input: OfficialRuntimeManifestInput): void {
   const manifestPath = join(input.rootPath, ".zcode-plugin", "plugin.json");
   const currentContents = readFileSync(manifestPath, "utf8");
-  const manifest = JSON.parse(currentContents) as Record<string, unknown>;
+  // 缓存里的入口可能已被旧客户端覆盖，必须从内置原始 manifest 重新生成。
+  const manifest = JSON.parse(input.sourceManifestContents ?? currentContents) as Record<
+    string,
+    unknown
+  >;
   // skill-only / command-only 类型的 official plugin 不带 mcpServers，直接跳过 rewrite。
   // 之前这里无脑 asRecord(manifest.mcpServers) 会对 undefined 抛错，
   // 把 seed 流程整个阻断，连带 listZCodeSkills 拉不出 plugin skill。
@@ -64,9 +69,33 @@ export function writeOfficialPluginRuntimeManifest(input: OfficialRuntimeManifes
   // 不会进入这个分支，也不会生成独立的 CUA MCP server。
   for (const [serverKey, serverRaw] of Object.entries(mcpServers)) {
     const mcpServer = asRecord(serverRaw);
+    // HTTP/SSE 插件没有本地入口；按 stdio 校验会让 image-search 阻断整个会话初始化。
+    if (mcpServer.type !== undefined && mcpServer.type !== "stdio") continue;
     const mcpServerEnv = isRecord(mcpServer.env) ? mcpServer.env : {};
+    const serverArgs =
+      input.sourceManifestContents === undefined
+        ? [join(input.rootPath, ...MCP_SERVER_RELATIVE_PATH)]
+        : mcpServer.args;
+    if (
+      !Array.isArray(serverArgs) ||
+      !serverArgs.every((arg): arg is string => typeof arg === "string") ||
+      serverArgs.length === 0
+    ) {
+      throw new Error("Official plugin manifest has invalid MCP server args.");
+    }
     mcpServer.command = process.execPath;
-    mcpServer.args = [...hostPrefixArgs, join(input.rootPath, ...MCP_SERVER_RELATIVE_PATH)];
+    // 文档插件使用 dist/server.mjs；统一覆盖成 dist/mcp/server.js 会导致启动失败。
+    mcpServer.args = [
+      ...hostPrefixArgs,
+      // 清单里写的是 `${ZCODE_PLUGIN_ROOT}/dist/...`；直接字符串替换在 Windows 上会拼出
+      // `C:\cache\plugin/dist/server.mjs` 这种混合分隔符路径。下游按字符串比对/去重时会判不等，
+      // 所以展开后统一 normalize 成平台分隔符。
+      ...serverArgs.map((arg) =>
+        arg.includes("${ZCODE_PLUGIN_ROOT}")
+          ? normalize(arg.replaceAll("${ZCODE_PLUGIN_ROOT}", input.rootPath))
+          : arg,
+      ),
+    ];
     mcpServer.env = {
       ...mcpServerEnv,
       // 桌面打包态的 process.execPath 是 ZCode Helper。

@@ -111,18 +111,12 @@ async function readTrimmedGitOutput(
   return trimmed ? trimmed : undefined;
 }
 
-async function readGitOutput(
-  args: string[],
-  workingDirectory: string,
-): Promise<string> {
+async function readGitOutput(args: string[], workingDirectory: string): Promise<string> {
   const result = await execGitNoThrow(args, workingDirectory);
   return result.stdout;
 }
 
-async function execGitNoThrow(
-  args: string[],
-  workingDirectory: string,
-): Promise<GitCommandResult> {
+async function execGitNoThrow(args: string[], workingDirectory: string): Promise<GitCommandResult> {
   try {
     const result = await execFile(GIT_COMMAND, args, {
       cwd: workingDirectory,
@@ -159,18 +153,16 @@ function splitGitStatusForContext(status: string): string[] {
     return [];
   }
 
+  // Windows 上也只有一个 provider-visible 工具 Bash（内部可按 Git Bash/cmd 执行），
+  // 不存在 PowerShell 工具；提示里不能写模型无法调用的工具名。
   const boundedStatus =
     status.length > MAX_GIT_STATUS_CONTEXT_CHARS
       ? `${status.substring(0, MAX_GIT_STATUS_CONTEXT_CHARS)}
-... (truncated because it exceeds 2k characters. If you need more information, run "git status" using ${gitStatusToolName()})`
+... (truncated because it exceeds 2k characters. If you need more information, run "git status" using Bash)`
       : status;
 
   // 与上游 CLI 保持一致：git status 只按 2k 字符截断，不按文件条目数截断，避免 provider-visible prompt 形状漂移。
   return boundedStatus.split(/\r?\n/u).filter((line) => line.length > 0);
-}
-
-function gitStatusToolName(): "Bash" | "PowerShell" {
-  return process.platform === "win32" ? "PowerShell" : "Bash";
 }
 
 function splitNonEmptyLines(value: string | undefined): string[] {

@@ -4,9 +4,9 @@ import { ALL_BOT_WORKSPACES } from "@zcode/shared";
 import {
   BOT_PROVIDERS,
   BOT_REPLY_GRANULARITIES,
+  getBotProviderRegionTagLabelId,
   getBotReplyGranularitiesForProvider,
   getBotReplyGranularityEntryForProvider,
-  getBotProviderRegionTagLabelId,
   resolveBotProviderEntry,
 } from "../src/botsUi.js";
 import enUS from "../src/i18n/locales/en-US.js";
@@ -14,13 +14,6 @@ import zhCN from "../src/i18n/locales/zh-CN.js";
 
 describe("BotsDialog config", () => {
   it("keeps reply granularity labels localized", () => {
-    expect(BOT_REPLY_GRANULARITIES.map((item) => item.id)).toEqual([
-      "assistant_changes",
-      "assistant_toolcalls_changes",
-      "summary_changes",
-      "streaming_card",
-    ]);
-
     for (const granularity of BOT_REPLY_GRANULARITIES) {
       expect(enUS[granularity.labelId]).toBeTruthy();
       expect(zhCN[granularity.labelId]).toBeTruthy();

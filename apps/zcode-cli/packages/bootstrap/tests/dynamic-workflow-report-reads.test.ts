@@ -46,12 +46,12 @@ type SqliteJournal = JournalStorePort & {
 };
 
 let tempRoot: string;
-let store: ReturnType<typeof createSqliteSessionStore>;
+let store: Awaited<ReturnType<typeof createSqliteSessionStore>>;
 let journal: SqliteJournal;
 
 beforeEach(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), "zcode-dwf-report-reads-"));
-  store = createSqliteSessionStore({ dbPath: join(tempRoot, "session.sqlite") });
+  store = await createSqliteSessionStore({ dbPath: join(tempRoot, "session.sqlite") });
   const resolved = resolveDynamicWorkflowJournalStore(store as never);
   if (resolved === undefined) throw new Error("sqlite store must expose the dwf journal");
   journal = resolved as SqliteJournal;
@@ -341,7 +341,10 @@ describe("a run that reported 65,536 items", () => {
 
     // 快照 256 + 冷回放 64 + GetWorkflowRun 64；产物清单与修订导入一条不读。
     expect(counted.items()).toBe(256 + 64 + 64);
-  }, 120_000);
+    // 播种是 65,536 条 ×（节点行 + 事件）= 131,072 次独立提交；WAL 默认 synchronous=FULL，
+    // 实测 Windows 每次提交约 1.3 ms，光播种就 ~178 s（读侧断言合计不到 0.6 s）。用例验证的是
+    // 读侧交到 JS 的条数，不是写吞吐，所以按平台给足预算——断言一条没放宽。
+  }, process.platform === "win32" ? 420_000 : 120_000);
 });
 
 describe("report item size: 1 MiB items stay out of JavaScript except where they are shown", () => {

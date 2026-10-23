@@ -250,7 +250,7 @@ describe("script workflow runtime", () => {
     const shellDir = join(tempRoot, "bin");
     const scriptPath = join(workflowDir, "child-session.workflow.js");
     const zshPath = join(shellDir, "zsh");
-    const store = createSqliteSessionStore({ dbPath: ":memory:" });
+    const store = await createSqliteSessionStore({ dbPath: ":memory:" });
     await mkdir(workflowDir, { recursive: true });
     await mkdir(shellDir, { recursive: true });
     await writeFile(zshPath, "#!/bin/sh\n");
@@ -284,6 +284,9 @@ describe("script workflow runtime", () => {
 
     try {
       const app = await createZCodeApp({
+        // 固定 posix 解析：用例用 PATH/SHELL 里的假 shell 驱动选择，Windows 默认走 win32
+        // 探测会退回 legacy-shell，子会话快照里就没有 `- Shell: zsh`。
+        platform: "linux",
         env: {
           PATH: shellDir,
           SHELL: join(shellDir, "fish"),
@@ -335,7 +338,7 @@ describe("script workflow runtime", () => {
   it("Script Workflow 子 Runtime 继续使用进程 Registry 的 ModelFactory", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "zcode-workflow-provider-registry-"));
     const scriptPath = join(tempRoot, "registry.workflow.js");
-    const store = createSqliteSessionStore({ dbPath: ":memory:" });
+    const store = await createSqliteSessionStore({ dbPath: ":memory:" });
     const createdModels: string[] = [];
     await writeFile(
       scriptPath,

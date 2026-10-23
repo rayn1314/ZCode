@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { BarChart3, Blocks, Cable, Package, WandSparkles } from "lucide-react";
 import enUS from "../src/i18n/locales/en-US.js";
 import zhCN from "../src/i18n/locales/zh-CN.js";
+import { isSettingsSectionAvailable } from "../src/settings/settingsPageConfig.js";
 
 async function loadSettingsPageConfig(env: "test" | "production") {
   vi.resetModules();
@@ -12,7 +13,6 @@ async function loadSettingsPageConfig(env: "test" | "production") {
       ZCODE_ENV: env,
     };
   });
-
   return import("../src/settings/settingsPageConfig.js");
 }
 
@@ -22,10 +22,14 @@ afterEach(() => {
 });
 
 describe("settingsPageConfig", () => {
-  it("按设置页心智顺序展示 test 分区", async () => {
+  it("only exposes remote device management on desktop", () => {
+    expect(isSettingsSectionAvailable("remoteDevices", true)).toBe(true);
+    expect(isSettingsSectionAvailable("remoteDevices", false)).toBe(false);
+    expect(isSettingsSectionAvailable("general", false)).toBe(true);
+  });
+  it("按设置页分组与顺序展示公开分区", async () => {
     const { createSettingsPageConfig } = await loadSettingsPageConfig("test");
     const { settingsSectionGroups, settingsSections } = createSettingsPageConfig({});
-
     expect(
       settingsSectionGroups.map((group) => ({
         id: group.id,
@@ -34,7 +38,14 @@ describe("settingsPageConfig", () => {
     ).toEqual([
       {
         id: "basics",
-        sections: ["general", "appearance", "modelProvider", "browser", "shortcuts"],
+        sections: [
+          "general",
+          "appearance",
+          "modelProvider",
+          "browser",
+          "remoteDevices",
+          "shortcuts",
+        ],
       },
       {
         id: "agentCapabilities",
@@ -52,10 +63,9 @@ describe("settingsPageConfig", () => {
       },
       {
         id: "dataAndStats",
-        sections: ["migration", "usage"],
+        sections: ["migration", "usage", "archives"],
       },
     ]);
-
     expect(settingsSections.map((section) => section.id)).toEqual([
       "general",
       "appearance",
@@ -70,9 +80,11 @@ describe("settingsPageConfig", () => {
       "commands",
       "hooks",
       "browser",
+      "remoteDevices",
       "shortcuts",
       "migration",
       "usage",
+      "archives",
     ]);
   });
 
@@ -94,9 +106,11 @@ describe("settingsPageConfig", () => {
       "commands",
       "hooks",
       "browser",
+      "remoteDevices",
       "shortcuts",
       "migration",
       "usage",
+      "archives",
     ]);
   });
 
@@ -156,6 +170,7 @@ describe("settingsPageConfig", () => {
       "appearance",
       "modelProvider",
       "browser",
+      "remoteDevices",
       "computerUse",
       "shortcuts",
     ]);

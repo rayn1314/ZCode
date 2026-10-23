@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -67,8 +77,12 @@ describe("FileWorkspaceHookTrustStore", () => {
     const loaded = await store.load();
     expect(loaded.status).toBe("ok");
     expect(loaded.records).toHaveLength(2);
-    expect((await stat(path)).mode & 0o777).toBe(0o600);
-    expect((await stat(join(base, "security"))).mode & 0o777).toBe(0o700);
+    // Windows 没有 POSIX mode 位，chmod 只切换只读属性，stat().mode 恒为 0o666/0o777；
+    // 权限收紧只能在 POSIX 文件系统上验证。原子提交与无残留 temp 的契约在两侧都校验。
+    if (process.platform !== "win32") {
+      expect((await stat(path)).mode & 0o777).toBe(0o600);
+      expect((await stat(join(base, "security"))).mode & 0o777).toBe(0o700);
+    }
     expect((await readdir(join(base, "security"))).filter((name) => name.endsWith(".tmp"))).toEqual(
       [],
     );

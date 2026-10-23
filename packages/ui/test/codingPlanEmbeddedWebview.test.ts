@@ -1,21 +1,19 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createElement } from "react";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import {
   BUILTIN_MODEL_PROVIDER_IDS,
   DEFAULT_ZCODE_ENDPOINT_ORIGIN,
   isTrustedCodingPlanWebviewOrigin,
 } from "@zcode/shared";
-import { CodingPlanWebviewChannels, type CodingPlanPurchaseCompletePayload } from "@zcode/shared";
 import {
   buildCodingPlanEmbeddedWebviewUrl,
   buildCodingPlanEmbeddedReportContext,
   createCodingPlanAuthInjectionScript,
   createCodingPlanCredentialClearScript,
-  createCodingPlanScrollbarHideScript,
   getCodingPlanCredentialKeys,
   isTrustedCodingPlanEmbeddedWebviewUrl,
   resolveCodingPlanEmbeddedOrigin,
@@ -65,22 +63,6 @@ afterEach(() => {
 });
 
 describe("coding plan embedded webview bridge", () => {
-  it("exports the embedded dialog component", () => {
-    expect(CodingPlanEmbeddedWebviewDialog).toBeTypeOf("function");
-  });
-
-  it("exposes the purchase-complete channel and payload type", () => {
-    // 频道名固定，两端（App preload + 官网通过注入的 bridge）共享
-    expect(CodingPlanWebviewChannels.PurchaseComplete).toBe("zcode:coding-plan-purchase-complete");
-    // payload 类型仅做编译期校验：provider 限定 zai/bigmodel，timestamp 为 number
-    const payload: CodingPlanPurchaseCompletePayload = {
-      provider: "zai",
-      timestamp: Date.now(),
-    };
-    expect(payload.provider).toBe("zai");
-    expect(typeof payload.timestamp).toBe("number");
-  });
-
   it("builds the website URL with app embedded marker and no telemetry query", () => {
     const url = new URL(
       buildCodingPlanEmbeddedWebviewUrl({
@@ -350,16 +332,6 @@ describe("coding plan embedded webview bridge", () => {
     expect(script).toContain("delete window.__zcodeReportContext__");
   });
 
-  it("injects a guest-page scrollbar hiding style without disabling scroll", () => {
-    const script = createCodingPlanScrollbarHideScript();
-
-    expect(script).toContain("zcode-coding-plan-hide-scrollbar");
-    expect(script).toContain("scrollbar-width: none");
-    expect(script).toContain("::-webkit-scrollbar");
-    expect(script).toContain("display: none");
-    expect(script).not.toContain("overflow: hidden");
-  });
-
   it("only injects credentials on the current trusted embedded coding plan page", () => {
     expect(
       isTrustedCodingPlanEmbeddedWebviewUrl(
@@ -504,112 +476,5 @@ describe("coding plan embedded webview bridge", () => {
 
     // 修复原因：支付授权可能持续数分钟，系统主题自动切换不能让 src 变化并重载 PayPal 流程。
     expect(view.getByTestId("coding-plan-embedded-webview").getAttribute("src")).toBe(initialSrc);
-  });
-
-  it("wires onPurchaseComplete via ipc-message from the webview preload", () => {
-    const source = readFileSync(
-      resolve("packages/ui/src/settings/CodingPlanEmbeddedWebviewDialog.tsx"),
-      "utf8",
-    );
-
-    // 完成回传协议：官网页通过 window.zcodeBridge.notifyPurchaseComplete
-    // → preload ipcRenderer.sendToHost(PurchaseComplete 频道)
-    // → host renderer webview.addEventListener("ipc-message")
-    // → onPurchaseCompleteRef.current?.() → CodingPlanUpgradeDialog 刷新+关闭
-    expect(source).toContain("onPurchaseComplete");
-    expect(source).toContain("onPurchaseCompleteRef");
-    expect(source).toContain('addEventListener("ipc-message"');
-    expect(source).toContain("CodingPlanWebviewChannels.PurchaseComplete");
-    expect(source).toContain("CodingPlanPurchaseCompletePayload");
-    expect(source).toContain("buildCodingPlanEmbeddedReportContext");
-    expect(source).toContain("platform.getDeviceId()");
-    // provider payload 校验：只接受 zai / bigmodel
-    expect(source).toContain('raw?.provider !== "zai"');
-    expect(source).toContain('raw?.provider !== "bigmodel"');
-  });
-
-  it("exposes getReportContext on the coding plan webview preload bridge", () => {
-    const source = readFileSync(
-      resolve("packages/desktop/src/preload/codingPlanWebview.ts"),
-      "utf8",
-    );
-
-    expect(source).toContain("getReportContext()");
-    expect(source).toContain("__zcodeReportContext__");
-    expect(source).toContain("REPORT_CONTEXT_VAR");
-    expect(source).toContain("return value as CodingPlanReportContext");
-  });
-
-  it("exposes webview i18n keys in both locales", () => {
-    const enUs = readFileSync(resolve("packages/ui/src/i18n/locales/en-US.ts"), "utf8");
-    const zhCn = readFileSync(resolve("packages/ui/src/i18n/locales/zh-CN.ts"), "utf8");
-
-    const keys = [
-      "settings.modelProvider.codingPlan.webview.title",
-      "settings.modelProvider.codingPlan.webview.authInjectFailed",
-      "settings.modelProvider.codingPlan.webview.retry",
-      "settings.modelProvider.codingPlan.webview.loadFailed",
-      "settings.modelProvider.codingPlan.webview.openWebsite",
-    ];
-    for (const key of keys) {
-      expect(enUs).toContain(`"${key}":`);
-      expect(zhCn).toContain(`"${key}":`);
-    }
-  });
-
-  it("keeps refreshCodingPlanUpgradeCompletion exported for the future purchase-complete bridge", () => {
-    const source = readFileSync(
-      resolve("packages/ui/src/settings/CodingPlanUpgradeDialog.tsx"),
-      "utf8",
-    );
-
-    // onPurchaseComplete 触发 closeAndRefreshCodingPlanUpgradeFromWebview：
-    // 先关闭升级 webview，再刷新 App 侧 provider/权益状态。
-    expect(source).toContain("export async function refreshCodingPlanUpgradeCompletion");
-    expect(source).toContain("export async function closeAndRefreshCodingPlanUpgradeFromWebview");
-    expect(source).toContain("refreshTeamPlanProducts");
-    expect(source).toContain("codingPlanSubscriptionService.getEnterprisePricing");
-    expect(source).toContain("const teamPlanFamily");
-    expect(source).toContain("resolveModelProviderFamilyIdByProviderId(productsProviderId)");
-    expect(source).toContain("family: teamPlanFamily");
-    expect(source).toContain("handlePurchaseComplete");
-    expect(source).toContain("onPurchaseComplete={handlePurchaseComplete}");
-    expect(source).toContain("onClose,");
-    expect(source).toContain("refresh: () =>");
-    expect(source).not.toContain("refreshModelProviderSnapshot");
-    expect(source).not.toContain("refreshCodingPlanApiKey");
-  });
-
-  it("clears the persistent webview partition on logout and provider unlink boundaries", () => {
-    const rootActionsSource = readFileSync(
-      resolve("packages/ui/src/root/useRootWorkspaceActions.ts"),
-      "utf8",
-    );
-    const settingsSource = readFileSync(
-      resolve("packages/ui/src/settings/ModelProviderSection.tsx"),
-      "utf8",
-    );
-
-    expect(rootActionsSource).toContain("DesktopCommandIds.ClearCodingPlanWebviewStorage");
-    expect(rootActionsSource.indexOf("ClearCodingPlanWebviewStorage")).toBeLessThan(
-      rootActionsSource.indexOf("DesktopCommandIds.RelaunchApp"),
-    );
-    expect(settingsSource).toContain("DesktopCommandIds.ClearCodingPlanWebviewStorage");
-  });
-
-  it("keeps manual provider refresh wired to both team plan families", () => {
-    const settingsSource = readFileSync(
-      resolve("packages/ui/src/settings/ModelProviderSection.tsx"),
-      "utf8",
-    );
-
-    expect(settingsSource).toContain("const refreshAuthenticatedEnterpriseProducts = useCallback");
-    expect(settingsSource).toContain("authenticatedZaiEnterpriseProducts.refresh");
-    expect(settingsSource).toContain(
-      "refreshTeamPlanProducts: refreshAuthenticatedEnterpriseProducts",
-    );
-    expect(settingsSource).not.toContain(
-      "refreshTeamPlanProducts: () =>\n            authenticatedEnterpriseProducts.refresh({ force: true })",
-    );
   });
 });

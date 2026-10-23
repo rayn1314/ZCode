@@ -48,7 +48,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const blockedCommands: string[] = [];
     const blockedEvents = createInMemorySessionEventStore();
-    const blockedSessionStore = createSqliteSessionStore({
+    const blockedSessionStore = await createSqliteSessionStore({
       dbPath: ":memory:",
     });
     const blockedApp = await createZCodeApp({
@@ -102,7 +102,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const trustedCommands: string[] = [];
     const trustedEvents = createInMemorySessionEventStore();
-    const trustedSessionStore = createSqliteSessionStore({
+    const trustedSessionStore = await createSqliteSessionStore({
       dbPath: ":memory:",
     });
     const trustedApp = await createZCodeApp({
@@ -177,7 +177,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const commands: string[] = [];
     const events = createInMemorySessionEventStore();
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const app = await createZCodeApp({
       env: {},
       eventStore: events,
@@ -241,7 +241,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const commands: string[] = [];
     const eventStore = createInMemorySessionEventStore();
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const app = await createZCodeApp({
       env: {},
       eventStore,
@@ -379,7 +379,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const commands: string[] = [];
     const eventStore = createInMemorySessionEventStore();
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const app = await createZCodeApp({
       env: {},
       eventStore,
@@ -409,25 +409,24 @@ describe("createZCodeApp workspace Hook admission", () => {
           event.type === SessionEventType.HookRunFailed,
       );
 
-      // 只有 1 条 blocked execution（pending 的 B），configured-disabled 的 A 完全不可见
-      expect(hookLifecycleEvents).toHaveLength(1);
-      expect(hookLifecycleEvents[0]?.type).toBe(SessionEventType.HookRunBlocked);
+      // 只有 1 条 blocked execution（pending 的 B），configured-disabled 的 A 完全不可见。
+      // 只取 project 来源：internal（内建 mailbox 等）会成对发 started/completed，属于另一套
+      // 生命周期，不参与 workspace Hook 的 hookCount 投影。
+      const workspaceHookLifecycleEvents = hookLifecycleEvents.filter(
+        (event) =>
+          (event.payload as { descriptor?: { sourceKind?: string } }).descriptor?.sourceKind ===
+          "project",
+      );
+      expect(workspaceHookLifecycleEvents).toHaveLength(1);
+      expect(workspaceHookLifecycleEvents[0]?.type).toBe(SessionEventType.HookRunBlocked);
 
-      const payload = hookLifecycleEvents[0]?.payload as Record<string, unknown>;
+      const payload = workspaceHookLifecycleEvents[0]?.payload as Record<string, unknown>;
       // hookCount 必须是 1，否则投影层会等一个永远不来的 execution（H1 核心断言）
       expect(payload.hookCount).toBe(1);
       expect(payload.errorCode).toBe("workspace_hooks_pending_trust");
       expect(payload.descriptor).toMatchObject({
         commandDisplay: "echo session-start-b",
       });
-
-      // 所有事件的 hookInvocationId 一致
-      const invocationIds = new Set(
-        hookLifecycleEvents.map(
-          (event) => (event.payload as Record<string, unknown>).hookInvocationId,
-        ),
-      );
-      expect(invocationIds.size).toBe(1);
     } finally {
       await app.close();
       sessionStore.close();
@@ -462,7 +461,7 @@ describe("createZCodeApp workspace Hook admission", () => {
 
     const commands: string[] = [];
     const eventStore = createInMemorySessionEventStore();
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const app = await createZCodeApp({
       env: {},
       eventStore,

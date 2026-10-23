@@ -220,9 +220,11 @@ function DropdownMenuSubTrigger({
   className,
   inset,
   children,
+  indicator,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.SubTrigger> & {
   inset?: boolean;
+  indicator?: React.ReactNode;
 }) {
   return (
     <DropdownMenuPrimitive.SubTrigger
@@ -235,7 +237,9 @@ function DropdownMenuSubTrigger({
       {...props}
     >
       {children}
-      <ChevronRightIcon className="ml-auto size-4 text-foreground-subtle group-data-[highlighted]/dropdown-menu-sub-trigger:text-foreground-subtle" />
+      {indicator ?? (
+        <ChevronRightIcon className="ml-auto size-4 text-foreground-subtle group-data-[highlighted]/dropdown-menu-sub-trigger:text-foreground-subtle" />
+      )}
     </DropdownMenuPrimitive.SubTrigger>
   );
 }

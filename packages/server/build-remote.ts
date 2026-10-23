@@ -5,7 +5,11 @@ import { loadBuiltinProviderConfig } from "../../scripts/builtin-provider-config
 import { resolveDesktopProductIdentity } from "../../scripts/product-identity.mjs";
 import { stageThirdPartyNotices } from "../../scripts/third-party-notices.mjs";
 
-const { version } = JSON.parse(readFileSync("../../package.json", "utf-8"));
+const { version, zcodeCompatibility } = JSON.parse(readFileSync("../../package.json", "utf-8")) as {
+  version: string;
+  zcodeCompatibility?: { minCompatibleVersion?: string };
+};
+const minCompatibleVersion = zcodeCompatibility?.minCompatibleVersion ?? version;
 const { content: zcodeBuiltinProviderConfigJson } = await loadBuiltinProviderConfig();
 
 /**
@@ -45,6 +49,7 @@ const buildResult = await build({
     "import.meta.url": "__import_meta_url",
     "import.meta.dirname": "__import_meta_dirname",
     __ZCODE_VERSION__: JSON.stringify(version),
+    __ZCODE_MIN_COMPATIBLE_VERSION__: JSON.stringify(minCompatibleVersion),
     __ZCODE_BUILTIN_PROVIDER_CONFIG_JSON__: JSON.stringify(zcodeBuiltinProviderConfigJson),
     // 远端 server bundle 独立部署运行（不经桌面宿主下发 ZCODE_DATA_ROOT），必须自带编译期身份：
     // 否则 @zcode/shared 的 ZCODE_DATA_ROOT_SUFFIX 为空串，远端 server 会落到官方数据根，

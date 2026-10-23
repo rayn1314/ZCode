@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { getModelIoDir, getProjectMemoryRoot } from "../src/app/paths.js";
 
 describe("getProjectMemoryRoot", () => {
@@ -15,7 +15,10 @@ describe("getProjectMemoryRoot", () => {
       "remote:ssh:host:/workspace/app",
     );
 
-    expect(first).toBe("/tmp/zcode-cli/memories/projects/project-dce7d1610bbf24dd/memory");
+    // 分隔符随平台（Windows 上 resolve 会产出反斜杠），期望值用 join 拼，不能写死 posix 字面量。
+    expect(first).toBe(
+      join("/tmp/zcode-cli", "memories", "projects", "project-dce7d1610bbf24dd", "memory"),
+    );
     expect(second).toBe(first);
   });
 
@@ -26,13 +29,17 @@ describe("getProjectMemoryRoot", () => {
 
     expect(relativeRoot).toBe(absoluteRoot);
     expect(blankIdentityRoot).toBe(absoluteRoot);
-    expect(relativeRoot).toMatch(/\/memories\/projects\/.+\/memory$/);
+    expect(relativeRoot).toMatch(/[\\/]memories[\\/]projects[\\/].+[\\/]memory$/);
   });
 });
 
 describe("getModelIoDir", () => {
   it("derives debug and rollout from the configured CLI storage root", () => {
-    expect(getModelIoDir("/custom/storage/cli", true)).toBe("/custom/storage/cli/debug");
-    expect(getModelIoDir("/custom/storage/cli", false)).toBe("/custom/storage/cli/rollout");
+    expect(getModelIoDir("/custom/storage/cli", true)).toBe(
+      join("/custom/storage/cli", "debug"),
+    );
+    expect(getModelIoDir("/custom/storage/cli", false)).toBe(
+      join("/custom/storage/cli", "rollout"),
+    );
   });
 });

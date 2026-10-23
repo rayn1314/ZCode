@@ -43,14 +43,14 @@ export function GoalProjectField({
 
   // 候选 = 当前窗口已打开的可用本地项目（与自动化创建同源）；若当前工作区不在
   // 候选中（如远端 WSL tab），把当前工作区自身并入作为默认项（label 用 basename）。
-  const localProjectOptions = useAutomationProjectOptions({
-    includeConversationWorkspace: true,
-  });
+  const localProjectOptions = useAutomationProjectOptions();
   const options = useMemo<GoalProjectSelection[]>(() => {
-    const base = localProjectOptions.map((option) => ({
-      workspacePath: option.workspacePath,
-      label: option.label,
-    }));
+    const base = localProjectOptions
+      .filter((option) => option.workspacePath)
+      .map((option) => ({
+        workspacePath: option.workspacePath,
+        label: option.label,
+      }));
     const hasCurrent = base.some((candidate) => candidate.workspacePath === workspacePath);
     if (hasCurrent) return base;
     return [

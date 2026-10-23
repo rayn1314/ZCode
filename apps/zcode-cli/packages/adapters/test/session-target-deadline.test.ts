@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -15,9 +16,12 @@ import { createSqliteSessionStore } from "../src/storage/session-store.js";
 const SESSION = "sess_deadline" as SessionId;
 const OTHER_SESSION = "sess_deadline_other" as SessionId;
 
-async function withStore<T>(run: (store: SessionStorePort) => Promise<T>): Promise<T> {
+async function withStore<T>(
+  run: (store: SessionStorePort, dbPath: string) => Promise<T>,
+): Promise<T> {
   const rootDir = await mkdtemp(join(tmpdir(), "zcode-session-target-deadline-"));
-  const store = createSqliteSessionStore({ dbPath: join(rootDir, "sessions.db") });
+  const dbPath = join(rootDir, "sessions.db");
+  const store = await createSqliteSessionStore({ dbPath });
   try {
     for (const [id, directory, title] of [
       [SESSION, rootDir, "deadline session"],
@@ -33,7 +37,7 @@ async function withStore<T>(run: (store: SessionStorePort) => Promise<T>): Promi
         version: "1",
       });
     }
-    return await run(store);
+    return await run(store, dbPath);
   } finally {
     store.close();
     await rm(rootDir, { recursive: true, force: true });
@@ -349,9 +353,16 @@ test("listTargets 按工作区过滤并带上承载会话的展示身份", async
 });
 
 test("listTargets 默认排除已归档会话的目标", async () => {
-  await withStore(async (store) => {
+  await withStore(async (store, dbPath) => {
     await store.setTarget({ objective: "archived goal", sessionID: SESSION, status: "active" });
-    await store.updateSession({ id: SESSION, timeArchived: Date.now() });
+    // 合并后的契约没有「归档会话」写入面（归档语义上移到项目/任务域），这里直接写列，
+    // 模拟历史库里已归档、目标行仍在的会话：面板列表必须默认不带出它们。
+    const legacy = new DatabaseSync(dbPath);
+    try {
+      legacy.prepare("update session set time_archived = ? where id = ?").run(Date.now(), SESSION);
+    } finally {
+      legacy.close();
+    }
 
     assert.equal((await store.listTargets!({})).length, 0);
     const withArchived = await store.listTargets!({ includeArchived: true });

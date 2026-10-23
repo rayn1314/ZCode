@@ -1,42 +1,26 @@
-# zcode-cli
+# ZCode CLI
 
-TypeScript + Node.js 24.14.0 CLI starter. The default artifact is a normal Node CLI bundle, and SEA is kept as an optional packaging path.
-
-## Why This Shape
-
-- Runtime code has zero production dependencies.
-- The CLI uses Node built-ins for argument parsing and terminal control.
-- `npm run build` produces `dist/zcode.cjs`, which works anywhere Node.js 24.14.0 is installed.
-- `npm run sea` attempts to turn that same bundle into a single executable.
-- If SEA breaks on a platform, the normal CLI artifact is still the fallback.
-
-## Commands
+ZCode's Agent CLI provides an interactive terminal and non-interactive task execution. It is part of this pnpm workspace; build it from the repository root with the Node and pnpm versions in [mise.toml](../../mise.toml).
 
 ```sh
-npm run bootstrap
-npm run dev -- --help
-npm run build
-npm run start -- doctor --json
-npm test
-npm run sea
-npm run sea -- --target linux-x64 --target win-x64
-npm run sea -- --all
+pnpm install --frozen-lockfile
+pnpm --filter @zcode/cli... build
+node apps/zcode-cli/packages/cli/dist/zcode.cjs doctor --json
 ```
 
-## Project Layout
+The default artifact is a Node.js bundle with adjacent runtime resources. SEA packaging is optional. The Agent CLI differs from the root distribution launcher, which also supports Web startup.
 
-```txt
-src/
-  cli/       command parsing and process wiring
-  core/      reusable runtime logic
-  ui/        terminal UI layer
-scripts/    build and optional SEA packaging scripts
-tests/      subprocess-level CLI tests
-```
+See the [CLI usage guide (中文)](docs/usage/README.md) for setup, model configuration, permissions, sessions, MCP, skills, hooks, plugins, and reproducible batch tasks. The guide distinguishes current source behavior from older binaries and documents its verification limits.
 
-## Bootstrap
+Useful entry points:
 
-Run `npm run bootstrap` after cloning the repository. It checks the local Node.js version, installs dependencies, and runs the full project check.
+- [Quick start and packaging](docs/usage/01-quickstart.md)
+- [Model and runtime configuration](docs/usage/03-config.md)
+- [Plugin development](docs/usage/10-plugins.md)
+- [Hooks and workspace trust](docs/usage/09-hooks.md)
+- [Batch tasks and trajectory capture](docs/usage/13-automation.md)
+- [Design specifications](docs/design/v2/)
+- [Contributor instructions](AGENTS.md)
 
 ## Plugin Development
 
@@ -405,3 +389,5 @@ zcode hooks trust revoke --workspace <path-or-identity> [--hook-digest <sha256> 
 4. SEA target Node.js binaries are downloaded from the official Node.js release for the current `process.versions.node` and verified against `SHASUMS256.txt`.
 5. Keep native addons and runtime dynamic imports out of the core CLI until SEA compatibility is proven.
 6. Add richer TUI libraries later only behind a compatibility spike.
+
+Run `pnpm --filter @zcode/cli dev` for source development. CLI code validation follows the contributor instructions; CLI tests are separate from the root unit-test suite.

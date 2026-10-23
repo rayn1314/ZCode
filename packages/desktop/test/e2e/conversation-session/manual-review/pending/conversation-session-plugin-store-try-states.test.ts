@@ -1,6 +1,6 @@
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { TID_V4_COMPOSER_INPUT } from "@zcode/shared";
+import { TID_V4_COMPOSER_INPUT } from "@zcode/shared/test-ids";
 import { clearAppData, setInputValueByTestIdDom } from "../../../helpers/desktop-app.js";
 import {
   ELECTRON_WINDOW_RECORDING_CAPTURE_MODE,

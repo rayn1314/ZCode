@@ -144,8 +144,10 @@ describe("bash source script materializer", () => {
         shellDialect: "git-bash",
       });
 
+      // Git Bash 下转换后的 POSIX 路径可能不需要引号（取决于临时目录是否含特殊字符），
+      // 两种形式都是合法的 source 命令；断言仍要求它指向 embedded-search 启动脚本。
       expect(rewritten.command.command).toMatch(
-        /^\. \/c\/Users\/me\/AppData\/Local\/ZCode\/shell-snapshots\/snapshot-bash-1\.sh 2>\/dev\/null \|\| true\n\. '.+embedded-search-startup-.+\.sh'\ngrep needle file\.txt$/u,
+        /^\. \/c\/Users\/me\/AppData\/Local\/ZCode\/shell-snapshots\/snapshot-bash-1\.sh 2>\/dev\/null \|\| true\n\. '?[^\n']*embedded-search-startup-[^\n']+\.sh'?\ngrep needle file\.txt$/u,
       );
 
       const startupDir = join(rootDir, "bash-startup", "session");

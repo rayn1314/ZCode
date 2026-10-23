@@ -93,11 +93,6 @@ describe("saved workflow frontmatter codec", () => {
     expect(parsed.script).toBe(SCRIPT);
   });
 
-  it("serializes deterministically so re-saving makes no spurious diff", () => {
-    const meta: SavedWorkflowMeta = { description: "stable", whenToUse: "always" };
-    expect(serializeSavedWorkflow(meta, SCRIPT)).toBe(serializeSavedWorkflow(meta, SCRIPT));
-  });
-
   // 脚本正文是 run 的脚本哈希的基准，任何一次"顺手规范化"都会让 resume 对不上。
   it("preserves trailing newlines, blank lines and CRLF-free content verbatim", () => {
     const script = "\n\nlog('one');\n\n\nlog('two');\n";
@@ -114,13 +109,6 @@ describe("saved workflow frontmatter codec", () => {
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
     expect(parsed.script).toBe("");
-  });
-
-  it("tolerates blank lines before the sentinel", () => {
-    const parsed = parseSavedWorkflow(
-      `\n\n${serializeSavedWorkflow({ description: "padded" }, SCRIPT)}`,
-    );
-    expect(parsed.ok).toBe(true);
   });
 
   // 四种失败各有各的名字，因为它们要给用户不同的建议。

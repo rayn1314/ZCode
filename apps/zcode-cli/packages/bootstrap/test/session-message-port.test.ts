@@ -297,6 +297,9 @@ test("input-intent：链写进 TurnInputIntentMetadata，缺席不产生该字�
     type: "sendText",
     commandId: "cmd_1",
     clientId: "cli",
+    // 真实 sendText 信封必有 payload（`inputIntentMetadata` 从里面读 highspeedMeta）；
+    // 本用例只关心链字段，但不能造一个契约上不存在的空 payload 形状。
+    payload: {},
   } as unknown as CommandEnvelope;
 
   const withChain = inputIntentMetadata(envelope, {

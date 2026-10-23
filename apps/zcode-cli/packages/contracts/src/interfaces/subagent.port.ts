@@ -29,7 +29,7 @@ export interface SubagentRunOptions {
   modelOverride?: {
     selection: ModelSelection;
     requestDependencies?: ModelRequestDependencies;
-    background: "deny";
+    background: "deny" | "allow";
   };
   /**
    * 调用级（一次 Agent 调用）的子代理选型：`Agent` 的 `model` 经 `resolveInput` 归一后的规范形。
@@ -74,6 +74,11 @@ export interface SubagentStartOptions {
   /** 后台 child 启动时继承的普通 Model；临时 turn 模型仍禁止进入后台。 */
   model?: Model;
   /**
+   * 上游「闲时任务」通道：Core Server 的 override 只在 background: "allow" 时允许进后台；
+   * `deny` 的 override 由 runner 判为前台，不允许转后台。
+   */
+  modelOverride?: SubagentRunOptions["modelOverride"];
+  /**
    * 调用级「显式继承」（{@link SubagentRunOptions.callModelInherit}）的后台通道。
    *
    * 后台不接 `callModelSelection`（选型需要 Model 实例与 request dependencies），但继承只需要
@@ -110,9 +115,7 @@ export interface SubagentSendMessageRequest {
   trace: TraceContext;
 }
 
-export interface SubagentSendMessageOptions {
-  signal?: AbortSignal;
-}
+export type SubagentSendMessageOptions = SubagentRunOptions;
 
 export type SubagentSendMessageDelivery = "queued" | "steered" | "resumed_background";
 

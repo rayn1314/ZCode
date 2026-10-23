@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
-import { prepareTasksIndexStorage } from "../src/session/tasksDatabase/startup.js";
+import { prepareTasksIndexStorage } from "../src/project-storage/startup.js";
 import {
   TASKS_DATABASE_MIGRATION_IDS,
   runTasksDatabaseMigrations,
@@ -17,7 +17,7 @@ it("prepares the same frozen ledger as the old runner and preserves completed da
   const dir = await mkdtemp(join(tmpdir(), "zcode-startup-"));
   const expected = new DatabaseSync(":memory:");
   try {
-    runTasksDatabaseMigrations(expected);
+    await runTasksDatabaseMigrations(expected);
     const path = join(dir, "tasks.sqlite");
     const phases: string[] = [];
     await prepareTasksIndexStorage(path, (phase) => {
@@ -55,7 +55,7 @@ it("does not reuse an in-process preparation marker after the database was repla
   try {
     markTasksStoragePrepared("/replacement-test");
     expect(isTasksStoragePrepared("/replacement-test", db)).toBe(false);
-    runTasksDatabaseMigrations(db);
+    await runTasksDatabaseMigrations(db);
     expect(isTasksStoragePrepared("/replacement-test", db)).toBe(true);
     db.exec("UPDATE tasks_schema_migration SET checksum='invalid'");
     expect(() => isTasksStoragePrepared("/replacement-test", db)).toThrow("checksum mismatch");
@@ -202,6 +202,28 @@ it("keeps the pre-upgrade task ledger ID after committing the remaining migratio
         lastAppliedMigrationId: previousMigrationId,
       },
     });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+it("startup receives old settings before marking the project migration complete", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "zcode-startup-projects-"));
+  const path = join(dir, "tasks.sqlite");
+  try {
+    await prepareTasksIndexStorage(path, () => {}, {
+      lastWorkspaceSession: [
+        { kind: "local", workspacePath: "/saved-project", workspacePurpose: "project" },
+      ],
+    });
+    const db = new DatabaseSync(path);
+    try {
+      expect(db.prepare("SELECT root_path FROM project_roots").all()).toEqual([
+        { root_path: "/saved-project" },
+      ]);
+    } finally {
+      db.close();
+    }
   } finally {
     await rm(dir, { recursive: true, force: true });
   }

@@ -42,6 +42,9 @@ export interface RuntimeTaskMessageSink {
 }
 
 export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
+  /** 内存执行归属；重启不会恢复闲时后台任务。 */
+  offPeakExecutionId?: string;
+  offPeakCancelled?: boolean;
   /** task 注册时所属 active conversation branch；用于迟到 completion fencing。 */
   branchGeneration?: number;
   exitCode?: number;
@@ -82,6 +85,8 @@ export interface RuntimeTaskSnapshot extends SubagentTaskSnapshot {
 }
 
 export interface RuntimeTaskRegistry {
+  subscribe?(listener: () => void): () => void;
+  setOffPeakExecutionId?(executionId: string | undefined): void;
   all(): Record<string, RuntimeTaskSnapshot>;
   get(id: string): RuntimeTaskSnapshot | undefined;
   drainMessages(id: string): RuntimeTaskPendingMessage[];
@@ -157,6 +162,20 @@ export class RuntimeTaskMessageQueueFullError extends Error {
 }
 
 export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
+  private offPeakExecutionId: string | undefined;
+  private readonly listeners = new Set<() => void>();
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+  setOffPeakExecutionId(executionId: string | undefined): void {
+    this.offPeakExecutionId = executionId;
+  }
+  private changed(): void {
+    for (const listener of this.listeners) listener();
+  }
   private activeBranchGeneration = 0;
   private readonly backgroundWaiters = new Map<string, Set<RuntimeTaskWaiter>>();
   private readonly tasks = new Map<string, RuntimeTaskSnapshot>();
@@ -165,6 +184,9 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
   register(task: RuntimeTaskSnapshot): void {
     const stamped = {
       ...task,
+      ...((task.offPeakExecutionId ?? this.offPeakExecutionId)
+        ? { offPeakExecutionId: task.offPeakExecutionId ?? this.offPeakExecutionId }
+        : {}),
       branchGeneration: task.branchGeneration ?? this.activeBranchGeneration,
     };
     this.tasks.set(stamped.taskId, stamped);
@@ -172,6 +194,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.resolveIfBackgrounded(stamped.taskId, stamped);
     // 直接以终态注册（恢复 / 还原旧 snapshot 等）同样计入终态保留窗口。
     if (isTerminalRuntimeTask(stamped)) this.evictTerminalOverflow();
+    this.changed();
   }
 
   setActiveBranchGeneration(generation: number): void {
@@ -193,6 +216,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     if (!isTerminalRuntimeTask(current) && isTerminalRuntimeTask(next)) {
       this.evictTerminalOverflow();
     }
+    this.changed();
     return next;
   }
 
@@ -202,6 +226,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     const next: RuntimeTaskSnapshot = { ...task, isBackgrounded: true };
     this.tasks.set(id, next);
     this.resolveBackgroundWaiters(id, next);
+    this.changed();
     return true;
   }
 
@@ -209,6 +234,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     this.tasks.delete(id);
     this.resolveTerminalWaiters(id, undefined);
     this.resolveBackgroundWaiters(id, undefined);
+    this.changed();
   }
 
   get(id: string): RuntimeTaskSnapshot | undefined {
@@ -239,6 +265,7 @@ export class InMemoryRuntimeTaskRegistry implements RuntimeTaskRegistry {
     if (!task || !task.pendingMessages || task.pendingMessages.length === 0) return [];
     const messages = task.pendingMessages;
     this.tasks.set(id, { ...task, pendingMessages: [] });
+    this.changed();
     return messages;
   }
 

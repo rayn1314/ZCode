@@ -23,16 +23,14 @@ import type {
   SkillsCapability,
   RemoteTarget,
 } from "@zcode/shared";
+import type { IServiceAccessor } from "@zcode/services";
 import { ZCODE_AGENT_PROVIDER } from "@zcode/shared";
 import type { CreateTaskRequest } from "@/app-shell/types.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { toast } from "@/components/ui/toast.js";
 import { usePlatform } from "@/hooks/usePlatform.js";
-import { useZCodeSessionService } from "@/hooks/useZCodeSessionService.js";
-import {
-  useBaseWorkspaceServices,
-  useWorkspaceServicesResolution,
-} from "@/hooks/useWorkspaceServices.js";
+import { useBaseWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
+import { useConfigWorkspaceServicesResolution as useWorkspaceServicesResolution } from "@/workspace-config-catalog/index.js";
 import { useConfirmDialog } from "@/hooks/useConfirmDialog.js";
 import { buildSkillMentionMarkdown } from "@/mentions/mentionMarkdown.js";
 import { filterSkillsForProvider } from "@/lib/skillSourceFilter.js";
@@ -58,6 +56,7 @@ import { SkillsImportDialog } from "@/settings/ExternalAgentImportDialog.js";
 import { formatRemoteSkillSyncTarget } from "@/settings/RemoteSkillSyncDialog.js";
 import { RemoteSyncDialogs, shouldShowRemoteSyncActions } from "@/settings/RemoteSyncActions.js";
 import { refreshSharedSkillStoreForWorkspace } from "@/lib/skillStoreRefresh.js";
+import { buildSourceSettingsProjectionKey } from "@/settings/settingsSourceWorkspace.js";
 import { usePluginManagementStore } from "@/store/pluginManagementStore.js";
 import {
   groupScopedSkillsBySource,
@@ -156,6 +155,8 @@ interface SkillsSectionProps {
   onOpenPluginStore?: () => void;
   showMarketplaceBreadcrumb?: boolean;
   reportDetailBreadcrumb?: boolean;
+  unscopedServices?: IServiceAccessor;
+  cacheAuthorityKey?: string;
 }
 
 export function SkillsSection({
@@ -172,6 +173,8 @@ export function SkillsSection({
   onOpenPluginStore,
   showMarketplaceBreadcrumb = false,
   reportDetailBreadcrumb = false,
+  unscopedServices,
+  cacheAuthorityKey,
 }: SkillsSectionProps) {
   const { intl, locale } = useZCodeIntl();
   const platform = usePlatform();
@@ -197,16 +200,12 @@ export function SkillsSection({
     remoteSessionId,
     activeWorkspaceIdentity,
     remoteTarget,
+    { unscopedServices, forceUnscoped: Boolean(cacheAuthorityKey) },
   );
   // PluginsSection 已把 Scope target 传入，但 Skills 仍从当前 ServiceProvider
   // 取服务，导致跨远程 host 误路由。技能读写和远端同步都改用同一 target 解析结果。
   const { pluginManagementService, skillSyncService, skillsService } =
     targetServiceResolution.services;
-  const zcodeSessionService = useZCodeSessionService(
-    activeWorkspacePath ?? undefined,
-    undefined,
-    activeWorkspaceIdentity,
-  );
   const [skills, setSkills] = useState<SkillSummary[]>([]);
   const [capability, setCapability] = useState<SkillsCapability | null>(null);
   const [loadedSkillTargetKey, setLoadedSkillTargetKey] = useState("");
@@ -222,7 +221,11 @@ export function SkillsSection({
   const [importDialogOpen, setImportDialogOpen] = useState(false);
   const [remoteSkillSyncOpen, setRemoteSkillSyncOpen] = useState(false);
   const latestRequestIdRef = useRef(0);
-  const activeSkillTargetKey = activeWorkspaceIdentity?.trim() || activeWorkspacePath || "";
+  const activeSkillTargetKey = buildSourceSettingsProjectionKey(
+    activeWorkspacePath,
+    activeWorkspaceIdentity,
+    cacheAuthorityKey,
+  );
   const projectionMatchesTarget =
     !activeWorkspacePath || loadedSkillTargetKey === activeSkillTargetKey;
 
@@ -231,12 +234,14 @@ export function SkillsSection({
     void initializePlugins({
       workspacePath: activeWorkspacePath,
       workspaceIdentity: activeWorkspaceIdentity,
+      authorityKey: cacheAuthorityKey,
       configScope: scopeFilter,
       pluginService: pluginManagementService,
     });
   }, [
     activeWorkspaceIdentity,
     activeWorkspacePath,
+    cacheAuthorityKey,
     initializePlugins,
     pluginManagementService,
     scopeFilter,
@@ -308,7 +313,11 @@ export function SkillsSection({
         setLoadedSkillTargetKey("");
         return;
       }
-      const requestTargetKey = activeWorkspaceIdentity?.trim() || activeWorkspacePath;
+      const requestTargetKey = buildSourceSettingsProjectionKey(
+        activeWorkspacePath,
+        activeWorkspaceIdentity,
+        cacheAuthorityKey,
+      );
       setLoading(showBlockingLoading);
       setError(null);
       const requestId = ++latestRequestIdRef.current;
@@ -335,7 +344,13 @@ export function SkillsSection({
         setError(loadError instanceof Error ? loadError.message : String(loadError));
       }
     },
-    [activeWorkspaceIdentity, activeWorkspacePath, skillsService, targetServiceResolution.rpcReady],
+    [
+      activeWorkspaceIdentity,
+      activeWorkspacePath,
+      cacheAuthorityKey,
+      skillsService,
+      targetServiceResolution.rpcReady,
+    ],
   );
 
   useEffect(() => {
@@ -382,7 +397,6 @@ export function SkillsSection({
           enabled,
         });
         await invalidateDeferredDraftSessionForSkillChange({
-          zcodeSessionService,
           workspacePath: activeWorkspacePath,
           workspaceIdentity: activeWorkspaceIdentity,
           reason: "settings-skill-enabled",
@@ -401,7 +415,6 @@ export function SkillsSection({
       refreshSharedSkillStoreForCurrentWorkspace,
       skills,
       skillsService,
-      zcodeSessionService,
     ],
   );
 
@@ -413,6 +426,7 @@ export function SkillsSection({
         return;
       }
       const confirmed = await confirmDialog({
+        confirmVariant: "destructive",
         title: intl.formatMessage({ id: "settings.skills.delete.title" }),
         description: intl.formatMessage(
           { id: "settings.skills.delete.description" },
@@ -430,7 +444,6 @@ export function SkillsSection({
           skillId: skill.id,
         });
         await invalidateDeferredDraftSessionForSkillChange({
-          zcodeSessionService,
           workspacePath: activeWorkspacePath,
           workspaceIdentity: activeWorkspaceIdentity,
           reason: "settings-skill-delete",
@@ -451,7 +464,6 @@ export function SkillsSection({
       loadSkills,
       selectedSkill,
       skillsService,
-      zcodeSessionService,
     ],
   );
 
@@ -970,7 +982,6 @@ export function SkillsSection({
         onOpenChange={setImportDialogOpen}
         onImported={async () => {
           await invalidateDeferredDraftSessionForSkillChange({
-            zcodeSessionService,
             workspacePath: activeWorkspacePath,
             workspaceIdentity: activeWorkspaceIdentity,
             reason: "settings-skill-import",
@@ -995,7 +1006,6 @@ export function SkillsSection({
         workspaceIdentity={activeWorkspaceIdentity}
         onSkillsSynced={async () => {
           await invalidateDeferredDraftSessionForSkillChange({
-            zcodeSessionService,
             workspacePath: activeWorkspacePath,
             workspaceIdentity: activeWorkspaceIdentity,
             reason: "settings-remote-skill-sync",

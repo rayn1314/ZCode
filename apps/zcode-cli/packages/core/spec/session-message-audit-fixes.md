@@ -128,36 +128,34 @@ delivery result），语义不变。
 **不变式**：链只由"带链的会话消息"改写为新链、由"人类输入"清零；其它任何输入
 都不触碰。
 
-## 修复 5 · task_complete 按 stopReason 分派行状态（services）
+## 修复 5 · 终态 resultType 与行状态同口径（core，2026-10-23 迁移）
 
-**背景与问题**：`updateTaskIndexFromStreamEvent` 对 `task_complete` 无条件写
-`status: "completed"`。上游 `turn.completed` 的 `resultType`（= `stopReason`）词表含
-`error_max_turns / error_max_budget / error_during_execution / error_max_tool_calls`；
-投影侧（`product-projection.onTurnComplete`）把它们派生为 phase `error`、syncer
-（`taskStatusFromSummaryPhase`）落 `status: "error"`——事件流却把同一轮写成
-`completed`，行状态与投影互相打架。
+**背景与问题**：最初缺陷在 `services` 的 `updateTaskIndexFromStreamEvent`：它对
+`task_complete` 无条件写 `status: "completed"`。上游 `turn.completed` 的 `resultType`
+（= `stopReason`）词表含 `error_max_turns / error_max_budget / error_during_execution /
+error_max_tool_calls`；投影侧（`product-projection.onTurnComplete`）把它们派生为 phase
+`error`，行状态却被事件流写成 `completed`，两者互相打架。
 
-**复现测试先行**：修复前先落测试 `packages/services/test/taskCompleteStatus.test.ts`
-（驱动 adapter 真实事件链 `session.event → mapSessionEvent → applyAgentPatch`），
-实测 `cancelled → completed`（与 syncer 的 completedInterrupted 口径一致，无需改）、
-`error_during_execution → completed`（缺陷所在，期望 `error`）。
+**迁移（v3.16.2 合并）**：上游把 task 索引收口成「CLI 事实唯一来源」
+（`task-facts` → `applyCliFacts` + snapshot presentation），services 侧那条流式写路径
+被整条删除；`lastOutcome` 在 `core/src/runtime/methods/events.ts` 的
+`persistDurableSessionEvent` 里持久化，再由 sessions-index 流下发到 task 行。
+因此缺陷的真实位置挪到了 CLI：旧映射把 `error_*` 与未识别值都写成 `completed`。
 
-**决策**：`taskIndexPatchFromTaskComplete(stopReason)` 分派，词表与投影/syncer 对齐：
-- `success` / `cancelled` → `completed`，并清 `lastError`（沿 completed 旧语义）；
-- `error_*` 及未识别值 → `error`，**不动 `lastError`**（错误正文不在 TurnComplete
-  payload 里；与 syncer 的 error 分支一致，权威值由随后的回源 snapshot 写入）；
-- 缺省 `"complete"`（旧 payload 无 resultType 的上游兜底）→ `completed`，保持兼容。
+**决策**：`lastOutcome` 与投影 phase 逐字对齐：
+- `TurnError` → `error`；
+- `TurnComplete(success)` → `completed`；`TurnComplete(cancelled)` → `interrupted`；
+- `TurnComplete(其它/缺失 resultType)` → `error`。
 
 **同链核查（不修的部分）**：`zcodeTaskIndexSyncer.emitTerminalAndReady` 的
-`failed = phase === "error"`——TurnError 走 `turn.failed`/`task_error`、投影 phase
-为 `error`，`failed=false` 时确实只对应 completedSuccess/completedInterrupted，
-语义正确，未改动。
+`failed = phase === "error"` 语义正确；`applyCliFacts` 用 `coalesce(=?,task_status)`
+只写终态，运行中状态由 sessions-index 的 running activity 表达，未改动。
 
-**行为变化**：以 `error_*` 收口的轮，任务行状态从错误地 `completed` 变为 `error`；
-`cancelled` 行为不变。
+**行为变化**：以 `error_*` 收口的轮，`session_entry.last_outcome`、task 行状态与投影
+phase 从「互相打架」变为同词；`success` / `cancelled` 不变。
 
-**不变式**：同一轮的行状态、conversation 投影 phase、syncer 终态三者同词
-（success/cancelled → completed，error → error）。
+**不变式**：同一轮的 `last_outcome`、conversation 投影 phase、syncer 终态三者同词
+（success/cancelled → completed(interrupted)，其余 → error）。
 
 ## 测试与验收
 
@@ -167,7 +165,7 @@ delivery result），语义不变。
 | 2 | `apps/zcode-cli/packages/adapters/test/mailbox.test.ts`（restore 往返/幂等/坏档隔离）+ `apps/zcode-cli/packages/core/test/session-mailbox-rollback.test.ts`（被拒回滚、抛错回滚后续） |
 | 3 | bootstrap port 测试（requestId 不影响 commandId）+ `packages/services/test/sessionMessageDelivery.test.ts`（Host commandId/clientId 断言） |
 | 4 | `apps/zcode-cli/packages/core/test/session-message-chain.test.ts`（人类 clear / 会话消息 keep / 无链批不清） |
-| 5 | `packages/services/test/taskCompleteStatus.test.ts`（cancelled/success/error_* 行状态） |
+| 5 | `apps/zcode-cli/packages/core/tests/turn-errors.test.ts`（success/cancelled/error_* → lastOutcome） |
 
 ## 迁移边界
 

@@ -9,7 +9,18 @@ export const WORKSPACE_HOOK_SCHEMA_FIELDS = {
   matcher: ["matcher", "hooks"],
   // 事件名单一来源是 @zcode/shared 的 HOOK_EVENT_NAMES；此处只派生，不再维护双份。
   events: [...HOOK_EVENT_NAMES] as const,
-  process: ["type", "command", "enabled", "args", "timeoutMs", "statusMessage"],
+  // P3 行为字段 once/failClosed 与 @zcode/shared 的 workspace-hook-config 一致，
+  // 必须进入 exhaustive lock，否则真实 schema 与 canonical lock 会漂移。
+  process: [
+    "type",
+    "command",
+    "enabled",
+    "args",
+    "timeoutMs",
+    "statusMessage",
+    "once",
+    "failClosed",
+  ],
   command: [
     "type",
     "command",
@@ -19,6 +30,8 @@ export const WORKSPACE_HOOK_SCHEMA_FIELDS = {
     "timeout",
     "timeoutMs",
     "statusMessage",
+    "once",
+    "failClosed",
   ],
 } as const;
 

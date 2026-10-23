@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  ModelRetryBudget,
-  modelNetworkStatusEventJsonSchema,
-  type ModelTextRequest,
-} from "../src/model/index.js";
+import { ModelRetryBudget, modelNetworkStatusEventJsonSchema } from "../src/model/index.js";
 import {
   getCurrentModelInvocationContext,
   runWithModelInvocationContext,
@@ -12,9 +8,8 @@ import {
 // docs/dynamic-workflow/concurrency.md「Unbounded retries for workflow traffic」：重试预算档位是 runtime-only 字段；
 // 状态事件用 maxAttempts = 0 表示无上限，协议 schema 的下界因此是 0。
 describe("ModelRetryBudget", () => {
-  it("exposes the budget tiers", () => {
-    // 上游 v3.15.1 的源码加了第三档 SingleAttempt，但这条用例还钉着两档（上游自身不一致，
-    // 合并时按源码现实对齐；档位语义见 docs/dynamic-workflow/concurrency.md）。
+  it("exposes default, unbounded and single-attempt budget tiers", () => {
+    // 合入加速失败回退后新增单次预算；保留工作流无界预算，不能让旧枚举断言排斥新档位。
     expect(ModelRetryBudget).toEqual({
       Default: "default",
       Unbounded: "unbounded",
@@ -23,12 +18,6 @@ describe("ModelRetryBudget", () => {
   });
 
   it("is a runtime-only request field and stays out of the model request JSON schema", async () => {
-    const request: ModelTextRequest = {
-      model: "test/model",
-      messages: [],
-      modelRetryBudget: ModelRetryBudget.Unbounded,
-    };
-    expect(request.modelRetryBudget).toBe("unbounded");
     const { modelTextRequestJsonSchema } = await import("../src/model/index.js");
     const properties = (modelTextRequestJsonSchema as { properties: Record<string, unknown> })
       .properties;

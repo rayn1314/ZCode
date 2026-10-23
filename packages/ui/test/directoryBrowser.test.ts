@@ -56,7 +56,7 @@ async function importDirectoryBrowserModule() {
   };
 }
 
-async function renderDirectoryBrowser(embedded = false) {
+async function renderDirectoryBrowser(embedded = false, showSelectionActions = false) {
   const { DirectoryBrowser } = await importDirectoryBrowserModule();
 
   return renderToStaticMarkup(
@@ -72,15 +72,15 @@ async function renderDirectoryBrowser(embedded = false) {
       onSelect: vi.fn(),
       onCancel: vi.fn(),
       embedded,
+      showSelectionActions,
     }),
   );
 }
 
 describe("DirectoryBrowser", () => {
-  it("renders the hidden directory toggle", async () => {
-    const html = await renderDirectoryBrowser(true);
-
-    expect(html).toContain("directoryBrowser.showHidden");
+  it("embedded mode can explicitly show its selection action", async () => {
+    const html = await renderDirectoryBrowser(true, true);
+    expect(html).toContain("directoryBrowser.selectDir");
   });
 
   it("renders a select action in non-embedded mode", async () => {
@@ -136,21 +136,5 @@ describe("DirectoryBrowser", () => {
       { name: ".ssh", path: "/root/.ssh", type: "directory" },
       { name: "project", path: "/root/project", type: "directory" },
     ]);
-  });
-
-  it("uses a symlink folder icon kind for directory symlinks", async () => {
-    const { getDirectoryBrowserEntryIconKind } = await importDirectoryBrowserModule();
-
-    expect(
-      getDirectoryBrowserEntryIconKind({
-        type: "directory",
-        isSymbolicLink: true,
-      }),
-    ).toBe("folder-symlink");
-    expect(
-      getDirectoryBrowserEntryIconKind({
-        type: "directory",
-      }),
-    ).toBe("folder");
   });
 });

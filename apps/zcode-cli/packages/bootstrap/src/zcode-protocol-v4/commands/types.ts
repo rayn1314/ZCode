@@ -39,11 +39,17 @@ export interface V4CommandLogger {
 
 export type V4QueueItemCommand = QueueItem;
 
+/** 单轮执行材料的协议原形。 */
+export type V4TurnExecution = NonNullable<CommandPayloadMap["sendText"]["modelExecution"]>;
+
 /**
- * 队列项的单轮执行材料（协议原形）。加速卡的 Selection 已随 QueueItem.modelSelection
- * 进入投影，这里只暂存不可投影的动态凭据，提升时再冻结成 ModelExecutionContext。
+ * Highspeed 队列项的临时执行包。QueueItem.modelSelection 只保存普通提交模型；
+ * 加速 Selection 必须与动态凭据一起驻留内存，提升时再冻结进本轮。
  */
-export type V4QueuedTurnExecution = NonNullable<CommandPayloadMap["sendText"]["modelExecution"]>;
+export interface V4QueuedTurnExecution {
+  modelSelection: NonNullable<CommandPayloadMap["sendText"]["modelSelection"]>;
+  modelExecution: V4TurnExecution;
+}
 
 export type V4StableForkTargetResolution =
   | {
@@ -254,11 +260,12 @@ export interface V4CommandCoreHost {
    */
   afterLegacyStateMutation?(record: V4SessionRecordView, reason: string): Promise<void>;
   /**
-   * 会话关闭（deleteSession 的执行面：整棵子代理子树关停 + 自身关闭，见
-   * zcode-protocol/session-tree.ts）。过渡形态：会话注册表仍归旧协议宿主，binder 实现调
-   * 该共享模块；v4 自持会话注册表后收编为原生实现。
+   * 会话删除（deleteSession 的执行面：软删除持久化 → 整棵子代理子树关停 + 自身关闭 →
+   * gateway 发 session.removed，关停实现见 zcode-protocol/session-tree.ts）。
+   * 过渡形态：会话注册表仍归旧协议宿主，binder 实现调该共享模块；v4 自持会话注册表后
+   * 收编为原生实现。
    */
-  closeSession?(sessionId: string): Promise<void>;
+  deleteSession?(sessionId: string): Promise<void>;
   /**
    * 沿树中止该会话**后代**（子/孙）正在跑的轮，不投通知。
    *
@@ -274,6 +281,8 @@ export interface V4CommandCoreHost {
    * 语义决策（draft persistence / firstInput 提交）留在原生 handler，不进钩子。
    */
   createSessionRecord?(params: {
+    sessionId?: string;
+    additionalDirectories?: string[];
     workspaceId: string;
     permissionScope?: "session";
     mcpServers?: CommandPayloadMap["createSession"]["mcpServers"];

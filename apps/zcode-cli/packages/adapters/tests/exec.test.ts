@@ -109,11 +109,6 @@ describe("NodeExecutionAdapter", () => {
     const capable = adapter as BashBackgroundLifecycleCapableAdapter;
 
     try {
-      const removedMethodName = ["run", "Backgroundable"].join("");
-      expect(removedMethodName in adapter).toBe(false);
-      expect(capable.runBashWithBackgroundLifecycle).toBeTypeOf("function");
-      expect(capable.waitForBackgroundTask).toBeTypeOf("function");
-
       const result = await capable.runBashWithBackgroundLifecycle!(
         {
           command: {
@@ -618,9 +613,6 @@ describe("NodeExecutionAdapter", () => {
     const capable = adapter as BashBackgroundLifecycleCapableAdapter;
 
     try {
-      expect(capable.runBashWithBackgroundLifecycle).toBeTypeOf("function");
-      expect(capable.waitForBackgroundTask).toBeTypeOf("function");
-
       const result = await capable.runBashWithBackgroundLifecycle!(
         {
           command: {
@@ -661,8 +653,6 @@ describe("NodeExecutionAdapter", () => {
     const capable = adapter as BashBackgroundLifecycleCapableAdapter;
 
     try {
-      expect(capable.runBashWithBackgroundLifecycle).toBeTypeOf("function");
-
       const result = await capable.runBashWithBackgroundLifecycle!(
         {
           command: {
@@ -1301,7 +1291,9 @@ describe("NodeExecutionAdapter", () => {
 
   it("captures final cwd for successful foreground shell commands when requested", async () => {
     const root = await mkdtemp(join(tmpdir(), "zcode-exec-cwd-"));
-    const child = join(root, " child with spaces ");
+    // Windows 的文件 API 会裁掉目录名末尾的空格，cmd.exe 无法 chdir 进去；
+    // 这里用两端无空格的名称验证含空格路径的转义，仍然是同一个断言。
+    const child = join(root, "child with spaces");
     await mkdir(child);
 
     try {
@@ -1309,7 +1301,10 @@ describe("NodeExecutionAdapter", () => {
       const result = await adapter.run({
         command: {
           mode: "shell",
-          command: `cd ${JSON.stringify(child)}`,
+          command:
+            process.platform === "win32"
+              ? `cd /d ${JSON.stringify(child)}`
+              : `cd ${JSON.stringify(child)}`,
         },
         cwd: root,
         captureCwdAfterSuccess: true,
@@ -1383,7 +1378,10 @@ describe("NodeExecutionAdapter", () => {
       const result = await adapter.run({
         command: {
           mode: "shell",
-          command: `cd ${JSON.stringify(child)}; false`,
+          command:
+            process.platform === "win32"
+              ? `cd /d ${JSON.stringify(child)} & exit /b 1`
+              : `cd ${JSON.stringify(child)}; false`,
         },
         cwd: root,
         captureCwdAfterSuccess: true,
@@ -2227,9 +2225,11 @@ describe("NodeExecutionAdapter", () => {
       mode: "shell",
     });
     expect(windowsPlan.command.command).toContain("cd C:\\repo");
-    expect(windowsPlan.command.command).toContain('set "__zcode_status=%ERRORLEVEL%"');
-    expect(windowsPlan.command.command).toContain('if "%__zcode_status%"=="0" cd > "');
-    expect(windowsPlan.command.command).toContain("exit /b %__zcode_status%");
+    // cmd /c 只执行命令字符串的第一行，包装必须与用户命令同处一行。
+    expect(windowsPlan.command.command).not.toContain("\n");
+    // `%ERRORLEVEL%` 会在解析整行时提前展开；必须用运行时判断保留用户命令的真实退出码。
+    expect(windowsPlan.command.command).toContain('& if not errorlevel 1 cd > "');
+    expect(windowsPlan.command.command).not.toContain("%__zcode_status%");
   });
 
   it("does not create a cwd capture wrapper for argv commands", () => {
@@ -3473,7 +3473,9 @@ describe("NodeExecutionAdapter", () => {
     };
     const originalPrepare = internals.prepareChildSpawn.bind(adapter);
     internals.prepareChildSpawn = async (request: unknown) => {
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      // 准备阶段远长于 timeout；Windows 上 node 冷启动约 50-130ms，timeout 需留出余量，
+      // 否则用例测到的是子进程启动开销而不是「计时器是否提前启动」。
+      await new Promise((resolve) => setTimeout(resolve, 1500));
       return originalPrepare(request);
     };
 
@@ -3483,7 +3485,7 @@ describe("NodeExecutionAdapter", () => {
         file: process.execPath,
         args: ["-e", "process.exit(0)"],
       },
-      timeoutMs: 60,
+      timeoutMs: 500,
     });
 
     expect(result.status).toBe("completed");
@@ -4272,8 +4274,10 @@ describe("NodeExecutionAdapter", () => {
               mode: "shell",
               command: "(sleep 0.5; printf late) & printf early",
               shellProfile: "posix-bash",
+              // Windows 上这里是 Git Bash，必须用 git-bash 方言：否则快照会按
+              // 宿主 Windows 路径写入并用 Windows PATH 覆盖 bash 的 PATH。
               shellOverride: {
-                dialect: "posix",
+                dialect: process.platform === "win32" ? "git-bash" : "posix",
                 display: { name: "bash" },
                 path: bashPath,
                 source: "auto-detected",
@@ -4304,8 +4308,14 @@ describe("NodeExecutionAdapter", () => {
         });
 
         expect(result.task.outputPath).toBeTypeOf("string");
-        await sleep(600);
-        await expect(readFile(result.task.outputPath!, "utf8")).resolves.toBe("earlylate");
+        // 后代的 late 写在根进程退出后 0.5 s；固定 sleep 在高负载下会读早于写入，
+        // 改成有界轮询：仍然断言最终内容，只是不再把机器快慢当契约。
+        await expect
+          .poll(async () => readFile(result.task.outputPath!, "utf8"), {
+            interval: 50,
+            timeout: 10_000,
+          })
+          .toBe("earlylate");
       } finally {
         await adapter.close();
         await rm(outputRootDir, { force: true, recursive: true });
@@ -4825,7 +4835,11 @@ describe("NodeExecutionAdapter", () => {
       const started = await adapter.start({
         command: {
           mode: "shell",
-          command: `cd ${JSON.stringify(child)}; printf bg`,
+          command:
+            process.platform === "win32"
+              ? // cmd 没有 printf/`;`；用 set /p 输出无换行的 bg，并显式归零退出码。
+                `cd /d ${JSON.stringify(child)} & <nul set /p "=bg" & exit /b 0`
+              : `cd ${JSON.stringify(child)}; printf bg`,
         },
         cwd: root,
         captureCwdAfterSuccess: true,

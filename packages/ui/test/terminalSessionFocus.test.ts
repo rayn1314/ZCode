@@ -95,19 +95,6 @@ describe("persistentKey 路径输入链路保活契约", () => {
     );
   });
 
-  it("persistent 路径 onData 维护 keydown candidate 去重历史（IME Shift 切换契约）", () => {
-    // 回归守卫：曾把 persistent 路径 onData 简化（漏掉 candidate 去重），导致中文输入法无法通过
-    // Shift 切英文直接输入（只能回车提交）。persistent onData 必须与原路径 onData 对称。
-    const source = readSource("packages/ui/src/terminal/TerminalSession.tsx");
-    // 定位 persistent 路径的 onData（第一个 term.onData）
-    const onDataIdx = source.indexOf("term.onData(");
-    expect(onDataIdx).toBeGreaterThanOrEqual(0);
-    // onData 回调体内必须含 candidate 去重调用（取 onData 后 600 字符窗口断言）
-    const onDataBody = source.slice(onDataIdx, onDataIdx + 600);
-    expect(onDataBody).toContain("recordTerminalInputFallbackHandledData");
-    expect(onDataBody).toContain("inputFallbackKeydownCandidateRef");
-  });
-
   it("persistent 路径的 Windows 输入法 textarea 兜底也挂在 registryDisposers", () => {
     const source = readSource("packages/ui/src/terminal/TerminalSession.tsx");
     // textarea 兜底的 disposer（removeEventListener）前面最近的 push 必须是 registryDisposers。

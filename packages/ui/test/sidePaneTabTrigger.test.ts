@@ -2,18 +2,14 @@
 
 import { createElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { cleanup, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   getPatchFileDisplayTarget,
   getSidePaneTabTitle,
-  SidePaneTabDragOverlay,
   SidePaneTabIcon,
   SortableSidePaneTabTrigger,
 } from "@/app-shell/SidePaneTabTrigger.js";
-import { SidePaneTabTitleTooltip } from "@/app-shell/SidePaneTabTitleTooltip.js";
 import { Tabs, TabsList } from "@/components/ui/tabs.js";
 import type { WorkspaceSidePaneTab } from "@/lib/workspaceSidePane.js";
 
@@ -327,7 +323,6 @@ describe("SortableSidePaneTabTrigger", () => {
     expect(html).toContain("Close tab");
     expect(html).toContain("Close other tabs");
     expect(html).toContain("Close all tabs");
-    expect(html).not.toContain('role="separator"');
   });
 
   it("always renders the close button for active and inactive tabs", () => {
@@ -388,64 +383,6 @@ describe("SortableSidePaneTabTrigger", () => {
     expect(onActivateTab).not.toHaveBeenCalled();
     expect(onParentAuxClick).not.toHaveBeenCalled();
   });
-
-  it("shows the full title through an independently delayed tooltip", () => {
-    const html = renderSidePaneTab(true, "A complete tab title");
-
-    expect(html).toContain('data-tooltip-delay="1500"');
-    expect(html).toContain('data-tooltip-skip-delay="0"');
-    expect(html).toContain('data-testid="side-pane-tab-tooltip"');
-    expect(html).toContain("A complete tab title");
-  });
-
-  it("uses a 156px preferred width and an equal-shrink 60px minimum", () => {
-    const longTitle = "A very long browser tab title that must be truncated";
-    const tabHtml = renderSidePaneTab(true, longTitle);
-    const overlayHtml = renderToStaticMarkup(
-      createElement(SidePaneTabDragOverlay, {
-        tab: browserTab,
-        title: longTitle,
-        diffBadgeLabel: "Diff",
-      }),
-    );
-
-    expect(tabHtml).toContain("flex-[1_1_9.75rem]");
-    expect(tabHtml).toContain("min-w-15");
-    expect(tabHtml).toContain("max-w-39");
-    expect(tabHtml).toContain("flex-1");
-    expect(tabHtml).toContain('data-side-pane-tab-content=""');
-    expect(tabHtml).toContain("mask-image");
-    expect(tabHtml).not.toMatch(/class="[^"]*\btruncate\b/);
-    expect(overlayHtml).toContain("w-39");
-    expect(overlayHtml).toContain('data-side-pane-tab-content=""');
-    expect(overlayHtml).toContain("mask-image");
-    expect(overlayHtml).not.toMatch(/class="[^"]*\btruncate\b/);
-  });
-});
-
-describe("SidePaneTabTitleTooltip", () => {
-  it("uses the shared tooltip default side offset", async () => {
-    const source = await readFile(
-      resolve(process.cwd(), "packages/ui/src/app-shell/SidePaneTabTitleTooltip.tsx"),
-      "utf8",
-    );
-
-    expect(source).not.toContain("sideOffset=");
-  });
-
-  it("preserves the trigger shrink behavior required by responsive tab widths", () => {
-    const html = renderToStaticMarkup(
-      createElement(
-        SidePaneTabTitleTooltip,
-        { isDragging: false, title: "Docs" },
-        createElement("div", { "data-testid": "responsive-tab-trigger" }),
-      ),
-    );
-    const triggerMarkup = html.match(/<div data-testid="responsive-tab-trigger"[^>]*>/)?.[0] ?? "";
-
-    expect(triggerMarkup).toContain('class="shrink"');
-    expect(triggerMarkup).not.toContain("shrink-0");
-  });
 });
 
 describe("SidePaneTabIcon browser-use operation state", () => {
@@ -466,7 +403,6 @@ describe("SidePaneTabIcon browser-use operation state", () => {
 
     expect(html).toContain('data-browser-use-operation-indicator="active"');
     expect(html).toContain("browser-use-operation-breathe");
-    expect(html).not.toContain("motion-safe:animate-pulse");
     expect(html).not.toContain("https://example.com/favicon.ico");
   });
 

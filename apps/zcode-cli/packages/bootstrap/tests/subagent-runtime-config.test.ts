@@ -3,9 +3,9 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi } from "vitest";
 import { createAgentStateId, type SubagentRuntimeConfig } from "@zcode/shared";
-import type { ModelRequest } from "@zcode/contracts";
+import type { SubagentChildLaunchBundle, SubagentChildSessionHost } from "@zcode/core";
 import { createNodeLoggerFactory } from "@zcode/adapters/logging";
-import { parseRuntimeSubagentConfig } from "../src/subagent-runtime-config.js";
+import { parseRuntimeSubagentConfig } from "../src/runtime-subagents/index.js";
 import * as subagents from "../src/subagents.js";
 import { createRegistryBackedTestApp } from "./helpers/registry-backed-test-app.js";
 
@@ -111,9 +111,16 @@ describe("subagent initialization source", () => {
       });
       const initial = Promise.withResolvers<SubagentRuntimeConfig>();
       const readHost = vi.fn(async () => initial.promise);
-      const fileLoader = vi.spyOn(subagents, "loadZCodeAgentProfiles");
+      // 本用例只验证「子代理定义来自哪个来源」，不跑真实子会话：构造入口记录派发入参后
+      // 直接失败，Agent 工具把这个失败当作工具结果回给父轮。
+      const launched: SubagentChildLaunchBundle[] = [];
+      const childHost: SubagentChildSessionHost = {
+        async createChildSession(bundle) {
+          launched.push(bundle);
+          throw new Error("child runtime is not constructed in this test");
+        },
+      };
       const pluginLoader = vi.spyOn(subagents, "loadPluginAgentTemplates");
-      const requests: ModelRequest[] = [];
       let parentCalls = 0;
       let app: Awaited<ReturnType<typeof createRegistryBackedTestApp>> | undefined;
       let creating: ReturnType<typeof createRegistryBackedTestApp> | undefined;
@@ -144,11 +151,10 @@ describe("subagent initialization source", () => {
             },
           },
           ...(source === "host" ? { readSubagentRuntimeConfig: readHost } : {}),
+          subagentChildHost: childHost,
           modelExecutor: {
-            async generateText(request) {
-              const isChild = JSON.stringify(request.messages).includes("_PROFILE");
-              if (isChild) requests.push(request);
-              return !isChild && ++parentCalls === 1
+            async generateText() {
+              return ++parentCalls === 1
                 ? {
                     finishReason: "tool-calls",
                     text: "",
@@ -161,6 +167,9 @@ describe("subagent initialization source", () => {
                           description: "Review",
                           prompt: "Review",
                           subagent_type: "reviewer",
+                          // 前台派发：本轮结束前完成派发，断言才能看到构造入参；
+                          // 后台派发会在 submitPrompt 返回后才开始。
+                          wait: true,
                         },
                       },
                     ],
@@ -169,39 +178,26 @@ describe("subagent initialization source", () => {
             },
           },
         });
-        if (source === "host") {
-          let created = false;
-          void creating.then(
-            () => {
-              created = true;
-            },
-            () => {},
-          );
-          await vi.waitFor(() => expect(readHost).toHaveBeenCalledTimes(1));
-          expect(created).toBe(false);
-          expect(fileLoader).not.toHaveBeenCalled();
-          initial.resolve(hostConfig("INITIAL_PROFILE"));
-        }
+        // 子代理定义按 turn 加载：创建不再阻塞在 host 读取上，创建阶段也不落盘解析。
+        if (source === "host") initial.resolve(hostConfig("INITIAL_PROFILE"));
         app = await creating;
-        // Host 已记录解析诊断；CLI 不再重复解析/记录，独立 loader 保持诊断。
-        expect(await readDiagnostics()).toMatchObject(
-          source === "files" ? [expectedDiagnostic] : [],
-        );
-        expect(fileLoader).toHaveBeenCalledTimes(source === "host" ? 0 : 1);
+        expect(readHost).not.toHaveBeenCalled();
         expect(pluginLoader).toHaveBeenCalledTimes(1);
         readHost.mockResolvedValue(hostConfig("NEXT_PROFILE"));
         await app.submitPrompt("Please delegate the review");
-        expect(readHost).toHaveBeenCalledTimes(source === "host" ? 2 : 0);
-        expect(requests).toHaveLength(1);
-        expect(JSON.stringify(requests[0])).toContain(
+        // 单一来源：host 来源每 turn 读一次 host 快照；files 来源只用启动期解析的磁盘 profile。
+        expect(readHost).toHaveBeenCalledTimes(source === "host" ? 1 : 0);
+        expect(launched).toHaveLength(1);
+        expect(launched[0]?.agentType).toBe("reviewer");
+        expect(launched[0]?.runtimeConfig.subagentContext?.agentPrompt).toContain(
           source === "host" ? "NEXT_PROFILE" : "DISK_PROFILE",
         );
-        expect(pluginLoader).toHaveBeenCalledTimes(1);
+        // 磁盘与 host 各自的解析诊断只由对应来源产生，不会互相补写。
+        expect(await readDiagnostics()).toMatchObject(
+          source === "files" ? [expectedDiagnostic] : [],
+        );
         expect((await readdir(join(storage, "cli", "agents"))).length).toBeGreaterThan(0);
         const diagnostics = await readDiagnostics();
-        expect(diagnostics).toMatchObject(
-          Array.from({ length: source === "host" ? 0 : 1 }, () => expectedDiagnostic),
-        );
         expect(JSON.stringify(diagnostics)).not.toContain(invalidDocument.content);
         // 只替换 subagent 来源；实际 session 数据库仍在环境变量指定的位置。
         expect((await readFile(join(storage, "cli", "db", "db.sqlite"))).length).toBeGreaterThan(0);
@@ -273,7 +269,8 @@ describe("subagent initialization source", () => {
       expect(last).toContain("inline-reviewer");
       expect(resolvePlugins).toHaveBeenCalledTimes(1);
       expect(loadTemplates).toHaveBeenCalledTimes(1);
-      expect(readHost).toHaveBeenCalledTimes(4);
+      // 每个 turn 读一次 host 快照：共 3 个 turn。
+      expect(readHost).toHaveBeenCalledTimes(3);
     } finally {
       await app?.close?.();
       vi.restoreAllMocks();
@@ -281,26 +278,25 @@ describe("subagent initialization source", () => {
     }
   });
 
-  it("propagates an initialization read failure without using the file loader", async () => {
+  it("propagates an initialization read failure without falling back to disk profiles", async () => {
     const root = await mkdtemp(join(tmpdir(), "subagent-initial-failure-"));
-    const fileLoader = vi.spyOn(subagents, "loadZCodeAgentProfiles");
     const error = new Error("Host configuration unavailable");
     let app: Awaited<ReturnType<typeof createRegistryBackedTestApp>> | undefined;
     try {
-      await expect(
-        createRegistryBackedTestApp({
-          env: { ZCODE_STORAGE_DIR: root, ZCODE_SESSION_DB_PATH: join(root, "db.sqlite") },
-          skipUserConfig: true,
-          runtimeConfig: { workingDirectory: root, mcp: { enabled: false, servers: {} } },
-          readSubagentRuntimeConfig: async () => {
-            throw error;
-          },
-        }).then((created) => {
-          app = created;
-          return "created";
-        }),
-      ).rejects.toBe(error);
-      expect(fileLoader).not.toHaveBeenCalled();
+      app = await createRegistryBackedTestApp({
+        env: { ZCODE_STORAGE_DIR: root, ZCODE_SESSION_DB_PATH: join(root, "db.sqlite") },
+        skipUserConfig: true,
+        runtimeConfig: { workingDirectory: root, mcp: { enabled: false, servers: {} } },
+        readSubagentRuntimeConfig: async () => {
+          throw error;
+        },
+      });
+      // 定义按 turn 加载：读取失败在首个 turn 的加载阶段上抛。turn 级包装是统一的
+      // “Turn execution failed”，根因必须留在 cause 链里（见 core turn-errors），
+      // 且失败意味着本轮不会静默改用磁盘 profile 继续跑。
+      const failure = await app.submitPrompt("First turn").catch((caught: unknown) => caught);
+      expect(failure).toMatchObject({ type: "unknown_error", recoverable: false });
+      expect((failure as { cause?: unknown }).cause).toBe(error);
     } finally {
       await app?.close?.();
       vi.restoreAllMocks();

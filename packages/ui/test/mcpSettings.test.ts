@@ -1,8 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ZCodeMcpServer } from "@zcode/shared";
 import {
-  SOURCE_META,
-  MCP_SECTIONS,
   serverToForm,
   formToConfig,
   formToJsonDraft,
@@ -11,24 +9,6 @@ import {
 } from "../src/settings/mcpSettingsShared.js";
 
 describe("MCP Settings Shared", () => {
-  describe("SOURCE_META", () => {
-    it("应包含 zcodeagentmcp 的元数据", () => {
-      expect(SOURCE_META.zcodeagentmcp).toBeDefined();
-      expect(SOURCE_META.zcodeagentmcp.label).toBe("ZCode Agent");
-      expect(SOURCE_META.zcodeagentmcp.section).toBe("ZCode Agent");
-      expect(SOURCE_META.zcodeagentmcp.badgeClass).toContain("cyan");
-    });
-  });
-
-  describe("MCP_SECTIONS", () => {
-    it("只展示 ZCode Agent MCP scope", () => {
-      expect(MCP_SECTIONS).toEqual(["zcodeagentmcp"]);
-      expect([...MCP_SECTIONS]).not.toContain("codexclimcp");
-      expect([...MCP_SECTIONS]).not.toContain("geminiclimcp");
-      expect([...MCP_SECTIONS]).not.toContain("opencodemcp");
-    });
-  });
-
   describe("serverToForm", () => {
     it("应正确转换 streamableHttp 类型", () => {
       const server: ZCodeMcpServer = {

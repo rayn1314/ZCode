@@ -17,6 +17,7 @@
  * 只有类型导入），因此不依赖模型侧的任何东西。同 workflow-driver-world-read-args.test.ts。
  */
 
+import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type {
   ExecutionPort,
@@ -36,7 +37,10 @@ import {
 import { createWorkflowEscalationRegistry } from "../src/app/workflow-escalation-registry.js";
 import { createAgentRuntimeWorkflowDriver } from "../src/app/workflow-driver.js";
 
-const CWD = "/ws";
+// 工作区根：driver 的路径归一是"解析后与自身相等才算已归一化"（`toWorkspaceRelative`），
+// 所以夹具必须是**本机原生**绝对路径。Windows 上 `/ws` 会落到当前盘符根的 `\ws`，
+// 既不是原生绝对路径，也测不到真实行为。
+const CWD = process.platform === "win32" ? resolve("ws") : "/ws";
 
 /** 一次被记录下来的 git 调用（argv 与 cwd 都要能断言）。 */
 interface GitCall {
@@ -131,8 +135,7 @@ function fakeFileSystemPort(
       globRequests.push(request);
       const all = options.globFiles ?? [];
       // 复刻真适配器的截断语义：maxResults 之内切片，truncated 表示还有剩余。
-      const files =
-        request.maxResults === undefined ? [...all] : all.slice(0, request.maxResults);
+      const files = request.maxResults === undefined ? [...all] : all.slice(0, request.maxResults);
       return {
         path: request.path,
         pattern: request.pattern,
@@ -277,23 +280,11 @@ describe("git world reads — exact argv", () => {
     await withPath.driver.executeWorldRead("git-diff", ["main", "src/a.ts"]);
     // `--` 是契约的一部分：一个恰好与分支同名的路径不能被 git 解读成 ref（也不能反过来）。
     // 显式 path **取代**缺省 pathspec。
-    expect(withPath.gitCalls[0]?.argv).toEqual([
-      "diff",
-      "--relative",
-      "main",
-      "--",
-      "src/a.ts",
-    ]);
+    expect(withPath.gitCalls[0]?.argv).toEqual(["diff", "--relative", "main", "--", "src/a.ts"]);
 
     const pathOnly = makeDriver({ git: [{ stdout: "diff" }] });
     await pathOnly.driver.executeWorldRead("git-diff", [undefined, "src/a.ts"]);
-    expect(pathOnly.gitCalls[0]?.argv).toEqual([
-      "diff",
-      "--relative",
-      "HEAD",
-      "--",
-      "src/a.ts",
-    ]);
+    expect(pathOnly.gitCalls[0]?.argv).toEqual(["diff", "--relative", "HEAD", "--", "src/a.ts"]);
   });
 
   it("does not need a prefix lookup for the patch diff (git --relative does that base)", async () => {
@@ -638,13 +629,7 @@ describe("git world reads — argument validation", () => {
   it("accepts a legitimate nested path", async () => {
     const { driver, gitCalls } = makeDriver({ git: [{ stdout: "" }] });
     await driver.executeWorldRead("git-diff", ["HEAD", "sub/nested/deep.ts"]);
-    expect(gitCalls[0]?.argv).toEqual([
-      "diff",
-      "--relative",
-      "HEAD",
-      "--",
-      "sub/nested/deep.ts",
-    ]);
+    expect(gitCalls[0]?.argv).toEqual(["diff", "--relative", "HEAD", "--", "sub/nested/deep.ts"]);
   });
 
   it("rejects an absolute or escaping path", async () => {
@@ -749,8 +734,9 @@ describe("git world reads — failure and caps", () => {
 describe("files.glob world read", () => {
   it("maps the port's mtime-ordered absolute paths to lexicographic workspace-relative", async () => {
     const { driver, globRequests } = makeDriver({
-      // 端口按 mtime 降序、绝对/相对混合（真适配器给绝对路径；形状归一是 driver 的事）。
-      glob: ["/ws/src/z.ts", "/ws/a.ts", "src/m.ts"],
+      // 端口按 mtime 降序、绝对/相对混合（真适配器给**本机原生**绝对路径；形状归一是 driver 的事）。
+      // 用 join 构造：Windows 上端口给的是 `E:\ws\…`，`/ws/…` 在那里不是已归一化的绝对路径。
+      glob: [join(CWD, "src", "z.ts"), join(CWD, "a.ts"), "src/m.ts"],
     });
     await expect(driver.executeWorldRead("glob", ["**/*.ts"])).resolves.toEqual([
       "a.ts",
@@ -768,7 +754,7 @@ describe("files.glob world read", () => {
   it("rejects over-cap file counts with actionable guidance, never a truncated view", async () => {
     // 截断的世界视图会被 journal 记录、被 resume 原样重放，脚本还会拿它去扇出。
     const cap = WORLD_READ_CAPS.globMaxFiles;
-    const tooMany = Array.from({ length: cap + 1 }, (_, i) => `/ws/f${i}.ts`);
+    const tooMany = Array.from({ length: cap + 1 }, (_, i) => join(CWD, `f${i}.ts`));
     const { driver } = makeDriver({ glob: tooMany });
     await expect(driver.executeWorldRead("glob", ["**/*"])).rejects.toMatchObject({
       code: "WorldReadCapExceeded",
@@ -778,7 +764,7 @@ describe("files.glob world read", () => {
 
   it("passes a file count exactly at the cap through", async () => {
     const cap = WORLD_READ_CAPS.globMaxFiles;
-    const exact = Array.from({ length: cap }, (_, i) => `/ws/f${i}.ts`);
+    const exact = Array.from({ length: cap }, (_, i) => join(CWD, `f${i}.ts`));
     const { driver } = makeDriver({ glob: exact });
     const files = (await driver.executeWorldRead("glob", ["**/*"])) as string[];
     expect(files).toHaveLength(cap);
@@ -786,7 +772,7 @@ describe("files.glob world read", () => {
 
   it("rejects when the port reports truncation even under the count cap", async () => {
     // 与 grep 同一条线：端口若因别的原因截断，我们手上就不是完整结果了。
-    const { driver } = makeDriver({ glob: ["/ws/a.ts"], globTruncated: true });
+    const { driver } = makeDriver({ glob: [join(CWD, "a.ts")], globTruncated: true });
     await expect(driver.executeWorldRead("glob", ["*.ts"])).rejects.toMatchObject({
       code: "WorldReadCapExceeded",
     });
@@ -801,10 +787,10 @@ describe("files.grep world read", () => {
   it("maps port entries to workspace-relative {path, line, text}", async () => {
     const { driver, grepRequests } = makeDriver({
       grep: [
-        { path: "/ws/src/a.ts", lineNumber: 12, text: "// TODO: fix" },
+        { path: join(CWD, "src", "a.ts"), lineNumber: 12, text: "// TODO: fix" },
         { path: "src/b.ts", lineNumber: 3, text: "// TODO: later" },
         // 端口在别的 outputMode 下会产出没有行号的条目；那不是一条内容命中。
-        { path: "/ws/src/c.ts", count: 4 },
+        { path: join(CWD, "src", "c.ts"), count: 4 },
       ],
     });
     await expect(driver.executeWorldRead("grep", ["TODO", "*.ts"])).resolves.toEqual([
@@ -835,7 +821,7 @@ describe("files.grep world read", () => {
     // 截断把一份悄悄残缺的世界视图交给脚本，而脚本接下来会拿它去扇出——扇出才是贵的那一步。
     const cap = WORLD_READ_CAPS.grepMaxMatches;
     const tooMany = Array.from({ length: cap + 1 }, (_, i) => ({
-      path: `/ws/f${i}.ts`,
+      path: join(CWD, `f${i}.ts`),
       lineNumber: 1,
       text: "hit",
     }));
@@ -931,7 +917,8 @@ describe("files.read — workspace containment", () => {
   it("resolves a legitimate nested path against the workspace", async () => {
     const { driver, readPaths } = makeDriver({});
     await expect(driver.executeWorldRead("read", ["sub/nested/a.ts"])).resolves.toBe("body");
-    expect(readPaths).toEqual([`${CWD}/sub/nested/a.ts`]);
+    // 端口收到的是解析后的**原生**绝对路径（Windows 上是反斜杠），不是拼出来的 POSIX 形状。
+    expect(readPaths).toEqual([resolve(CWD, "sub/nested/a.ts")]);
   });
 
   it("rejects a path that escapes the workspace with ..", async () => {

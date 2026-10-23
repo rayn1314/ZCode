@@ -1,7 +1,9 @@
 // 任务面板 store 契约：列表落库、失败保留旧列表、resume 透传截止时间、
 // createGoal 先建会话再设定目标、start/scope 参数透传、deadlineWarningSent 原样落库。
 import assert from "node:assert/strict";
-import { test } from "node:test";
+// 原先用 node:test；本文件在 vitest 的 include 范围（packages/*/test/**）内，
+// 必须在 vitest 里注册才能被收集，否则整跑报 “No test suite found”。
+import { it as test } from "vitest";
 import type { ZCodeSessionGoalListEntry } from "@zcode/shared";
 import type { IZCodeAgentService } from "@zcode/services";
 import { useGoalManagementStore } from "../src/store/goalManagementStore.js";

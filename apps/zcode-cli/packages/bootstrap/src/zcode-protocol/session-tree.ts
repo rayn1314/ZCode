@@ -72,6 +72,7 @@ export function listSubagentDescendantSessionIds(
 export async function closeSessionRecord(
   context: ZCodeProtocolAgentServerContext,
   sessionId: string,
+  options: { deleted?: boolean } = {},
 ): Promise<void> {
   const record = context.sessions.get(sessionId);
   // 幂等：record 已不在注册表（重复删除 / 并发竞态）时静默返回。
@@ -80,7 +81,8 @@ export async function closeSessionRecord(
   await runCloseStep(context, sessionId, "unsubscribe", () => record.unsubscribe?.());
   await runCloseStep(context, sessionId, "app_close", () => record.app.close?.());
   await runCloseStep(context, sessionId, "gateway_dispose", () =>
-    context.v4Gateway?.disposeSession(sessionId),
+    // 删除语义要额外通知 sessions-index 摘除列表项；普通 close 只清内存运行态。
+    context.v4Gateway?.disposeSession(sessionId, { deleted: options.deleted === true }),
   );
   // 注册表摘除本身不可能抛错，放在 step 之外以保证它一定执行。
   context.sessions.delete(sessionId);
@@ -101,9 +103,10 @@ export async function closeSessionRecord(
 export async function closeSessionTree(
   context: ZCodeProtocolAgentServerContext,
   rootSessionId: string,
+  options: { deleted?: boolean } = {},
 ): Promise<void> {
   if (!context.sessions.has(rootSessionId)) return;
-  await closeSessionSubtree(context, rootSessionId, new Set<string>([rootSessionId]));
+  await closeSessionSubtree(context, rootSessionId, new Set<string>([rootSessionId]), options);
 }
 
 /**
@@ -155,13 +158,15 @@ async function closeSessionSubtree(
   context: ZCodeProtocolAgentServerContext,
   sessionId: string,
   visited: Set<string>,
+  rootOptions: { deleted?: boolean },
 ): Promise<void> {
   for (const childId of listSubagentChildSessionIds(context, sessionId)) {
     if (visited.has(childId)) continue;
     visited.add(childId);
-    await closeSessionSubtree(context, childId, visited);
+    // 子会话不在 sessions-index 中，删除通知只对传入 options 的根节点生效。
+    await closeSessionSubtree(context, childId, visited, {});
   }
-  await closeSessionRecord(context, sessionId);
+  await closeSessionRecord(context, sessionId, rootOptions);
 }
 
 /** 单个关停步骤的失败隔离 + 诊断（事件名遵循本目录既有 `zcode_protocol.session.*` 约定）。 */

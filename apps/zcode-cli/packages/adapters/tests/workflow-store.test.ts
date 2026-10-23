@@ -84,7 +84,8 @@ describe("Node workflow store", () => {
       });
       const artifact = await store.writeArtifact("wf_test", "artifacts/clarify.md", "# ok\n");
 
-      expect(artifact.relativePath).toBe("artifacts/clarify.md");
+      // relativePath 是宿主原生相对路径，Windows 上分隔符为 `\`。
+      expect(artifact.relativePath).toBe(join("artifacts", "clarify.md"));
       expect((await store.readRun("wf_test"))?.task).toBe("work");
       expect((await store.readLatestRun({ cwd: "/repo", kind: "expert" }))?.runId).toBe("wf_test");
       expect(await store.readEvents("wf_test")).toHaveLength(1);

@@ -60,6 +60,9 @@ function requireModelSelectionForExecution(
 export const commandPayloadSchemas = {
   // firstInput 缺省 → phase=draft 空会话；携带 → 直接 turnHeader+userInput rows。
   createSession: z.object({
+    // Host 预留归属使用稳定 ID；CLI 仍负责拒绝覆盖既有会话。
+    sessionId: z.string().min(1).optional(),
+    additionalDirectories: z.array(z.string().min(1)).max(256).optional(),
     workspaceId: z.string(),
     permissionScope: z.literal("session").optional(),
     firstInput: z

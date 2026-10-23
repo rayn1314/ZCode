@@ -128,10 +128,14 @@ test("resolveInput：合法 model 归一成规范形（默认档位、大小写�
     resolvedInput(await resolveInput(agentInput("ANTHROPIC/Claude-Haiku$HIGH"))).model,
     "anthropic/claude-haiku$high",
   );
-  assert.equal(
-    resolvedInput(await resolveInput(agentInput("claude-haiku"))).model,
-    "anthropic/claude-haiku$low",
-  );
+  // 裸名只在会话自己的 provider 下命中（provider 边界，见 resolveModelReference 的第 2 档）。
+  assert.equal(resolvedInput(await resolveInput(agentInput("GLM-5.3"))).model, "zcode/glm-5.3$high");
+});
+
+test("resolveInput：裸名只挂在别的 provider 下 → 整次调用失败，不悄悄跨账单", async () => {
+  const resolution = asFailure(await resolveInput(agentInput("claude-haiku")));
+  assert.equal(resolution.errorCode, 400);
+  assert.match(resolution.message, /not configured under the session's provider/);
 });
 
 test("resolveInput：省略 model 时逐字节恒等（零回归）", async () => {

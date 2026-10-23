@@ -242,26 +242,29 @@ describe("RemoteConnectionFields Docker refresh", () => {
   });
 
   it("shows an empty Docker container hint in the chooser when no containers are available", () => {
+    // 分割控件默认在未选容器时进入手动模式，选择模式需要已有容器名才会挂载。
     const html = renderDockerFields({
+      dockerContainer: "zcode-dev",
       dockerContainers: [],
       refreshDockerContainers: vi.fn(),
     });
 
-    expect(html).toContain("未检测到运行中容器");
+    expect(html).toContain("没有运行中的容器");
   });
 
   it("shows the same short hint when Docker availability detection reports unavailable", () => {
     const html = renderDockerFields({
+      dockerContainer: "zcode-dev",
       dockerAvailable: false,
       dockerContainers: [],
       refreshDockerContainers: vi.fn(),
     });
 
-    expect(html).toContain("未检测到运行中容器");
+    expect(html).toContain("Docker 不可用");
     expect(html).not.toContain("当前环境未检测到可用的 Docker 运行环境");
   });
 
-  it("renders an independent manual container input without replacing the selected container label", () => {
+  it("renders the manual container input independently from the container chooser", () => {
     const html = renderDockerFields({
       dockerContainer: "zcode-dev",
       manualDockerContainer: "manual-dev",
@@ -270,11 +273,13 @@ describe("RemoteConnectionFields Docker refresh", () => {
 
     expect(html).toContain('data-testid="docker-container-input"');
     expect(html).toContain('value="manual-dev"');
-    expect(html).toContain("zcode-dev");
+    // 手动/选择两态互斥：手动模式下不再渲染已选容器下拉。
+    expect(html).not.toContain('data-testid="docker-container-select"');
   });
 
   it("shows a helper hint when the manual Docker container input is empty", () => {
     const html = renderDockerFields({
+      dockerContainer: "",
       manualDockerContainer: "",
       refreshDockerContainers: vi.fn(),
     });

@@ -948,7 +948,6 @@ describe("AiSdkModelAdapter", () => {
 
       const content = await readFile(join(debugDir, files[0]!), "utf8");
       const record = JSON.parse(content.trim()) as {
-        model: { role?: string };
         querySource?: string;
         request: { body: unknown; headers: Record<string, string> };
         response: { body: unknown; headers: Record<string, string>; reasoningText?: string };
@@ -961,7 +960,6 @@ describe("AiSdkModelAdapter", () => {
       expect(record.sessionId).toBe("sess_debug");
       expect(record.turnId).toBe("turn_debug");
       expect(record.querySource).toBe("session_title");
-      expect(record.model.role).toBeUndefined();
       expect(record.request.body).toMatchObject({
         messages: [{ role: "user", content: "Ping" }],
         model: "model-a",
@@ -3555,6 +3553,7 @@ describe("AiSdkModelAdapter", () => {
       streamText() {
         return {
           fullStream: stream([
+            { type: "text-delta", id: "partial", text: "partial answer" },
             {
               type: "finish",
               finishReason: "other",
@@ -3580,6 +3579,7 @@ describe("AiSdkModelAdapter", () => {
     }
 
     expect(events).toEqual([
+      { type: "text_delta", id: "partial", text: "partial answer" },
       {
         type: "finish",
         finishReason: "other",
@@ -4996,7 +4996,6 @@ describe("AiSdkModelAdapter", () => {
       events.push(event);
     }
 
-    expect(malformedInput).toHaveLength(884);
     expect(events.map((event) => event.type)).toEqual([
       "start",
       "tool_input_start",

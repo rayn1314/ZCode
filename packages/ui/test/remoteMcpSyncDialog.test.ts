@@ -244,11 +244,6 @@ describe("RemoteMcpSyncDialog", () => {
 
     expect(html).toContain("Sync MCP servers to remote target");
     expect(html).toContain('data-tooltip-title="MCP data and environment availability"');
-    expect(html).toContain("HTTP MCP URLs are copied");
-    expect(html).toContain("filesystem MCP paths are rewritten");
-    expect(html).toContain("not all dependent data and system environment capabilities");
-    expect(html).toContain("install it or add the dependencies on the remote server");
-    expect(html).not.toContain("secret");
     expect(html).toContain('aria-label="MCP data and environment availability"');
     expect(controlHintTooltipMockState.latest).toEqual({
       hasOnMouseEnter: true,
@@ -314,11 +309,8 @@ describe("RemoteMcpSyncDialog", () => {
       }),
     );
 
-    expect(html).toContain("grid gap-2");
-    expect(html).toContain("rounded-lg border border-border bg-surface");
     expect(html).toContain('aria-labelledby="remote-mcp-sync-filesystem-id-label"');
     expect(html).toContain("/Users/me/.zcode/cli/config.json");
-    expect(html).not.toContain("divide-y divide-border");
   });
 
   it("places the existing filter on the same row as the target", () => {

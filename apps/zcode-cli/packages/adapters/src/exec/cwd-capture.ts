@@ -58,12 +58,11 @@ function createPosixCwdCaptureCommand(command: string, cwdFilePath: string): str
 }
 
 function createWindowsCmdCwdCaptureCommand(command: string, cwdFilePath: string): string {
-  return [
-    command,
-    'set "__zcode_status=%ERRORLEVEL%"',
-    `if "%__zcode_status%"=="0" cd > ${cmdQuote(cwdFilePath)}`,
-    "exit /b %__zcode_status%",
-  ].join("\r\n");
+  // cmd /c 只执行传给它的命令字符串的第一行（Node 的 shell 选项固定走 /d /s /c），
+  // 所以状态检查与 cwd 写回必须和用户命令拼在同一行；用 `if not errorlevel 1`
+  // 在运行时读取真实 errorlevel，避免 `%ERRORLEVEL%` 在同一行被提前展开成旧值。
+  // 不额外写 `exit /b`：cmd /c 的退出码仍由最后一条命令（成功时的 cd）或用户命令决定。
+  return `${command} & if not errorlevel 1 cd > ${cmdQuote(cwdFilePath)}`;
 }
 
 export function readCapturedCwd(
@@ -89,10 +88,7 @@ export function readCapturedCwd(
   }
 }
 
-export function normalizeCapturedCwdForHost(
-  value: string,
-  dialect: ExecutionShellDialect,
-): string {
+export function normalizeCapturedCwdForHost(value: string, dialect: ExecutionShellDialect): string {
   return dialect === "git-bash" ? gitBashPathToWindowsPath(value) : value;
 }
 

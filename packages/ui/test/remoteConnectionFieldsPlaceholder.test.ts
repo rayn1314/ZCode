@@ -30,7 +30,7 @@ const platform: IPlatformService = {
   selectFile: vi.fn(),
 };
 
-function renderRemoteConnectionFields(kind: "ssh" | "docker") {
+function renderRemoteConnectionFields(kind: "ssh" | "docker", dockerContainer = "") {
   return renderToStaticMarkup(
     createElement(
       PlatformProvider,
@@ -50,7 +50,7 @@ function renderRemoteConnectionFields(kind: "ssh" | "docker") {
           privateKeyPassphrase: "",
           wslDistro: "",
           wslDistros: [],
-          dockerContainer: "",
+          dockerContainer,
           manualDockerContainer: "",
           serverUrl: "",
           serverName: "",
@@ -94,11 +94,19 @@ describe("RemoteConnectionFields placeholder", () => {
     expect(html).toContain('placeholder="输入用户名，例如 root"');
   });
 
-  it("Docker 容器选择器无可用容器时展示空态提示，并提供独立手动输入框", () => {
+  it("Docker 手动模式保留切换列表入口与空输入提示", () => {
     const html = renderRemoteConnectionFields("docker");
 
-    expect(html).toContain("未检测到运行中容器");
+    // 未选容器时默认进入手动模式：保留「选择运行中的容器」切换入口，但不挂载下拉本体。
+    expect(html).toContain("选择运行中的容器");
+    expect(html).not.toContain('data-testid="docker-container-select"');
     expect(html).toContain('placeholder="输入容器名或 ID，例如 my-container"');
     expect(html).toContain("如果运行中的容器列表不完整，可以手动输入容器名或 ID 连接。");
+  });
+
+  it("Docker 容器选择器无可用容器时展示空态提示", () => {
+    const html = renderRemoteConnectionFields("docker", "zcode-dev");
+
+    expect(html).toContain("没有运行中的容器");
   });
 });

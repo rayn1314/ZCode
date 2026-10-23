@@ -36,7 +36,7 @@ async function seedWorkspace(repo: TaskIndexRepo): Promise<void> {
     "unread-deleted",
   ];
   for (const taskId of taskIds) {
-    await repo.syncTaskMeta({ meta: taskMeta(taskId) });
+    await repo.applyCliFacts({ meta: taskMeta(taskId) });
   }
   await repo.updateTaskState({ ...scope, taskId: "unread-plain", patch: { unreadAt: 1_000 } });
   await repo.updateTaskState({
@@ -50,13 +50,14 @@ async function seedWorkspace(repo: TaskIndexRepo): Promise<void> {
     patch: { unreadAt: 3_000, archived: true },
   });
   await repo.updateTaskState({ ...scope, taskId: "unread-deleted", patch: { unreadAt: 4_000 } });
-  await repo.updateTaskState({ ...scope, taskId: "unread-deleted", patch: { deleted: true } });
+  // 删除是 CLI 事实，只能经 applyCliFacts 落地；updateTaskState 不接受 deleted。
+  await repo.applyCliFacts({ meta: taskMeta("unread-deleted"), deleted: true });
 }
 
 test("clearWorkspaceUnread clears exactly the blue-dot scope and leaves pinned/archived unread", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zcode-unread-clear-"));
   const path = join(dir, "tasks.sqlite");
-  const repo = new TaskIndexRepo(path);
+  const repo = new TaskIndexRepo(undefined, undefined, path);
   try {
     await seedWorkspace(repo);
     const beforeRows = await repo.listTaskMetas({ ...scope, includeDeleted: true });
@@ -100,9 +101,9 @@ test("clearWorkspaceUnread clears exactly the blue-dot scope and leaves pinned/a
 test("clearWorkspaceUnread is a no-op when the workspace has no unread task", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zcode-unread-empty-"));
   const path = join(dir, "tasks.sqlite");
-  const repo = new TaskIndexRepo(path);
+  const repo = new TaskIndexRepo(undefined, undefined, path);
   try {
-    await repo.syncTaskMeta({ meta: taskMeta("read-task") });
+    await repo.applyCliFacts({ meta: taskMeta("read-task") });
     const result = await repo.clearWorkspaceUnread(scope);
     assert.deepEqual(result, { clearedTaskIds: [] });
   } finally {
@@ -114,9 +115,9 @@ test("clearWorkspaceUnread is a no-op when the workspace has no unread task", as
 test("clearWorkspaceUnread is a no-op when every unread task sits outside the blue-dot scope", async () => {
   const dir = await mkdtemp(join(tmpdir(), "zcode-unread-pinned-only-"));
   const path = join(dir, "tasks.sqlite");
-  const repo = new TaskIndexRepo(path);
+  const repo = new TaskIndexRepo(undefined, undefined, path);
   try {
-    await repo.syncTaskMeta({ meta: taskMeta("pinned-only") });
+    await repo.applyCliFacts({ meta: taskMeta("pinned-only") });
     await repo.updateTaskState({
       ...scope,
       taskId: "pinned-only",

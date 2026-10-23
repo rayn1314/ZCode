@@ -2,7 +2,7 @@ import {
   TID_COMPOSER_REMOTE_CONNECTION,
   TID_COMPOSER_WORKSPACE_TRIGGER,
   TID_SSH_DIALOG,
-} from "@zcode/shared";
+} from "@zcode/shared/test-ids";
 import { clearAppData, clickTestIdByWebDriver } from "../../../helpers/desktop-app.js";
 import { prepareConversationE2E } from "../../../helpers/conversation-session.js";
 

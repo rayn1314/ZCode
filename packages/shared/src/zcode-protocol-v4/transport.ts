@@ -35,6 +35,7 @@ export const hostCapabilitiesSchema = z.object({
    * `state.updated`，并且先经 `clampWorkflowRunsForLegacy` 裁到旧界。
    */
   workflowRunDeltas: z.boolean().optional(),
+  historyFirst: z.boolean().optional(),
 });
 export type HostCapabilities = z.infer<typeof hostCapabilitiesSchema>;
 
@@ -82,6 +83,7 @@ export const clientHelloSchema = z
          * 是 `.strict()` 的，老 Host 见到不认识的键会整条 clientHello 解析失败、连接握不上手。
          */
         workflowRunDeltas: z.boolean().optional(),
+        historyFirst: z.boolean().optional(),
       })
       .strict()
       .optional(),
@@ -112,6 +114,8 @@ export const subscribeParamsSchema = z
     topic: z.string(),
     // 水位不变量：仅当客户端真持有该时刻一致状态才允许带。
     base: z.object({ logEpoch: z.string(), seq: z.number() }).optional(),
+    // 手动重试仅消费当前 failed attempt；普通重连不重跑 hook。
+    retryInitialization: z.string().min(1).optional(),
     // QoS hint，只影响调度，不影响语义。
     visibility: z.enum(["foreground", "background"]).optional(),
   })
@@ -142,6 +146,7 @@ export const conversationOpenTimingSchema = z
     cliRequestMs: openTimingMsSchema,
     cliBootstrapMs: openTimingMsSchema,
     cliSessionRestoreMs: openTimingMsSchema,
+    historyReadyMs: openTimingMsSchema,
     initialFrameEncodeMs: openTimingMsSchema,
     cliProcessState: z.enum(["spawned", "reused"]).optional(),
     sessionRuntimeState: z.enum(["cold", "warm"]).optional(),
@@ -335,6 +340,7 @@ export const V4_METHODS = {
   controllerResync: "v4/controller/resync",
   controllerUnsubscribe: "v4/controller/unsubscribe",
   conversationSubscribe: "v4/conversation/subscribe",
+  sessionsIndexReconcile: "v4/sessionsIndex/reconcile",
   conversationResync: "v4/conversation/resync",
   conversationUnsubscribe: "v4/conversation/unsubscribe",
   // 行分页 query（rows/range）：只读、无状态、超时重发安全。
@@ -346,6 +352,7 @@ export const V4_METHODS = {
   // 投影只下发 summaryRef 占位，正文按 ref 懒加载（见 compaction-summary.ts 文件头）。
   conversationCompactionSummary: "v4/conversation/compactionSummary",
   backgroundBashOutput: "v4/conversation/backgroundBashOutput",
+  offPeakControl: "v4/conversation/offPeakControl",
   conversationFileRewindPreview: "v4/conversation/fileRewindPreview",
   // workflow run 的事件日志分页（详情页审计面）：只读、无状态、超时重发安全。
   // 新方法天然偏斜安全——旧桌面根本不会调用它。
@@ -408,6 +415,7 @@ export type V4ConnectionFlowParams = z.infer<typeof v4ConnectionFlowParamsSchema
 export const v4ConnectionFlowResultSchema = z.object({}).strict();
 
 export const V4_NOTIFICATIONS = {
+  offPeakLifecycle: "v4/offPeak/lifecycle",
   // 下行帧（snapshot / deltas），params = ConversationTopicFrame。
   conversationFrame: "v4/conversation/frame",
   // 仅 live ingest 的无正文事实；不进入 topic snapshot/recovery。
@@ -418,6 +426,7 @@ export const V4_NOTIFICATIONS = {
   // CLI→Host：跨进程会话消息已写 mailbox，请 Host 转 main 做实时路由（params 见
   // v4SessionMessageSendRequestedParamsSchema）。同为 live sideband，不进 topic/replayable。
   sessionMessageSendRequested: "v4/session/message-send-requested",
+  pluginUiToolResult: "v4/plugin-ui/tool-result",
 } as const;
 
 /** 3.3.6 SSH 历史任务归属证明与 sessions-index 冷种子共享同一有界窗口。 */
@@ -426,6 +435,7 @@ export const MAX_LEGACY_TASK_IDS_PER_SUBSCRIBE = 200;
 // subscribe 请求 = 通用 SubscribeParams + connectionId（重订阅替换按
 // (connectionId, topic) 判定；stdio 单管道场景由 host 为每个下游客户端分配）。
 export const v4ConversationSubscribeParamsSchema = subscribeParamsSchema.extend({
+  additionalDirectories: z.array(z.string().trim().min(1)).max(256).optional(),
   connectionId: z.string(),
   clientMode: z.enum(["desktop-continuous", "web-remote-replayable"]),
   // 当前可信 attachment 的 workspace；cold resume 优先使用它恢复身份，live 不消费。
@@ -440,6 +450,7 @@ export const v4ConversationSubscribeParamsSchema = subscribeParamsSchema.extend(
    * 不是某一次订阅可以自选的口味。缺席 = 按旧消费者处理（整键 patch + 旧界裁剪）。
    */
   workflowRunDeltas: z.boolean().optional(),
+  historyFirst: z.boolean().optional(),
 });
 export type V4ConversationSubscribeParams = z.infer<typeof v4ConversationSubscribeParamsSchema>;
 

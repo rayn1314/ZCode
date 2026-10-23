@@ -25,6 +25,7 @@ export interface CronRunResultPayload {
 export interface OffPeakRunResultPayload {
   offPeakTaskId: string;
   ok: boolean;
+  lifecycleManaged?: true;
   conversationId?: string;
   sessionId?: string;
   error?: string;
@@ -141,6 +142,9 @@ export function spawnCronScheduler(deps: CronSchedulerDeps): CronSchedulerHandle
           mode: msg.mode,
           workspacePath: msg.workspacePath,
           workspaceIdentity: msg.workspaceIdentity,
+          projectId: msg.projectId,
+          hostId: msg.hostId,
+          additionalDirectories: msg.additionalDirectories,
         });
       } catch (error) {
         deps.logger.warn("[cron-scheduler] forward CronRun to host failed:", error);
@@ -180,6 +184,9 @@ export function spawnCronScheduler(deps: CronSchedulerDeps): CronSchedulerHandle
           serverTicketId: msg.serverTicketId,
           workspacePath: msg.workspacePath,
           workspaceIdentity: msg.workspaceIdentity,
+          projectId: msg.projectId,
+          hostId: msg.hostId,
+          additionalDirectories: msg.additionalDirectories,
         });
       } catch (error) {
         deps.logger.warn("[cron-scheduler] forward OffPeakRun to host failed:", error);

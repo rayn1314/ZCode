@@ -155,7 +155,6 @@ describe("formatOffPeakRemainingWait", () => {
     const label = formatOffPeakRemainingWait(now + 60_001, now, remainingWaitIntl);
 
     expect(label).toBe("2 分钟");
-    expect(label).not.toMatch(/[年月日]/);
   });
 
   it("uses a sub-minute label once the recovery point is reached", () => {
@@ -273,7 +272,7 @@ describe("off-peak permission recommendation", () => {
 });
 
 describe("off-peak terminal status presentation", () => {
-  it("dims completed cards while preserving hover and more-actions feedback", () => {
+  it("completed tasks resolve to the terminal status footer", () => {
     expect(resolveOffPeakStatusFooter({ status: "completed" })).toMatchObject({
       icon: "success",
       className: "text-foreground-subtle",

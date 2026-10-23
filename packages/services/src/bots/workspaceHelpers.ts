@@ -57,18 +57,26 @@ function resolveCanonicalWorkspaceId(
   if (!trimmed) {
     return undefined;
   }
-  const samePathWorkspaces = workspaces.filter((workspace) => workspace.workspacePath === trimmed);
-  const exactWorkspace = workspaces.find((workspace) => workspace.id === trimmed);
-  if (exactWorkspace) {
-    const identityCandidates = samePathWorkspaces.filter(
-      (workspace) => workspace.workspaceIdentity,
+  const exact = workspaces.find((workspace) => workspace.id === trimmed);
+  if (exact) {
+    // 修复原因：UI 建连后可能把 workspacePath 规范化为 realpath，而 bot 配置仍存旧路径。
+    // 身份隔离语义以 workspaceIdentity 为准：精确命中的条目没有身份时，优先取同路径里
+    // 唯一带身份的条目，避免同一物理工作区被拆成两个 bot 作用域。
+    const identityCandidates = workspaces.filter(
+      (workspace) => workspace.workspacePath === trimmed && workspace.workspaceIdentity,
     );
-    if (!exactWorkspace.workspaceIdentity && identityCandidates.length === 1) {
+    if (!exact.workspaceIdentity && identityCandidates.length === 1) {
       return identityCandidates[0]!.id;
     }
-    return exactWorkspace.id;
+    return exact.id;
   }
-  return samePathWorkspaces.length === 1 ? samePathWorkspaces[0]!.id : trimmed;
+  const candidates = workspaces.filter(
+    (workspace) =>
+      workspace.workspaceIdentity === trimmed ||
+      (!workspace.workspaceIdentity && workspace.rootPaths?.includes(trimmed)) ||
+      workspace.workspacePath === trimmed,
+  );
+  return candidates.length === 1 ? candidates[0]!.id : trimmed;
 }
 
 export function normalizeConfiguredAllowedWorkspaces(
@@ -112,13 +120,13 @@ export function resolveWorkspaceByValue(
     return workspaces[index - 1] ?? null;
   }
   const normalized = normalizeText(trimmed);
-  return (
-    workspaces.find(
-      (workspace) =>
-        normalizeText(workspace.id) === normalized ||
-        normalizeText(workspace.label) === normalized ||
-        workspace.workspacePath === trimmed ||
-        getWorkspaceKey(workspace.workspacePath, workspace.workspaceIdentity) === trimmed,
-    ) ?? null
+  const exact = workspaces.find((workspace) => workspace.id === trimmed);
+  if (exact) return exact;
+  const matches = workspaces.filter(
+    (workspace) =>
+      normalizeText(workspace.label) === normalized ||
+      workspace.workspacePath === trimmed ||
+      getWorkspaceKey(workspace.workspacePath, workspace.workspaceIdentity) === trimmed,
   );
+  return matches.length === 1 ? matches[0]! : null;
 }

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSharedZCodeCredentialStore } from "../src/auth/shared-credentials.js";
 import {
@@ -73,8 +73,9 @@ describe("MCP OAuth authorization lease", () => {
     const leasePath = resolveAuthorizationLeasePath(credentialsPath, KEY_PREFIX);
 
     // credential key prefix 形如 `mcp:oauth:<hash>`；冒号在 Windows 文件名中非法，
-    // 直接拼进锁路径会让整个授权流程在 Windows 上失败。
-    expect(leasePath).not.toContain(":");
+    // 直接拼进锁路径会让整个授权流程在 Windows 上失败。这里只校验文件名，
+    // 完整路径在 Windows 上必然包含盘符冒号（如 `E:\`）。
+    expect(basename(leasePath)).not.toContain(":");
     expect(leasePath.endsWith(".authz")).toBe(true);
   });
 

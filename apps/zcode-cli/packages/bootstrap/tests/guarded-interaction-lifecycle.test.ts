@@ -43,6 +43,8 @@ function harness(
     onVisible?: (id: string, registry: V4InteractionRegistry) => void;
     clientError?: number;
     clientResponse?: () => PermissionBrokerResult;
+    /** 授权请求到点自动拒绝（本 fork 的能力，默认与 Host 一致为开）。 */
+    permissionAutoDenyEnabled?: boolean;
   } = {},
 ) {
   const sessionId = createSessionId("guarded-wire");
@@ -66,6 +68,13 @@ function harness(
   const saveProjectPermission = vi.fn();
   const context = {
     v4Interactions: interactions,
+    ...(options.permissionAutoDenyEnabled === undefined
+      ? {}
+      : {
+          appRuntimePreferences: {
+            permissionRequestAutoDenyEnabled: options.permissionAutoDenyEnabled,
+          },
+        }),
     // 真正的 broker 在问答登记前读取持久化元数据；测试保留这个异步边界。
     deps: { sessionStore: { sessionEntries: async () => [] } },
     requestClient: (
@@ -244,7 +253,10 @@ describe("Guarded real executor → protocol broker → V4 command → result", 
 
   it("no human response does not activate the AskUserQuestion automatic-answer timer", async () => {
     vi.useFakeTimers();
-    const h = harness();
+    // 本 fork 对授权请求另有「到点自动拒绝」时限（默认开，见 spec/permission-request-timeout.md，
+    // 专属用例在 test/permission-auto-deny-timeout.test.ts）。这里要验的是 AskUserQuestion 的
+    // 自动应答计时不得作用于授权请求，因此关掉那条独立时限，把观察窗口拉长到 10 分钟。
+    const h = harness({ permissionAutoDenyEnabled: false });
     const pending = h.run();
     await vi.advanceTimersByTimeAsync(600_000);
     const id = h.requests[0]!.requestId;

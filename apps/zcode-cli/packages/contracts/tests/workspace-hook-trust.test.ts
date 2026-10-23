@@ -65,7 +65,16 @@ describe("workspace hook trust contracts", () => {
         "PreModelSwitch",
         "PostModelSwitch",
       ],
-      process: ["type", "command", "enabled", "args", "timeoutMs", "statusMessage"],
+      process: [
+        "type",
+        "command",
+        "enabled",
+        "args",
+        "timeoutMs",
+        "statusMessage",
+        "once",
+        "failClosed",
+      ],
       command: [
         "type",
         "command",
@@ -75,6 +84,8 @@ describe("workspace hook trust contracts", () => {
         "timeout",
         "timeoutMs",
         "statusMessage",
+        "once",
+        "failClosed",
       ],
     });
   });

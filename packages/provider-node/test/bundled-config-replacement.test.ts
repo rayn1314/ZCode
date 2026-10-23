@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { materializeZCodeBuiltinProviderConfig } from "../src/index.js";
 import * as persistence from "@zcode/shared/node";
@@ -70,6 +71,10 @@ it("替换期间并发读取只见完整旧版或新版，不产生 hash 历史�
       const fileContent = JSON.parse(await readFile(file, "utf8"));
       expect([1, 2]).toContain(fileContent.revision);
       expect(fileContent).toEqual(JSON.parse(release(fileContent.revision)));
+      // Windows 上 rename 无法覆盖任何仍被打开的句柄（reader 自身也不行），空转轮询会让
+      // 写侧永远抢不到窗口、3s 重试预算耗尽而 EPERM。让出一拍仍保持“读-写交错”的对抗性：
+      // 每次写入期间都会发生多次完整读取，撕裂内容依旧会被这里抓到。
+      if (process.platform === "win32") await sleep(1);
     } while (!finished);
   })();
   await Promise.all([writer, reader]);

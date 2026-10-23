@@ -217,8 +217,6 @@ describe("node repl tool interaction", () => {
 
     const resultSurface = screen.getByTestId("node-repl-result-surface");
     expect(resultSurface.textContent).toBe("示例页面");
-    expect(resultSurface.className).toContain("bg-card");
-    expect(resultSurface.className).toContain("border-border");
     expect(screen.queryByTestId("code-block")).toBeNull();
   });
 

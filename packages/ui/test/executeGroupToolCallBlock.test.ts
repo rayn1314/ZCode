@@ -1,3 +1,4 @@
+import { ToolPresentation } from "@/ToolCallBlocks/ToolPresentation.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -14,6 +15,7 @@ function renderExecuteGroup(
       ZCodeIntlProvider,
       { initialLocale: locale },
       createElement(ExecuteGroupToolCallBlock, {
+        nestedToolRenderer: ToolPresentation,
         toolCallNode: {
           toolCall: {
             toolId: "execute:tool-1",
@@ -76,6 +78,8 @@ describe("ExecuteGroupToolCallBlock", () => {
     expect(enHtml).toContain('<span class="shrink-0 text-foreground-subtle">Running</span>');
     expect(enHtml).toContain('<code class="min-w-0 truncate font-sans">pnpm test</code>');
     expect(html).toContain("relative inline-flex min-w-0 items-center gap-2 overflow-hidden");
+    expect(enHtml).toContain(">Running</span>");
+    expect(enHtml).toContain(">pnpm test</code>");
   });
 
   it("shows only the command count in the expanded running summary", () => {

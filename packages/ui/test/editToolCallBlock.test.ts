@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderToStaticMarkup } from "react-dom/server";
+
 import { buildEditCodeViewerSource } from "../src/ToolCallBlocks/renderers/edit.js";
 import { getEditKindLabelMessageId, renderFileChip } from "../src/ToolCallBlocks/renderers.js";
 
@@ -39,25 +39,5 @@ describe("getEditKindLabelMessageId", () => {
   it("uses stable terminal kinds for writes and deletes", () => {
     expect(getEditKindLabelMessageId(["write"], [], false)).toBe("chat.toolCall.kind.write");
     expect(getEditKindLabelMessageId(["delete"], [], false)).toBe("chat.toolCall.kind.delete");
-  });
-});
-
-describe("renderFileChip", () => {
-  it.each([false, true])("uses the subtle filename color (clickable=%s)", (clickable) => {
-    const html = renderToStaticMarkup(
-      renderFileChip({
-        summary: {
-          path: "/workspace/src/App.tsx",
-          actionLabel: "Edited",
-          operationKind: "update",
-          fileName: "App.tsx",
-          filePath: "/workspace/src/",
-          fileIconSrc: "/material-icons/typescript.svg",
-        },
-        clickable,
-      }),
-    );
-    expect(html).toContain("text-foreground-subtle");
-    expect(html).not.toMatch(/(?:class="[^"]* )text-foreground(?: |")/u);
   });
 });

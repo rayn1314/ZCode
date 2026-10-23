@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { PluginLoadOutcome, PluginMetadata } from "@zcode/contracts";
 import { resolvePluginRuntimeFeatures } from "../src/app/plugin-runtime-features.js";
@@ -34,7 +35,7 @@ describe("resolvePluginRuntimeFeatures", () => {
       resolvePluginRuntimeFeatures(outcome([plugin("browser-use@zcode-plugins-official", true)])),
     ).toEqual({
       browserUse: true,
-      browserDocumentationRoot: "/tmp/plugin/docs",
+      browserDocumentationRoot: join("/tmp/plugin", "docs"),
     });
   });
 
@@ -60,7 +61,7 @@ describe("resolvePluginRuntimeFeatures", () => {
       enabledServers.node_repl?.type === "stdio"
         ? enabledServers.node_repl.args?.at(-1)
         : undefined,
-    ).toBe("/tmp/host/dist/mcp/server.js");
+    ).toBe(join("/tmp/host", "dist", "mcp", "server.js"));
     expect(enabledServers.browser_use).toBeUndefined();
   });
 
@@ -144,21 +145,6 @@ describe("resolvePluginRuntimeFeatures", () => {
         workingDirectory: "/workspace",
       }),
     ).toEqual({});
-  });
-
-  // node_repl 的注册开关必须和 browserUse runtime feature 同源，避免以后再次分叉出
-  // 「工具在、bridge 不在」或「bridge 在、工具不在」的半开状态。
-  it("keeps node_repl registration in sync with the browserUse runtime feature", () => {
-    for (const enabled of [true, false]) {
-      const pluginOutcome = outcome([
-        plugin("node-repl-host@zcode-plugins-official", true, "/tmp/host"),
-        plugin("browser-use@zcode-plugins-official", enabled),
-      ]);
-      const hasNodeRepl =
-        resolveBuiltInNodeReplMcpServers({ pluginOutcome, workingDirectory: "/workspace" })
-          .node_repl !== undefined;
-      expect(hasNodeRepl).toBe(resolvePluginRuntimeFeatures(pluginOutcome).browserUse === true);
-    }
   });
 
   it("keeps browser-use disabled for disabled or non-official plugins", () => {

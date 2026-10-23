@@ -3,11 +3,11 @@ import { describe, expect, it } from "vitest";
 
 // Commands/Hooks/Subagents/Memory 的头部纯图标按钮已收进共享组件
 // SettingsResourceHeaderActions（icon-md）；仍自带图标的页面沿用 icon-lg。
+// 上游把插件商店页顶栏动作改成 secondary（刷新 / 市场源），插件列表页不再自带头部按钮。
 const selfRenderedIconFiles = {
-  "McpSettingsSection.tsx": 1,
-  "PluginStorePage.tsx": 2,
-  "PluginStoreListView.tsx": 1,
-  "SkillsSection.tsx": 1,
+  "McpSettingsSection.tsx": { count: 1, variant: "outline" },
+  "PluginStorePage.tsx": { count: 2, variant: "secondary" },
+  "SkillsSection.tsx": { count: 1, variant: "outline" },
 } as const;
 
 const delegatingSections = [
@@ -18,15 +18,14 @@ const delegatingSections = [
 ] as const;
 
 describe("settings list header actions", () => {
-  it("纯图标按钮统一使用 outline，共享头部动作用 icon-md", async () => {
-    for (const [fileName, expectedCount] of Object.entries(selfRenderedIconFiles)) {
+  it("纯图标按钮沿用各自 variant，共享头部动作用 icon-md", async () => {
+    for (const [fileName, expected] of Object.entries(selfRenderedIconFiles)) {
       const source = await readFile(
         new URL(`../src/settings/${fileName}`, import.meta.url),
         "utf8",
       );
-      expect(source.match(/variant="outline"\s+size="icon-lg"/g), fileName).toHaveLength(
-        expectedCount,
-      );
+      const pattern = new RegExp(`variant="${expected.variant}"\\s+size="icon-lg"`, "g");
+      expect(source.match(pattern), fileName).toHaveLength(expected.count);
     }
 
     const shared = await readFile(
@@ -47,6 +46,6 @@ describe("settings list header actions", () => {
       new URL("../src/settings/PluginStorePage.tsx", import.meta.url),
       "utf8",
     );
-    expect(source).toContain('className="flex shrink-0 items-center gap-2"');
+    expect(source).toContain('className="flex flex-wrap items-center gap-2"');
   });
 });

@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, type TestContext } from "vitest";
 import { createNodeCustomCommandAdapter } from "../src/commands/index.js";
 
 describe("NodeCustomCommandAdapter", () => {
@@ -179,7 +179,7 @@ describe("NodeCustomCommandAdapter", () => {
       await rm(dir, { force: true, recursive: true });
     }
   });
-  it("discovers commands imported as file symlinks", async () => {
+  it("discovers commands imported as file symlinks", async (context) => {
     // 回归测试：外部 agent 导入默认 importMode="symlink"，命令文件是指向源文件的软链。
     // 旧逻辑只检查 entry.isFile() 会漏掉 symlink（readdir 报告为 isSymbolicLink()）。
     const dir = await mkdtemp(join(tmpdir(), "zcode-commands-"));
@@ -194,7 +194,7 @@ describe("NodeCustomCommandAdapter", () => {
         sourceFile,
         ["---", "description: Commit staged changes", "---", "", "Commit $ARGUMENTS."].join("\n"),
       );
-      await symlink(sourceFile, join(commandDir, "commit.md"));
+      if (!(await createSymlinkOrSkip(context, sourceFile, join(commandDir, "commit.md")))) return;
 
       const adapter = createNodeCustomCommandAdapter({ homeDirectory: join(dir, "home") });
       const outcome = await adapter.discoverCommands({ workingDirectory: dir });
@@ -209,7 +209,7 @@ describe("NodeCustomCommandAdapter", () => {
     }
   });
 
-  it("discovers commands inside a symlinked directory", async () => {
+  it("discovers commands inside a symlinked directory", async (context) => {
     const dir = await mkdtemp(join(tmpdir(), "zcode-commands-"));
     const sourceDir = join(dir, "source-commands");
     const commandRoot = join(dir, ".zcode", "commands");
@@ -218,8 +218,12 @@ describe("NodeCustomCommandAdapter", () => {
       await mkdir(sourceDir, { recursive: true });
       await mkdir(commandRoot, { recursive: true });
       await writeCommand(sourceDir, "deploy", "Deploy the app");
-      // 目录级 symlink：stat 跟随链接后应识别为目录并递归扫描
-      await symlink(sourceDir, join(commandRoot, "ops"), "dir");
+      // 目录级 symlink：stat 跟随链接后应识别为目录并递归扫描。
+      // Windows 上 junction 无需符号链接权限，Node 同样把它报告为 symbolic link。
+      const linkType = process.platform === "win32" ? "junction" : "dir";
+      if (!(await createSymlinkOrSkip(context, sourceDir, join(commandRoot, "ops"), linkType))) {
+        return;
+      }
 
       const adapter = createNodeCustomCommandAdapter({ homeDirectory: join(dir, "home") });
       const outcome = await adapter.discoverCommands({ workingDirectory: dir });
@@ -230,14 +234,22 @@ describe("NodeCustomCommandAdapter", () => {
     }
   });
 
-  it("skips dangling command symlinks without failing the scan", async () => {
+  it("skips dangling command symlinks without failing the scan", async (context) => {
     const dir = await mkdtemp(join(tmpdir(), "zcode-commands-"));
     const commandDir = join(dir, ".zcode", "commands");
 
     try {
       await mkdir(commandDir, { recursive: true });
       await writeCommand(commandDir, "kept", "Real command");
-      await symlink(join(dir, "does-not-exist.md"), join(commandDir, "broken.md"));
+      if (
+        !(await createSymlinkOrSkip(
+          context,
+          join(dir, "does-not-exist.md"),
+          join(commandDir, "broken.md"),
+        ))
+      ) {
+        return;
+      }
 
       const adapter = createNodeCustomCommandAdapter({ homeDirectory: join(dir, "home") });
       const outcome = await adapter.discoverCommands({ workingDirectory: dir });
@@ -255,3 +267,63 @@ async function writeCommand(dir: string, name: string, description: string): Pro
     ["---", `description: ${description}`, "---", "", "# Body"].join("\n"),
   );
 }
+
+/**
+ * Windows 默认账号没有 SeCreateSymbolicLinkPrivilege，创建文件链接或悬空链接会 EPERM；
+ * 这是操作系统权限限制，只有开发者模式或管理员权限才可绕过。目录链接已改用 junction。
+ */
+async function createSymlinkOrSkip(
+  context: TestContext,
+  target: string,
+  path: string,
+  type?: "dir" | "file" | "junction",
+): Promise<boolean> {
+  try {
+    await symlink(target, path, type);
+    return true;
+  } catch (error) {
+    if (process.platform === "win32" && isSymlinkPrivilegeError(error)) {
+      context.skip("Windows 创建符号链接需要 SeCreateSymbolicLinkPrivilege 或开发者模式");
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isSymlinkPrivilegeError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error.code === "EPERM" || error.code === "EACCES")
+  );
+}
+
+it("附加目录命令使用目录限定名并保留原 cwd 命令", async () => {
+  const root = await mkdtemp(join(tmpdir(), "zcode-additional-commands-"));
+  try {
+    const main = join(root, "frontend"),
+      extra = join(root, "backend");
+    for (const dir of [main, extra]) {
+      await mkdir(join(dir, ".zcode", "commands"), { recursive: true });
+      await writeFile(
+        join(dir, ".zcode", "commands", "review.md"),
+        `---\ndescription: review\n---\n${dir}`,
+      );
+    }
+    const adapter = createNodeCustomCommandAdapter({
+      homeDirectory: join(root, "home"),
+      additionalDirectories: [extra],
+    });
+    expect(
+      (await adapter.discoverCommands({ workingDirectory: main })).commands
+        .map((c) => c.name)
+        .sort(),
+    ).toEqual(["backend/review", "review"]);
+    expect(
+      (await adapter.loadCommand({ workingDirectory: main, name: "backend/review" })).content,
+    ).toContain(extra);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

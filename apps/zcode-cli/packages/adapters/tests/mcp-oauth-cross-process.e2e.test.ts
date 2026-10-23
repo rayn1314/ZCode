@@ -413,8 +413,10 @@ describe("MCP OAuth cross-process end-to-end", () => {
     // 根因 2 的现场形态:过去两个连接各开一个 listener、各注册一个 client、各生成一个
     // 授权 URL,且 client 的 redirect_uris 锁死各自的随机端口。修复后跨进程授权 lease
     // 单飞:恰好一次 DCR、一个授权 URL;follower 观察 canonical 换代后用新凭据重连。
-    expect(first.status?.status).toBe("connected");
-    expect(second.status?.status).toBe("connected");
+    // 失败时把子进程回传的 status（含 error/failureKind）带进断言消息：只看到
+    // "failed" 无法区分 lease 竞态、冷启动超时还是 DCR 拒绝。
+    expect(first.status?.status, JSON.stringify(first)).toBe("connected");
+    expect(second.status?.status, JSON.stringify(second)).toBe("connected");
     expect(first.status?.toolCount).toBe(1);
     expect(second.status?.toolCount).toBe(1);
     const drivenUrls = [...(first.authorizationUrls ?? []), ...(second.authorizationUrls ?? [])];
@@ -477,7 +479,9 @@ describe("MCP OAuth cross-process end-to-end", () => {
   it("completes authorization that outlasts the caller budget (incident timeline replay)", async () => {
     // 现场:2026-08-11 真人授权耗时约 74 秒,而 session 预算只有 15 秒。旧实现 15 秒后
     // 关闭 listener,授权必败;新实现预算只约束 caller 等待,事务继续存活。
-    // 按比例缩放:caller 预算 100ms,「用户」1500ms 后才完成授权。
+    // 按比例缩放:caller 预算 800ms,「用户」2500ms 后才完成授权。
+    // 预算必须留足 DCR/注册的建链时间（高负载下几百毫秒），否则断言的会是
+    // 「预算在 DCR 阶段就到期」这个另一种现场——那时授权 URL 还没产生。
     const stack = await startFakeStack();
     const { credentialStore, credentialsPath } = await createCredentials("cross-process-budget");
     const secret = "cross-process-budget";
@@ -486,7 +490,7 @@ describe("MCP OAuth cross-process end-to-end", () => {
       mcpOAuth: {
         credentialStore,
         openAuthorizationUrl: async ({ authorizationUrl }) => {
-          await new Promise((resolve) => setTimeout(resolve, 1500));
+          await new Promise((resolve) => setTimeout(resolve, 2500));
           const response = await fetch(authorizationUrl, { redirect: "manual" });
           const location = response.headers.get("location");
           if (location) await fetch(location);
@@ -498,7 +502,7 @@ describe("MCP OAuth cross-process end-to-end", () => {
       const budgeted = await adapter.connectServer(
         "budget",
         { type: "http", url: stack.mcpUrl, oauth: { type: "authorization_code", scope: MCP_SCOPE } },
-        { oauthAuthorizationTimeoutMs: 100 },
+        { oauthAuthorizationTimeoutMs: 800 },
       );
       // 预算到点只返回快照:connecting + 授权 URL,事务没有被杀。
       expect(budgeted.status).toBe("connecting");

@@ -99,8 +99,11 @@ describe("idle-time task Figma layout contracts", () => {
   });
 
   it("keeps the idle-time entry component available without mounting it on the draft homepage", () => {
-    const dockStart = sessionPaneSource.indexOf("const chatDockContent =");
-    const dockEnd = sessionPaneSource.indexOf("\n  );\n", dockStart);
+    // 合并后底部 dock 收口为 capabilities.composer 门控的 conversationBottomDockContent。
+    const dockStart = sessionPaneSource.indexOf(
+      "const conversationBottomDockContent = capabilities.composer ?",
+    );
+    const dockEnd = sessionPaneSource.indexOf("\n  ) : null;\n", dockStart);
     const dockSource = sessionPaneSource.slice(dockStart, dockEnd);
 
     expect(dockStart).toBeGreaterThanOrEqual(0);
@@ -444,7 +447,11 @@ describe("idle-time task Figma layout contracts", () => {
     expect(editViewSource).toContain("<AutomationInstructionsComposer");
     expect(automationEditViewSource).not.toContain("min-h-[116px] max-h-[156px]");
     expect(editViewSource).not.toContain("<textarea");
-    expect(editViewSource).toContain('containerClassName="contents"');
+    // 旧 v4 Composer 的 containerClassName="contents" 包装已随共享 AutomationInstructionsComposer 退场；
+    // 闲时表单必须完整使用该共享三件套，才能与定时表单保持同一几何契约。
+    expect(editViewSource).toContain("<AutomationInstructionsTextarea");
+    expect(editViewSource).toContain("<AutomationInstructionsToolbar>");
+    expect(editViewSource).not.toContain('containerClassName="contents"');
     expect(editViewSource).not.toContain("focus-within:bg-hover");
     expect(editViewSource).toContain("<ModelConfigSelect");
     expect(editViewSource).toContain("showProviderLevel={false}");
@@ -465,8 +472,11 @@ describe("idle-time task Figma layout contracts", () => {
     expect(automationIconsSource).toContain("strokeWidth={2}");
     expect(automationIconsSource).not.toContain("@/assets/");
     expect(automationIconsSource).not.toContain("maskImage");
-    expect(editViewSource).toContain("triggerIndicator={");
-    expect(editViewSource).toContain("containerSize={20}");
+    // 工具条 trigger 的下拉指示器由共享 ProjectComposerMenu / ThoughtLevelCycleControl 提供，
+    // 闲时页只复用共享 trigger 样式常量，不再自带 triggerIndicator / containerSize 参数。
+    expect(editViewSource.match(/AUTOMATION_INSTRUCTIONS_TOOLBAR_TRIGGER_CLASSNAME/g)).toHaveLength(
+      6,
+    );
     expect(editViewSource).toContain("<ConfigSelect");
     expect(editViewSource).toContain("option={modeOption}");
     expect(chatInputDisplaySource).toContain(

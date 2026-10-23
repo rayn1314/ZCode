@@ -1,5 +1,5 @@
-import { access, readFile, mkdir, rename } from "node:fs/promises";
-import { join } from "node:path";
+import { readFile, mkdir, rename } from "node:fs/promises";
+import { dirname } from "node:path";
 import type {
   AppSettings,
   ProviderFamilyDomain,
@@ -11,20 +11,18 @@ import {
   formatLogPrefix,
   formatZodError,
 } from "@zcode/shared";
-import type { ISettingService } from "./setting.js";
+import type { ISettingService, WorkspaceSettingsProjection } from "./setting.js";
 import { normalizeSettingsPatch } from "#src/setting/normalizeSettingsPatch.js";
 import {
   copyDataDirectory,
   getBootstrapSettingsCandidateFiles,
-  getBootstrapSettingsDir,
-  getBootstrapSettingsFile,
   getDataBaseDir,
   resolveUserHomeDir,
   validateDataBaseDirTarget,
 } from "../paths.js";
 import { isEffectiveDevelopmentNodeEnv } from "../runtime-tools/nodeEnv.js";
 import { maybeThrowInjectedFsFault } from "../fs/fsFaultInjection.js";
-import { atomicWriteText } from "../fs/atomicFileUtils.js";
+import { atomicWriteText, withAtomicFileLock } from "../fs/atomicFileUtils.js";
 import { withSettingsWriteQueueTimeout } from "./settingsWriteQueue.js";
 import {
   migrateLegacyAccountConnectionSettings,
@@ -35,7 +33,6 @@ import {
   type LegacyTeamConnection,
 } from "#src/setting/legacyAccountConnectionSettings.js";
 const MAX_RECENT_PROJECTS = 10;
-const DEFAULT_PROJECT_NAME = "ZCodeProject";
 const SETTINGS_PARSE_RETRY_DELAY_MS = 300;
 const SETTINGS_PARSE_RETRY_COUNT = 3;
 
@@ -90,10 +87,13 @@ function shouldPersistSettingsMigrations(rawValue: unknown): boolean {
   if (!rawValue || typeof rawValue !== "object" || Array.isArray(rawValue)) return false;
   const raw = rawValue as Record<string, unknown>;
   return (
+    // 原因：只在内存迁移仍会把磁盘上的 3 留给回滚客户端；必须走现有写锁落盘。
+    raw.remoteBoundaryOnboardingVersion === 3 ||
     (needsLegacyAccountConnectionMigration(rawValue) &&
       readIncompleteLegacyTeamConnections(rawValue).length === 0) ||
     raw.closeToTrayOnWindowsMigrationInitialized !== true ||
-    raw.messageStreamShowReasoningMigrationInitialized !== true
+    raw.messageStreamShowReasoningMigrationInitialized !== true ||
+    raw.taskAutoArchiveResetVersion !== 1
   );
 }
 
@@ -164,8 +164,9 @@ async function readSettingsRawValue(
  * 读取设置：身份文件优先，修复前遗留的官方共享文件兜底（见 paths.ts 的候选链注释）。
  * 写入始终只落身份文件，所以旧用户读到共享文件里的值后，下一次 update 就完成了迁移。
  */
-async function readSettingsWithMeta(): Promise<ReadSettingsResult> {
-  const candidates = getBootstrapSettingsCandidateFiles();
+async function readSettingsWithMetaImpl(
+  candidates: readonly string[],
+): Promise<ReadSettingsResult> {
   for (const [candidateIndex, settingsFile] of candidates.entries()) {
     const rawValue = await readSettingsRawValue(settingsFile, candidateIndex === 0);
     if (rawValue === undefined) {
@@ -183,7 +184,6 @@ async function readSettingsWithMeta(): Promise<ReadSettingsResult> {
         needsMigrationPersist: false,
       };
     }
-    debugLog("read result:", JSON.stringify(result.data));
     return {
       settings: result.data,
       needsMigrationPersist: shouldPersistSettingsMigrations(rawValue),
@@ -197,21 +197,14 @@ async function readSettingsWithMeta(): Promise<ReadSettingsResult> {
   };
 }
 
-async function readSettings(): Promise<AppSettings> {
-  return (await readSettingsWithMeta()).settings;
-}
-
-async function writeSettings(
+async function writeSettingsAt(
+  settingsFile: string,
   settings: AppSettings,
   shouldCommit: () => boolean = () => true,
-  runExclusiveCommit: (commit: () => Promise<void>) => Promise<void> = (commit) => commit(),
   enterCommitPhase: () => void = () => undefined,
   commitAccountSelection = false,
 ): Promise<void> {
-  const settingsDir = getBootstrapSettingsDir();
-  const settingsFile = getBootstrapSettingsFile();
-  // Windows 下测试只改了 HOME，模块顶层常量如果在导入时就把 homedir() 固化，
-  // 后续读写仍会串到真实用户目录。这里改成每次按当前环境解析配置路径，保证本地和测试都稳定。
+  const settingsDir = dirname(settingsFile);
   log("writing settings to:", settingsFile, JSON.stringify(settings));
   maybeThrowInjectedFsFault({ operation: "mkdir", path: settingsDir });
   await mkdir(settingsDir, { recursive: true });
@@ -226,6 +219,7 @@ async function writeSettings(
     delete persisted.providerFamilyConnectionSelections;
   }
   await atomicWriteText(settingsFile, JSON.stringify(persisted, null, 2), {
+    useFileLock: false,
     beforeRename: () => {
       if (!shouldCommit()) {
         // 提交前超时的旧写只能清理临时文件，不能晚到 rename 覆盖新语言偏好。
@@ -233,11 +227,6 @@ async function writeSettings(
       }
       enterCommitPhase();
     },
-    runRename: (renameFile) =>
-      runExclusiveCommit(async () => {
-        if (!shouldCommit()) throw new Error("stale settings write skipped before atomic rename");
-        await renameFile();
-      }),
   });
   log("write done");
 }
@@ -249,33 +238,64 @@ export function createSettingService(): ISettingService {
 /** Host 私有迁移入口，不加入 Setting RPC；普通 get/update 从不等待 OAuth 查询。 */
 export function createSettingServiceWithMigrations(): {
   service: ISettingService;
+  setWorkspaceProjection: (
+    reader: (settings: AppSettings) => Promise<WorkspaceSettingsProjection>,
+  ) => void;
   prepareLegacyAccountConnections: (
     resolveOrganization: (connection: LegacyTeamConnection) => Promise<string | null>,
   ) => Promise<readonly ProviderFamilyDomain[]>;
 } {
+  // 上游修复：设置文件必须在实例创建时取定。每次 IO 动态读 HOME 会让旧实例的异步投影
+  // 写进后来实例的目录（两个 Host 各自固定 home 时尤为致命）。
+  // fork 额外要求按产品身份选 bootstrap 文件（`.zcode{suffix}`，并保留官方共享文件兜底），
+  // 这个身份判定同样在创建时取定，与上游保持同源的取值时点。
+  const settingsCandidates = getBootstrapSettingsCandidateFiles();
+  const settingsFile = settingsCandidates[0]!;
+  const getSettingsFile = () => settingsFile;
+  const getSettingsDir = () => dirname(settingsFile);
+  const readSettingsWithMeta = () => readSettingsWithMetaImpl(settingsCandidates);
+  const readSettings = async () => (await readSettingsWithMeta()).settings;
+  const writeSettings = (
+    settings: AppSettings,
+    shouldCommit?: () => boolean,
+    enterCommitPhase?: () => void,
+    commitAccountSelection?: boolean,
+  ) =>
+    writeSettingsAt(
+      getSettingsFile(),
+      settings,
+      shouldCommit,
+      enterCommitPhase,
+      commitAccountSelection,
+    );
   let updateQueue = Promise.resolve();
-  let commitQueue = Promise.resolve();
   let writeQueueGeneration = 0;
-
-  const runSettingsCommit = async (commit: () => Promise<void>) => {
-    const queued = commitQueue.then(commit, commit);
-    commitQueue = queued.catch(() => {});
-    await queued;
-  };
+  let workspaceProjection:
+    | ((settings: AppSettings) => Promise<WorkspaceSettingsProjection>)
+    | undefined;
+  const projectSettings = async (settings: AppSettings): Promise<AppSettings> =>
+    workspaceProjection
+      ? appSettingsSchema.parse({ ...settings, ...(await workspaceProjection(settings)) })
+      : settings;
 
   const enqueueSettingsWrite = async (
     runUpdate: (shouldCommit: () => boolean, enterCommitPhase: () => void) => Promise<void>,
   ) => {
-    const runCurrentUpdate = () => {
+    const runCurrentUpdate = async () => {
       const currentGeneration = ++writeQueueGeneration;
       const shouldCommit = () => currentGeneration === writeQueueGeneration;
-      return withSettingsWriteQueueTimeout(
-        (enterCommitPhase) => runUpdate(shouldCommit, enterCommitPhase),
-        () => {
-          if (writeQueueGeneration === currentGeneration) {
-            writeQueueGeneration += 1;
-          }
-        },
+      await mkdir(getSettingsDir(), { recursive: true });
+      // Main 的窗口尺寸与 Host 的远程目录会并发保存同一文件。只锁 rename 会让后写者
+      // 用锁外读取的旧快照覆盖对方字段；事务必须在锁内重新读取、合并、提交。
+      return withAtomicFileLock(getSettingsFile(), () =>
+        withSettingsWriteQueueTimeout(
+          (enterCommitPhase) => runUpdate(shouldCommit, enterCommitPhase),
+          () => {
+            if (writeQueueGeneration === currentGeneration) {
+              writeQueueGeneration += 1;
+            }
+          },
+        ),
       );
     };
     const queued = updateQueue.then(
@@ -292,19 +312,27 @@ export function createSettingServiceWithMigrations(): {
       // runtime 会固定旧开关值。先等待现有写队列，保证启动偏好读取到已提交的选择。
       await updateQueue;
       const result = await readSettingsWithMeta();
-      if (!result.needsMigrationPersist) {
-        return result.settings;
+      const projected = await projectSettings(result.settings);
+      if (
+        !result.needsMigrationPersist &&
+        JSON.stringify(projected) === JSON.stringify(result.settings)
+      ) {
+        return projected;
       }
 
       await enqueueSettingsWrite(async (shouldCommit, enterCommitPhase) => {
         const latest = await readSettingsWithMeta();
-        if (!latest.needsMigrationPersist) {
+        const projected = await projectSettings(latest.settings);
+        if (
+          !latest.needsMigrationPersist &&
+          JSON.stringify(projected) === JSON.stringify(latest.settings)
+        ) {
           return;
         }
 
         // 初始化原因：旧版设置可能已把无法区分来源的默认值落盘；升级后按 schema 统一迁移一次。
         // 迁移写盘必须进入 updateQueue，并在队列内重读最新文件，避免覆盖并发保存的其他设置。
-        await writeSettings(latest.settings, shouldCommit, runSettingsCommit, enterCommitPhase);
+        await writeSettings(projected, shouldCommit, enterCommitPhase);
       });
 
       return readSettings();
@@ -314,11 +342,23 @@ export function createSettingServiceWithMigrations(): {
       const runUpdate = async (shouldCommit: () => boolean, enterCommitPhase: () => void) => {
         const validatedPatch = appSettingsPatchSchema.parse(normalizeSettingsPatch(patch));
         const current = await readSettings();
+        // 原因：完整连接映射来自读改写快照；任一无版本写入者都能绕过其它窗口的 CAS。
+        const writesConnections = Object.hasOwn(patch, "providerFamilyConnectionSelections");
+        if (
+          writesConnections &&
+          expectedAccountSettings?.providerFamilyDomainUpdatedAt === undefined
+        ) {
+          throw new Error("Account connection CAS required");
+        }
         if (expectedAccountSettings) {
           // 账号查询期间用户可能已手动切换。必须在同一写队列内校验，不能靠调用方先读再写。
           const expected = appSettingsPatchSchema.parse(expectedAccountSettings);
           if (
             current.providerFamilyDomain !== expected.providerFamilyDomain ||
+            // 原因：另一窗口重新选择相同身份时映射值不变；旧回滚仍须按操作版本拒绝。
+            (expected.providerFamilyDomainUpdatedAt !== undefined &&
+              (current.providerFamilyDomainUpdatedAt ?? 0) !==
+                expected.providerFamilyDomainUpdatedAt) ||
             JSON.stringify(current.providerFamilyConnectionSelections ?? {}) !==
               JSON.stringify(expected.providerFamilyConnectionSelections ?? {})
           ) {
@@ -330,6 +370,14 @@ export function createSettingServiceWithMigrations(): {
           ...validatedPatch,
         });
 
+        if (writesConnections) {
+          // 即使选择值相同也代表一次新操作，版本由同一写锁保证单调递增。
+          merged.providerFamilyDomainUpdatedAt = Math.max(
+            validatedPatch.providerFamilyDomainUpdatedAt ?? Date.now(),
+            (current.providerFamilyDomainUpdatedAt ?? 0) + 1,
+          );
+        }
+
         // 打开工作区后会几乎同时写 recentProjects 和 lastWorkspaceSession。
         // 之前两个 update 都是基于各自读到的旧 settings 直接覆盖写回，
         // 后写入的补丁会把前一个字段整块抹掉，导致下次启动恢复不到会话。
@@ -339,9 +387,8 @@ export function createSettingServiceWithMigrations(): {
         }
 
         await writeSettings(
-          merged,
+          await projectSettings(merged),
           shouldCommit,
-          runSettingsCommit,
           enterCommitPhase,
           Object.hasOwn(patch, "providerFamilyConnectionSelections"),
         );
@@ -371,37 +418,23 @@ export function createSettingServiceWithMigrations(): {
 
       await this.update({ dataBaseDir: newDir });
     },
-
-    async ensureDefaultProject(userHomeDir: string): Promise<{ path: string; created: boolean }> {
-      const path = join(userHomeDir, DEFAULT_PROJECT_NAME);
-      let existedBefore = true;
-
-      try {
-        await access(path).catch(() => {
-          existedBefore = false;
-        });
-        maybeThrowInjectedFsFault({ operation: "mkdir", path });
-        await mkdir(path, { recursive: true });
-      } catch (error) {
-        log("ensureDefaultProject failed:", error);
-        throw error;
-      }
-
-      return { path, created: !existedBefore };
-    },
   };
 
   let inFlight: Promise<readonly ProviderFamilyDomain[]> | null = null;
   let migrationComplete = false;
   return {
     service,
+    setWorkspaceProjection(reader) {
+      if (workspaceProjection) throw new Error("settings.workspace-projection-already-bound");
+      workspaceProjection = reader;
+    },
     prepareLegacyAccountConnections(resolveOrganization) {
       // 已完成导入后不让每次请求鉴权重复读迁移文件。恢复旧备份需要重启 Host。
       if (migrationComplete) return Promise.resolve([]);
       if (inFlight) return inFlight;
       const run = async (): Promise<readonly ProviderFamilyDomain[]> => {
         await service.get();
-        const original = await readLegacyAccountConnectionSettingsFile(getBootstrapSettingsFile());
+        const original = await readLegacyAccountConnectionSettingsFile(settingsFile);
         const incomplete = readIncompleteLegacyTeamConnections(original);
         if (incomplete.length === 0) return [];
         // 网络在写队列外：代理设置读取及用户操作均可继续，不形成 get -> HTTP -> get 循环。
@@ -412,7 +445,7 @@ export function createSettingServiceWithMigrations(): {
           })),
         );
         await enqueueSettingsWrite(async (shouldCommit, enterCommitPhase) => {
-          const latest = await readLegacyAccountConnectionSettingsFile(getBootstrapSettingsFile());
+          const latest = await readLegacyAccountConnectionSettingsFile(settingsFile);
           // 只核对迁移输入，不因普通语言/窗口设置变化丢失合法结果，也不覆盖用户新账号意图。
           if (
             Object.hasOwn(latest, "providerFamilyConnectionSelections") ||
@@ -435,15 +468,14 @@ export function createSettingServiceWithMigrations(): {
             };
           }
           await writeSettings(
-            { ...migrated, providerFamilyConnectionSelections: selections },
+            await projectSettings({ ...migrated, providerFamilyConnectionSelections: selections }),
             shouldCommit,
-            runSettingsCommit,
             enterCommitPhase,
             true,
           );
         });
         return readIncompleteLegacyTeamConnections(
-          await readLegacyAccountConnectionSettingsFile(getBootstrapSettingsFile()),
+          await readLegacyAccountConnectionSettingsFile(settingsFile),
         ).map((entry) => entry.family);
       };
       const pending = run();

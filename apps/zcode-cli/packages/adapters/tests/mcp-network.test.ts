@@ -2,10 +2,7 @@ import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, delimiter, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  buildMcpStdioEnv,
-  prependRunningNodeDirectory,
-} from "../src/mcp/network.js";
+import { buildMcpStdioEnv, prependRunningNodeDirectory } from "../src/mcp/network.js";
 
 describe("MCP stdio environment", () => {
   it("prepends the running Node directory so portable node commands work remotely", () => {
@@ -22,7 +19,8 @@ describe("MCP stdio environment", () => {
 
   it("preserves an existing PATH when another executable node is already available", async () => {
     const root = await mkdtemp(join(tmpdir(), "zcode-mcp-node-path-"));
-    const nodePath = join(root, "node");
+    // Windows 上 Node 可执行文件是 node.exe；用闭包名会退化为补齐 Node 目录的分支。
+    const nodePath = join(root, process.platform === "win32" ? "node.exe" : "node");
     try {
       await writeFile(nodePath, "#!/bin/sh\nexit 0\n");
       await chmod(nodePath, 0o755);

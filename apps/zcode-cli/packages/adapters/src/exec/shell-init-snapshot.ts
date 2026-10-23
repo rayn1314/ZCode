@@ -4,7 +4,7 @@ import {
 } from "node:child_process";
 import { existsSync } from "node:fs";
 import { access, mkdir, readdir, stat, unlink } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { basename, join, posix } from "node:path";
 import { promisify } from "node:util";
 import { windowsPathToGitBashPath } from "@zcode/contracts";
 import type { ExecutionShellDialect } from "@zcode/contracts";
@@ -132,9 +132,7 @@ export class ShellInitSnapshotManager {
 
     const snapshotPath = join(snapshotsDir, createSnapshotFileName(shellKind));
     const snapshotShellPath =
-      request.shellDialect === "git-bash"
-        ? windowsPathToGitBashPath(snapshotPath)
-        : snapshotPath;
+      request.shellDialect === "git-bash" ? windowsPathToGitBashPath(snapshotPath) : snapshotPath;
     const configPath = detectShellInitConfigPath({
       env: request.env,
       shellPath: request.shellPath,
@@ -145,7 +143,9 @@ export class ShellInitSnapshotManager {
       configPath,
       pathValue,
       shellKind,
-      snapshotPath,
+      // Git Bash 只能写入 POSIX 风格路径；宿主 Windows 路径在 bash 里会被当成相对文件名。
+      snapshotPath: snapshotShellPath,
+      snapshotHostPath: snapshotPath,
     });
 
     await this.execFile(request.shellPath, ["-c", "-l", creationScript], {
@@ -227,12 +227,7 @@ export async function cleanupStaleShellInitSnapshots(
 }
 
 function isMissingFileError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "code" in error &&
-    error.code === "ENOENT"
-  );
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
 export function supportsShellInitSnapshot(
@@ -254,9 +249,15 @@ export function detectShellInitConfigPath(input: {
 }): string {
   const home = input.env.HOME || input.env.USERPROFILE || "";
   const shellKind = detectShellKind(input.shellPath);
-  if (shellKind === "zsh") return join(home, ".zshrc");
-  if (shellKind === "bash") return join(home, ".bashrc");
-  return join(home, ".profile");
+  if (shellKind === "zsh") return joinShellHome(home, ".zshrc");
+  if (shellKind === "bash") return joinShellHome(home, ".bashrc");
+  return joinShellHome(home, ".profile");
+}
+
+// Git Bash/WSL 会把 HOME 设成 POSIX 路径；Windows 上 path.join 会把 "/home/user"
+// 规整成 "\home\user"，写进 shell 脚本后无法 source。按 home 自身的风格选择分隔符。
+function joinShellHome(home: string, fileName: string): string {
+  return home.startsWith("/") ? posix.join(home, fileName) : join(home, fileName);
 }
 
 export function buildShellInitSnapshotCreationScript(input: {
@@ -265,7 +266,10 @@ export function buildShellInitSnapshotCreationScript(input: {
   pathValue?: string;
   shellKind: ShellInitSnapshotShellKind;
   snapshotPath: string;
+  /** 宿主侧路径，仅用于错误信息；shell 内统一使用 snapshotPath。 */
+  snapshotHostPath?: string;
 }): string {
+  const snapshotHostPath = input.snapshotHostPath ?? input.snapshotPath;
   const configSourceLine = input.configExists
     ? `source ${shellDoubleQuote(input.configPath)} < /dev/null`
     : "# No user config file to source";
@@ -283,7 +287,7 @@ export function buildShellInitSnapshotCreationScript(input: {
     'echo "# Snapshot file" >| "$SNAPSHOT_FILE"',
     "",
     "# When this file is sourced, we first unalias to avoid conflicts",
-    "# This is necessary because aliases get \"frozen\" inside function definitions at definition time,",
+    '# This is necessary because aliases get "frozen" inside function definitions at definition time,',
     "# which can cause unexpected behavior when functions use commands that conflict with aliases",
     'echo "# Unset all aliases to avoid conflicts with functions" >> "$SNAPSHOT_FILE"',
     'echo "unalias -a 2>/dev/null || true" >> "$SNAPSHOT_FILE"',
@@ -293,7 +297,7 @@ export function buildShellInitSnapshotCreationScript(input: {
     "",
     "# Exit silently on success, only report errors",
     'if [ ! -f "$SNAPSHOT_FILE" ]; then',
-    '  echo "Error: Snapshot file was not created at $SNAPSHOT_FILE" >&2',
+    `  echo "Error: Snapshot file was not created at ${shellDoubleQuote(snapshotHostPath)}" >&2`,
     "  exit 1",
     "fi",
   ].join("\n");
@@ -315,7 +319,7 @@ export async function revalidateShellInitSnapshotForExecution(
 function snapshotExportLines(shellKind: ShellInitSnapshotShellKind): string[] {
   const aliasLines = [
     'echo "# Aliases" >> "$SNAPSHOT_FILE"',
-    "# Filter out winpty aliases on Windows to avoid \"stdin is not a tty\" errors",
+    '# Filter out winpty aliases on Windows to avoid "stdin is not a tty" errors',
     "# Git Bash automatically creates aliases like \"alias node='winpty node.exe'\" for",
     "# programs that need Win32 Console in mintty, but winpty fails when there's no TTY",
     'if [[ "$OSTYPE" == "msys" ]] || [[ "$OSTYPE" == "cygwin" ]]; then',
@@ -352,16 +356,16 @@ function snapshotExportLines(shellKind: ShellInitSnapshotShellKind): string[] {
     "",
     "# Now get user function names - filter completion functions (single underscore prefix)",
     "# but keep double-underscore helpers (e.g. __zsh_like_cd from mise, __pyenv_init)",
+    // 每个函数单独启动 base64 外部进程，在 Windows 上约 70ms/次；Git Bash 自带 145 个
+    // 函数，累积超过 10s 快照创建超时，导致快照永远创建失败并回退到 login shell。
+    // declare -f 的输出本身就是可 source 的 shell 代码，直接追加即可保留全部特殊字符。
     "declare -F | cut -d' ' -f3 | grep -vE '^_[^_]' | while read func; do",
-    "  # Encode the function to base64, preserving all special characters",
-    '  encoded_func=$(declare -f "$func" | base64 )',
-    "  # Write the function definition to the snapshot",
-    "  echo \"eval \\\"\\$(echo '$encoded_func' | base64 -d)\\\" > /dev/null 2>&1\" >> \"$SNAPSHOT_FILE\"",
+    '  declare -f "$func" >> "$SNAPSHOT_FILE"',
     "done",
     "",
     'echo "# Shell Options" >> "$SNAPSHOT_FILE"',
-    "shopt -p | head -n 1000 >> \"$SNAPSHOT_FILE\"",
-    "set -o | grep \"on\" | awk '{print \"set -o \" $1}' | head -n 1000 >> \"$SNAPSHOT_FILE\"",
+    'shopt -p | head -n 1000 >> "$SNAPSHOT_FILE"',
+    'set -o | grep "on" | awk \'{print "set -o " $1}\' | head -n 1000 >> "$SNAPSHOT_FILE"',
     'echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"',
     ...aliasLines,
   ];

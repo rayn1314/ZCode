@@ -269,6 +269,27 @@ async function persistDurableSessionEvent(
 ): Promise<void> {
   if (!this.sessionStore) return;
 
+  if (event.type === SessionEventType.TurnComplete || event.type === SessionEventType.TurnError) {
+    const payload = event.payload as { resultType?: string };
+    // 终态由 CLI 在发布事件前持久化；Host 冷启动不能再把全部历史任务推导为成功。
+    await this.sessionStore.updateSession({
+      id: event.sessionId,
+      // lastOutcome 必须与投影的 phase 判定逐字一致（product-projection.onTurnComplete：
+      // 只有 success/cancelled 是正常收口，其余一律 phase "error"）。旧实现把 error_* 与
+      // 未识别的 resultType 也写成 completed，导致 task 行状态与 UI 投影长期打架。
+      lastOutcome:
+        event.type === SessionEventType.TurnError
+          ? "error"
+          : payload.resultType === "success"
+            ? "completed"
+            : payload.resultType === "cancelled"
+              ? "interrupted"
+              : "error",
+      timeUpdated: event.timestamp.getTime(),
+    });
+    return;
+  }
+
   if (event.type === SessionEventType.CheckpointCreated) {
     await persistWorkspaceCheckpointEntry(this, event, traceContext);
     return;

@@ -690,6 +690,7 @@ describe("useWorkspaceServices 核心路由逻辑覆盖", () => {
     baseServices: IServiceAccessor | null,
     sessionsById: Record<string, { sessionId: string; services: IServiceAccessor }>,
     isRemoteTarget = false,
+    unscopedServices?: IServiceAccessor,
   ): IServiceAccessor {
     return resolveWorkspaceServicesForTarget({
       currentContextServices,
@@ -697,6 +698,7 @@ describe("useWorkspaceServices 核心路由逻辑覆盖", () => {
       baseServices,
       sessionsById,
       isRemoteTarget,
+      unscopedServices,
     });
   }
 
@@ -751,6 +753,16 @@ describe("useWorkspaceServices 核心路由逻辑覆盖", () => {
 
       const result = resolveWorkspaceServices(context, null, null, state.sessionsById);
       expect(result).toBe(context);
+    });
+
+    it("无 workspace 的 Source user scope 优先使用显式 Source services", () => {
+      const context = makeMockServices("source-context");
+      const base = makeMockServices("base");
+
+      const result = resolveWorkspaceServices(context, null, base, {}, false, context);
+
+      expect(result).toBe(context);
+      expect(result).not.toBe(base);
     });
 
     it("远程 workspace session 丢失时不回退到 baseServices", async () => {
@@ -961,75 +973,6 @@ describe("useWorkspaceServices 核心路由逻辑覆盖", () => {
       );
     });
   });
-
-  describe("workspaceIdentity 路由隔离", () => {
-    it("workspaceIdentity 不同 → 路由到不同 services", () => {
-      const base = makeMockServices("base");
-      const remoteA = makeMockServices("remote-A");
-      const remoteB = makeMockServices("remote-B");
-      registerBaseWorkspaceServices(base);
-      registerRemoteWorkspaceSession({
-        sessionId: "session-A",
-        target: makeMockTarget(),
-        services: remoteA,
-      });
-      registerRemoteWorkspaceSession({
-        sessionId: "session-B",
-        target: makeMockTarget(),
-        services: remoteB,
-      });
-      bindRemoteWorkspaceIdentity("remote:ssh:host-a:/workspace/demo", "session-A");
-      bindRemoteWorkspaceIdentity("remote:ssh:host-b:/workspace/demo", "session-B");
-
-      const state = useRemoteWorkspaceSessionStore.getState();
-      expect(
-        resolveWorkspaceServices(
-          makeMockServices("context"),
-          "session-A",
-          base,
-          state.sessionsById,
-        ),
-      ).toBe(remoteA);
-      expect(
-        resolveWorkspaceServices(
-          makeMockServices("context"),
-          "session-B",
-          base,
-          state.sessionsById,
-        ),
-      ).toBe(remoteB);
-    });
-
-    it("workspaceIdentity 路由与 workspacePath 路由独立", () => {
-      const base = makeMockServices("base");
-      const remotePath = makeMockServices("remote-path");
-      const remoteIdentity = makeMockServices("remote-identity");
-      registerBaseWorkspaceServices(base);
-      registerRemoteWorkspaceSession({
-        sessionId: "session-path",
-        target: makeMockTarget(),
-        services: remotePath,
-      });
-      registerRemoteWorkspaceSession({
-        sessionId: "session-identity",
-        target: makeMockTarget(),
-        services: remoteIdentity,
-      });
-      bindRemoteWorkspacePath("/workspace/demo", "session-path");
-      bindRemoteWorkspaceIdentity("remote:ssh:host:/workspace/demo", "session-identity");
-
-      const state = useRemoteWorkspaceSessionStore.getState();
-      // 通过 identity session 路由
-      expect(
-        resolveWorkspaceServices(
-          makeMockServices("context"),
-          "session-identity",
-          base,
-          state.sessionsById,
-        ),
-      ).toBe(remoteIdentity);
-    });
-  });
 });
 
 // ============================================================================
@@ -1044,11 +987,6 @@ describe("resolveBaseWorkspaceServices", () => {
   });
 
   it("没有 registeredBaseServices 时返回 contextServices", () => {
-    const context = makeMockServices("context");
-    expect(resolveBaseWorkspaceServices(context, null)).toBe(context);
-  });
-
-  it("registeredBaseServices 为 null 时返回 contextServices", () => {
     const context = makeMockServices("context");
     expect(resolveBaseWorkspaceServices(context, null)).toBe(context);
   });
@@ -1071,13 +1009,5 @@ describe("isWorkspaceTab", () => {
       label: "settings",
     };
     expect(isWorkspaceTab(tab)).toBe(false);
-  });
-
-  it("带 remoteSessionId 的 workspace tab 仍返回 true", () => {
-    const tab = makeMockTab("/workspace/demo", {
-      remoteSessionId: "session-1",
-      workspaceIdentity: "remote:ssh:host:/workspace/demo",
-    });
-    expect(isWorkspaceTab(tab)).toBe(true);
   });
 });

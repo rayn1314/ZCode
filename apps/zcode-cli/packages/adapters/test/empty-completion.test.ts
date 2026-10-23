@@ -11,7 +11,7 @@ import { isZeroOutputModelCompletion } from "../src/model/runner-diagnostics.js"
  * 不是可交付输出，不能作为判据。
  */
 test("命中：终态非正常结束且没有任何可交付输出", () => {
-  for (const finishReason of ["other", "unknown", "length", "error", "content-filter"]) {
+  for (const finishReason of ["other", "unknown", "length", "error"]) {
     assert.equal(
       isZeroOutputModelCompletion({ finishReason, textLength: 0, toolCallCount: 0 }),
       true,
@@ -39,6 +39,25 @@ test("不命中：有可交付输出", () => {
     isZeroOutputModelCompletion({ finishReason: "other", textLength: 0, toolCallCount: 1 }),
     false,
   );
+});
+
+test("不命中：有明确原因的终态交给 core 处理", () => {
+  // 上下文超限、拒答、内容过滤都有明确原因（见 EMPTY_COMPLETION_RETRY_EXCLUSIONS），
+  // 重试改变不了结果，交给 core 走各自的失败链。
+  for (const finishReason of [
+    "content-filter",
+    "content_filter",
+    "refusal",
+    "context_exceeded",
+    "context_length_exceeded",
+    "prompt_too_long",
+  ]) {
+    assert.equal(
+      isZeroOutputModelCompletion({ finishReason, textLength: 0, toolCallCount: 0 }),
+      false,
+      `${finishReason} 有明确原因，不应触发适配器重试`,
+    );
+  }
 });
 
 test("不命中：provider 没有给出终态信号", () => {

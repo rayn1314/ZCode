@@ -3,7 +3,7 @@ import {
   GROUPED_TASK_COLLAPSED_GROUPS_STORAGE_KEY,
   persistGroupedTaskCollapsedGroupIds,
   readGroupedTaskCollapsedGroupIds,
-} from "../src/lib/groupedTaskExpansionPreference.js";
+} from "../src/project-sidebar/grouped-expansion.js";
 
 function createMemoryStorage(initial: Record<string, string> = {}) {
   const values = new Map(Object.entries(initial));

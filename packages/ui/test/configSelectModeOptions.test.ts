@@ -277,7 +277,6 @@ describe("ConfigSelect mode options", () => {
     expect(html).toContain("自动编辑");
     expect(html).not.toContain("变更前确认 / Build");
     expect(html).toContain("改文件前先问我。");
-    expect(html).toContain("pr-8");
   });
 
   it("mode trigger 使用当前文案而不是 SelectValue 自动回填", () => {

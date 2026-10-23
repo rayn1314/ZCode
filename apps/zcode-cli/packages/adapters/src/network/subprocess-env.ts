@@ -76,9 +76,7 @@ function applyProxyEnv(
 ): void {
   const configuredProxy = normalizeProxyValue(network.httpProxy);
   if (configuredProxy) {
-    for (const key of ALL_PROXY_KEYS) {
-      setEnvKey(env, key, configuredProxy, platform);
-    }
+    setEnvKeys(env, ALL_PROXY_KEYS, configuredProxy, platform);
     return;
   }
 
@@ -86,9 +84,7 @@ function applyProxyEnv(
     getFirstEnvValue(sourceEnv, [ZCODE_HTTP_PROXY_ENV_KEY], platform),
   );
   if (zcodeProxy) {
-    for (const key of ALL_PROXY_KEYS) {
-      setEnvKey(env, key, zcodeProxy, platform);
-    }
+    setEnvKeys(env, ALL_PROXY_KEYS, zcodeProxy, platform);
     return;
   }
 }
@@ -105,9 +101,7 @@ function applyNoProxyEnv(
   if (!noProxy) {
     return;
   }
-  for (const key of NO_PROXY_KEYS) {
-    setEnvKey(env, key, noProxy, platform);
-  }
+  setEnvKeys(env, NO_PROXY_KEYS, noProxy, platform);
 }
 
 function applyCaEnv(
@@ -122,9 +116,7 @@ function applyCaEnv(
   if (!caCertFile) {
     return;
   }
-  for (const key of CA_TARGET_KEYS) {
-    setEnvKey(env, key, caCertFile, platform);
-  }
+  setEnvKeys(env, CA_TARGET_KEYS, caCertFile, platform);
 }
 
 function normalizeProxyValue(value: string | undefined): string | undefined {
@@ -165,6 +157,33 @@ function setEnvKey(
 ): void {
   deleteEnvKey(env, key, platform);
   env[key] = value;
+}
+
+/**
+ * 写入同一逻辑变量的多个大小写变体（HTTP_PROXY/http_proxy 等）。
+ *
+ * Windows 上 `setEnvKey` 的删除逻辑大小写不敏感，逐个写入会让后写的变体把先写的删掉，
+ * 子进程最终只剩一种拼写；而不同工具只认其中一种。这里先统一清掉目标键的全部大小写变体，
+ * 再一次性写入所有拼写，既避免旧值残留，也保留双拼写。
+ */
+function setEnvKeys(
+  env: Record<string, string>,
+  keys: readonly string[],
+  value: string,
+  platform: NodeJS.Platform,
+): void {
+  if (platform !== "win32") {
+    for (const key of keys) env[key] = value;
+    return;
+  }
+
+  const targetKeys = new Set(keys.map((key) => key.toLowerCase()));
+  for (const existingKey of Object.keys(env)) {
+    if (targetKeys.has(existingKey.toLowerCase())) {
+      delete env[existingKey];
+    }
+  }
+  for (const key of keys) env[key] = value;
 }
 
 function deleteEnvKey(env: Record<string, string>, key: string, platform: NodeJS.Platform): void {

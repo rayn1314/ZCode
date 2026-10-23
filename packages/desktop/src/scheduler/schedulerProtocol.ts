@@ -19,6 +19,9 @@ export type SchedulerToMainMessage =
       mode?: string;
       workspacePath: string;
       workspaceIdentity?: string;
+      projectId?: string | null;
+      hostId?: string;
+      additionalDirectories?: string[];
     }
   | {
       // 闲时任务派发：与 cron 消息对独立。首跑不带 conversationId/sessionId，
@@ -33,6 +36,9 @@ export type SchedulerToMainMessage =
       serverTicketId?: string;
       workspacePath: string;
       workspaceIdentity?: string;
+      projectId?: string | null;
+      hostId?: string;
+      additionalDirectories?: string[];
     }
   | {
       type: "scheduler-log";
@@ -68,6 +74,7 @@ export type MainToSchedulerMessage =
       type: "offpeak-dispatch-result";
       offPeakTaskId: string;
       ok: boolean;
+      lifecycleManaged?: true;
       conversationId?: string;
       sessionId?: string;
       error?: string;

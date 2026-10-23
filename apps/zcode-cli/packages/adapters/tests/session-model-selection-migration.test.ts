@@ -15,16 +15,36 @@ const current = {
   options: { reasoningLevel: "high" },
 };
 
+/**
+ * Windows 上刚关闭的 sqlite 句柄（-shm/-wal）会短暂占用目录，直接 `rm` 抛 EBUSY 并顶掉
+ * 真正的断言失败。有界重试只吸收瞬时占用，预算用尽仍抛原错。
+ */
+async function removeTempRoot(root: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(root, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transient = code === "EBUSY" || code === "EPERM" || code === "ENOTEMPTY";
+      if (!transient || attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
 describe("旧 Session 当前选择的单次迁移", () => {
   let root: string;
-  let store: ReturnType<typeof createSqliteSessionStore>;
+  let store: Awaited<ReturnType<typeof createSqliteSessionStore>>;
   let db: DatabaseSync;
-  let opened = false;
+  // 并发 migrate 会同时打开多个 store；只保留「当前」引用会让先开出来的连接泄漏，
+  // 句柄不释放 → teardown 删目录时 EBUSY。全部登记，统一关闭。
+  let openedStores: Array<Awaited<ReturnType<typeof createSqliteSessionStore>>> = [];
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "zcode-selection-migration-"));
     const dbPath = join(root, "session.sqlite");
-    store = createSqliteSessionStore({ dbPath });
-    opened = true;
+    store = await createSqliteSessionStore({ dbPath });
+    openedStores = [store];
     db = new DatabaseSync(dbPath);
     await store.createSession({
       id: sessionID,
@@ -37,16 +57,24 @@ describe("旧 Session 当前选择的单次迁移", () => {
     // 此夹具只用新版建空表；删除尚未播种数据的 0020 记录，模拟升级前库。
     db.prepare("DELETE FROM schema_migration WHERE id = ?").run("0020_provider_model_selection");
   });
+  const openStore = async () => {
+    const opened = await createSqliteSessionStore({ dbPath: join(root, "session.sqlite") });
+    openedStores.push(opened);
+    return opened;
+  };
+  // 用例显式关闭的连接要同时从登记表移除，否则 afterEach 再关一次会抛 "database is not open"。
+  const closeStore = (target: typeof store) => {
+    target.close();
+    openedStores = openedStores.filter((opened) => opened !== target);
+  };
   const migrate = async (_input: { sessionID: typeof sessionID }) => {
-    if (opened) store.close();
-    opened = false;
-    store = createSqliteSessionStore({ dbPath: join(root, "session.sqlite") });
-    opened = true;
+    store = await openStore();
   };
   afterEach(async () => {
     db.close();
-    if (opened) store.close();
-    await rm(root, { recursive: true, force: true });
+    for (const opened of openedStores) opened.close();
+    openedStores = [];
+    await removeTempRoot(root);
   });
   const entry = async (data: unknown) =>
     store.saveSessionEntry({
@@ -224,8 +252,8 @@ describe("旧 Session 当前选择的单次迁移", () => {
         };
       };
       expect(oldReader(rawEntry())).toEqual(oldReader(legacy));
-      store.close();
-      store = createSqliteSessionStore({ dbPath: join(root, "session.sqlite") });
+      closeStore(store);
+      store = await openStore();
       expect(await read()).toEqual(next);
     },
   );
@@ -248,8 +276,8 @@ describe("旧 Session 当前选择的单次迁移", () => {
       oldMessage();
       await migrate({ sessionID });
       await entry(selection);
-      store.close();
-      store = createSqliteSessionStore({ dbPath: join(root, "session.sqlite") });
+      closeStore(store);
+      store = await openStore();
       await migrate({ sessionID });
       expect(rawEntry()).toEqual({ ...legacy, modelSelection: selection });
       expect(await read()).toEqual(selection);

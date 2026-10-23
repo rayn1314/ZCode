@@ -265,6 +265,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           signal: launchOptions?.signal,
           ...(launchOptions?.model ? { model: launchOptions.model } : {}),
           ...(launchOptions?.callModelInherit ? { callModelInherit: true as const } : {}),
+          ...(launchOptions?.modelOverride ? { modelOverride: launchOptions.modelOverride } : {}),
         });
       }
       return port.run(executionRequest, launchOptions);
@@ -277,7 +278,8 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
       const { profile, request } = resolveAgentProfileForRequest(getProfiles(), rawRequest);
       const lifecycle = createSubagentLifecycle(options, request, profile);
       const startedAt = new Date(lifecycle.startedAt);
-      const hasForegroundModelOverride = runOptions?.modelOverride !== undefined;
+      // 只有 deny 的 override 才占住前台；background: "allow"（闲时任务）允许被自动转后台。
+      const hasForegroundModelOverride = runOptions?.modelOverride?.background === "deny";
 
       registry.register(
         createRuntimeTaskSnapshot({
@@ -646,6 +648,7 @@ export function createExploreSubagentPort(options: ExploreSubagentPortOptions): 
           ...(startOptions?.model ? { model: startOptions.model } : {}),
           // 继承这条在后台也带（见 launch 的分支注释）：它不是一个选型，只是一个开关。
           ...(startOptions?.callModelInherit ? { callModelInherit: true as const } : {}),
+          ...(startOptions?.modelOverride ? { modelOverride: startOptions.modelOverride } : {}),
         },
         {
           onSessionReady: async () => {
@@ -1119,6 +1122,7 @@ async function sendMessageToLocalAgent(
     task,
     request,
     message,
+    sendOptions,
   );
 }
 
@@ -1175,6 +1179,7 @@ async function resumeTerminalAgentInBackground(
   task: RuntimeTaskSnapshot,
   request: SubagentSendMessageRequest,
   message: RuntimeTaskPendingMessage,
+  sendOptions?: SubagentSendMessageOptions,
 ): Promise<SubagentSendMessageResult> {
   const profile = profiles.find((candidate) => candidate.name === task.agentType);
   if (!profile) {
@@ -1234,7 +1239,11 @@ async function resumeTerminalAgentInBackground(
     lifecycle,
     registry,
     taskAbort,
-    { signal: taskAbort.signal },
+    {
+      signal: taskAbort.signal,
+      model: sendOptions?.model,
+      modelOverride: sendOptions?.modelOverride,
+    },
     {
       resumeFromStore: true,
       onSessionReady: async () => {
@@ -2778,8 +2787,17 @@ function aggregateModelUsage(events: SessionEvent[]): ModelUsage | undefined {
   let usage: ModelUsage | undefined;
 
   for (const event of events) {
-    if (event.type !== SessionEventType.ModelComplete) continue;
     const payload = event.payload;
+    // 与主 turn 共用失败事件的用量事实，不增加独立汇总状态。
+    if (
+      event.type !== SessionEventType.ModelComplete &&
+      !(
+        event.type === SessionEventType.ModelNetworkStatus &&
+        isRecord(payload) &&
+        payload.type === "model_request_failed"
+      )
+    )
+      continue;
     if (!isRecord(payload) || !isRecord(payload.usage)) {
       continue;
     }

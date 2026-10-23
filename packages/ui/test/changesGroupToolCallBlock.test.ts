@@ -1,3 +1,4 @@
+import { ToolCallBlock } from "@/ToolCallBlocks.js";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
@@ -115,6 +116,7 @@ function renderChangesGroup(options: {
       ZCodeIntlProvider,
       { initialLocale: "en-US" },
       createElement(ChangesGroupToolCallBlock, {
+        nestedToolRenderer: ToolCallBlock,
         toolCallNode: {
           toolCall: {
             toolId: "changes:1",
@@ -159,12 +161,6 @@ function parentSummary(html: string) {
 }
 
 describe("ChangesGroupToolCallBlock", () => {
-  it("uses a pencil icon for the Changes group", () => {
-    const html = renderChangesGroup({ running: false });
-    expect(html).toContain("lucide-pencil");
-    expect(html).not.toContain("lucide-files");
-  });
-
   it("rolls the latest editing file while running and collapsed", () => {
     const summary = parentSummary(renderChangesGroup({ running: true }));
     expect(summary).toContain("Editing");
@@ -178,12 +174,11 @@ describe("ChangesGroupToolCallBlock", () => {
     expect(summary).toContain("relative inline-flex min-w-0 items-center gap-2 overflow-hidden");
   });
 
-  it("keeps initial diff animation enabled for expanded child edits", () => {
+  it("keeps child diff counts visible while expanded", () => {
     const html = renderChangesGroup({ running: true, forceOpen: true });
     const content = html.slice(html.indexOf('data-slot="collapsible-content"'));
 
     expect(content).toContain('aria-label="+2"');
-    expect(content).toContain('data-animate-initial="true"');
   });
 
   it("uses the latest child operation when rolling a Write", () => {

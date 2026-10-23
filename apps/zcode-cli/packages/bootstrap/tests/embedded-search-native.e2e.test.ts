@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -244,10 +244,7 @@ describe.skipIf(!nativeE2eEnabled)("native embedded search E2E", () => {
 
     expect(
       outputLines(normalizeNativeSearchResultPaths(outputSection(result.stdout, "RG_FILES"))),
-    ).toEqual([
-      "src/alpha.ts:2:needle alpha",
-      "src/deep/beta.ts:1:needle beta",
-    ]);
+    ).toEqual(["src/alpha.ts:2:needle alpha", "src/deep/beta.ts:1:needle beta"]);
     expect(outputSection(result.stdout, "RG_HIDDEN")).toBe(".hidden.ts:1:needle hidden");
     expect(outputSection(result.stdout, "RG_STDIN")).toBe("needle from rg stdin");
     expect(outputLines(outputSection(result.stdout, "RG_MATCHERS"))).toEqual([
@@ -292,6 +289,82 @@ describe.skipIf(!nativeE2eEnabled)("native embedded search E2E", () => {
     expect(result.stdout).toBe("src/alpha.ts\nsrc/deep/beta.ts\n---\nneedle fallback\n");
     expect(result.stderr).toBe("");
   });
+
+  it.each(["ugrep-direct", "ugrep-pipe", "system-grep-pipe"])(
+    "isolates live output from recursive search (%s)",
+    async (mode) => {
+      const searchRoot = join(fixtureRoot, `self-search-${mode}`);
+      const tempParent = join(fixtureRoot, `temporary-${mode}`);
+      await mkdir(searchRoot);
+      await mkdir(tempParent);
+      await writeFile(join(searchRoot, "00-seed.txt"), "self_search_needle\n".repeat(200_000));
+      const shellPath = (path: string) =>
+        process.platform === "win32" ? windowsPathToGitBashPath(path) : path;
+      // 只允许读回种子输出及一条嵌套匹配；另设大小和时长保护，不能把测试变成磁盘耗尽事故。
+      const grep =
+        mode === "system-grep-pipe"
+          ? "command grep -rn -m200001 self_search_needle ."
+          : "grep -J1 --sort=name -rn -m200001 self_search_needle .";
+      const command = `cd ${quoteShellValue(shellPath(searchRoot))} && ${grep}${mode.endsWith("pipe") ? " | cut -c 1-4096" : ""}`;
+      for (const useTmp of [false, true]) {
+        const outputRoot = join(searchRoot, "zz-output");
+        const execution = new NodeExecutionAdapter({
+          outputRootDir: outputRoot,
+          ...(useTmp ? { bashOutputTempDir: tempParent } : {}),
+          processEnv: { ...process.env, PATH: nativeShellPathEntries().join(delimiter) },
+        });
+        // 时长保护是为了不把测试跑成无界任务，不是断言预算：Windows 上递归搜索会把自身
+        // 正在增长的输出日志一起扫到 64 MiB，10 s 不够（实测被 10 s 保护截断成 cancelled），
+        // 放宽到 60 s；真正的界仍由上面的 64 MiB 大小保护把关。
+        const deadline = setTimeout(
+          () => void execution.close(),
+          process.platform === "win32" ? 60_000 : 10_000,
+        );
+        const controlPath = join(
+          outputRoot,
+          "native-search-e2e",
+          "tool_native_search_e2e-stdout.log",
+        );
+        const sizeGuard = setInterval(() => {
+          void stat(controlPath).then(
+            (file) => {
+              if (file.size >= 64 * 1024 * 1024) return execution.close();
+            },
+            () => undefined,
+          );
+        }, 25);
+        try {
+          const result = await runBashToolCall(command, backend, execution);
+          expectToolCallExit(result, 0);
+          const outputPath = result.persistedOutputPath!;
+          expect(outputPath).toBeTruthy();
+          expect((await stat(outputPath)).size).toBeLessThan(64 * 1024 * 1024);
+          const text = await readFile(outputPath, "utf8");
+          const nested = /stdout\.log:\d+:/u.test(text);
+          if (useTmp) {
+            expect(outputPath.startsWith(tempParent)).toBe(true);
+            expect(nested).toBe(false);
+            expect(text.match(/self_search_needle/g)).toHaveLength(200_000);
+          } else if (
+            mode === "ugrep-pipe" ||
+            process.platform === "win32" ||
+            (mode === "system-grep-pipe" && process.platform === "linux")
+          ) {
+            expect(nested).toBe(true);
+          }
+        } finally {
+          clearTimeout(deadline);
+          clearInterval(sizeGuard);
+          await execution.close();
+          await rm(outputRoot, { recursive: true, force: true });
+        }
+      }
+    },
+    // 用例一次跑 3 种模式 × 2 个输出目录 = 6 趟；Windows 上每趟约 15 s（Git Bash + 20 MB
+    // 输出经 Node 适配器落盘，实测总计 ~90 s），30 s 预算在这里必然超时。真实的时间界仍由
+    // 每趟 10 s→60 s 的时长保护与 64 MiB 大小保护把关。
+    process.platform === "win32" ? 180_000 : 30_000,
+  );
 
   async function runBashToolCall(
     command: string,

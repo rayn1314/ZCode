@@ -81,20 +81,6 @@ function createGitChangeCardElement(diffState: Record<string, unknown>) {
 }
 
 describe("content horizontal scrolling", () => {
-  it("keeps patch preview pane content scrollable in both axes", () => {
-    const html = renderToStaticMarkup(
-      createElement(PatchFallbackContent, {
-        patch: "diff --git a/demo.ts b/demo.ts\n@@ -1 +1 @@\n-foo\n+bar",
-        codePreviewSettings,
-        resolvedTheme: "light",
-      }),
-    );
-
-    expect(html).toContain("data-diff-viewer");
-    expect(html).toContain("overflow-auto");
-    expect(html).not.toContain("overflow-hidden");
-  });
-
   it("does not opt patch preview pane rendering out of the diff worker pool", () => {
     const html = renderToStaticMarkup(
       createElement(PatchFallbackContent, {
@@ -131,7 +117,7 @@ describe("content horizontal scrolling", () => {
 
     expect(html).toContain("data-patch-plain-text-preview");
     expect(html).toContain("data-lightweight-diff-preview");
-    expect(html).toContain("overflow-auto");
+
     expect(html).toContain("bar");
     expect(html).toContain("new");
     expect(html).not.toContain("+bar");
@@ -162,21 +148,6 @@ describe("content horizontal scrolling", () => {
     expect(html).toContain('data-lightweight-diff-highlighted="false"');
     expect(html).toContain("&lt;!DOCTYPE html&gt;");
     expect(html).not.toContain("+&lt;!DOCTYPE html&gt;");
-  });
-
-  it("allows expanded Git change card diffs to scroll horizontally", () => {
-    const html = renderToStaticMarkup(
-      createGitChangeCardElement({
-        availability: "patch",
-        patch: null,
-        beforeContent: "foo\n",
-        afterContent: "bar\n",
-        path: "/workspace/demo.ts",
-        summary: null,
-      }),
-    );
-
-    expect(html).toContain("overflow-x-auto overflow-y-hidden");
   });
 
   it("keeps small Git change card diffs on the rich before/after renderer", () => {

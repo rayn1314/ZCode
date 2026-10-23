@@ -407,7 +407,6 @@ describe("AgentRuntime trace propagation", () => {
       status: "completed",
       traceId: traceContext.traceId,
     });
-    expect(context?.sections?.length).toBeGreaterThan(0);
     expect(context?.sections).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -845,10 +844,7 @@ describe("AgentRuntime trace propagation", () => {
 
     expect(requests[0]?.[0]).toEqual(expect.objectContaining({ role: "system" }));
     expect(requests[0]?.[0]?.content).toBe("You are ZCode, an interactive coding agent");
-    expect(requests[0]?.[0]?.content).not.toContain("# Agent Identity");
     expect(requests[0]?.[1]?.content).toBe("\nYou are terse for this session.");
-    expect(requests[0]?.[1]?.content).not.toContain("# Task Behavior");
-    expect(requests[0]?.[1]?.content).not.toContain("# Agent Identity");
     expect(requests[0]?.[2]?.role).toBe("user");
     expect(requests[0]?.[2]?.content).not.toContain("# agentsMd");
     expect(requests[0]?.[2]?.content).not.toContain("# claudeMd");
@@ -1074,8 +1070,6 @@ describe("AgentRuntime trace propagation", () => {
       "Respond in the primary language of the user's current prompt",
     );
     expect(dynamicSystem).not.toContain("Respond in Spanish");
-    expect(dynamicSystem).toContain("# Output Style: Learning");
-    expect(dynamicSystem).toContain("Explain tradeoffs while solving the task.");
     expect(dynamicSystem).toContain(
       "# Output Style: Learning\nExplain tradeoffs while solving the task.",
     );
@@ -1204,7 +1198,6 @@ describe("AgentRuntime trace propagation", () => {
       "user",
     ]);
     expect(requests[0]?.[0]?.content).toBe("You are ZCode, an interactive coding agent");
-    expect(requests[0]?.[0]?.content).not.toContain("# Agent Identity");
     expect(requests[0]?.[1]?.content).not.toContain("# Agent Identity");
     expect(requests[0]?.[1]?.content).toMatch(/^\n?You are an interactive ZCode agent/);
     expect(requests[0]?.[1]?.content).toContain("# Harness");

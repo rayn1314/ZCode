@@ -1,3 +1,4 @@
+import type { ToolSearchExecutionContext, ModelCallWrapper } from "@zcode/contracts";
 import type { McpToolUiDescriptor } from "@zcode/shared/mcp-apps";
 // ============================================================
 // Tool Types - Core tool types for registry and executor
@@ -71,6 +72,9 @@ import type {
 // -----------------------------------------------
 
 export interface ToolMetadata {
+  shouldDefer?: boolean;
+  alwaysLoad?: boolean;
+  searchHint?: string;
   name: string;
   description?: string;
   modelInstructions?: readonly string[];
@@ -138,6 +142,7 @@ export interface BackgroundTaskControlPort {
 }
 
 export interface ToolExecutionContext {
+  toolSearch?: ToolSearchExecutionContext;
   toolCallId: string;
   /**
    * 当前 Tool 的实时观测写入器。Handler 只能通过窄接口写事实，不能接触原始 OTel Span。
@@ -527,6 +532,7 @@ export interface ToolBatchResult {
 // -----------------------------------------------
 
 export interface ExecutableToolCall {
+  modelCallWrapper?: ModelCallWrapper;
   id: string;
   name: string;
   input: unknown;

@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { windowsPathToGitBashPath, gitBashPathToWindowsPath } from "@zcode/contracts";
 import {
   ShellInitSnapshotManager,
   buildShellInitSnapshotCreationScript,
@@ -60,11 +61,12 @@ describe("shell init snapshot", () => {
     expect(script).toContain('echo "# Snapshot file" >| "$SNAPSHOT_FILE"');
     expect(script).toContain('echo "shopt -s expand_aliases" >> "$SNAPSHOT_FILE"');
     expect(script).toContain("declare -F | cut -d' ' -f3 | grep -vE '^_[^_]'");
-    expect(script).toContain("encoded_func=$(declare -f \"$func\" | base64 )");
-    expect(script).toContain("base64 -d");
-    expect(script).toContain('shopt -p | head -n 1000');
+    // 函数体直接追加：逐函数启动 base64 子进程在 Windows/Git Bash 下会打穿快照超时。
+    expect(script).toContain('declare -f "$func" >> "$SNAPSHOT_FILE"');
+    expect(script).not.toContain("base64");
+    expect(script).toContain("shopt -p | head -n 1000");
     expect(script).toContain('set -o | grep "on"');
-    expect(script).toContain("alias | grep -v \"='winpty \"");
+    expect(script).toContain('alias | grep -v "=\'winpty "');
     expect(script).toContain("sed 's/^/alias -- /'");
     expect(script).toContain("head -n 1000");
     expect(script).toContain("export PATH=");
@@ -81,9 +83,9 @@ describe("shell init snapshot", () => {
     expect(script).toContain("SNAPSHOT_FILE='/tmp/zcode-zsh-snapshot.sh'");
     expect(script).toContain('source "/home/user/.zshrc" < /dev/null');
     expect(script).toContain("typeset +f | grep -vE '^_[^_]'");
-    expect(script).toContain("typeset -f \"$func\"");
+    expect(script).toContain('typeset -f "$func"');
     expect(script).toContain("setopt | sed 's/^/setopt /' | head -n 1000");
-    expect(script).toContain("alias | grep -v \"='winpty \"");
+    expect(script).toContain('alias | grep -v "=\'winpty "');
     expect(script).not.toContain("declare -f");
     expect(script).not.toContain("shopt -s expand_aliases");
   });
@@ -132,8 +134,8 @@ describe("shell init snapshot", () => {
       if (!first) throw new Error("expected ready snapshot");
       expect(second).toEqual(first);
       expect(execFile).toHaveBeenCalledTimes(1);
-      expect(first.path).toMatch(/\/shell-snapshots\/snapshot-bash-\d+-[a-z0-9]{6}\.sh$/u);
-      expect(first.path).not.toContain("/session/");
+      expect(first.path).toMatch(/[\\/]shell-snapshots[\\/]snapshot-bash-\d+-[a-z0-9]{6}\.sh$/u);
+      expect(first.path).not.toMatch(/[\\/]session[\\/]/u);
 
       const cleanup = await manager.cleanup();
       expect(cleanup).toEqual({ deleted: 1, errors: 0 });
@@ -228,8 +230,8 @@ describe("shell init snapshot", () => {
       }
       expect(execFile).toHaveBeenCalledTimes(2);
       expect(bash.path).not.toBe(zsh.path);
-      expect(bash.path).toMatch(/\/shell-snapshots\/snapshot-bash-\d+-[a-z0-9]{6}\.sh$/u);
-      expect(zsh.path).toMatch(/\/shell-snapshots\/snapshot-zsh-\d+-[a-z0-9]{6}\.sh$/u);
+      expect(bash.path).toMatch(/[\\/]shell-snapshots[\\/]snapshot-bash-\d+-[a-z0-9]{6}\.sh$/u);
+      expect(zsh.path).toMatch(/[\\/]shell-snapshots[\\/]snapshot-zsh-\d+-[a-z0-9]{6}\.sh$/u);
       expect(await readFile(bash.path, "utf8")).toBe("# bash\n");
       expect(await readFile(zsh.path, "utf8")).toBe("# zsh\n");
 
@@ -251,10 +253,7 @@ describe("shell init snapshot", () => {
       await writeFile(match[1], "alias ll='ls -l fresh'\n");
       return { stdout: "", stderr: "" };
     });
-    const nowSpy = vi
-      .spyOn(Date, "now")
-      .mockReturnValueOnce(1_000)
-      .mockReturnValueOnce(2_000);
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValueOnce(1_000).mockReturnValueOnce(2_000);
 
     try {
       const staleManager = new ShellInitSnapshotManager({ execFile });
@@ -288,7 +287,14 @@ describe("shell init snapshot", () => {
 
   it("uses host paths in creation scripts and Git Bash paths when sourcing snapshots", async () => {
     const rootDir = await mkdtemp(join(tmpdir(), "zcode-shell-init-snapshot-"));
-    const windowsLikeRoot = join(rootDir, "C:\\Users\\me\\ZCode");
+    // 在 POSIX 主机上用一个非法但可创建的 Windows 风格目录模拟 Windows 路径；Windows 上
+    // 路径里不能再嵌盘符冒号，直接使用宿主路径下的普通子目录。
+    const windowsLikeRoot =
+      process.platform === "win32"
+        ? join(rootDir, "Users", "me", "ZCode")
+        : join(rootDir, "C:\\Users\\me\\ZCode");
+    const hostSegment =
+      process.platform === "win32" ? join("Users", "me", "ZCode") : windowsLikeRoot;
     let creationSnapshotPath = "";
     const execFile = vi.fn(async (_file: string, args: string[]) => {
       if (args[0] === "-lc") return { stdout: "/usr/bin:/bin\n", stderr: "" };
@@ -297,9 +303,15 @@ describe("shell init snapshot", () => {
       const match = script.match(/SNAPSHOT_FILE='([^']+)'/u);
       if (!match) throw new Error("missing snapshot path");
       creationSnapshotPath = match[1];
-      expect(creationSnapshotPath).toContain("C:\\Users\\me\\ZCode");
-      await mkdir(dirname(creationSnapshotPath), { recursive: true });
-      await writeFile(creationSnapshotPath, "alias ll='ls -l git-bash'\n");
+      // creation script 里的 SNAPSHOT_FILE 是 Git Bash 视角路径；mock 用 Node fs 落地，
+      // 必须像真实 shell 一样先换回宿主路径。
+      const hostSnapshotPath =
+        process.platform === "win32"
+          ? gitBashPathToWindowsPath(creationSnapshotPath)
+          : creationSnapshotPath;
+      expect(hostSnapshotPath).toContain(hostSegment);
+      await mkdir(dirname(hostSnapshotPath), { recursive: true });
+      await writeFile(hostSnapshotPath, "alias ll='ls -l git-bash'\n");
       return { stdout: "", stderr: "" };
     });
 
@@ -314,9 +326,13 @@ describe("shell init snapshot", () => {
 
       expect(result).toBeDefined();
       if (!result) throw new Error("expected ready snapshot");
-      expect(result.path).toContain("C:\\Users\\me\\ZCode");
-      expect(result.path).toBe(creationSnapshotPath);
-      expect(result.shellPath).toContain("C:/Users/me/ZCode");
+      expect(result.path).toContain(hostSegment);
+      expect(result.path).toBe(
+        process.platform === "win32"
+          ? gitBashPathToWindowsPath(creationSnapshotPath)
+          : creationSnapshotPath,
+      );
+      expect(result.shellPath).toBe(windowsPathToGitBashPath(result.path));
       expect(result.shellPath).not.toContain("\\");
       expect(execFile).toHaveBeenCalledTimes(2);
 

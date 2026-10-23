@@ -75,6 +75,22 @@ describe("collectClosedRemoteWorkspaceKeys", () => {
 
     expect(collectClosedRemoteWorkspaceKeys(previousTabs, [])).toEqual(["/workspace/demo"]);
   });
+
+  it("does not interpret same-tab identity rekey as an explicit close", () => {
+    const previousTabs: WorkspaceTabState[] = [
+      createWorkspaceTab("remote-1", "/workspace/demo", {
+        workspaceIdentity: "remote:ssh:linux-amd64-dev:dev:/workspace/demo",
+      }),
+    ];
+    const nextTabs: WorkspaceTabState[] = [
+      createWorkspaceTab("remote-1", "/workspace/demo", {
+        workspaceIdentity: "remote:server:server-1:/workspace/demo",
+        previousWorkspaceIdentity: "remote:ssh:linux-amd64-dev:dev:/workspace/demo",
+      }),
+    ];
+
+    expect(collectClosedRemoteWorkspaceKeys(previousTabs, nextTabs)).toEqual([]);
+  });
 });
 
 describe("collectClosedRemoteWorkspaceSessionIds", () => {

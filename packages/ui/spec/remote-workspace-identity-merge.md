@@ -43,6 +43,10 @@ target 现算的，不会被同步重算。
 - `buildRemoteWorkspaceSessionMutation` 身份解析优先级调整为：
   **归并命中的条目 identity > 调用方显式传入 > 现算**。全部 5 个调用方
   （新连接落库、手动重连、Bot 重连、失败回写 ×2）收敛到同一语义。
+- 上一条的例外：调用方显式传入 **Host stable identity**（`remote:server:`）时以它为准，
+  先于条目身份。该身份来自 Host 绑定后的显式换代（旧 route 条目并入 stable 身份），
+  不是 canonical 化的现算值；让旧身份压过它会把换代退化成两条并存。换代时旧条目的
+  rollback 凭据保留（`preservesRollbackCredential`），stable 身份下的凭据另存。
 - 归并命中时条目 target 快照照常更新为 canonical 版本（`createRemoteTargetSnapshot` 不变）；
   target 与 identity 允许存在「格式不一致」，由归并匹配层兜底，不再分裂。
 

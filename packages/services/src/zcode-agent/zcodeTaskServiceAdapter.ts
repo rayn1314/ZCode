@@ -1,3 +1,4 @@
+import { isAuxiliarySessionKind } from "@zcode/shared";
 import { createBotTopicAdmission } from "#src/zcode-agent/botTopicAdmission.js";
 import {
   readBotGroupRuntimeSnapshot,
@@ -167,7 +168,6 @@ import {
 } from "#src/paths.js";
 import { claudeNativeSessionImportRepo } from "#src/session/claude-native/claudeNativeSessionImportRepo.js";
 import { importClaudeNativeSessions } from "#src/session/claude-native/claudeNativeSessionImportService.js";
-import { buildImportedClaudeTaskId } from "#src/session/claude-native/buildImportedClaudeTaskFile.js";
 import { repairImportedClaudeSessionSnapshot } from "#src/session/claude-native/importedClaudeHistoryRepair.js";
 import { safeParseLegacyTaskSessionFile } from "#src/session/legacyTaskSessionFile.js";
 import {
@@ -182,14 +182,6 @@ import {
 } from "./zcodeConfigOptions.js";
 import type { CuaProductMcpServerResolver } from "#src/cua-permission-broker/index.js";
 import { registerMemoryDiagnosticsProvider } from "#src/memoryDiagnostics.js";
-
-interface TaskOverlay {
-  archived?: boolean;
-  deleted?: boolean;
-  pinned?: boolean;
-  title?: string;
-  unreadAt?: number;
-}
 
 interface CreateZCodeTaskServiceAdapterOptions {
   zcodeAgentService: IZCodeAgentService;
@@ -222,6 +214,7 @@ interface TaskTarget {
 }
 
 interface TaskTargetWithMcpServers extends TaskTarget {
+  additionalDirectories?: string[];
   model?: string;
   thoughtLevel?: string;
   mcpServers?: ZCodeAgentMcpServer[];
@@ -241,17 +234,6 @@ const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
 const EXIT_PLAN_MODE_TOOL_NAME = "ExitPlanMode";
 const EXIT_PLAN_MODE_APPROVAL_QUESTION = "Review this implementation plan.";
 const EXIT_PLAN_MODE_APPROVAL_APPROVE = "approve";
-
-function sameModelSelection(
-  left: ModelSelection | undefined,
-  right: ModelSelection | undefined,
-): boolean {
-  return (
-    left?.providerId === right?.providerId &&
-    left?.modelId === right?.modelId &&
-    left?.options?.reasoningLevel === right?.options?.reasoningLevel
-  );
-}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -286,36 +268,6 @@ function formatSessionMessageResultText(result: SessionMessageDeliveryResult): s
     "For reference only. No action is required.",
     "</session-message>",
   ].join("\n");
-}
-
-/**
- * task_complete → task 行 status（审计修复 #5）。
- *
- * 旧实现无条件写 "completed"：可 turn.completed 的 resultType 里还有 error_*（max_turns /
- * max_budget / during_execution / max_tool_calls），它们在投影侧派生 phase "error"、
- * syncer 落 "error"，事件流却把同一轮写成 "completed"——行状态与投影互相打架。
- * 对齐的词表（product-projection onTurnComplete / zcodeTaskIndexSyncer）：
- * - success / cancelled → completedSuccess/completedInterrupted → "completed"
- *   （ZCodeTaskPersistStatus 没有独立 interrupted 值，completedInterrupted 就落 "completed"）；
- * - error_* 及未识别的 stopReason → 投影 default 分支 → phase "error" → "error"；
- *   错误正文不在 TurnComplete payload 里，因此不动 lastError（与 syncer 的 error 分支一致，
- *   权威值由随后的回源 snapshot 写入）；
- * - 缺省 "complete"（旧 payload 无 resultType 时上游的兜底值）→ "completed"，保持兼容。
- */
-function taskIndexPatchFromTaskComplete(stopReason: string): {
-  status: "completed" | "error";
-  lastError?: undefined;
-  updatedAt: number;
-} {
-  const updatedAt = Date.now();
-  switch (stopReason) {
-    case "success":
-    case "cancelled":
-    case "complete":
-      return { status: "completed", lastError: undefined, updatedAt };
-    default:
-      return { status: "error", updatedAt };
-  }
 }
 
 const MAX_LIVE_TOOL_PROJECTION_TASKS = 128;
@@ -366,7 +318,6 @@ export function createZCodeTaskServiceAdapter(
   const errorEmitter = new Emitter<ZCodeError>();
   const taskEmitters = new Map<string, Emitter<ZCodeStreamEvent>>();
   const globalTaskEmitters = new Map<string, Emitter<ZCodeStreamEvent>>();
-  const overlays = new Map<string, TaskOverlay>();
   const taskTargets = new Map<string, TaskTarget>();
   const topicAdmission = createBotTopicAdmission();
   const runtimeCommands = new Map<string, ZCodeTaskRuntimeCommand[]>();
@@ -379,13 +330,12 @@ export function createZCodeTaskServiceAdapter(
   const liveToolProjectionsByTaskKey = new Map<string, Map<string, LiveToolProjection>>();
   let liveToolProjectionOrder = 0;
   const legacySnapshotTaskKeys = new Set<string>();
-  // 内存诊断计数器（docs/monitoring/memory-diagnostics-log.md）：对应审计里 closeTask/deleteTask
+  // 内存诊断计数器（docs/monitoring/memory-diagnostics-log.md）：对应审计里 deleteTask
   // 不清理的 per-task 表，只读 size。
   const memoryDiagnostics = registerMemoryDiagnosticsProvider("task", () => ({
     runtimeCommands: runtimeCommands.size,
     toolMemoryTasks: toolProjectionMemoryByTaskKey.size,
     taskEmitters: taskEmitters.size,
-    overlays: overlays.size,
   }));
   const taskIndexRepo = options.taskIndexRepo ?? new TaskIndexRepo();
   const taskIndexSyncer = options.taskIndexSyncer;
@@ -1295,14 +1245,6 @@ export function createZCodeTaskServiceAdapter(
     return target;
   }
 
-  function getOverlay(params: {
-    workspacePath: string;
-    workspaceIdentity?: string;
-    taskId: string;
-  }) {
-    return overlays.get(taskKey(params)) ?? {};
-  }
-
   function getToolProjectionMemory(params: TaskTarget): ZCodeToolProjectionMemory {
     const key = taskKey(params);
     let memory = toolProjectionMemoryByTaskKey.get(key);
@@ -1317,19 +1259,7 @@ export function createZCodeTaskServiceAdapter(
     toolProjectionMemoryByTaskKey.get(taskKey(params))?.streamingToolInputById?.clear();
   }
 
-  function setOverlay(
-    params: {
-      workspacePath: string;
-      workspaceIdentity?: string;
-      taskId: string;
-    },
-    patch: Partial<TaskOverlay>,
-  ) {
-    const key = taskKey(params);
-    overlays.set(key, { ...overlays.get(key), ...patch });
-  }
-
-  // workspace emitter 已上提到 syncer，adapter 通过 syncer 获取共享 emitter，
+  // Bugfix: workspace emitter 已上提到 syncer，adapter 通过 syncer 获取共享 emitter，
   // 保证 task adapter 路径和 desktop-continuous 路径走同一份订阅，UI 不会漏事件。
   function getWorkspaceEmitter(workspace: WorkspaceEventInput): Emitter<ZCodeWorkspaceEvent> {
     return taskIndexSyncer.getWorkspaceEmitter(workspace);
@@ -1411,8 +1341,9 @@ export function createZCodeTaskServiceAdapter(
 
   /**
    * 超期归档核心：按 workspace key 去重后逐个工作区归档，并沿用
-   * overlay / meta / task_meta_changed 广播的既有收敛路径。
-   * 自动触发与设置页手动触发共用，避免出现第二条归档写入路径。
+   * meta / task_meta_changed 广播的既有收敛路径。只服务设置页的显式「立即归档」；
+   * 按设置的自动归档由 Host 侧 `autoArchiveScheduler` 独立驱动（唯一触发者），
+   * 读取/点击路径都不再触发归档。
    */
   async function archiveStaleTasksAcrossWorkspaces(params: {
     scopes: Array<{ workspacePath: string; workspaceIdentity?: string }>;
@@ -1435,7 +1366,6 @@ export function createZCodeTaskServiceAdapter(
         olderThanDays: params.olderThanDays,
       });
       for (const task of archived) {
-        setOverlay(task, { archived: true });
         rememberIndexedTaskMeta(task);
         // 归属变更（自动/手动归档）：沿用 task_meta_changed 走 membership 重拉收敛；
         // 先保持现状行为。
@@ -1444,28 +1374,6 @@ export function createZCodeTaskServiceAdapter(
       archivedTasks.push(...archived);
     }
     return { archivedTasks, scopedWorkspaceCount };
-  }
-
-  async function runWorkspaceTaskAutoArchive(
-    scopes: Array<{ workspacePath: string; workspaceIdentity?: string }>,
-  ): Promise<void> {
-    if (scopes.length === 0) {
-      return;
-    }
-    const settings = await readTaskArchiveSettings();
-    if (!settings?.enabled) {
-      return;
-    }
-    const { archivedTasks, scopedWorkspaceCount } = await archiveStaleTasksAcrossWorkspaces({
-      scopes,
-      olderThanDays: settings.olderThanDays,
-    });
-    if (archivedTasks.length > 0) {
-      logger.info(
-        undefined,
-        `按设置自动归档旧 task 数量=${archivedTasks.length} 扫描工作区=${scopedWorkspaceCount} olderThanDays=${settings.olderThanDays}`,
-      );
-    }
   }
 
   async function resumeSnapshot(
@@ -1478,7 +1386,10 @@ export function createZCodeTaskServiceAdapter(
       workspacePath: params.workspacePath,
       workspaceIdentity: params.workspaceIdentity,
       sessionId: params.taskId,
-      // replayable 手机端恢复仍经 task adapter，但 stale model guard 在
+      ...(params.additionalDirectories !== undefined
+        ? { additionalDirectories: params.additionalDirectories }
+        : {}),
+      // Bugfix: replayable 手机端恢复仍经 task adapter，但 stale model guard 在
       // session resume 内执行；这里带上当前 UI 模型，避免只保护 desktop continuous 主链路。
       model: params.model ? parseModelPickerValue(params.model) : undefined,
       ...(thoughtLevel ? { thoughtLevel } : {}),
@@ -1559,7 +1470,7 @@ export function createZCodeTaskServiceAdapter(
       return snapshot;
     }
     const meta = await syncTaskIndexSnapshot(repaired);
-    await syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
+    await updateIndexedPresentation({ ...meta, migrationSource: "claudeCode" });
     return repaired;
   }
 
@@ -1618,7 +1529,10 @@ export function createZCodeTaskServiceAdapter(
       };
       const snapshot: ZCodeTaskSnapshot = {
         ...legacyFile,
-        meta: applyOverlayToMeta(legacyMeta, getOverlay(params)),
+        meta: {
+          ...legacyMeta,
+          ...(indexedMeta ? { title: indexedMeta.title, unreadAt: indexedMeta.unreadAt } : {}),
+        },
         runtime: {
           apiRetry: apiRetryByTaskKey.get(taskKey(params)) ?? null,
           pendingCommands: runtimeCommands.get(taskKey(params)) ?? [],
@@ -1678,7 +1592,7 @@ export function createZCodeTaskServiceAdapter(
             },
           });
           const meta = await syncTaskIndexSnapshot(snapshot);
-          await syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
+          await updateIndexedPresentation({ ...meta, migrationSource: "claudeCode" });
           logger.info(
             undefined,
             `legacy Claude 导入 task 已升级为 ZCode session taskId=${params.taskId}`,
@@ -1708,40 +1622,37 @@ export function createZCodeTaskServiceAdapter(
       workspaceIdentity: snapshot.session.workspace.workspaceIdentity,
     };
     rememberTaskTarget(target);
-    return applyOverlayToMeta(
-      {
-        taskId: snapshot.session.sessionId,
-        traceId: snapshot.session.traceId ?? generateTraceId(snapshot.session.sessionId),
-        title: deriveTitleFromSnapshot(snapshot),
-        workspacePath: snapshot.session.workspace.workspacePath,
-        workspaceIdentity: snapshot.session.workspace.workspaceIdentity,
-        createdAt: snapshot.session.createdAt,
-        updatedAt: snapshot.session.updatedAt,
-        mode: fromZCodeMode(snapshot.session.mode),
-        model: formatTaskMetaModelSelectionFromSnapshot(snapshot),
-        thoughtLevel: snapshot.settings.thoughtLevel.current,
-        provider: GLM_PROVIDER,
-        status: deriveZCodeTaskStatusFromSessionSnapshot(snapshot),
-        lastError: snapshot.projection.lastError
-          ? {
-              code: snapshot.projection.lastError.code ?? snapshot.projection.lastError.type,
-              ...(snapshot.projection.lastError.detail
-                ? { detail: snapshot.projection.lastError.detail }
-                : {}),
-              // service snapshot 是 mobile replayable/cold task meta 的来源，不能
-              // 让它与 UI 直接投影的 lastError 产生归因漂移。
-              ...(snapshot.projection.lastError.attribution
-                ? { attribution: snapshot.projection.lastError.attribution }
-                : {}),
-              message: snapshot.projection.lastError.message,
-            }
-          : undefined,
-        target: snapshot.projection.target
-          ? fromZCodeGoal(snapshot.projection.target)
-          : snapshot.projection.target,
-      },
-      getOverlay(target),
-    );
+    return {
+      taskId: snapshot.session.sessionId,
+      traceId: snapshot.session.traceId ?? generateTraceId(snapshot.session.sessionId),
+      title: deriveTitleFromSnapshot(snapshot),
+      workspacePath: snapshot.session.workspace.workspacePath,
+      workspaceIdentity: snapshot.session.workspace.workspaceIdentity,
+      createdAt: snapshot.session.createdAt,
+      updatedAt: snapshot.session.updatedAt,
+      mode: fromZCodeMode(snapshot.session.mode),
+      model: formatTaskMetaModelSelectionFromSnapshot(snapshot),
+      thoughtLevel: snapshot.settings.thoughtLevel.current,
+      provider: GLM_PROVIDER,
+      status: deriveZCodeTaskStatusFromSessionSnapshot(snapshot),
+      lastError: snapshot.projection.lastError
+        ? {
+            code: snapshot.projection.lastError.code ?? snapshot.projection.lastError.type,
+            ...(snapshot.projection.lastError.detail
+              ? { detail: snapshot.projection.lastError.detail }
+              : {}),
+            // 修复原因：service snapshot 是 mobile replayable/cold task meta 的来源，不能
+            // 让它与 UI 直接投影的 lastError 产生归因漂移。
+            ...(snapshot.projection.lastError.attribution
+              ? { attribution: snapshot.projection.lastError.attribution }
+              : {}),
+            message: snapshot.projection.lastError.message,
+          }
+        : undefined,
+      target: snapshot.projection.target
+        ? fromZCodeGoal(snapshot.projection.target)
+        : snapshot.projection.target,
+    };
   }
 
   function rememberIndexedTaskMeta(meta: ZCodeTaskMeta): ZCodeTaskMeta {
@@ -1792,31 +1703,48 @@ export function createZCodeTaskServiceAdapter(
     };
   }
 
-  async function syncTaskIndexMeta(meta: ZCodeTaskMeta): Promise<ZCodeTaskMeta> {
-    const indexedMeta = await taskIndexRepo.syncTaskMeta({ meta });
-    return rememberIndexedTaskMeta(indexedMeta);
+  async function updateIndexedPresentation(meta: ZCodeTaskMeta): Promise<ZCodeTaskMeta> {
+    const {
+      mode,
+      model,
+      thoughtLevel,
+      lastError,
+      target,
+      migrationSource,
+      cronAutomationId,
+      offPeakTaskId,
+    } = meta;
+    const presentation = Object.fromEntries(
+      Object.entries({
+        mode,
+        model,
+        thoughtLevel,
+        lastError,
+        target,
+        migrationSource,
+        cronAutomationId,
+        offPeakTaskId,
+      }).filter(([, value]) => value !== undefined),
+    );
+    const indexedMeta = await taskIndexRepo.updateTaskPresentation({ ...meta, presentation });
+    return rememberIndexedTaskMeta(indexedMeta ?? meta);
   }
 
   async function syncTaskIndexSnapshot(
     snapshot: ZCodeSessionStateSnapshot,
+    broadcastReason: ZCodeWorkspaceTaskListChanged["reason"] | null = "task_status_changed",
   ): Promise<ZCodeTaskMeta> {
-    const meta = snapshotToMeta(snapshot);
-    // 旧污染标签页的显式恢复不能把只读 child 再次写进主任务索引。
-    if (snapshot.session.sessionKind === "subagent_child") return meta;
-    return syncTaskIndexMeta(meta);
+    if (isAuxiliarySessionKind(snapshot.session.sessionKind)) return snapshotToMeta(snapshot);
+    return rememberIndexedTaskMeta(
+      await taskIndexSyncer.syncSnapshotAndBroadcast(snapshot, {
+        broadcastReason,
+      }),
+    );
   }
 
   async function updateIndexedTaskState(
     params: TaskTarget,
-    patch: {
-      pinned?: boolean;
-      archived?: boolean;
-      deleted?: boolean;
-      title?: string;
-      titleOverridden?: boolean;
-      updatedAt?: number;
-      unreadAt?: number;
-    },
+    patch: { pinned?: boolean; archived?: boolean; unreadAt?: number },
   ): Promise<ZCodeTaskMeta> {
     try {
       return await taskIndexRepo.updateTaskState({
@@ -1837,69 +1765,6 @@ export function createZCodeTaskServiceAdapter(
         taskId: params.taskId,
         patch,
       });
-    }
-  }
-
-  function updateTaskIndexFromStreamEvent(params: TaskTarget, event: ZCodeStreamEvent): void {
-    if (event.type === "session_info_update") {
-      const patch: Parameters<typeof taskIndexRepo.applyAgentPatch>[0]["patch"] = {
-        title: typeof event.title === "string" ? event.title : undefined,
-        updatedAt: Date.now(),
-      };
-      if (event.target) {
-        // session_info_update 经常只携带标题或更新时间；只有事件显式包含
-        // target 时才覆盖 task-index，避免把从 db.sqlite 恢复出的 goal 清成 undefined。
-        patch.target = event.target.target;
-      }
-      void taskIndexRepo
-        .applyAgentPatch({
-          workspacePath: params.workspacePath,
-          workspaceIdentity: params.workspaceIdentity,
-          taskId: params.taskId,
-          patch,
-        })
-        .catch((error) => {
-          logger.warn(undefined, "同步 session_info_update 到 task index 失败", error);
-        });
-      return;
-    }
-
-    if (event.type === "task_complete") {
-      void taskIndexRepo
-        .applyAgentPatch({
-          workspacePath: params.workspacePath,
-          workspaceIdentity: params.workspaceIdentity,
-          taskId: params.taskId,
-          patch: taskIndexPatchFromTaskComplete(event.stopReason),
-        })
-        .catch((error) => {
-          logger.warn(undefined, "同步 task_complete 到 task index 失败", error);
-        });
-      return;
-    }
-
-    if (event.type === "task_error") {
-      void taskIndexRepo
-        .applyAgentPatch({
-          workspacePath: params.workspacePath,
-          workspaceIdentity: params.workspaceIdentity,
-          taskId: params.taskId,
-          patch: {
-            status: "error",
-            lastError: {
-              code: event.code,
-              ...(event.detail ? { detail: event.detail } : {}),
-              message: event.error,
-              traceId: event.traceId,
-              taskId: params.taskId,
-              ...(event.attribution ? { attribution: event.attribution } : {}),
-            },
-            updatedAt: Date.now(),
-          },
-        })
-        .catch((error) => {
-          logger.warn(undefined, "同步 task_error 到 task index 失败", error);
-        });
     }
   }
 
@@ -2085,7 +1950,6 @@ export function createZCodeTaskServiceAdapter(
     for (const streamEvent of streamEvents) {
       rememberLiveToolProjection(params, streamEvent);
       updateTaskApiRetryFromStreamEvent(params, streamEvent);
-      updateTaskIndexFromStreamEvent(params, streamEvent);
       emitTaskEvent(params, streamEvent);
       if (streamEvent.type === "task_complete" || streamEvent.type === "task_error") {
         completeRuntimeCommandForTerminalEvent(params, streamEvent);
@@ -2231,126 +2095,84 @@ export function createZCodeTaskServiceAdapter(
               ...(params.thoughtLevel ? { options: { reasoningLevel: params.thoughtLevel } } : {}),
             }
           : undefined);
-      const draftSessionId = params.draftSessionId?.trim();
       const mcpServers = await resolveProductMcpServers(params.mcpServers);
-      let snapshot: ZCodeSessionStateSnapshot | null = null;
-      if (draftSessionId && !mcpServers) {
-        try {
-          snapshot = await options.zcodeAgentService.readSession({
+      let snapshot: ZCodeSessionStateSnapshot;
+      // M5 ③-2 评估标注（生命周期 op，不迁）：v4 createSession 命令已原生（desktop
+      // v4 UI 在用），但 replayable createTask 需要 mcpServers/model/importedHistory
+      // 载荷与 snapshot 返回值（task index 同步依赖），v4 命令面均未建模；
+      // 迁移属 ③-3/波次 3 生命周期收口。
+      if (params.v4Create === true) {
+        const model = requestedSelection;
+        const ack = assertV4CommandAckOk(
+          "createSession",
+          await options.zcodeAgentService.sendConversationCommandV4({
             ...target,
-            sessionId: draftSessionId,
-          });
-          if (requestedSelection) {
-            if (!sameModelSelection(snapshot.settings.model.current, requestedSelection)) {
-              // replayable 首发复用 draft session 时，draft 可能仍停在预热时的旧模型。
-              // 复用前必须同步 UI 当前模型，否则手机远控首发会显示新模型但真实请求仍用旧模型。
-              snapshot = await options.zcodeAgentService.setModel({
-                ...target,
-                sessionId: draftSessionId,
-                model: requestedSelection,
-              });
-            }
-          }
-          if (
-            requestedSelection?.options?.reasoningLevel &&
-            snapshot.settings.thoughtLevel.current !== requestedSelection.options.reasoningLevel
-          ) {
-            // replayable 首发复用 draft session 时也必须以 UI 当前 thought_level 为准。
-            // 否则手机远控可能复用旧 draft session，导致首发请求沿用过期推理强度。
-            snapshot = await options.zcodeAgentService.setThoughtLevel({
-              ...target,
-              sessionId: draftSessionId,
-              thoughtLevel: requestedSelection.options.reasoningLevel,
-            });
-          }
-        } catch (error) {
-          if (!isSessionMissingError(error)) {
-            throw error;
-          }
-          // 手机端草稿 session 和桌面一样只存在 agent runtime 内存里。
-          // 远端重连/agent 重启后旧 draftSessionId 可能失效；首发消费点降级新建，避免用户卡死。
-          logger.warn(undefined, "手机 replayable draft session 已失效，降级创建新 task", {
-            draftSessionId,
-            workspaceIdentity: target.workspaceIdentity ?? null,
-            workspacePath: target.workspacePath,
-          });
-        }
-      }
-      if (!snapshot) {
-        // v4 createSession 命令已原生（desktop
-        // v4 UI 在用），但 replayable createTask 需要 mcpServers/model/importedHistory
-        // 载荷与 snapshot 返回值（task index 同步依赖），v4 命令面均未建模；
-        if (params.v4Create === true) {
-          const model = requestedSelection;
-          const ack = assertV4CommandAckOk(
-            "createSession",
-            await options.zcodeAgentService.sendConversationCommandV4({
-              ...target,
-              envelope: createHostCommandEnvelope({
-                type: "createSession",
-                sessionId: null,
-                payload: {
-                  workspaceId: target.workspaceIdentity?.trim() || target.workspacePath,
-                  ...(params.permissionScope ? { permissionScope: params.permissionScope } : {}),
-                  config: {
-                    ...(model ? { provider: model.providerId, model: model.modelId } : {}),
-                    ...(model?.options?.reasoningLevel
-                      ? { thought: model.options.reasoningLevel }
-                      : {}),
-                    ...(params.mode ? { mode: toZCodeMode(params.mode) } : {}),
-                  },
-                  ...(mcpServers ? { mcpServers } : {}),
+            projectId: params.projectId ?? null,
+            envelope: createHostCommandEnvelope({
+              type: "createSession",
+              sessionId: null,
+              payload: {
+                workspaceId: target.workspaceIdentity?.trim() || target.workspacePath,
+                ...(params.additionalDirectories !== undefined
+                  ? { additionalDirectories: params.additionalDirectories }
+                  : {}),
+                ...(params.permissionScope ? { permissionScope: params.permissionScope } : {}),
+                config: {
+                  ...(model ? { provider: model.providerId, model: model.modelId } : {}),
+                  ...(model?.options?.reasoningLevel
+                    ? { thought: model.options.reasoningLevel }
+                    : {}),
+                  ...(params.mode ? { mode: toZCodeMode(params.mode) } : {}),
                 },
-              }),
+                ...(mcpServers ? { mcpServers } : {}),
+              },
             }),
-            `workspace=${target.workspacePath}`,
-          );
-          const sessionId = ack.result?.type === "createSession" ? ack.result.sessionId : undefined;
-          if (!sessionId) {
-            throw new Error("v4 createSession accepted without sessionId result");
-          }
-          snapshot = await options.zcodeAgentService.readSession({
-            ...target,
-            sessionId,
-          });
-        } else {
-          snapshot = await options.zcodeAgentService.createSession({
-            ...target,
-            sessionTraceId: createSessionTraceId(),
-            mode: toZCodeMode(params.mode),
-            model: requestedSelection,
-            thoughtLevel: requestedSelection?.options?.reasoningLevel,
-            ...(params.automationId || params.deferPersistenceUntilFirstPrompt
-              ? {
-                  // 修复原因：automation / 闲时任务新建空 session 后会立即 sendText。session_input 有
-                  // session 外键，必须让 V4 admission 在首发前统一持久化 session 主记录；
-                  // 否则 create 返回成功后第一条 prompt 会稳定触发 FOREIGN KEY constraint failed。
-                  persistence: "deferred" as const,
-                }
-              : {}),
-            ...(params.automationId
-              ? {
-                  titleGenerationEnabled: false,
-                }
-              : {}),
-            // Bugfix: replayable task facade 创建 session 时同样会启动 runtime；
-            // 之前这里丢掉 mcpServers，导致手机远控路径和 desktop-continuous 的 MCP 行为不一致。
-            mcpServers,
-          });
+          }),
+          `workspace=${target.workspacePath}`,
+        );
+        const sessionId = ack.result?.type === "createSession" ? ack.result.sessionId : undefined;
+        if (!sessionId) {
+          throw new Error("v4 createSession accepted without sessionId result");
         }
+        snapshot = await options.zcodeAgentService.readSession({
+          ...target,
+          sessionId,
+        });
+      } else {
+        snapshot = await options.zcodeAgentService.createSession({
+          ...target,
+          projectId: params.projectId ?? null,
+          additionalDirectories: params.additionalDirectories,
+          sessionTraceId: createSessionTraceId(),
+          mode: toZCodeMode(params.mode),
+          model: requestedSelection,
+          thoughtLevel: requestedSelection?.options?.reasoningLevel,
+          ...(params.automationId || params.deferPersistenceUntilFirstPrompt
+            ? {
+                // 修复原因：automation / 闲时任务新建空 session 后会立即 sendText。session_input 有
+                // session 外键，必须让 V4 admission 在首发前统一持久化 session 主记录；
+                // 否则 create 返回成功后第一条 prompt 会稳定触发 FOREIGN KEY constraint failed。
+                persistence: "deferred" as const,
+              }
+            : {}),
+          ...(params.automationId
+            ? {
+                titleGenerationEnabled: false,
+              }
+            : {}),
+          // Bugfix: replayable task facade 创建 session 时同样会启动 runtime；
+          // 之前这里丢掉 mcpServers，导致手机远控路径和 desktop-continuous 的 MCP 行为不一致。
+          mcpServers,
+        });
       }
-      const baseMeta = snapshotToMeta(snapshot);
-      const meta = await syncTaskIndexMeta({
+      const baseMeta = await syncTaskIndexSnapshot(snapshot, null);
+      const meta = await updateIndexedPresentation({
         ...baseMeta,
         ...(params.automationId ? { cronAutomationId: params.automationId } : {}),
         // 闲时派发在创建时即盖章持久归属；月亮图标与后续系统分组归属都只看该标记。
         ...(params.offPeakTaskId ? { offPeakTaskId: params.offPeakTaskId } : {}),
       });
-      await taskIndexRepo.initializeGroupedTaskAtTop({
-        workspacePath: meta.workspacePath,
-        workspaceIdentity: meta.workspaceIdentity,
-        taskId: meta.taskId,
-      });
+
       notifySyncerSession({
         taskId: meta.taskId,
         workspacePath: meta.workspacePath,
@@ -2957,22 +2779,6 @@ export function createZCodeTaskServiceAdapter(
       return true;
     },
 
-    async closeTask(params): Promise<void> {
-      // 此兼容入口仍通过 closeSession 关闭会话；尚无只关闭 runtime、保留会话的独立操作。
-      const target = getTaskTarget(params.taskId);
-      await options.zcodeAgentService.closeSession({
-        workspacePath: target.workspacePath,
-        workspaceIdentity: target.workspaceIdentity,
-        sessionId: params.taskId,
-      });
-      setOverlay(target, { deleted: true });
-      await updateIndexedTaskState(target, { deleted: true });
-      clearLiveToolProjection(target);
-      clearStreamingToolInputCache(target);
-      // 删除的列表内容收敛由 sessions-index session.removed 驱动；此处广播沿用旧语义兜底。
-      emitWorkspaceTaskListChanged(target, undefined, "task_meta_changed");
-    },
-
     async resumeTask(params): Promise<ZCodeTaskMeta> {
       // v4 侧 resume 已走 subscribe 冷恢复钩子
       // （CLI cold-resume），但 replayable resumeTask 还承担 model/thoughtLevel 回填与
@@ -2992,9 +2798,10 @@ export function createZCodeTaskServiceAdapter(
         model,
         thoughtLevel,
         mcpServers: params.mcpServers,
+        additionalDirectories: params.additionalDirectories,
       });
       if (restored.kind === "legacy") {
-        const meta = await syncTaskIndexMeta({
+        const meta = await updateIndexedPresentation({
           ...restored.snapshot.meta,
           ...(params.automationId ? { cronAutomationId: params.automationId } : {}),
           // D48：pre-打点会话被闲时续跑恢复时补写归属；backfill 之外的双保险。
@@ -3009,7 +2816,7 @@ export function createZCodeTaskServiceAdapter(
       const snapshotMeta = await syncTaskIndexSnapshot(snapshot);
       const meta =
         params.automationId || params.offPeakTaskId
-          ? await syncTaskIndexMeta({
+          ? await updateIndexedPresentation({
               ...snapshotMeta,
               ...(params.automationId ? { cronAutomationId: params.automationId } : {}),
               // 续跑时补写闲时归属标记。
@@ -3063,9 +2870,15 @@ export function createZCodeTaskServiceAdapter(
       });
     },
 
-    // listTaskList 的消费面是全文搜索（searchable_text/snippets）与
-    // remoteTimelineTaskStore 补充链路；侧栏 5 视图 + remote shard 的无搜索行集合
-    // 走上方三个分区读取。workspace 行在客户端用各 endpoint 的 task 行 + session detail 构建。
+    async listActiveTaskIds(params): Promise<string[]> {
+      const key = workspaceKey(params);
+      return taskIndexSyncer
+        .activeTaskRefs()
+        .filter((ref) => workspaceKey(ref) === key)
+        .map((ref) => ref.taskId);
+    },
+
+    // 保留全局搜索与 Controller 的显式 scopes 查询；项目侧栏不再维护旧远端列表镜像。
     async listTaskList(params: ZCodeTaskListQuery): Promise<ZCodeTaskListResult> {
       const result = await taskIndexRepo.queryTaskList({
         ...params,
@@ -3074,67 +2887,6 @@ export function createZCodeTaskServiceAdapter(
       return {
         ...result,
         items: result.items.map(rememberIndexedTaskMeta),
-      };
-    },
-
-    async createTaskGroup(params) {
-      const group = await taskIndexRepo.createTaskGroup(params);
-      return group;
-    },
-
-    async renameTaskGroup(params) {
-      const group = await taskIndexRepo.renameTaskGroup(params);
-      for (const scope of params.workspaceScopes ?? []) {
-        // grouped 结构变更无单任务 meta，沿用 task_meta_changed 驱动 grouped 视图重拉。
-        emitWorkspaceTaskListChanged(scope, undefined, "task_meta_changed");
-      }
-      return group;
-    },
-
-    async updateTaskGroupColor(params) {
-      const group = await taskIndexRepo.updateTaskGroupColor(params);
-      for (const scope of params.workspaceScopes ?? []) {
-        emitWorkspaceTaskListChanged(scope, undefined, "task_meta_changed");
-      }
-      return group;
-    },
-
-    async deleteTaskGroup(params) {
-      await taskIndexRepo.deleteTaskGroup(params);
-      for (const scope of params.workspaceScopes ?? []) {
-        emitWorkspaceTaskListChanged(scope, undefined, "task_meta_changed");
-      }
-    },
-
-    // grouped 视图任务内容由 sessions-index 提供；provider 过滤与 meta 翻译
-    // 随客户端 task 行 join 完成，此处仅保留结构读取。
-
-    async listGroupedTaskViewStructure(params) {
-      // grouped 原始结构（不 join tasks 表）；任务内容由 sessions-index 提供，客户端 join。
-      // 与 listGroupedTaskView 同口径保留 auto-archive 触发（进入 grouped 视图时清理超期任务）。
-      await runWorkspaceTaskAutoArchive(params.workspaceScopes);
-      return taskIndexRepo.queryGroupedTaskViewStructure(params);
-    },
-
-    async applyGroupedTaskViewOrder(params) {
-      const result = await taskIndexRepo.applyGroupedTaskViewOrder({
-        ...params,
-        // grouped 保存排序后的回包也必须继承列表查询的 glm provider 边界，
-        // 否则历史外部 provider 的 task 会通过未过滤的二次查询短暂回到 UI。
-        provider: GLM_PROVIDER,
-      });
-      for (const scope of params.workspaceScopes) {
-        emitWorkspaceTaskListChanged(scope, undefined, "task_meta_changed");
-      }
-      return {
-        nodes: result.nodes.map((node) =>
-          node.type === "task"
-            ? { ...node, task: rememberIndexedTaskMeta(node.task) }
-            : {
-                ...node,
-                tasks: node.tasks.map(rememberIndexedTaskMeta),
-              },
-        ),
       };
     },
 
@@ -3187,7 +2939,6 @@ export function createZCodeTaskServiceAdapter(
         archived: false,
       });
       for (const task of tasks) {
-        setOverlay(task, { archived: true });
         await taskIndexRepo.updateTaskState({
           workspacePath: task.workspacePath,
           workspaceIdentity: task.workspaceIdentity,
@@ -3235,9 +2986,7 @@ export function createZCodeTaskServiceAdapter(
         const legacySnapshot = limitTaskSnapshotMessages(restored.snapshot, params.messageLimit);
         const limitDurationMs = Date.now() - limitStartedAt;
         const indexStartedAt = Date.now();
-        const indexedMeta =
-          (await taskIndexRepo.getTaskMeta(params)) ??
-          (await syncTaskIndexMeta(legacySnapshot.meta));
+        const indexedMeta = (await taskIndexRepo.getTaskMeta(params)) ?? legacySnapshot.meta;
         const indexDurationMs = Date.now() - indexStartedAt;
         logger.info(undefined, "[zcode-task-service] 历史快照读取完成", {
           clientMode: params.clientMode ?? "unknown",
@@ -3263,9 +3012,9 @@ export function createZCodeTaskServiceAdapter(
         params.messageLimit,
       );
       const projectionDurationMs = Date.now() - projectionStartedAt;
-      // session owner 的快照刷新索引投影；syncTaskMeta 继续保留用户手动标题。
+      // 恢复先从 CLI 对账事实，再补模型/思考深度/正文；快照不再推导持久状态。
       const indexStartedAt = Date.now();
-      const indexedMeta = await syncTaskIndexMeta(zcodeSnapshot.meta);
+      const indexedMeta = await syncTaskIndexSnapshot(snapshot);
       const indexDurationMs = Date.now() - indexStartedAt;
       logger.info(undefined, "[zcode-task-service] 历史快照读取完成", {
         clientMode: params.clientMode ?? "unknown",
@@ -3412,7 +3161,7 @@ export function createZCodeTaskServiceAdapter(
           const snapshot = await options.zcodeAgentService.createSession({
             workspacePath: source.workspacePath,
             workspaceIdentity: targetWorkspaceIdentity,
-            sessionId: buildImportedClaudeTaskId(source.workspacePath, source.sessionId),
+            // 显式重新导入产生新 CLI 会话，不能用来源 hash 覆盖已删除或已继续对话的记录。
             sessionTraceId: createSessionTraceId(),
             persistence: "immediate",
             importedHistory: {
@@ -3430,7 +3179,7 @@ export function createZCodeTaskServiceAdapter(
           const meta = await syncTaskIndexSnapshot(snapshot);
           // 导入后的任务必须是真实 ZCode session，setModel/sendPrompt 才能继续命中 runtime。
           // 同时保留 migrationSource，避免任务列表把 Claude Code 迁移历史当成本地新会话。
-          return syncTaskIndexMeta({ ...meta, migrationSource: "claudeCode" });
+          return updateIndexedPresentation({ ...meta, migrationSource: "claudeCode" });
         },
         onTaskImported: (meta) => {
           rememberIndexedTaskMeta(meta);
@@ -3605,20 +3354,19 @@ export function createZCodeTaskServiceAdapter(
     },
 
     async deleteTask(params): Promise<void> {
-      setOverlay(params, { deleted: true });
-      const meta = await updateIndexedTaskState(params, { deleted: true });
-      // task_meta_changed 只会重拉普通 membership，不能表达持久删除语义；
-      // sessions-index 后续仍会返回 CLI 中保留的 session，必须用 task_deleted 让 UI
-      // 立即移除缓存并换代 deleted tombstone join，避免重启或 live upsert 后复活。
-      // 同时携带 meta，让桌面/远控的重复订阅能按同一事件去重 membership bump。
-      emitWorkspaceTaskListChanged(params, meta, "task_deleted");
+      await taskIndexSyncer.mutateSessionFacts(
+        { ...params, sessionId: params.taskId },
+        { type: "delete" },
+      );
     },
 
     async deleteArchivedTask(params): Promise<boolean> {
       const meta = await taskIndexRepo.deleteArchivedTask(params);
       if (!meta) return false;
-      // 先持久化成功再写 overlay；否则失败项会被内存 deleted 标记提前隐藏。
-      setOverlay(params, { deleted: true });
+      await taskIndexSyncer.mutateSessionFacts(
+        { ...params, sessionId: params.taskId },
+        { type: "delete" },
+      );
       emitWorkspaceTaskListChanged(params, meta, "task_deleted");
       return true;
     },
@@ -3645,7 +3393,10 @@ export function createZCodeTaskServiceAdapter(
             result.skippedTaskIds.push(taskId);
             continue;
           }
-          setOverlay(target, { deleted: true });
+          await taskIndexSyncer.mutateSessionFacts(
+            { ...target, sessionId: taskId },
+            { type: "delete" },
+          );
           result.deletedTaskIds.push(taskId);
         } catch (error) {
           result.failedTaskIds.push(taskId);
@@ -3669,80 +3420,15 @@ export function createZCodeTaskServiceAdapter(
     },
 
     async renameTask(params): Promise<ZCodeTaskMeta> {
-      const renamedAt = Date.now();
-      logger.info(undefined, "[ZCodeTaskService] renameTask start", {
-        taskId: params.taskId,
-        workspacePath: params.workspacePath,
-        workspaceIdentity: params.workspaceIdentity,
-        workspaceKey: resolveWorkspaceKey(params),
-        titleLength: params.title.length,
-      });
-      try {
-        setOverlay(params, { title: params.title });
-        logger.info(undefined, "[ZCodeTaskService] renameTask overlay set", {
-          taskId: params.taskId,
-          workspaceKey: resolveWorkspaceKey(params),
-        });
-        const meta = await updateIndexedTaskState(params, {
-          title: params.title,
-          // 手动重命名是 app 侧 task meta 变更。之前只写 title 不更新时间，
-          // 运行中前端 optimistic merge 会把同 updatedAt 的旧长标题当成更强 meta，导致标题要等任务完成才刷新。
-          updatedAt: renamedAt,
-          titleOverridden: true,
-        });
-        logger.info(undefined, "[ZCodeTaskService] renameTask index updated", {
-          taskId: params.taskId,
-          workspaceKey: resolveWorkspaceKey(params),
-          updatedAt: meta.updatedAt,
-          titleLength: meta.title.length,
-        });
-        try {
-          const ack = await options.zcodeAgentService.sendConversationCommandV4({
-            workspacePath: params.workspacePath,
-            workspaceIdentity: params.workspaceIdentity,
-            envelope: createHostCommandEnvelope({
-              type: "renameSession",
-              sessionId: params.taskId,
-              payload: { title: params.title },
-            }),
-          });
-          assertV4CommandAckOk("renameSession", ack, `session=${params.taskId}`);
-        } catch (error) {
-          // 旧侧边栏 rename 过去只写 tasks-index；v4 sessions-index 读 CLI
-          // session store，导致手动标题在新侧边栏丢失。这里尽力同步 renameSession，
-          // 但历史/导入类 task 可能没有活跃 v4 session，不能因此破坏既有重命名。
-          logger.warn(
-            undefined,
-            "同步 task rename 到 v4 session store 失败，保留 task-index 标题",
-            {
-              taskId: params.taskId,
-              workspacePath: params.workspacePath,
-              workspaceIdentity: params.workspaceIdentity,
-              message: error instanceof Error ? error.message : String(error),
-            },
-          );
-        }
-        // 手动重命名同样是标题变更，与 pin/archive/unread 归属无关，用专属 reason。
-        emitWorkspaceTaskListChanged(params, meta, "task_title_changed");
-        logger.info(undefined, "[ZCodeTaskService] renameTask event emitted", {
-          taskId: params.taskId,
-          workspaceKey: resolveWorkspaceKey(params),
-        });
-        return meta;
-      } catch (error) {
-        logger.error(undefined, "[ZCodeTaskService] renameTask failed", {
-          taskId: params.taskId,
-          workspacePath: params.workspacePath,
-          workspaceIdentity: params.workspaceIdentity,
-          workspaceKey: resolveWorkspaceKey(params),
-          message: error instanceof Error ? error.message : String(error),
-        });
-        throw error;
-      }
+      const meta = await taskIndexSyncer.mutateSessionFacts(
+        { ...params, sessionId: params.taskId },
+        { type: "rename", title: params.title },
+      );
+      if (!meta) throw new Error("task.not-found");
+      return meta;
     },
 
     async setTaskPinned(params): Promise<ZCodeTaskMeta> {
-      setOverlay(params, { pinned: params.pinned });
       const meta = await updateIndexedTaskState(params, {
         pinned: params.pinned,
       });
@@ -3758,9 +3444,8 @@ export function createZCodeTaskServiceAdapter(
           workspaceIdentity: params.workspaceIdentity,
           expectedUnreadAt: params.expectedUnreadAt,
         });
-        // 旧手机点击可能晚于新的终态未读到达。CAS 未命中时必须把
-        // service overlay 对账到当前 meta，不能先乐观清除后留下 renderer-only 已读状态。
-        setOverlay(params, { unreadAt: result.meta.unreadAt });
+        // Bug 原因：旧手机点击可能晚于新的终态未读到达。CAS 未命中时必须把当前 meta
+        // 广播出去让 renderer 对账，不能先乐观清除后留下 renderer-only 已读状态。
         if (result.cleared) {
           emitWorkspaceTaskListChanged(params, result.meta, "task_meta_changed");
         }
@@ -3768,11 +3453,9 @@ export function createZCodeTaskServiceAdapter(
       }
 
       const unreadAt = params.unread ? Date.now() : undefined;
-      setOverlay(params, { unreadAt });
       const meta = await updateIndexedTaskState(params, { unreadAt });
-      // repository 可能为避免同毫秒 CAS 版本碰撞而推进 unreadAt；
-      // service overlay 必须对账最终持久值，否则后续 snapshot 会继续暴露旧 marker。
-      setOverlay(params, { unreadAt: meta.unreadAt });
+      // Bug 原因：repository 可能为避免同毫秒 CAS 版本碰撞而推进 unreadAt；
+      // 必须把最终持久值广播给 renderer 对账，否则后续 snapshot 会继续暴露旧 marker。
       // unread 归属在 tasks-index、sessions-index 不携带，必须走 task_meta_changed 触发 membership 重拉。
       emitWorkspaceTaskListChanged(params, meta, "task_meta_changed");
       return meta;
@@ -3783,10 +3466,8 @@ export function createZCodeTaskServiceAdapter(
         workspacePath: params.workspacePath,
         workspaceIdentity: params.workspaceIdentity,
       });
-      // 逐条对账 service overlay：不这么做，随后到达的 snapshot 会把已清掉的 marker 写回。
-      for (const taskId of clearedTaskIds) {
-        setOverlay({ ...params, taskId }, { unreadAt: undefined });
-      }
+      // 清未读已经落在 sqlite 上（同事务），广播让各观察端重拉即收敛；
+      // 旧实现还有一份内存 overlay 需要逐条对账，该层已随上游写路径收敛删除。
       if (clearedTaskIds.length > 0) {
         // 批次只广播一次。unread 归属在 tasks-index、sessions-index 不携带，
         // 必须走 task_meta_changed 让所有观察端重拉 membership（含手机端兜底）。
@@ -3796,14 +3477,12 @@ export function createZCodeTaskServiceAdapter(
     },
 
     async archiveTask(params): Promise<ZCodeTaskMeta> {
-      setOverlay(params, { archived: true });
       const meta = await updateIndexedTaskState(params, { archived: true });
       emitWorkspaceTaskListChanged(params, meta, "task_archived");
       return meta;
     },
 
     async unarchiveTask(params): Promise<ZCodeTaskMeta> {
-      setOverlay(params, { archived: false });
       const meta = await updateIndexedTaskState(params, { archived: false });
       emitWorkspaceTaskListChanged(params, meta, "task_unarchived");
       return meta;
@@ -3934,14 +3613,6 @@ function normalizeWorkspaceParams(params: {
   return {
     workspacePath: params.workspacePath,
     workspaceIdentity: params.workspaceIdentity,
-  };
-}
-
-function applyOverlayToMeta(meta: ZCodeTaskMeta, overlay: TaskOverlay): ZCodeTaskMeta {
-  return {
-    ...meta,
-    title: overlay.title ?? meta.title,
-    unreadAt: overlay.unreadAt,
   };
 }
 

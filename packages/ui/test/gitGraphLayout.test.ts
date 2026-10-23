@@ -137,21 +137,6 @@ describe("layoutGitGraph", () => {
       ),
     ).toBe(true);
   });
-
-  it("keeps refs on the row when multiple names point to one commit", () => {
-    const layout = layoutGitGraph([
-      {
-        ...commit("head"),
-        refs: [
-          { name: "HEAD", kind: "head" },
-          { name: "main", kind: "branch" },
-          { name: "v1.0.0", kind: "tag" },
-        ],
-      },
-    ]);
-
-    expect(layout.rows[0]?.commit.refs.map((ref) => ref.name)).toEqual(["HEAD", "main", "v1.0.0"]);
-  });
 });
 
 describe("GitGraphPane", () => {

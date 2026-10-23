@@ -33,7 +33,7 @@ describe("create-app 装配跨进程共享账本", () => {
   it("一次限速请求的扣减落在共享文件里（账本由 create-app 装进进程单例）", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "zcode-quota-app-"));
     const quotaFile = join(tempRoot, "shared", "provider-quota.json");
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     try {
       const app = await createRegistryBackedTestApp({
         // 位置写进 env 才会被 create-app 采纳；这里用显式路径而不是 %ProgramData%，

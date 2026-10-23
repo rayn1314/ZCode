@@ -10,11 +10,12 @@ import {
 } from "./helpers/registry-backed-test-app.js";
 
 describe("guarded workflow runtime ingress", () => {
+  // 真实 App、SQLite 与父子工作流有初始化开销；框架预算不改变权限及产品超时。
   it.each(["expert", "script"] as const)(
     "%s child stays YOLO while its parent remains guarded",
     async (kind) => {
       const root = await mkdtemp(join(tmpdir(), "guarded-workflow-"));
-      const store = createSqliteSessionStore({ dbPath: ":memory:" });
+      const store = await createSqliteSessionStore({ dbPath: ":memory:" });
       const selection = {
         providerId: "parent",
         modelId: "model",
@@ -48,6 +49,14 @@ describe("guarded workflow runtime ingress", () => {
         },
         runtimeConfig: {
           mode: "guarded",
+          // 显式给出可解析的方言：Windows 精简测试环境探测不到 bash/cmd 时会退回
+          // legacy-shell，而 guarded 的危命令匹配按设计不支持该方言（无从判断语法），
+          // 自动退回会让本用例在 Windows 上测不到 ask 路径。
+          bashShellSelection: {
+            dialect: "posix",
+            source: "auto-detected",
+            display: { name: "bash" },
+          },
           workingDirectory: root,
           mcp: { enabled: false },
           modelSelection: selection,
@@ -115,5 +124,6 @@ describe("guarded workflow runtime ingress", () => {
         await rm(root, { recursive: true, force: true });
       }
     },
+    30_000,
   );
 });

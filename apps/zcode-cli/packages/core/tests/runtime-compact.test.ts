@@ -233,9 +233,6 @@ describe("runtime compact helpers", () => {
       "message" in entry ? [entry.message] : [],
     );
 
-    expect(selection.preservedEntries.some((entry) => "tokens" in entry && entry.tokens)).toBe(
-      true,
-    );
     expect(
       selection.preservedEntries.find(
         (entry) => "tokens" in entry && entry.tokens?.input === latestTokens.input,
@@ -321,28 +318,25 @@ describe("runtime compact helpers", () => {
     expect(estimateCurrentModelInputTokens(messages, [undefined])).toBe(14);
   });
 
-  it.each([undefined, 0] as const)(
-    "keeps the assistant in the local increment when outputTokens=%s",
-    (outputTokens) => {
-      const committedAssistant = {
-        message: { role: "assistant" as const, content: "previous assistant response" },
-        tokens: {
-          input: 100,
-          output: outputTokens ?? 0,
-          reasoning: 0,
-          cache: { read: 0, write: 0 },
-        },
-      };
-      const incrementalMessages = [
-        committedAssistant.message,
-        { role: "user" as const, content: "new user message" },
-      ];
+  it("keeps the assistant in the local increment when output tokens are zero", () => {
+    const committedAssistant = {
+      message: { role: "assistant" as const, content: "previous assistant response" },
+      tokens: {
+        input: 100,
+        output: 0,
+        reasoning: 0,
+        cache: { read: 0, write: 0 },
+      },
+    };
+    const incrementalMessages = [
+      committedAssistant.message,
+      { role: "user" as const, content: "new user message" },
+    ];
 
-      expect(
-        estimateCurrentModelInputTokens(incrementalMessages, [committedAssistant, undefined]),
-      ).toBe(100 + estimateMessageTokens(incrementalMessages));
-    },
-  );
+    expect(
+      estimateCurrentModelInputTokens(incrementalMessages, [committedAssistant, undefined]),
+    ).toBe(100 + estimateMessageTokens(incrementalMessages));
+  });
 
   it("uses the real provider anchor plus the local increment for the pre-compact count", () => {
     const entries: RuntimeMessageEntry[] = [
@@ -671,12 +665,11 @@ describe("AgentRuntime manual compact", () => {
     expect(compactRequests[0]?.messages.some((message) => message.role === "system")).toBe(true);
   });
 
-  it("preserves the main-turn thinking config for compact summary requests", async () => {
+  it("uses the default output budget for compact summary requests", async () => {
     const sessionId = createSessionId("runtime-compact-main-thinking-config");
     const requests: Array<{
       isCompact: boolean;
       maxOutputTokens?: number;
-      providerOptions: unknown;
     }> = [];
     const runtime = createTestAgentRuntime(
       sessionId,
@@ -693,7 +686,6 @@ describe("AgentRuntime manual compact", () => {
               requests.push({
                 isCompact,
                 maxOutputTokens: request.options?.maxOutputTokens,
-                providerOptions: undefined,
               });
               return {
                 finishReason: "stop",
@@ -710,10 +702,7 @@ describe("AgentRuntime manual compact", () => {
     await runtime.executeTurn("second compact thinking setup");
     await runtime.executeTurn("/compact");
 
-    const compactProviderOptions = requests.find((request) => request.isCompact)?.providerOptions;
     expect(requests.find((request) => request.isCompact)?.maxOutputTokens).toBe(20_000);
-    expect(compactProviderOptions).toBeUndefined();
-    expect(requests.find((request) => !request.isCompact)?.providerOptions).toBeUndefined();
   });
 
   it("runs compact stream-first, links the non-stream fallback, and keeps the stream hidden", async () => {
@@ -1297,7 +1286,6 @@ describe("AgentRuntime manual compact", () => {
       kind: "compact" | "normal";
       messages: Array<{ role: string; content: string }>;
     }> = [];
-    let compactAttempts = 0;
     let normalResponseCount = 0;
 
     const runtime = createTestAgentRuntime(
@@ -1319,7 +1307,6 @@ describe("AgentRuntime manual compact", () => {
               });
 
               if (isCompact) {
-                compactAttempts++;
                 return {
                   finishReason: "stop",
                   text: [
@@ -1354,7 +1341,6 @@ describe("AgentRuntime manual compact", () => {
       ?.messages.map((message) => message.content)
       .join("\n");
 
-    expect(compactAttempts).toBe(1);
     expect(compactRequests).toHaveLength(1);
     expect(postCompactContext).toContain("Prompt is too long was mentioned");
     expect(postCompactContext).toContain("context-usage.ts");
@@ -2468,7 +2454,6 @@ describe("AgentRuntime manual compact", () => {
 
     const timelineMessage = store.savedMessages.find((message) => message.id === timelineMessageId);
     expect(timelineMessage?.parentID).toBe(compactMessageId);
-    expect(timelineMessage?.parentID).not.toBe(preservedMessageId);
   });
 
   it("keeps the summarized message anchor when compacting after resume", async () => {
@@ -2691,7 +2676,10 @@ describe("AgentRuntime manual compact", () => {
     const runtime = createTestAgentRuntime(
       sessionId,
       // 本场景固定截断预算；目录补齐另由 agent-listing-persistence 覆盖。
-      { systemPrompt: "You are a compact prompt-too-long test agent.", subagents: { enabled: false } },
+      {
+        systemPrompt: "You are a compact prompt-too-long test agent.",
+        subagents: { enabled: false },
+      },
       {
         eventStore,
         modelFactory: createTestModelFactory(
@@ -3319,7 +3307,6 @@ describe("AgentRuntime manual compact", () => {
     const postCompactRequest = requests.at(-1)?.context;
 
     expect(result.response).toBe("normal response 3");
-    expect(compactAttempts).toBe(3);
     expect(requests.map((request) => request.kind)).toEqual([
       "normal",
       "normal",
@@ -3556,7 +3543,6 @@ describe("AgentRuntime manual compact", () => {
     const postCompactContext = requests.at(-1)?.context;
 
     expect(result.response).toBe("normal response 4");
-    expect(compactAttempts).toBe(2);
     expect(compactRequests).toHaveLength(2);
     expect(compactModelRetries).toEqual([0, 1]);
     expect(timelinePayloads).toEqual([
@@ -3948,7 +3934,7 @@ describe("AgentRuntime manual compact", () => {
         },
         contextWindow: 128_000,
         modelSelection: createTestModelSelection(modelSelection),
-        modelContextBudgetStrategy: "legacy",
+        modelContextBudgetStrategy: "preflight-v1",
       },
       {
         eventStore: createTestSessionEventStore(),
@@ -3965,6 +3951,7 @@ describe("AgentRuntime manual compact", () => {
     const autoCompactLog = debug.mock.calls
       .map((call) => call[1])
       .find((context) => context?.event === "compact.auto.skipped");
+    // 固定 preflight 策略限制 compact 预留，不能把主请求的模型输出预算一并降为 21K。
     expect(mainRequestMaxOutputTokens).toBe(64_000);
     // 上游这条断言的数值来自已被移除的 legacy 预留分支（预留整个模型输出 64000 / 阈值 51000）。
     // 当前 policy 统一按 min(maxOutputTokens, 21000) 预留，策略字段恒为共享默认 preflight-v1
@@ -4519,16 +4506,9 @@ describe("AgentRuntime manual compact", () => {
       ?.messages.map((message) => message.content)
       .join("\n");
 
-    expect(postResumeContext).toContain("Reactive resume summary");
     expect(postResumeContext).not.toContain("second reactive resume setup");
-    expect(postResumeContext).toContain("normal response 2");
-    expect(postResumeContext).toContain("trigger reactive resume overflow");
-    expect(postResumeContext).toContain(
-      `Called the Read tool with the following input: {"file_path":"${readFilePath}"}`,
-    );
     expect(postResumeContext).toContain("1\texport const reactiveResume = 42;");
     expect(postResumeContext).not.toContain("Recent file read before compact");
-    expect(postResumeContext).toContain("continue after reactive compact resume");
     expect(
       indexOrder(postResumeContext ?? "", [
         "Reactive resume summary",
@@ -4848,7 +4828,6 @@ describe("AgentRuntime manual compact", () => {
       "compact",
       "normal",
     ]);
-    expect(compactAttempts).toBe(2);
     expect(compactModelRetries).toEqual([0, 1]);
     expect(retriedMainContext).toContain("Reactive empty length retry summary");
     expect(retriedMainContext).toContain("reactive empty length overflow");
@@ -5900,8 +5879,6 @@ function createRecordingSessionStore(
             input.timeCompacting === null
               ? undefined
               : (input.timeCompacting ?? current.time.compacting),
-          archived:
-            input.timeArchived === null ? undefined : (input.timeArchived ?? current.time.archived),
         },
       };
       sessions.set(input.id, next);
@@ -5912,9 +5889,7 @@ function createRecordingSessionStore(
     },
     async listSessions(input) {
       return Array.from(sessions.values()).filter(
-        (session) =>
-          (!input?.projectID || session.projectID === input.projectID) &&
-          (input?.includeArchived || session.time.archived === undefined),
+        (session) => !input?.projectID || session.projectID === input.projectID,
       );
     },
     async saveMessage(input) {

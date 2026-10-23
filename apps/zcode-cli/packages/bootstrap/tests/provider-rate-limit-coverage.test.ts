@@ -140,7 +140,7 @@ describe("每分钟请求数的覆盖面", () => {
   it("legacy Workflow 工具的子代理带上 provider 配额端口", async () => {
     const tempRoot = await mkdtemp(join(tmpdir(), "zcode-rate-limit-script-"));
     const scriptPath = join(tempRoot, "coverage.workflow.js");
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const seen: (ModelRequestAdmission | undefined)[] = [];
     await writeFile(
       scriptPath,
@@ -188,7 +188,7 @@ describe("每分钟请求数的覆盖面", () => {
   }, 30_000);
 
   it("expert workflow facade 的子 runtime 带上 provider 配额端口", async () => {
-    const sessionStore = createSqliteSessionStore({ dbPath: ":memory:" });
+    const sessionStore = await createSqliteSessionStore({ dbPath: ":memory:" });
     const seen: (ModelRequestAdmission | undefined)[] = [];
 
     try {

@@ -21,7 +21,7 @@ const tempRoots: string[] = [];
 afterEach(async () => {
   while (tempRoots.length > 0) {
     const root = tempRoots.pop();
-    if (root) await rm(root, { force: true, recursive: true });
+    if (root) await removeTempRoot(root);
   }
 });
 
@@ -30,7 +30,7 @@ async function seedSession(input: {
   messageCount: number;
   partsPerMessage?: number;
 }): Promise<{ sessionID: SessionId; messageIds: MessageId[] }> {
-  const store = createSqliteSessionStore({ dbPath: input.dbPath });
+  const store = await createSqliteSessionStore({ dbPath: input.dbPath });
   const sessionID = createSessionId("window-session");
   await store.createSession({
     id: sessionID,
@@ -66,8 +66,28 @@ async function seedSession(input: {
   return { sessionID, messageIds };
 }
 
-function openStore(dbPath: string) {
+// createSqliteSessionStore 在上游合并后是异步工厂：忘记 await 拿到的是 Promise，
+// 后面 store.close() 就会报 "store.close is not a function"。
+async function openStore(dbPath: string) {
   return createSqliteSessionStore({ dbPath });
+}
+
+/**
+ * Windows 上刚关闭的 sqlite 句柄（-shm/-wal）会短暂占用目录，直接 `rm` 抛 EBUSY 并顶掉
+ * 真正的断言失败。有界重试只吸收瞬时占用，预算用尽仍抛原错。
+ */
+async function removeTempRoot(root: string): Promise<void> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      await rm(root, { force: true, recursive: true });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      const transient = code === "EBUSY" || code === "EPERM" || code === "ENOTEMPTY";
+      if (!transient || attempt >= 20) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 describe("session store message window", () => {
@@ -76,7 +96,7 @@ describe("session store message window", () => {
     tempRoots.push(root);
     const dbPath = join(root, "session.sqlite");
     const { sessionID } = await seedSession({ dbPath, messageCount: 25, partsPerMessage: 2 });
-    const store = openStore(dbPath);
+    const store = await openStore(dbPath);
     try {
       const all = await store.messages({ sessionID });
       const window = await store.messageWindow!({ sessionID, limit: 10 });
@@ -99,7 +119,7 @@ describe("session store message window", () => {
     tempRoots.push(root);
     const dbPath = join(root, "session.sqlite");
     const { sessionID } = await seedSession({ dbPath, messageCount: 3 });
-    const store = openStore(dbPath);
+    const store = await openStore(dbPath);
     try {
       const window = await store.messageWindow!({ sessionID, limit: 10 });
       expect(window.hasOlder).toBe(false);
@@ -145,7 +165,7 @@ describe("session store message window", () => {
     db.close();
     expect(Number(nullCount.total)).toBe(1);
 
-    const store = openStore(dbPath);
+    const store = await openStore(dbPath);
     try {
       const window = await store.messageWindow!({ sessionID, limit: 2 });
       expect(window.legacySequence).toBe(true);

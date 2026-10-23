@@ -16,6 +16,8 @@ const allowedNetworkBoundaryFiles = new Set([
   // 只读 node:http 的 IncomingMessage 类型，把已到手的响应交给 http/index.ts 与 proxy-fetch.ts，不发请求。
   "packages/adapters/src/network/incoming-response.ts",
   "packages/adapters/src/network/proxy-fetch.ts",
+  // MCP 的局部 fetch 由 createNetworkProxyFetch 注入，仅包裹网络观测范围，不直接使用全局 fetch。
+  "packages/adapters/src/mcp/network.ts",
   "packages/cli/src/provider-runtime-env.ts",
   // Hook 的 http 回调：本 fork 新增的出网点，在 core 内自带 SSRF 校验
   // （resolveHttpRequest：仅 http/https，请求前解析并拒绝回环/链路本地/私网）。

@@ -35,7 +35,7 @@ describe("Settings target workspace service routing", () => {
 
     expect(source).toContain("useWorkspaceServicesResolution");
     expect(source).toMatch(
-      /useWorkspaceServicesResolution\(\s*target\?\.workspacePath,\s*target\?\.remoteSessionId,\s*target\?\.workspaceIdentity,\s*target\?\.remoteTarget,\s*\)/,
+      /useWorkspaceServicesResolution\(\s*target\?\.workspacePath,\s*target\?\.remoteSessionId,\s*target\?\.workspaceIdentity,\s*target\?\.remoteTarget,\s*\{[\s\S]*?forceUnscoped: Boolean\(cacheAuthorityKey\),?\s*\}[\s\S]*?\)/,
     );
     expect(source).toContain(
       "const { pluginManagementService } = targetServiceResolution.services;",
@@ -54,10 +54,14 @@ describe("Settings target workspace service routing", () => {
 
     expect(source).toContain("useWorkspaceServicesResolution");
     expect(source).toMatch(
-      /useWorkspaceServicesResolution\(\s*targetWorkspacePath,\s*selectedWorkspace\?\.remoteSessionId,\s*targetWorkspaceIdentity,\s*selectedWorkspace\?\.remoteTarget,\s*\)/,
+      /useWorkspaceServicesResolution\(\s*targetWorkspacePath,\s*selectedWorkspace\?\.remoteSessionId,\s*targetWorkspaceIdentity,\s*selectedWorkspace\?\.remoteTarget,\s*\{[\s\S]*?forceUnscoped: Boolean\(settingsSourceServerId && !selectedWorkspace\),?\s*\}[\s\S]*?\)/,
+    );
+    // Source user scope 只暴露 user-only 合同；hooksService 最终仍必须来自 target 解析结果。
+    expect(source).toContain(
+      "const { hooksService: targetHooksService, pluginManagementService } =\n    targetServiceResolution.services;",
     );
     expect(source).toContain(
-      "const { hooksService, pluginManagementService } = targetServiceResolution.services;",
+      'loadHooks: (params) => targetHooksService.loadHooks({ ...params, scope: "user" })',
     );
     expect(source).toContain("if (!targetServiceResolution.rpcReady) return;");
     expect(source).toMatch(
@@ -65,18 +69,26 @@ describe("Settings target workspace service routing", () => {
     );
   });
 
-  it("keeps Subagent settings on the Local Environment services and model view", async () => {
+  it("routes Subagent settings through the target scope and keeps the local agent service", async () => {
     const source = await readSource("src/settings/SubagentsSection.tsx");
 
-    expect(source).toContain("const localHostServices = useBaseWorkspaceServices();");
-    expect(source).toContain("localHostServices.modelSelectionService");
-    expect(source).toContain(
-      "const { pluginManagementService, subagentsService, zcodeAgentService } = localHostServices;",
+    // 上游接管后：子智能体与插件投影走 Scope target 解析，连接就绪前暂停 RPC；
+    // 未选项目时权威固定为本机 base（不能继承 active 远端身份）。
+    expect(source).toContain("const baseServices = useBaseWorkspaceServices();");
+    expect(source).toMatch(
+      /unscopedServices: selectedWorkspace\s*\?\s*undefined\s*:\s*settingsSourceServerId\s*\?\s*currentServices\s*:\s*baseServices,/,
     );
+    expect(source).toContain("forceUnscoped: !selectedWorkspace");
     expect(source).toContain(
-      ".filter((tab) => !tab.remoteTarget && !tab.remoteSessionId && !tab.workspaceIdentity)",
+      "const { pluginManagementService, subagentsService } = targetServiceResolution.services;",
     );
-    expect(source).not.toContain("useWorkspaceServicesResolution");
+    // 本机热重载只作用于本机运行中的会话，zcodeAgentService 固定取 base 权威。
+    expect(source).toContain("const { zcodeAgentService } = baseServices;");
+    expect(source).toContain("targetServiceResolution.services.modelSelectionService,");
+    expect(source).toMatch(
+      /\.filter\(\s*\(tab\) => !tab\.workspaceIdentity && !tab\.remoteSessionId && !tab\.remoteTarget,?\s*\)/,
+    );
+    expect(source).toContain("if (!targetServiceResolution.rpcReady) return;");
   });
 
   it("routes Skills through the target passed by PluginsSection", async () => {
@@ -84,7 +96,7 @@ describe("Settings target workspace service routing", () => {
 
     expect(source).toContain("useWorkspaceServicesResolution");
     expect(source).toMatch(
-      /useWorkspaceServicesResolution\(\s*activeWorkspacePath,\s*remoteSessionId,\s*activeWorkspaceIdentity,\s*remoteTarget,\s*\)/,
+      /useWorkspaceServicesResolution\(\s*activeWorkspacePath,\s*remoteSessionId,\s*activeWorkspaceIdentity,\s*remoteTarget,\s*\{[\s\S]*?forceUnscoped: Boolean\(cacheAuthorityKey\),?\s*\}[\s\S]*?\)/,
     );
     expect(source).toMatch(
       /const \{ pluginManagementService, skillSyncService, skillsService \}\s*=\s*targetServiceResolution\.services;/,
@@ -106,7 +118,7 @@ describe("Settings target workspace service routing", () => {
 
     expect(source).not.toContain('useServices.js"');
     expect(source).toMatch(
-      /useWorkspaceServicesResolution\(\s*currentWorkspaceTab\?\.workspacePath \?\? workspacePath,\s*currentWorkspaceTab\?\.remoteSessionId,\s*currentWorkspaceTab\?\.workspaceIdentity \?\? workspaceIdentity,\s*currentWorkspaceTab\?\.remoteTarget,\s*\)/,
+      /useWorkspaceServicesResolution\(\s*currentWorkspaceTab\?\.workspacePath \?\? workspacePath,\s*currentWorkspaceTab\?\.remoteSessionId,\s*currentWorkspaceTab\?\.workspaceIdentity \?\? workspaceIdentity,\s*currentWorkspaceTab\?\.remoteTarget,\s*\{[\s\S]*?forceUnscoped: Boolean\(cacheAuthorityKey\),?\s*\}[\s\S]*?\)/,
     );
     expect(source).toMatch(
       /const \{ commandsService, pluginManagementService, settingsSyncService \}\s*=\s*listServiceResolution\.services;/,

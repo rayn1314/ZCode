@@ -48,6 +48,9 @@ export type SubagentChildRuntimeConfigOverrides = Pick<
   | "taskType"
   | "toolAllowlist"
   | "toolDisallowlist"
+  // 3.16.2：子会话 runtimeConfig 明确继承父会话的 tool search 模式，
+  // 漏掉这一项子代理会退回默认暴露面（与父会话可派发工具面分叉）。
+  | "toolSearch"
   | "toolset"
   | "workingDirectory"
 >;

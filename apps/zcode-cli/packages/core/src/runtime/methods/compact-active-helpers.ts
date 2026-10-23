@@ -105,13 +105,17 @@ export function estimatePreCompactTokenCount(input: {
 export function buildCompactSummaryRequestMessages(
   entriesForSummary: readonly RuntimeMessageEntry[],
   compactPrompt: string,
-  options: { useMidConversationSystem?: boolean } = {},
+  options: {
+    useMidConversationSystem?: boolean;
+    loadedToolCallIds?: ReadonlySet<string>;
+  } = {},
 ): RunModelTextRequestOptions["messages"] {
   return buildProviderRequestMessages({
     entries: [...entriesForSummary, { message: { role: "user" as const, content: compactPrompt } }],
     applyCacheControl: true,
     skipCacheWrite: true,
     useMidConversationSystem: options.useMidConversationSystem,
+    loadedToolCallIds: options.loadedToolCallIds,
   }).messages;
 }
 

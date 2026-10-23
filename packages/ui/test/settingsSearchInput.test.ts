@@ -18,7 +18,7 @@ describe("SettingsSearchInput", () => {
     expect(container.querySelector("svg")?.getAttribute("class")).toContain("size-4");
   });
 
-  it("uses an X icon button to clear a controlled search", () => {
+  it("clears a controlled search through the labelled button", () => {
     const onClear = vi.fn();
     render(
       createElement(SettingsSearchInput, {

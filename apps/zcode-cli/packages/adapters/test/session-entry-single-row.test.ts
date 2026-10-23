@@ -25,7 +25,7 @@ const ENTRY_ID = "subagent-lifecycle:agent_1";
 
 async function withStore<T>(run: (store: SessionStorePort) => Promise<T>): Promise<T> {
   const rootDir = await mkdtemp(join(tmpdir(), "zcode-session-entry-"));
-  const store = createSqliteSessionStore({ dbPath: join(rootDir, "sessions.db") });
+  const store = await createSqliteSessionStore({ dbPath: join(rootDir, "sessions.db") });
   try {
     await store.createSession({
       id: SESSION,

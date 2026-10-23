@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CRON_DEFAULT_GROUP_ID, OFF_PEAK_DEFAULT_GROUP_ID } from "@zcode/shared";
-import { getTaskGroupDisplayTitle } from "@/workspace-grouped-tasks/group-title.js";
+import { getTaskGroupDisplayTitle } from "@/project-sidebar/grouped/group-title.js";
 import enUS from "@/i18n/locales/en-US.js";
 import zhCN from "@/i18n/locales/zh-CN.js";
 
@@ -37,7 +37,7 @@ describe("off-peak 系统分组 id 与标题", () => {
 
 describe("grouped UI 收敛接线（源码断言）", () => {
   it("GroupItem 用 isSystemGroup 统一裁剪改名/解散，标题走本地化", () => {
-    const source = readSource("packages/ui/src/workspace-grouped-tasks/group-item.tsx");
+    const source = readSource("packages/ui/src/project-sidebar/grouped/group-item.tsx");
     expect(source).toContain("OFF_PEAK_DEFAULT_GROUP_ID");
     expect(source).toContain("const isSystemGroup = isCronGroup || isOffPeakGroup;");
     expect(source).not.toContain("{isCronGroup ? null : (");
@@ -46,24 +46,24 @@ describe("grouped UI 收敛接线（源码断言）", () => {
   });
 
   it("sticky header 对系统分组裁剪解散项（修掉 cron 存量缺口）", () => {
-    const source = readSource("packages/ui/src/workspace-grouped-tasks/sticky-group-header.tsx");
+    const source = readSource("packages/ui/src/project-sidebar/grouped/sticky-group-header.tsx");
     expect(source).toContain("OFF_PEAK_DEFAULT_GROUP_ID");
     expect(source).toContain("isSystemGroup ? null : (");
   });
 
   it("Section 把闲时组头「+」路由到 Automations，且投影去重已退役", () => {
-    const source = readSource("packages/ui/src/WorkspaceGroupedTasksSection.tsx");
-    expect(source).toContain("node.group.id === OFF_PEAK_DEFAULT_GROUP_ID");
+    // 上游把侧栏分区迁到 project-sidebar/TaskGroupedView，创建路由逻辑随之迁移。
+    const source = readSource("packages/ui/src/project-sidebar/TaskGroupedView.tsx");
+    expect(source).toContain("groupId === OFF_PEAK_DEFAULT_GROUP_ID");
     expect(source).toContain("onOpenAutomations?.()");
     expect(source).not.toContain("filterGroupedTaskViewForOffPeakSessions");
-    expect(source).not.toContain("useOffPeakTaskStore");
     expect(source).not.toContain("excludeOffPeakSessions");
   });
 
   it("拖拽浮层与 sticky header 的标题同样本地化闲时组", () => {
     for (const relativePath of [
-      "packages/ui/src/workspace-grouped-tasks/group-drag-overlay.tsx",
-      "packages/ui/src/workspace-grouped-tasks/sticky-group-header.tsx",
+      "packages/ui/src/project-sidebar/grouped/group-drag-overlay.tsx",
+      "packages/ui/src/project-sidebar/grouped/sticky-group-header.tsx",
     ]) {
       expect(readSource(relativePath)).toContain(
         'offPeak: intl.formatMessage({ id: "offPeak.sidebar.groupTitle" })',

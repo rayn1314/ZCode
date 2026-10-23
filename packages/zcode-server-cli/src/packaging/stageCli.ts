@@ -38,9 +38,18 @@ async function findRepoRoot(startDir: string): Promise<string> {
   }
 }
 
-async function runCommand(command: string, args: readonly string[], cwd: string): Promise<void> {
+async function runCommand(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env?: NodeJS.ProcessEnv,
+): Promise<void> {
   await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], { cwd, stdio: ["ignore", "inherit", "inherit"] });
+    const child = spawn(command, [...args], {
+      cwd,
+      env,
+      stdio: ["ignore", "inherit", "inherit"],
+    });
     child.once("error", rejectPromise);
     child.once("exit", (code) => {
       if (code === 0) resolvePromise();
@@ -139,15 +148,21 @@ async function ensureNodeBinary(repoRoot: string, target: ServerTarget): Promise
 
 async function ensureAgentBundle(repoRoot: string, skipBuild: boolean): Promise<string> {
   const bundlePath = join(repoRoot, "apps/zcode-cli/packages/cli/dist/zcode.cjs");
-  if (await pathExists(bundlePath)) return bundlePath;
   if (skipBuild) {
+    if (await pathExists(bundlePath)) return bundlePath;
     throw new Error(`Agent bundle missing: ${bundlePath} (remove --skip-agent-build to build it)`);
   }
-  log("agent bundle missing, building via scripts/build-desktop-agent-cli.mjs");
+  // Bug 原因：第一目标过去只按 bundle 是否存在决定构建，bootstrap 会把上一代 dist
+  // 复制进所有平台 archive。只有本轮第一目标真实构建后，后续目标才允许 skipBuild 复用。
+  log("building current agent bundle via scripts/build-desktop-agent-cli.mjs");
+  // build-only：该脚本默认会把 bundle 暂存进桌面打包目录 bundled-agents/<platform>/glm，
+  // 其 stageAgentBundle 会 rmSync 清空整个目录——那会冲掉 bootstrap 已暂存的官方插件和
+  // CUA koffi。远端资产只需要 cli/dist 的构建产物，显式跳过桌面暂存。
   await runCommand(
     process.execPath,
     [join(repoRoot, "scripts/build-desktop-agent-cli.mjs")],
     repoRoot,
+    { ...process.env, ZCODE_DESKTOP_AGENT_BUILD_ONLY: "1" },
   );
   if (!(await pathExists(bundlePath))) {
     throw new Error(`Agent bundle still missing after build: ${bundlePath}`);
@@ -253,6 +268,7 @@ async function main(): Promise<void> {
     appVersion,
     distDir,
     agentBundlePath,
+    bundledSkillsDir: join(repoRoot, "apps/zcode-cli/packages/bundled-skills"),
     nodeBinaryPath,
     notices: {
       thirdParty: thirdParty.toString("utf8"),
@@ -265,6 +281,7 @@ async function main(): Promise<void> {
     officialPluginsDir,
     outputDir: join(packageRoot, "dist-release"),
     archive: !argv.includes("--no-archive"),
+    componentArchives: !argv.includes("--skip-component-archives"),
   });
 
   log(`release dir: ${staged.releaseDir}`);

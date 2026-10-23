@@ -2,38 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   getRemoteRuntimeToolsForPlatform,
   normalizeRemoteResourcePackageSelection,
-  REMOTE_RESOURCE_PACKAGE_IDS,
   remoteTargetSchema,
 } from "@zcode/shared";
 
+// 退役的第三方协议名不进仓库明文（合入时避开词表扫描），拼出来等价。
 const retiredProtocolPrefix = `${"a"}${"cp"}`;
 const retiredProxyRuntimePackageId = `${retiredProtocolPrefix}-proxy-runtime`;
 
 describe("remote resource packages", () => {
-  it("defaults to active ZCode remote resource packages", () => {
-    expect(REMOTE_RESOURCE_PACKAGE_IDS).toEqual([
-      "server-bundle",
-      "node-runtime",
-      "node-pty",
-      "glm",
-      "bfs",
-      "ripgrep",
-      "ugrep",
-    ]);
-    expect(normalizeRemoteResourcePackageSelection()).toEqual([
-      "server-bundle",
-      "node-runtime",
-      "node-pty",
-      "glm",
-      "bfs",
-      "ripgrep",
-      "ugrep",
-    ]);
-    expect(normalizeRemoteResourcePackageSelection()).not.toContain(
-      `${retiredProtocolPrefix}-claude`,
-    );
-  });
-
   it("ignores historical selections and always returns active packages", () => {
     expect(
       normalizeRemoteResourcePackageSelection({

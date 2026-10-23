@@ -86,6 +86,9 @@ describe("session facade shutdown", () => {
           calls.push("browser");
         },
         drainMemoryExtractions,
+        endSession: async (reason: string) => {
+          calls.push(`end:${reason}`);
+        },
         getModelRef: () => ({ providerId: "builtin:zai", modelId: "GLM-5" }),
       } as unknown as AgentRuntime,
       sessionId: createSessionId("session-facade-memory-drain"),
@@ -111,6 +114,7 @@ describe("session facade shutdown", () => {
       "shutdown",
       "drain:start",
       "drain",
+      "end:session_closed",
       "dwf",
       "shutdown",
       "browser",
@@ -167,6 +171,9 @@ describe("session facade shutdown", () => {
         drainMemoryExtractions: async () => {
           calls.push("drain");
         },
+        endSession: async (reason: string) => {
+          calls.push(`end:${reason}`);
+        },
       } as unknown as AgentRuntime,
       sessionId: createSessionId("session-facade-dwf-close-throws"),
       sessionStore: {
@@ -184,6 +191,7 @@ describe("session facade shutdown", () => {
     expect(calls).toEqual([
       "shutdown",
       "drain",
+      "end:session_closed",
       "dwf",
       "shutdown",
       "browser",

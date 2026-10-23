@@ -77,10 +77,6 @@ const SEND_MESSAGE_TOOL_OUTPUT_SCHEMA = {
 
 const sendMessageHandler: ToolHandler = async (input, context) => {
   const parsed = SendMessageInputSchema.parse(input) as SendMessageInput;
-  assertNotOffPeakTurn(context, SEND_MESSAGE_TOOL_NAME, {
-    hint: OFF_PEAK_SEND_MESSAGE_HINT,
-    recoverable: true,
-  });
 
   // 统一寻址按前缀分流：`agent_*` 是本会话子代理注册表的便捷别名，`sess_*` 交给跨会话端口。
   // 不解析 title/alias——会话一律用主键寻址（spec D2）。
@@ -124,7 +120,11 @@ async function sendToLocalSubagent(
       workspaceRoot: context.workspaceRoot,
       trace: resolveToolTraceContext(context),
     },
-    { signal: context.abortSignal },
+    {
+      signal: context.abortSignal,
+      model: context.model,
+      modelOverride: context.subagentModelOverride,
+    },
   ) satisfies Promise<SendMessageOutput>;
 }
 
@@ -247,7 +247,9 @@ function formatSessionDeliveryMessage(result: SessionMessageDeliveryResult): str
 export const sendMessageToolEntry: ToolEntry = {
   capability: "Send a short message to a local agent or another session",
   metadata: {
+    shouldDefer: true,
     name: SEND_MESSAGE_TOOL_NAME,
+    searchHint: "send messages to agent teammates",
     description: SEND_MESSAGE_PROVIDER_DESCRIPTION,
     readOnly: false,
     destructive: false,

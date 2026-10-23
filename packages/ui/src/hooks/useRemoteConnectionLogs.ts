@@ -10,11 +10,14 @@ export interface RemoteConnectionLogEntry {
 }
 
 export function normalizeRemoteConnectionLogMessage(message: string): string {
-  return message
-    .replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/u, "")
-    .replace(/^\[pid:\d+\]\s*/u, "")
-    .replace(/^(?:\[[^\]]+\]\s*)+/u, "")
-    .trim();
+  return (
+    message
+      .replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}\]\s*/u, "")
+      .replace(/^\[pid:\d+\]\s*/u, "")
+      // Source Server phase 是 bootstrap UI 的正式状态，不是通用日志前缀，必须保留。
+      .replace(/^(?:\[(?!source-server:)[^\]]+\]\s*)+/u, "")
+      .trim()
+  );
 }
 
 function isRemoteDownloadProgressLog(message: string): boolean {
@@ -22,11 +25,12 @@ function isRemoteDownloadProgressLog(message: string): boolean {
 }
 
 function getRemoteTransferProgressKey(message: string): string | null {
-  if (isRemoteDownloadProgressLog(message)) {
+  const progressMessage = message.replace(/^\[source-server:[^\]]+\]\s*/u, "");
+  if (isRemoteDownloadProgressLog(progressMessage)) {
     return "download";
   }
 
-  const uploadMatch = /^upload progress(?: \[([^\]]+)\])?(?: \((.+)\))?:/iu.exec(message);
+  const uploadMatch = /^upload progress(?: \[([^\]]+)\])?(?: \((.+)\))?:/iu.exec(progressMessage);
   if (!uploadMatch) {
     return null;
   }

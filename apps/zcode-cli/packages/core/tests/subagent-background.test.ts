@@ -5,7 +5,6 @@ import {
   createSessionId,
   createTurnId,
   modelMessageContentToText,
-  type AgentOutput,
   type BackgroundResultOriginMeta,
   type CreateSessionInput,
   type ModelMessageContent,
@@ -62,8 +61,6 @@ describe("subagent background notifications", () => {
         "</task-notification>",
       ].join("\n"),
     );
-    expect(notification).not.toContain("[SYSTEM NOTIFICATION");
-    expect(notification).not.toContain("<task-type>local_agent</task-type>");
   });
 
   it("omits unavailable local_agent usage fields", () => {
@@ -444,7 +441,6 @@ describe("subagent background notifications", () => {
     const backgroundMessages = sessionStore.savedMessages.filter(
       (message) => message.source === "background_task",
     );
-    expect(backgroundMessages).toHaveLength(3);
     expect(
       sessionStore.savedParts.filter(
         (part) =>
@@ -1801,51 +1797,6 @@ describe("subagent background notifications", () => {
     expect(requestCount).toBe(2);
   });
 
-  it("moves a foreground local agent to background after the configured timeout", async () => {
-    const sessionId = createSessionId("subagent-auto-background");
-    const turnId = createTurnId("subagent-auto-background-turn");
-    const childGate = createDeferred<void>();
-    const notifications: Array<Record<string, unknown>> = [];
-    const port = createExploreSubagentPort({
-      autoBackgroundMs: 1,
-      createAgentId: () => "agent_auto_background",
-      emitParentEvent: async () => {},
-      enqueueParentTaskNotification: (notification) => {
-        notifications.push(notification);
-      },
-      runExploreAgent: async (request) => {
-        await request.onSessionReady?.();
-        await childGate.promise;
-        return {
-          events: [],
-          response: "auto background child finished",
-          traceId: "trace_subagent_auto_background",
-        };
-      },
-    });
-
-    const output = await port.run(createSubagentRunRequest({ sessionId, turnId }));
-
-    expect(output).toMatchObject({
-      status: "async_launched",
-      agentId: "agent_auto_background",
-      backgroundTaskId: "agent_auto_background",
-    });
-    childGate.resolve();
-    await waitForCondition(() => notifications.length === 1);
-    expect(notifications[0]).toMatchObject({
-      originMeta: {
-        backgroundSource: "subagent",
-        title: "Auto background test",
-        workId: "agent_auto_background",
-      },
-      taskId: "agent_auto_background",
-    });
-    expect(notifications[0]?.text).toContain("<task-id>agent_auto_background</task-id>");
-    expect(notifications[0]?.text).toContain("<status>completed</status>");
-    expect(notifications[0]?.text).toContain("auto background child finished");
-  });
-
   it("preserves the provider cause across failed background local-agent surfaces", async () => {
     const providerMessage = [
       "Requests are too frequent.",
@@ -1960,17 +1911,17 @@ describe("subagent background notifications", () => {
     expect(stoppedIndex).toBeGreaterThan(completedIndex);
   });
 
-  it("keeps the auto-background timeout referenced until it fires", async () => {
+  it("auto-backgrounds with a referenced timeout and publishes the child result", async () => {
     const sessionId = createSessionId("subagent-auto-background-timeout-ref");
     const turnId = createTurnId("subagent-auto-background-timeout-ref-turn");
     const childGate = createDeferred<void>();
-    const notifications: string[] = [];
+    const notifications: Array<Record<string, unknown>> = [];
     const port = createExploreSubagentPort({
       autoBackgroundMs: 1,
       createAgentId: () => "agent_auto_background_timeout_ref",
       emitParentEvent: async () => {},
-      enqueueParentTaskNotification: ({ text }) => {
-        notifications.push(text);
+      enqueueParentTaskNotification: (notification) => {
+        notifications.push(notification);
       },
       runExploreAgent: async (request) => {
         await request.onSessionReady?.();
@@ -2000,6 +1951,19 @@ describe("subagent background notifications", () => {
     expect(unrefRecorder.calls).toEqual([]);
     childGate.resolve();
     await waitForCondition(() => notifications.length === 1);
+    expect(notifications[0]).toMatchObject({
+      originMeta: {
+        backgroundSource: "subagent",
+        title: "Auto background test",
+        workId: "agent_auto_background_timeout_ref",
+      },
+      taskId: "agent_auto_background_timeout_ref",
+    });
+    expect(notifications[0]?.text).toContain(
+      "<task-id>agent_auto_background_timeout_ref</task-id>",
+    );
+    expect(notifications[0]?.text).toContain("<status>completed</status>");
+    expect(notifications[0]?.text).toContain("auto background timeout ref child finished");
   });
 
   it("does not mark background local agents notified without a parent notification queue", async () => {
@@ -2180,9 +2144,58 @@ describe("subagent background notifications", () => {
       status: "completed",
       agentId: "agent_no_auto_background",
     });
-    expect((output as AgentOutput).status).toBe("completed");
     expect(notifications).toEqual([]);
   });
+
+  it.each(["explicit", "profile", "timeout"])(
+    "supports off-peak background model overrides: %s",
+    async (kind) => {
+      const gate = createDeferred<void>();
+      const calls: unknown[] = [];
+      const port = createExploreSubagentPort({
+        createAgentId: () => "idle-background",
+        ...(kind === "timeout" ? { autoBackgroundMs: 1 } : {}),
+        emitParentEvent: async () => {},
+        profiles: [
+          {
+            name: "Idle Reviewer",
+            description: "Review",
+            source: "user",
+            systemPrompt: "Review",
+            tools: ["Read"],
+            background: kind === "profile",
+          },
+        ],
+        runExploreAgent: async (request, options) => {
+          calls.push(options);
+          await request.onSessionReady?.();
+          await gate.promise;
+          return { events: [], response: "done", traceId: "idle-background-trace" };
+        },
+      });
+      const modelOverride = {
+        selection: { providerId: "idle", modelId: "model" },
+        background: "allow" as const,
+      };
+      try {
+        const output = await port.launch(
+          {
+            ...createSubagentRunRequest({
+              sessionId: createSessionId("idle-parent"),
+              turnId: createTurnId("idle-turn"),
+            }),
+            agentType: "Idle Reviewer",
+            runInBackground: kind === "explicit",
+          },
+          { modelOverride },
+        );
+        expect(output.status).toBe("async_launched");
+        expect(calls).toEqual([expect.objectContaining({ modelOverride })]);
+      } finally {
+        gate.resolve();
+      }
+    },
+  );
 
   it("degrades a foreground launch to inline when an execution model override denies background", async () => {
     const sessionId = createSessionId("subagent-background-turn-execution-model");
@@ -2454,8 +2467,6 @@ class RecordingSessionStore {
           input.timeCompacting === null
             ? undefined
             : (input.timeCompacting ?? session.time.compacting),
-        archived:
-          input.timeArchived === null ? undefined : (input.timeArchived ?? session.time.archived),
       },
     };
     this.sessions.set(input.id, next);

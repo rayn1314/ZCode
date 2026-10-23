@@ -1,17 +1,8 @@
 {
   "description": "pnpm typecheck:critical 的既存致命类型错误基线；修好问题后用 --update 收敛，新增项会挡住门禁。",
   "entries": [
-    "desktop main|packages/desktop/src/main/browserView/browserPlaywrightExecutor.ts|TS2304|Cannot find name 'Element'.",
-    "desktop main|packages/desktop/src/main/browserView/browserPlaywrightExecutor.ts|TS2304|Cannot find name 'HTMLElement'.",
-    "desktop main|packages/desktop/src/main/browserView/browserPlaywrightExecutor.ts|TS2304|Cannot find name 'HTMLInputElement'.",
-    "desktop main|packages/desktop/src/main/browserView/browserScreenshotSurfaceContracts.ts|TS2305|Module '\"@zcode/shared\"' has no exported member 'BrowserViewSurfaceScaleMode'.",
-    "desktop main|packages/desktop/src/main/desktopMainIpcPlatform.ts|TS2305|Module '\"@zcode/shared\"' has no exported member 'WindowControlsOverlayReadyPayload'.",
-    "desktop main|packages/desktop/src/main/resourceManagerStorage.ts|TS2305|Module '\"@zcode/services/node\"' has no exported member 'IStorageService'.",
-    "desktop main|packages/desktop/src/main/storageScanWorker.ts|TS2305|Module '\"@zcode/services\"' has no exported member 'StorageRootSpec'.",
-    "desktop main|packages/desktop/src/main/storageScanWorkerProtocol.ts|TS2305|Module '\"@zcode/services\"' has no exported member 'StorageRootSpec'.",
     "desktop preload|packages/desktop/src/preload/index.ts|TS2305|Module '\"@zcode/shared\"' has no exported member 'DesktopZoomState'.",
     "desktop preload|packages/desktop/src/preload/index.ts|TS2305|Module '\"@zcode/shared\"' has no exported member 'WindowControlsOverlayMetrics'.",
-    "desktop preload|packages/desktop/src/preload/index.ts|TS2305|Module '\"@zcode/shared\"' has no exported member 'WindowControlsOverlayReadyPayload'.",
     "desktop renderer|packages/desktop/src/renderer/src/plugin-sandbox/genUiTweakRuntime.test.ts|TS2304|Cannot find name 'setImmediate'."
   ]
 }

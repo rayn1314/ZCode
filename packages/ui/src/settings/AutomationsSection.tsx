@@ -12,6 +12,13 @@ import { CircleCheck, RotateCcw, TriangleAlert } from "lucide-react";
 import {
   AUTOMATION_CREATE_LIMIT,
   BUILTIN_MODEL_PROVIDER_IDS,
+  isAutomationCreateLimitError,
+  resolveWorkspaceKey,
+  type ZCodeAutomation,
+  type ZCodeOffPeakTask,
+  type ZCodeSessionGoalListEntry,
+} from "@zcode/shared";
+import {
   TID_AUTOMATION_ACTION_DELETE,
   TID_AUTOMATION_ACTION_TOGGLE,
   TID_AUTOMATION_CARD,
@@ -20,12 +27,7 @@ import {
   TID_AUTOMATIONS_STATUS_FILTER,
   TID_OFFPEAK_CREATE_BUTTON,
   TID_OFFPEAK_TAB,
-  isAutomationCreateLimitError,
-  resolveWorkspaceKey,
-  type ZCodeAutomation,
-  type ZCodeOffPeakTask,
-  type ZCodeSessionGoalListEntry,
-} from "@zcode/shared";
+} from "@zcode/shared/test-ids";
 import { Button } from "@/components/ui/button.js";
 import {
   DropdownMenu,
@@ -1371,6 +1373,7 @@ export function AutomationsSection({
   const handleOffPeakDelete = useCallback(
     async (task: ZCodeOffPeakTask) => {
       const confirmed = await confirmDialog({
+        confirmVariant: "destructive",
         title: intl.formatMessage({ id: "offPeak.delete.title" }),
         description: intl.formatMessage({ id: "offPeak.delete.description" }),
         confirmLabel: intl.formatMessage({ id: "offPeak.delete.confirm" }),

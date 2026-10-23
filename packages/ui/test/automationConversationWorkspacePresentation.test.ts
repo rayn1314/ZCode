@@ -8,9 +8,13 @@ const source = readFileSync(
 
 describe("AutomationEditView 无项目会话展示契约", () => {
   it("保留 conversation 语义并复用会话侧固定菜单项", () => {
-    expect(source).toContain("workspacePurpose: option.workspacePurpose");
-    expect(source).toContain("allowConversationWorkspaceSelection");
-    expect(source).toContain("allowConversationWorkspaceDetach={false}");
-    expect(source).toContain("onSelectConversationWorkspace={handleSelectConversationWorkspace}");
+    // 上游把项目选择收敛为 projectId/hostId 的 AutomationWorkspaceOption +
+    // resolveAutomationWorkspaceSelectionKey；本 fork 的 conversation 语义随 workspacePurpose 保留。
+    expect(source).toContain(
+      'selectedWorkspace?.projectId === null || selectedWorkspace?.workspacePurpose === "conversation"',
+    );
+    expect(source).toContain("isSelectedConversationWorkspace");
+    expect(source).toContain("resolveAutomationWorkspaceSelectionKey");
+    expect(source).toContain('data-testid="automation-project-select"');
   });
 });

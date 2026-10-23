@@ -23,7 +23,9 @@ export function resolveDefaultOutputRootDir(processEnv: NodeJS.ProcessEnv = proc
 
 export function isExpectedChildStdinClosureError(error: Error): boolean {
   const code = (error as NodeJS.ErrnoException).code;
-  return code === "EPIPE" || code === "ERR_STREAM_DESTROYED";
+  // Windows 命名管道在被读端关闭后写入返回 EOF（libuv 把 BROKEN_PIPE 映射成 EOF），
+  // POSIX 返回 EPIPE；两者都只说明子进程提前关闭了 stdin。
+  return code === "EPIPE" || code === "EOF" || code === "ERR_STREAM_DESTROYED";
 }
 
 export function isBashMergedOutputRequest(request: ExecutionRequest): boolean {

@@ -1,3 +1,4 @@
+import { resolveToolSearchMode } from "../../tool/search/exposure.js";
 import type {
   CollaborationMode,
   ExecutionShellSelection,
@@ -114,16 +115,20 @@ export function updateSubagentsConfig(
 ): void {
   // 整份替换：补丁是按当前磁盘重新解析的（spec subagent-settings-sync.md D3/D4），
   // 「改回继承 / 重新启用」表现为列表与覆盖表里不再出现该项，键级合并会把删除留下。
-  // 构造期对 config 做过持久记忆工具投影，热更新必须重跑同一份投影，否则热重载后的
-  // profile 与新会话不一致。
-  this.config = projectPersistentAgentMemoryTools({
+  // 构造期对 definitions 快照做过持久记忆工具投影，热更新必须重跑同一份投影，
+  // 否则热重载后的 profile 与新会话不一致。
+  const projected = projectPersistentAgentMemoryTools(
+    { activeAgents: [...patch.profiles] },
+    this.config.memory,
+  );
+  this.config = {
     ...this.config,
     subagents: {
       ...this.config.subagents,
       builtInModelSelectionOverrides: { ...patch.builtInModelSelectionOverrides },
-      profiles: [...patch.profiles],
+      profiles: [...projected.activeAgents],
     },
-  });
+  };
   // Agent / Task 的工具描述读的是同一份 profiles（第二处注册入口）。一并发散，
   // 否则热重载后模型看到的可用 agent 清单与实际可派发的清单会分叉（禁用项仍被广告、
   // 新增项看不到）。cachedTools 由该函数置空，下一轮重建。
@@ -198,6 +203,12 @@ export function getTools(this: AgentRuntimeInternal, model?: Model): ModelToolCo
     this.cachedTools = filterRuntimeVisibleTools.call(this, this.registry.toContracts());
   }
   return this.cachedTools
+    .filter(
+      (tool) =>
+        (tool.name !== "ToolSearch" && tool.name !== "DeferredToolCall") ||
+        !model ||
+        resolveToolSearchMode(model, this.config.toolSearch?.mode) !== "off",
+    )
     .filter((tool) => tool.name !== "WebSearch" || shouldExposeWebSearch.call(this, model))
     .map((tool) =>
       projectToolModelContract(tool, this.registry.get(tool.name), {

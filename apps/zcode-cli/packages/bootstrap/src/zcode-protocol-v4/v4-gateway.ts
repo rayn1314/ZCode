@@ -1,3 +1,8 @@
+import {
+  pluginUiToolResultNotificationSchema,
+  type PluginUiToolResultNotification,
+} from "@zcode/shared/mcp-apps";
+import { randomUUID } from "node:crypto";
 import { LocalTtftRecorder } from "./local-ttft.js";
 import { localTtftNow, localTtftFactsSchema } from "@zcode/shared/zcode-protocol-v4";
 import {
@@ -47,6 +52,8 @@ import type {
   RoutedTopicFrame,
   RoutedTopicWireFrame,
   SessionSummary,
+  SessionsIndexReconcileParams,
+  SessionsIndexReconcileResult,
   SessionsIndexTopicFrame,
   SubscribeAck,
   V4AttachmentBeginResult,
@@ -87,6 +94,8 @@ import {
   measureTopicNotificationEnvelopeBytes,
   parseConversationTopic,
   parseSessionsIndexTopic,
+  sessionsIndexReconcileParamsSchema,
+  sessionsIndexReconcileResultSchema,
   parseWorkspaceConfigTopic,
   v4AttachmentAbortParamsSchema,
   v4AttachmentBeginParamsSchema,
@@ -130,6 +139,7 @@ import {
 import { AttachmentUploadRegistry } from "./attachment-upload-registry.js";
 import {
   ColdSessionResumeCoordinator,
+  V4SubscribeSessionUnavailableError,
   type ColdSessionResumeOutcome,
 } from "./cold-session-resume.js";
 import { CommandInbox } from "./command-inbox.js";
@@ -243,10 +253,14 @@ export interface V4GatewayHost {
    * V4 冷恢复钩子。gateway 用同一个 READY promise 包住 runtime activation 与 projection
    * hydration；宿主只负责恢复 record。
    */
+  loadPersistedMessages?(sessionId: string): Promise<MessageWithParts[]>;
+  retainSessionRuntime?(sessionId: string): Promise<() => void>;
   resumePersistedSession?(
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: ZCodeWorkspaceRef,
+    additionalDirectories?: string[],
+    persistedMessages?: MessageWithParts[],
   ): Promise<ColdSessionResumeOutcome>;
   /**
    * 下行物理帧出口（宿主负责投递：stdio notification / MessagePort / ws）。
@@ -260,6 +274,8 @@ export interface V4GatewayHost {
   emitLocalTtftFacts?(facts: import("@zcode/shared").LocalTtftFacts): void;
   /** 当前进程 live request_access 权限事实；不缓存、不进入 topic replay。 */
   emitCuaPermissionObservation?(observation: CuaPermissionObservation): void;
+  /** 成功 UI 工具结果的窗口副作用；与 conversation 订阅、历史 hydration 无关。 */
+  emitPluginUiToolResult?(result: PluginUiToolResultNotification): void;
   /**
    * sessions-index：会话 → 所属 workspaceId（列表 topic 的分桶键）。
    * 未实现（旧宿主）→ sessions-index 路径整体不激活（no-op），不影响 conversation。
@@ -269,6 +285,7 @@ export interface V4GatewayHost {
   getSessionIndexMeta?(sessionId: string): {
     createdAt: number;
     lastActivityAt: number;
+    lastOutcome?: SessionSummary["lastOutcome"];
     parentSessionId?: string;
   } | null;
   /**
@@ -315,6 +332,7 @@ export interface V4GatewayHost {
    * store 读取是异步的，故允许返回 Promise（gateway 订阅时 await；同步 stub 直接返回数组）。
    */
   getStoredSessionSummaries?(workspaceId: string): Promise<SessionSummary[]> | SessionSummary[];
+  reconcileSessions?(params: SessionsIndexReconcileParams): Promise<SessionsIndexReconcileResult>;
   /**
    * 3.3.6 远端历史兼容：用精确 task allowlist 幂等认领后返回严格 identity 摘要。
    * 非远端 workspace 返回 null；失败可降级为空数组，后续携带 allowlist 的订阅会重试。
@@ -669,6 +687,14 @@ export class ConversationV4Gateway {
   /** 首次 hydration 按 session 单飞；并发 pane 共享同一份重建结果。 */
   private readonly hydrationInFlight = new Map<string, Promise<ConversationTopicPublisher>>();
   /** cold activation 到 hydration 的 READY 水位；只阻塞本次恢复期间的 command/query。 */
+  private readonly historyOpenings = new Map<
+    string,
+    {
+      history: Promise<ConversationTopicPublisher>;
+      start: () => void;
+      cancel: () => void;
+    }
+  >();
   private readonly readyFlights = new Map<string, Promise<ConversationTopicPublisher>>();
   /**
    * 冷打开「窗口态就绪」单飞（spec: cold-open-window-first §2/§3）：先产出尾部窗口投影，
@@ -766,8 +792,22 @@ export class ConversationV4Gateway {
     this.coldResume = new ColdSessionResumeCoordinator(host);
     this.inbox = new CommandInbox(
       {
+        prepareDecision: async (envelope) => {
+          if (
+            envelope.sessionId &&
+            (envelope.type === "renameSession" || envelope.type === "deleteSession") &&
+            !this.host.sessionExists(envelope.sessionId)
+          ) {
+            // 历史行的重命名 / 删除仍由 CLI 原命令写持久事实；只在真实命令 admission 后冷恢复。
+            await this.ensureColdReadyPublisher(envelope.sessionId);
+          }
+        },
         getRevision: (sessionId) => {
-          if (!this.host.sessionExists(sessionId)) return null;
+          if (
+            !this.host.sessionExists(sessionId) &&
+            !this.publishers.get(sessionId)?.getSnapshot().runtimeInitialization
+          )
+            return null;
           // 已知会话但尚无事件 → 投影未建，revision 视为 0（draft 起点）。
           return this.publishers.get(sessionId)?.getSnapshot().revision ?? 0;
         },
@@ -786,6 +826,22 @@ export class ConversationV4Gateway {
             ? { verdict: "stale", reasonCode: resolution.reasonCode }
             : { verdict: "reject", reasonCode: resolution.reasonCode };
         },
+        // 在 inbox 去重之后拒绝新执行，不把未就绪输入接受进运行队列。
+        guard: (envelope) => {
+          const initialization =
+            envelope.sessionId === null
+              ? undefined
+              : this.publishers.get(envelope.sessionId)?.getSnapshot().runtimeInitialization;
+          return initialization && initialization.status !== "ready"
+            ? {
+                verdict: "reject",
+                reasonCode:
+                  initialization.status === "failed"
+                    ? "guard.runtimeInitializationFailed"
+                    : "guard.runtimeInitializing",
+              }
+            : { verdict: "allow" };
+        },
         lookupTranscriptCommand: (key) => this.host.lookupTranscriptCommand?.(key) ?? null,
         lookupTimelineCommand: (key) => this.host.lookupTimelineCommand?.(key) ?? null,
         lookupChildCommand: (key) => this.host.lookupChildCommand?.(key) ?? null,
@@ -793,8 +849,7 @@ export class ConversationV4Gateway {
         now: this.now,
       },
       { conversationQueryTimeoutMs: options.conversationQueryTimeoutMs },
-    );
-    this.attachmentUploads = new AttachmentUploadRegistry({
+    );    this.attachmentUploads = new AttachmentUploadRegistry({
       now: this.now,
       putSessionAttachment: async (sessionId, input) => {
         if (!this.host.putSessionAttachment) {
@@ -1072,6 +1127,30 @@ export class ConversationV4Gateway {
       return;
     }
     this.resolveProjectionEventCommit(sessionId, String(event.id));
+    // 原因：后台会话没有卡片/订阅时无法创建 guest。只在 live 投影提交后投递，
+    // 从同一权威工具行取输入和 UI 描述；历史 hydration 直接写 publisher，不走此入口。
+    if (event.type === SessionEventType.ToolCallResult && this.host.emitPluginUiToolResult) {
+      const toolCallId = (event.payload as { toolCallId: string }).toolCallId;
+      const row = publisher
+        .getSnapshot()
+        .rows.window.find((row) => row.kind === "toolCall" && row.toolCallId === toolCallId);
+      if (
+        row?.kind === "toolCall" &&
+        row.status === "success" &&
+        row.display?.kind === "mcp_tool"
+      ) {
+        const result = pluginUiToolResultNotificationSchema.safeParse({
+          sessionId,
+          toolCallId,
+          serverName: row.display.serverName,
+          ui: row.display.ui,
+          ...(row.input && typeof row.input === "object" && !Array.isArray(row.input)
+            ? { input: row.input }
+            : {}),
+        });
+        if (result.success) this.host.emitPluginUiToolResult(result.data);
+      }
+    }
     if (
       !this.hydrationBuffers.has(sessionId) &&
       (event.type === SessionEventType.TurnComplete || event.type === SessionEventType.TurnError)
@@ -1255,12 +1334,14 @@ export class ConversationV4Gateway {
   private resolveIndexMeta(sessionId: string): {
     createdAt: number;
     lastActivityAt: number;
+    lastOutcome?: SessionSummary["lastOutcome"];
     parentSessionId?: string;
   } {
     const meta = this.host.getSessionIndexMeta?.(sessionId);
     return {
       createdAt: meta?.createdAt ?? 0,
       lastActivityAt: meta?.lastActivityAt ?? this.now(),
+      ...(meta?.lastOutcome ? { lastOutcome: meta.lastOutcome } : {}),
       ...(meta?.parentSessionId ? { parentSessionId: meta.parentSessionId } : {}),
     };
   }
@@ -1298,6 +1379,12 @@ export class ConversationV4Gateway {
     const dispatch = await this.subscribeSessionsIndexReserved(rawParams);
     dispatch.commit();
     return dispatch;
+  }
+
+  async reconcileSessions(rawParams: unknown): Promise<SessionsIndexReconcileResult> {
+    const params = sessionsIndexReconcileParamsSchema.parse(rawParams);
+    if (!this.host.reconcileSessions) throw new Error("sessionsIndex/reconcile is unavailable");
+    return sessionsIndexReconcileResultSchema.parse(await this.host.reconcileSessions(params));
   }
 
   async subscribeSessionsIndexReserved(
@@ -1525,12 +1612,38 @@ export class ConversationV4Gateway {
     // - 有 publisher 且事件日志完整（流式 live）→ 保留，重放会双计且打断流。
     const restoreStartedAt = performance.now();
     const existingReady = this.readyFlights.get(sessionId);
-    const publisher = existingReady
-      ? await existingReady
-      : !isLiveConversation
-        ? // 冷打开首帧：窗口态优先，完整 activation 在后台补全（spec: cold-open-window-first）。
-          await this.ensureColdOpenPublisher(sessionId, params.resumeThoughtLevel, params.workspace)
-        : await this.hydratePublisher(sessionId);
+    const historyFirst = params.historyFirst === true && Boolean(this.host.loadPersistedMessages);
+    const initialState = this.publishers.get(sessionId)?.getSnapshot().runtimeInitialization;
+    if (!historyFirst && initialState?.status === "failed") {
+      throw new V4SubscribeSessionUnavailableError(
+        sessionId,
+        "fault.subscribe.resumeFailed",
+        initialState.message,
+      );
+    }
+    const publisher =
+      historyFirst &&
+      (this.historyOpenings.has(sessionId) ||
+        initialState?.status === "failed" ||
+        (!isLiveConversation && !existingReady))
+        ? await this.ensureHistoryReadyPublisher(
+            sessionId,
+            params.resumeThoughtLevel,
+            params.workspace,
+            params.additionalDirectories,
+            params.retryInitialization,
+          )
+        : existingReady
+          ? await existingReady
+          : !isLiveConversation
+            ? // 冷打开首帧：窗口态优先，完整 activation 在后台补全（spec: cold-open-window-first）。
+              await this.ensureColdOpenPublisher(
+                sessionId,
+                params.resumeThoughtLevel,
+                params.workspace,
+                params.additionalDirectories,
+              )
+            : await this.hydratePublisher(sessionId);
     const cliSessionRestoreMs = !isLiveConversation
       ? Math.max(0, Math.round(performance.now() - restoreStartedAt))
       : undefined;
@@ -1558,12 +1671,17 @@ export class ConversationV4Gateway {
       dispatch = this.subscribeDispatch(result.ack, result.reservation, () => {
         const state = this.flushStates.get(routeKey);
         if (state) this.scheduleFlush(routeKey, state, publisher);
+        this.historyOpenings.get(sessionId)?.start();
       });
       dispatch.ack = {
         ...dispatch.ack,
         openTiming: {
           version: 1,
-          ...(cliSessionRestoreMs !== undefined ? { cliSessionRestoreMs } : {}),
+          ...(cliSessionRestoreMs !== undefined
+            ? historyFirst
+              ? { historyReadyMs: cliSessionRestoreMs }
+              : { cliSessionRestoreMs }
+            : {}),
           initialFrameEncodeMs: Math.max(
             0,
             Math.round(performance.now() - initialFrameEncodeStartedAt),
@@ -1703,11 +1821,16 @@ export class ConversationV4Gateway {
   async rowsRange(rawParams: unknown): Promise<V4ConversationRowsRangeResult> {
     const params = v4ConversationRowsRangeParamsSchema.parse(rawParams);
     const existingReady = this.readyFlights.get(params.sessionId);
-    const publisher = existingReady
-      ? await existingReady
-      : !this.hasLiveConversation(params.sessionId)
-        ? await this.ensureColdReadyPublisher(params.sessionId)
-        : await this.hydratePublisher(params.sessionId);
+    const publisher = this.historyOpenings.has(params.sessionId)
+      ? await this.historyOpenings.get(params.sessionId)!.history
+      : this.publishers.get(params.sessionId)?.getSnapshot().runtimeInitialization?.status ===
+          "failed"
+        ? this.publishers.get(params.sessionId)!
+        : existingReady
+          ? await existingReady
+          : !this.hasLiveConversation(params.sessionId)
+            ? await this.ensureColdReadyPublisher(params.sessionId)
+            : await this.hydratePublisher(params.sessionId);
     return publisher.getRowsRange(
       {
         ...(params.beforeRowId !== undefined ? { beforeRowId: params.beforeRowId } : {}),
@@ -2040,6 +2163,10 @@ export class ConversationV4Gateway {
    * 双写把序列账搞乱，transcript 从此定格（症状是直播冻结在「已工作 xx 秒」）。
    */
   private async ensureHostRecordForJournalRead(sessionId: string): Promise<void> {
+    const ready = this.readyFlights.get(sessionId);
+    if (ready) await ready;
+    if (this.publishers.get(sessionId)?.getSnapshot().runtimeInitialization?.status === "failed")
+      throw new Error("fault.subscribe.resumeFailed");
     if (this.hasLiveConversation(sessionId)) return;
     await this.coldResume.ensureResumed(sessionId);
   }
@@ -2551,7 +2678,7 @@ export class ConversationV4Gateway {
       const parsed = parseCommandEnvelope(rawParams);
       const sessionId = parsed.ok ? parsed.envelope.sessionId : null;
       const ready = sessionId === null ? undefined : this.readyFlights.get(sessionId);
-      if (ready) await ready;
+      if (ready && sessionId !== null && !this.historyOpenings.has(sessionId)) await ready;
     }
 
     const outcome = await this.inbox.handle(rawParams);
@@ -2677,6 +2804,11 @@ export class ConversationV4Gateway {
         this.host.executeCommand(outcome.envelope, admission),
       );
       const result = await Promise.race([execution, executeDeadline]);
+      // Bug 根因：首输入标题先于 deferred 提升发出，列表会过滤它；ACK 后若初始化/Hook
+      // 尚未结束便没有下一事件。沿用成功执行边界补发当前摘要，不等待 TurnStarted。
+      const admittedSessionId =
+        result?.type === "createSession" ? result.sessionId : outcome.envelope.sessionId;
+      if (admittedSessionId) this.publishCurrentSummaryToIndex(admittedSessionId);
       // 新建/侧聊命令采用结果会话的开关，避免把父会话或当前 App 设置误记到新会话。
       const telemetrySessionId =
         result?.type === "createSession" || result?.type === "createSelectionSideSession"
@@ -2898,12 +3030,12 @@ export class ConversationV4Gateway {
     return this.publishers.get(sessionId)?.getTurnRewindAnchor(rowId) ?? null;
   }
 
-  /** 会话关闭：清 publisher 与其全部订阅调度；hydration 标记同清（重开走冷启动重建）；
-   *  并从其 workspace index 移除该会话（session.removed 推给列表订阅者）。 */
-  disposeSession(sessionId: string): void {
+  /** 关闭只释放运行态；只有 CLI 已持久化软删除时才向列表发 session.removed。
+   * 修复原因：Host 将 removed 视为删除事实，普通 tab 关闭不能删除持久化会话。 */
+  disposeSession(sessionId: string, options: { deleted?: boolean } = {}): void {
     this.cleanupSessionRuntime(sessionId, {
       clearCommandInbox: false,
-      notifyIndexRemoved: true,
+      notifyIndexRemoved: options.deleted === true,
     });
   }
 
@@ -3008,6 +3140,7 @@ export class ConversationV4Gateway {
     this.hydrationBuffers.delete(sessionId);
     this.hydrationInFlight.delete(sessionId);
     this.readyFlights.delete(sessionId);
+    this.historyOpenings.get(sessionId)?.cancel();
     this.rawSequenceStates.delete(sessionId);
     if (options.clearCommandInbox) this.inbox.clearSession(sessionId);
     this.telemetryNormalizer.clearSession(sessionId);
@@ -3062,6 +3195,8 @@ export class ConversationV4Gateway {
     this.hydrationBuffers.clear();
     this.hydrationInFlight.clear();
     this.readyFlights.clear();
+    for (const opening of this.historyOpenings.values()) opening.cancel();
+    this.historyOpenings.clear();
     this.rawSequenceStates.clear();
     this.telemetryEventIds.clear();
     this.detachedLiveSessions.clear();
@@ -3141,6 +3276,138 @@ export class ConversationV4Gateway {
     }
   }
 
+  /** 首帧先落 transport queue，再启动会同步扫描插件的 runtime；重连不重跑失败 hook。 */
+  private ensureHistoryReadyPublisher(
+    sessionId: string,
+    thought?: string,
+    workspace?: ZCodeWorkspaceRef,
+    additionalDirectories?: string[],
+    retryAttempt?: string,
+  ): Promise<ConversationTopicPublisher> {
+    const existing = this.historyOpenings.get(sessionId);
+    if (existing) return existing.history;
+    const publisher = this.publishers.get(sessionId);
+    const failed = publisher?.getSnapshot().runtimeInitialization;
+    if (failed?.status === "failed" && failed.attemptId !== retryAttempt)
+      return Promise.resolve(publisher!);
+    // 失败 app 已回收，旧 raw tail 不属于下一次 runtime 的事件水位。
+    if (failed?.status === "failed") this.rawSequenceStates.delete(sessionId);
+    const attemptId = randomUUID();
+    const initializationStartedAt = performance.now();
+    let resolveReady!: (publisher: ConversationTopicPublisher) => void;
+    let rejectReady!: (error: unknown) => void;
+    const ready = new Promise<ConversationTopicPublisher>((resolve, reject) => {
+      resolveReady = resolve;
+      rejectReady = reject;
+    });
+    // 没有旧客户端等待时失败也由状态条消费，避免无人 await 的 rejection。
+    void ready.catch(() => undefined);
+    this.readyFlights.set(sessionId, ready);
+    let messages: MessageWithParts[] | undefined;
+    let started = false;
+    const clear = () => {
+      messages = undefined;
+      if (this.readyFlights.get(sessionId) === ready) this.readyFlights.delete(sessionId);
+      if (this.historyOpenings.get(sessionId) === opening) this.historyOpenings.delete(sessionId);
+    };
+    const opening = {
+      cancel: () => {
+        rejectReady(new Error("cold opening disposed"));
+        clear();
+      },
+      history: Promise.resolve()
+        .then(async () => {
+          messages = await this.host.loadPersistedMessages!(sessionId);
+          if (this.disposed || this.historyOpenings.get(sessionId) !== opening)
+            throw new Error("cold opening disposed");
+          const result = await this.hydratePublisher(sessionId, messages, true);
+          this.setInitialization(sessionId, result, { status: "initializing", attemptId });
+          return result;
+        })
+        .catch((error: unknown) => {
+          rejectReady(error);
+          clear();
+          throw error;
+        }),
+      start: () => {
+        if (started) return;
+        started = true;
+        // post-response commit 已确认首帧入队；下一轮让 stdio I/O 有机会交付，不用定时猜测 UI。
+        setImmediate(() => {
+          let disposeOnFailure: (() => Promise<void>) | undefined;
+          let releaseRuntime: (() => void) | undefined;
+          void (async () => {
+            if (this.disposed || this.historyOpenings.get(sessionId) !== opening)
+              throw new Error("cold opening disposed");
+            releaseRuntime = await this.host.retainSessionRuntime?.(sessionId);
+            if (this.disposed || this.historyOpenings.get(sessionId) !== opening)
+              throw new Error("cold opening disposed");
+            const restored = await this.coldResume.ensureResumed(
+              sessionId,
+              thought,
+              workspace,
+              additionalDirectories,
+              messages,
+              (outcome) => {
+                disposeOnFailure = outcome.disposeOnFailure;
+              },
+            );
+            if (this.disposed || this.historyOpenings.get(sessionId) !== opening)
+              throw new Error("cold opening disposed");
+            const result = await this.hydratePublisher(sessionId, restored ?? messages, true);
+            this.setInitialization(sessionId, result, { status: "ready", attemptId });
+            this.host.onDebug?.(
+              `v4 runtime ready session=${sessionId} attempt=${attemptId} runtimeReadyMs=${Math.round(performance.now() - initializationStartedAt)}`,
+            );
+            resolveReady(result);
+          })()
+            .catch(async (error: unknown) => {
+              // activation 成功而最终物化失败时，也必须拆掉本次 app，下一次重试才会完整 resume。
+              await disposeOnFailure?.();
+              if (!this.disposed && this.historyOpenings.get(sessionId) === opening) {
+                const result = this.publishers.get(sessionId);
+                if (result)
+                  this.setInitialization(sessionId, result, {
+                    status: "failed",
+                    attemptId,
+                    reasonCode: "fault.subscribe.resumeFailed",
+                    message: error instanceof Error ? error.message : String(error),
+                  });
+                this.host.onError?.("v4.initialize", error, { sessionId, attemptId });
+              }
+              rejectReady(error);
+            })
+            .finally(() => {
+              releaseRuntime?.();
+              clear();
+            });
+        });
+      },
+    };
+    this.historyOpenings.set(sessionId, opening);
+    return opening.history;
+  }
+
+  private setInitialization(
+    sessionId: string,
+    publisher: ConversationTopicPublisher,
+    state: NonNullable<ConversationSnapshot["runtimeInitialization"]>,
+  ): void {
+    publisher.setRuntimeInitialization(state);
+    const sequence = this.rawSequenceStates.get(sessionId);
+    if (sequence) {
+      sequence.lastTransportSeq = publisher.getSnapshot().seq;
+      sequence.offset = sequence.lastTransportSeq - sequence.sourceEventSeq;
+    }
+    for (const connectionId of new Set(
+      [...this.flushStates.values()]
+        .filter((entry) => entry.sessionId === sessionId)
+        .map((entry) => entry.connectionId),
+    )) {
+      if (!this.pausedConnections.has(connectionId)) this.flushConnection(connectionId);
+    }
+  }
+
   /**
    * 冷打开「窗口态就绪」单飞（spec: cold-open-window-first）。
    *
@@ -3155,6 +3422,7 @@ export class ConversationV4Gateway {
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: ZCodeWorkspaceRef,
+    additionalDirectories?: string[],
   ): Promise<ConversationTopicPublisher> {
     const existingFlight = this.coldOpenFlights.get(sessionId);
     if (existingFlight) return existingFlight;
@@ -3162,9 +3430,19 @@ export class ConversationV4Gateway {
     // 不能被窗口读覆盖；直接走既有完整 READY。
     const existingPublisher = this.publishers.get(sessionId);
     if (existingPublisher && !this.coldWindowSessions.has(sessionId)) {
-      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace);
+      return this.ensureColdReadyPublisher(
+        sessionId,
+        resumeThoughtLevel,
+        workspace,
+        additionalDirectories,
+      );
     }
-    const operation = this.startColdOpen(sessionId, resumeThoughtLevel, workspace);
+    const operation = this.startColdOpen(
+      sessionId,
+      resumeThoughtLevel,
+      workspace,
+      additionalDirectories,
+    );
     this.coldOpenFlights.set(sessionId, operation);
     const clear = () => {
       if (this.coldOpenFlights.get(sessionId) === operation) this.coldOpenFlights.delete(sessionId);
@@ -3177,11 +3455,12 @@ export class ConversationV4Gateway {
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: ZCodeWorkspaceRef,
+    additionalDirectories?: string[],
   ): Promise<ConversationTopicPublisher> {
     const readWindow = this.host.readMessageWindow;
     const synthesizeEvents = this.host.synthesizeTranscriptEvents;
     if (!readWindow || !synthesizeEvents) {
-      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace);
+      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace, additionalDirectories);
     }
     const window = await readWindow({ sessionId, limit: COLD_WINDOW_MESSAGE_LIMIT }).catch(
       (error) => {
@@ -3191,13 +3470,13 @@ export class ConversationV4Gateway {
     );
     // legacySequence：旧库排序口径退化，窗口读不能自称规范尾部；空窗口则没有可投影内容。
     if (!window || window.legacySequence || window.messages.length === 0) {
-      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace);
+      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace, additionalDirectories);
     }
     // 只有「窗口是全会话的尾部子集」才值得窗口态：窗口覆盖整个会话时全量读本来就便宜，
     // 而窗口投影缺 activation 才有的内存事实（queue / 权限面 / usage 水位 / runtime config
     // 真值），首帧反而更差。这条判据同时把中小会话留在既有完整路径上。
     if (!window.hasOlder) {
-      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace);
+      return this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace, additionalDirectories);
     }
     const publisher = this.ensurePublisher(sessionId);
     this.coldWindowSessions.add(sessionId);
@@ -3234,7 +3513,7 @@ export class ConversationV4Gateway {
     publisher.markRowsIncomplete({ totalCount: window.totalCount, rows: windowRows });
     // 完整 activation 在后台推进：不 await 首帧，失败只记错误并保留窗口投影（spec A5）。
     // 错误入口交给下一次 subscribe/retry（会重新走这里并在 readyFlights 上重试）。
-    void this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace).catch((error) => {
+    void this.ensureColdReadyPublisher(sessionId, resumeThoughtLevel, workspace, additionalDirectories).catch((error) => {
       this.host.onError?.("v4.coldOpen.complete", error, { phase: "coldComplete", sessionId });
     });
     this.host.onDebug?.(
@@ -3252,6 +3531,7 @@ export class ConversationV4Gateway {
     sessionId: string,
     resumeThoughtLevel?: string,
     workspace?: ZCodeWorkspaceRef,
+    additionalDirectories?: string[],
   ): Promise<ConversationTopicPublisher> {
     const existingFlight = this.readyFlights.get(sessionId);
     if (existingFlight) return existingFlight;
@@ -3261,6 +3541,7 @@ export class ConversationV4Gateway {
         sessionId,
         resumeThoughtLevel,
         workspace,
+        additionalDirectories,
       );
       return this.hydratePublisher(sessionId, persistedMessages);
     });
@@ -3284,7 +3565,8 @@ export class ConversationV4Gateway {
   ): Promise<ConversationTopicPublisher> {
     const existing = this.publishers.get(sessionId);
     // 已 hydrate 过的 live publisher：直接复用（避免重复重建 / 双计）。
-    if (existing && this.hydratedSessions.has(sessionId)) return Promise.resolve(existing);
+    if (!forceRebuild && existing && this.hydratedSessions.has(sessionId))
+      return Promise.resolve(existing);
 
     const inFlight = this.hydrationInFlight.get(sessionId);
     if (inFlight) return inFlight;
@@ -3335,6 +3617,7 @@ export class ConversationV4Gateway {
             persistedMessages: persistedMessages?.length ?? 0,
             sessionId,
           });
+          if (this.historyOpenings.has(sessionId)) throw error;
           return { events: [] as SessionEvent[], synthesized: false, sourceEventSeq: 0 };
         })
       : { events: [] as SessionEvent[], synthesized: false, sourceEventSeq: 0 };
