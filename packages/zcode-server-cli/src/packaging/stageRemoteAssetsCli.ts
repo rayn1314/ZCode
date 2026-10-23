@@ -1,28 +1,12 @@
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCommand } from "./runCommand.js";
 import {
   SOURCE_SERVER_REMOTE_RELEASE_TARGETS,
   beginSourceServerRemoteReleaseGeneration,
   collectSourceServerRemoteReleaseArchives,
 } from "./remoteAssetRelease.js";
-
-async function run(
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  env: NodeJS.ProcessEnv,
-): Promise<void> {
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], { cwd, env, stdio: "inherit" });
-    child.once("error", rejectPromise);
-    child.once("exit", (code) => {
-      if (code === 0) resolvePromise();
-      else rejectPromise(new Error(`${command} ${args.join(" ")} exited with code ${code}`));
-    });
-  });
-}
 
 async function main(): Promise<void> {
   const linuxOnly = process.argv.slice(2).includes("--linux");
@@ -46,9 +30,13 @@ async function main(): Promise<void> {
   };
   const versionReleaseDir = join(repoRoot, "packages/desktop/mock-cdn/releases", version);
   await beginSourceServerRemoteReleaseGeneration({ versionReleaseDir });
-  await run("pnpm", ["--filter", "@zcode/server-cli", "build"], repoRoot, env);
+  await runCommand("pnpm", ["--filter", "@zcode/server-cli", "build"], {
+    cwd: repoRoot,
+    env,
+    stdin: "inherit",
+  });
   for (const [index, target] of targets.entries()) {
-    await run(
+    await runCommand(
       "pnpm",
       [
         "--filter",
@@ -61,8 +49,7 @@ async function main(): Promise<void> {
         ...(linuxOnly ? ["--skip-component-archives"] : []),
         ...(index === 0 ? [] : ["--skip-agent-build"]),
       ],
-      repoRoot,
-      env,
+      { cwd: repoRoot, env, stdin: "inherit" },
     );
   }
   const collected = await collectSourceServerRemoteReleaseArchives({

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createWriteStream } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -14,6 +13,7 @@ import {
   type ServerTarget,
 } from "../runtime/manifest.js";
 import { stageRelease } from "./stage.js";
+import { runCommand } from "./runCommand.js";
 import { resolveNodeDistBase } from "./nodeDistMirror.js";
 
 const log = (...args: unknown[]): void => console.log("[stage]", ...args);
@@ -36,27 +36,6 @@ async function findRepoRoot(startDir: string): Promise<string> {
       throw new Error("Unable to locate workspace root (pnpm-workspace.yaml)");
     current = parent;
   }
-}
-
-async function runCommand(
-  command: string,
-  args: readonly string[],
-  cwd: string,
-  env?: NodeJS.ProcessEnv,
-): Promise<void> {
-  await new Promise<void>((resolvePromise, rejectPromise) => {
-    const child = spawn(command, [...args], {
-      cwd,
-      env,
-      stdio: ["ignore", "inherit", "inherit"],
-    });
-    child.once("error", rejectPromise);
-    child.once("exit", (code) => {
-      if (code === 0) resolvePromise();
-      else
-        rejectPromise(new Error(`${command} ${args.join(" ")} exited with code ${code ?? "null"}`));
-    });
-  });
 }
 
 async function downloadFile(url: string, destinationPath: string): Promise<void> {
@@ -123,7 +102,7 @@ async function ensureNodeBinary(repoRoot: string, target: ServerTarget): Promise
           cacheDir,
           `node-${nodeVersion}-${nodeTarget}/node.exe`,
         ],
-        repoRoot,
+        { cwd: repoRoot },
       );
     } else {
       await runCommand(
@@ -136,7 +115,7 @@ async function ensureNodeBinary(repoRoot: string, target: ServerTarget): Promise
           cacheDir,
           `node-${nodeVersion}-${nodeTarget}/bin/node`,
         ],
-        repoRoot,
+        { cwd: repoRoot },
       );
     }
     await chmod(cachedBinaryPath, 0o755);
@@ -158,12 +137,10 @@ async function ensureAgentBundle(repoRoot: string, skipBuild: boolean): Promise<
   // build-only：该脚本默认会把 bundle 暂存进桌面打包目录 bundled-agents/<platform>/glm，
   // 其 stageAgentBundle 会 rmSync 清空整个目录——那会冲掉 bootstrap 已暂存的官方插件和
   // CUA koffi。远端资产只需要 cli/dist 的构建产物，显式跳过桌面暂存。
-  await runCommand(
-    process.execPath,
-    [join(repoRoot, "scripts/build-desktop-agent-cli.mjs")],
-    repoRoot,
-    { ...process.env, ZCODE_DESKTOP_AGENT_BUILD_ONLY: "1" },
-  );
+  await runCommand(process.execPath, [join(repoRoot, "scripts/build-desktop-agent-cli.mjs")], {
+    cwd: repoRoot,
+    env: { ...process.env, ZCODE_DESKTOP_AGENT_BUILD_ONLY: "1" },
+  });
   if (!(await pathExists(bundlePath))) {
     throw new Error(`Agent bundle still missing after build: ${bundlePath}`);
   }
@@ -186,7 +163,7 @@ async function resolveNativeToolsDir(repoRoot: string, target: ServerTarget): Pr
       `--arch=${arch}`,
       `--output-dir=${cacheDir}`,
     ],
-    repoRoot,
+    { cwd: repoRoot },
   );
   if (!(await pathExists(cacheDir)))
     throw new Error(`Native search tools preparation produced no directory for ${target}`);
