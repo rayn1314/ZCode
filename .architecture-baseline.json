@@ -1,4 +1,113 @@
 {
   "version": 1,
-  "violations": []
+  "violations": [
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/services/src/source-server-workspace/sourceServerWorkspace.ts",
+      "module": "services",
+      "detail": "services",
+      "message": "新文件落在未受管模块 services；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "0b024def43a4318e",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/ui/src/store/sourceServerDisplayNameRegistry.ts",
+      "module": "ui",
+      "detail": "ui",
+      "message": "新文件落在未受管模块 ui；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "20e8a20ea812e9ad",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/ui/src/hooks/useSourceServerManagementSnapshot.ts",
+      "module": "ui",
+      "detail": "ui",
+      "message": "新文件落在未受管模块 ui；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "39f27d6fc070928e",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/ui/src/WorkspaceSidebar/RemoteProjectDetailsPopover.tsx",
+      "module": "ui",
+      "detail": "ui",
+      "message": "新文件落在未受管模块 ui；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "4dfc72236724a105",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/server/src/source-server/transportAdapter.ts",
+      "module": "server",
+      "detail": "server",
+      "message": "新文件落在未受管模块 server；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "5b0abdf6b2866eaa",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/server/src/source-server/sourceServerTransportRuntime.ts",
+      "module": "server",
+      "detail": "server",
+      "message": "新文件落在未受管模块 server；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "5c88877985dc23f2",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/shared/src/source-server/errorCodes.ts",
+      "module": "shared",
+      "detail": "shared",
+      "message": "新文件落在未受管模块 shared；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "7f947b3f3e24069c",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/desktop/src/host/sourceServerOperationLogs.ts",
+      "module": "desktop",
+      "detail": "desktop",
+      "message": "新文件落在未受管模块 desktop；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "a19442d059461562",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/ui/src/settings/SourceServerMigrationReportPanel.tsx",
+      "module": "ui",
+      "detail": "ui",
+      "message": "新文件落在未受管模块 ui；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "cc5c9c7502787d3d",
+      "global": false
+    },
+    {
+      "rule": "module-dependency",
+      "file": "packages/ui/src/gen-ui/domain/renderFailure.ts",
+      "module": "gen-ui",
+      "detail": "packages/shared/src/index.ts",
+      "message": "模块 gen-ui 未声明依赖 shared（import \"@zcode/shared\"）",
+      "fingerprint": "d1bd91c41c488ad4",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/desktop/src/host/sourceServerConnectionManager.ts",
+      "module": "desktop",
+      "detail": "desktop",
+      "message": "新文件落在未受管模块 desktop；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "e1776d13c626dab4",
+      "global": false
+    },
+    {
+      "rule": "unmanaged-new-file",
+      "file": "packages/zcode-server-cli/src/packaging/stageArchives.ts",
+      "module": "zcode-server-cli",
+      "detail": "zcode-server-cli",
+      "message": "新文件落在未受管模块 zcode-server-cli；请放入 managed 模块，或用 pnpm architecture:adopt <id> --root <dir> 为它所在目录登记模块",
+      "fingerprint": "f18e741f0cdccb4b",
+      "global": false
+    }
+  ]
 }
