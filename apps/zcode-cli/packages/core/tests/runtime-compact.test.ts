@@ -1390,6 +1390,85 @@ describe("AgentRuntime manual compact", () => {
     });
   });
 
+  it("blocks manual compact when the PreCompact hook vetoes it, and injects its context anyway", async () => {
+    const sessionId = createSessionId("runtime-compact-precompact-veto");
+    const eventStore = createTestSessionEventStore();
+    const compactRequests: ModelRequest[] = [];
+    const turnBodies: string[] = [];
+    let preCompactCalls = 0;
+    const hookRunner = createInMemoryHookRunner({
+      hooks: [
+        {
+          event: HookEventName.PreCompact,
+          callback: async () => {
+            preCompactCalls++;
+            return {
+              additionalContext: "PRE-COMPACT-VETO-CONTEXT",
+              continue: false,
+              reason: "hold the compaction",
+            };
+          },
+        },
+      ],
+    });
+    const runtime = createTestAgentRuntime(
+      sessionId,
+      { systemPrompt: "You are a PreCompact veto test agent." },
+      {
+        eventStore,
+        hookRunner,
+        modelFactory: createTestModelFactory(
+          withStreamTextFromGenerateText({
+            async generateText(request) {
+              const lastContent = providerContentToText(request.messages.at(-1)?.content);
+              if (lastContent.includes("create a detailed summary")) {
+                compactRequests.push(request);
+                return {
+                  finishReason: "stop",
+                  text: "<summary>veto test summary</summary>",
+                  usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+                };
+              }
+              turnBodies.push(
+                request.messages
+                  .map((message) => providerContentToText(message.content))
+                  .join("\n"),
+              );
+              return {
+                finishReason: "stop",
+                text: "veto warmup response",
+                usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+              };
+            },
+          }) as never,
+        ),
+      },
+    );
+
+    await runtime.executeTurn("first precompact veto setup");
+    await runtime.executeTurn("second precompact veto setup");
+    const result = await runtime.executeTurn("/compact");
+    await runtime.executeTurn("turn after the veto");
+
+    const events = await eventStore.getEvents(sessionId);
+    const compactCompleted = events
+      .filter((event) => event.type === SessionEventType.CompactCompleted)
+      .map((event) => event.payload as { status?: string; trigger?: string });
+
+    // 阻断发生在摘要请求之前：不能调模型，也不能落 boundary。
+    expect(result.response).toBe("Compaction blocked by PreCompact hook");
+    expect(preCompactCalls).toBe(1);
+    expect(compactRequests).toHaveLength(0);
+    expect(events.filter((event) => event.type === SessionEventType.CompactBoundary)).toHaveLength(0);
+    expect(compactCompleted).toHaveLength(1);
+    expect(compactCompleted[0]).toMatchObject({
+      status: CompactTimelineStatus.Skipped,
+      trigger: CompactTrigger.Manual,
+    });
+    // spec §4.1：PreCompact 的 additionalContext 无论是否阻断都要注入（注入先于阻断判定）。
+    expect(turnBodies.at(-1)).toContain("PRE-COMPACT-VETO-CONTEXT");
+  });
+
   it("propagates a healthy compact no-op as skipped for auto and reactive attempts", async () => {
     const sessionId = createSessionId("runtime-compact-noop-outcome");
     const eventStore = createTestSessionEventStore();

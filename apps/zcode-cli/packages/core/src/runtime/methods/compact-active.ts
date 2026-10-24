@@ -8,7 +8,6 @@ import {
   CompactReason,
   CompactTrigger,
   CompactTimelineStatus,
-  HookEventName,
   MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   SessionEventType,
   createChildTraceContext,
@@ -23,7 +22,6 @@ import {
   getUsageTotalTokens,
 } from "../deps.js";
 import type { SessionEvent, TraceContext } from "../deps.js";
-import type { CompactHookTrigger } from "@zcode/contracts";
 import {
   defaultCompactPhaseForTrigger,
   defaultCompactReasonForTrigger,
@@ -60,11 +58,16 @@ import {
 import { selectPersistedCompactTail } from "../helpers/compact-preservation.js";
 import {
   buildCompactSummaryRequestMessages,
+  compactHookTriggerOf,
   createCompactContextExceededFinishError,
   createCompactPromptTooLongError,
+  emitPostCompactFailedHook,
   estimatePreCompactTokenCount,
   formatCompactSummaryOrThrow,
+  persistCompactBlockedByHook,
   persistCompactTimelineEvent,
+  runPostCompactHookPhase,
+  runPreCompactHookGate,
 } from "./compact-active-helpers.js";
 import { runCompactSummaryModelRequest } from "./compact-summary-model-request.js";
 import { resolveNormalRequestMaxOutputTokens } from "./model-token-limits.js";
@@ -246,15 +249,11 @@ async function compactActiveConversationImpl(
       turnTraceContext,
       events,
     );
-    const postCompactHookResult = await this.runPostCompactHooks(
+    await runPostCompactHookPhase(
+      this,
       { compactTrigger, outcome: "skipped", phase, preCompactTokenCount },
       turnTraceContext,
       options.abortSignal,
-    );
-    // PostCompact 声明“仅观察 + 注入上下文”（spec §4.1）：hook 返回的上下文写入消息历史。
-    this.injectHookAdditionalContextIntoMessageHistory(
-      HookEventName.PostCompact,
-      postCompactHookResult.additionalContexts,
     );
     return {
       displayText: "Context is up to date; no compression needed",
@@ -264,36 +263,21 @@ async function compactActiveConversationImpl(
     };
   }
 
-  const preCompactHookResult = await this.runPreCompactHooks(
+  const preCompactHook = await runPreCompactHookGate(
+    this,
     { compactTrigger, phase, preCompactTokenCount },
     turnTraceContext,
     options.abortSignal,
   );
-  // PreCompact 声明“可注入上下文”（spec §4.1）：无论是否阻断，hook 返回的上下文都写入消息历史。
-  this.injectHookAdditionalContextIntoMessageHistory(
-    HookEventName.PreCompact,
-    preCompactHookResult.additionalContexts,
-  );
-  // PreCompact 可阻断（spec §4.1）：hook 返回阻断信号时中止压缩，按 skipped 记账并回填 UI。
-  if (preCompactHookResult.blockRequested || preCompactHookResult.preventContinuation) {
-    const blockedPayload = this.buildCompactTimelinePayload(compactTimeline, {
-      endedAt: Date.now(),
-      replace: true,
-      status: CompactTimelineStatus.Skipped,
-    });
-    await persistCompactTimelineEvent(
-      this,
-      SessionEventType.CompactCompleted,
-      blockedPayload,
-      turnTraceContext,
-      events,
-    );
-    return {
-      displayText: "Compaction blocked by PreCompact hook",
+  // PreCompact 可阻断（spec §4.1）：中止压缩，按 skipped 记账并回填 UI。
+  if (preCompactHook.blocked) {
+    return persistCompactBlockedByHook(this, {
+      compactTimeline,
       entries: activeEntries,
-      outcome: "skipped",
-      tokenCount: preCompactTokenCount,
-    };
+      events,
+      preCompactTokenCount,
+      traceContext: turnTraceContext,
+    });
   }
   const compactStartedPayload = this.buildCompactTimelinePayload(compactTimeline, {
     ...(maxAttempts > 1 ? { attempt, maxAttempts } : {}),
@@ -716,21 +700,18 @@ async function compactActiveConversationImpl(
         turnTraceContext,
         events,
       );
-      const postCompactHookResult = await this.runPostCompactHooks(
+      await runPostCompactHookPhase(
+        this,
         {
           boundaryId: compactBoundary.boundaryId,
           compactTrigger,
-          outcome: CompactTimelineStatus.Completed as "completed",
+          outcome: "completed",
           phase,
           postCompactTokenCount: providerPostCompactTokenCount,
           preCompactTokenCount,
         },
         turnTraceContext,
         options.abortSignal,
-      );
-      this.injectHookAdditionalContextIntoMessageHistory(
-        HookEventName.PostCompact,
-        postCompactHookResult.additionalContexts,
       );
 
       this.latestConversationMessageId = summaryMessageId;
@@ -809,70 +790,6 @@ async function compactActiveConversationImpl(
       });
       throw error;
     }
-  }
-}
-
-/**
- * 压缩失败时补发 PostCompact(outcome="failed")。
- *
- * 契约允许 completed|skipped|failed，但过去只有前两者会发射，靠 hook 观察压缩结果的用户
- * 收不到失败信号。这里只在「真实失败」时发射：被取消（Stop / 会话关闭导致的中断）不是失败，
- * 且此刻注入上下文没有意义。
- *
- * hook 自身异常必须吞掉：它不能掩盖原始压缩错误（fail-open 默认），否则用户看到的是
- * hook 的错误而不是压缩失败的原因。
- */
-async function emitPostCompactFailedHook(
-  runtime: AgentRuntimeInternal,
-  input: {
-    abortSignal?: AbortSignal;
-    compactTrigger: CompactHookTrigger;
-    error: unknown;
-    phase: CompactPhase;
-    preCompactTokenCount: number;
-    turnTraceContext: TraceContext;
-  },
-): Promise<void> {
-  if (isTurnCancellationError(input.error, input.abortSignal)) return;
-  try {
-    const result = await runtime.runPostCompactHooks(
-      {
-        compactTrigger: input.compactTrigger,
-        outcome: "failed",
-        phase: input.phase,
-        preCompactTokenCount: input.preCompactTokenCount,
-      },
-      input.turnTraceContext,
-      input.abortSignal,
-    );
-    runtime.injectHookAdditionalContextIntoMessageHistory(
-      HookEventName.PostCompact,
-      result.additionalContexts,
-    );
-  } catch (error) {
-    runtime.logger?.warn("PostCompact failure hook threw", {
-      ...traceContextToLogContext(input.turnTraceContext),
-      errorMessage: error instanceof Error ? error.message : String(error),
-      event: "compact.post_compact_hook_failed",
-      module: "core.runtime",
-      status: "failed",
-    });
-  }
-}
-
-function compactHookTriggerOf(trigger: CompactTrigger): CompactHookTrigger {
-  switch (trigger) {
-    case CompactTrigger.Manual:
-    case CompactTrigger.Auto:
-    case CompactTrigger.Reactive:
-    case CompactTrigger.PostTurn:
-    case CompactTrigger.ModelDownshift:
-      return trigger;
-    case CompactTrigger.Partial:
-    case CompactTrigger.SessionMemory:
-      // 这两条路径不经过 compactActiveConversation；走到这里说明调用方违约。
-      // 显式抛错而不是猜一个 hook 值，避免把错误的压缩来源告诉用户 hook。
-      throw new Error(`Compact trigger ${trigger} cannot be reported to hooks`);
   }
 }
 
