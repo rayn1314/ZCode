@@ -35,8 +35,13 @@ export interface ProcessTreeTerminatorOptions {
   resolveOwnedProcessExitedAtMs?: () => number | undefined;
   /** Windows taskkill 依赖注入；生产默认仍使用异步 execFile，确定性时序测试可替换。 */
   windowsTaskkillRunner?: WindowsTaskkillRunner;
-  /** Windows taskkill 单次命令预算；默认 2 秒，测试可缩短。 */
+  /** Windows 强杀命令（taskkill /T /F）预算；默认 2 秒，测试可缩短。 */
   windowsTaskkillTimeoutMs?: number;
+  /**
+   * Windows 礼貌命令（taskkill /T，不带 /F）预算；未提供时沿用强杀命令预算。
+   * 实际窗口还会被 force 触发前的剩余礼貌预算夹住，预算为 0 时整个礼貌阶段被跳过。
+   */
+  windowsGracefulTaskkillTimeoutMs?: number;
   /** Windows cleanup 全链路绝对截止时间（Unix epoch ms）；覆盖快照、EOF、taskkill 与 exit 观察。 */
   windowsCleanupDeadlineAtMs?: number;
 }

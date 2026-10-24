@@ -56,9 +56,18 @@ describe("ZCodeStdioTransport process tree result", () => {
     // stderr drain 只能使用 250ms，不能重新借到整个 Windows 进程树窗口。
     expect(performance.now() - startedAt).toBeLessThan(3_500);
     expect(terminateProcessTreeAndWaitMock).toHaveBeenCalledOnce();
+    // 预算表（见 packages/services/spec/process-tree-cleanup-budget.md）：
+    // 礼貌窗口 1500 + 强杀命令 1500 + 退出观察 250 = 3250（总预算与修改前一致，
+    // 仍在 Host service-dispose 的 3500ms 内）。阶段上限由 transport 显式下发，
+    // 避免 terminator/waiter 各自假设阶段时长。
     expect(terminateProcessTreeAndWaitMock).toHaveBeenCalledWith(
       child,
-      expect.objectContaining({ windowsCleanupDeadlineAtMs: 13_250 }),
+      expect.objectContaining({
+        windowsCleanupDeadlineAtMs: 13_250,
+        windowsGracefulTaskkillTimeoutMs: 1_000,
+        windowsTaskkillTimeoutMs: 1_500,
+        waitAfterForceMs: 250,
+      }),
     );
     expect(child.exitCode).toBeNull();
   });

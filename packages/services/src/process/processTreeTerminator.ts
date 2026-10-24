@@ -13,7 +13,10 @@ import {
   resolveCurrentOwnedIdentities,
   resolveCurrentOwnedIdentitiesAsync,
 } from "#src/process/processTreeOwnership.js";
-import { waitForProcessTreeTermination } from "#src/process/processTreeWaiter.js";
+import {
+  DEFAULT_WINDOWS_EXIT_OBSERVATION_MS,
+  waitForProcessTreeTermination,
+} from "#src/process/processTreeWaiter.js";
 import { defaultWindowsTaskkillRunner } from "#src/process/windowsTaskkillRunner.js";
 import type {
   ProcessIdentity,
@@ -59,6 +62,8 @@ interface InternalProcessTreeTerminatorOptions extends ProcessTreeTerminatorOpti
   resolvedOwnership?: ProcessTreeOwnershipResolution;
   /** 进程身份查询失败，只观察原 ChildProcess，禁止向裸 PID 发送 taskkill。 */
   unverifiedRootOnly?: boolean;
+  /** waiter 在命令结束后保留的退出观察窗口；命令窗口不得把它吃掉。 */
+  waitAfterForceMs?: number;
 }
 
 interface ForceCleanupResult {
@@ -141,12 +146,46 @@ function killPosixProcessGroup(
   }
 }
 
+/**
+ * 单条 taskkill 命令的窗口：不得超过调用方给该阶段的上限，也不得吃掉 waiter 在命令
+ * 结束后固定保留的退出观察窗口（`DEFAULT_WINDOWS_EXIT_OBSERVATION_MS`）。
+ * 旧实现只读 `windowsTaskkillTimeoutMs`，于是命令被自己的 execFile timeout 掐断的
+ * 时刻与绝对 deadline 判定残留的时刻重合，强杀窗口被两头吃掉；返回 ≤0 表示这个窗口
+ * 已经不可能产生可观察效果，调用方应跳过该命令。
+ */
+function resolveWindowsTaskkillWindowMs(
+  commandWindowMs: number,
+  options: ProcessTreeTerminatorOptions,
+): number {
+  const deadlineAtMs = options.windowsCleanupDeadlineAtMs;
+  const requestedMs = Math.max(commandWindowMs, 1);
+  if (deadlineAtMs === undefined) {
+    return requestedMs;
+  }
+  const observationReserveMs = Math.max(
+    (options as InternalProcessTreeTerminatorOptions).waitAfterForceMs ??
+      DEFAULT_WINDOWS_EXIT_OBSERVATION_MS,
+    0,
+  );
+  return Math.min(requestedMs, deadlineAtMs - Date.now() - observationReserveMs);
+}
+
 async function runWindowsTaskkill(
   pid: number,
   force: boolean,
   options: ProcessTreeTerminatorOptions,
+  commandWindowMs: number,
 ): Promise<void> {
-  const timeoutMs = Math.max(options.windowsTaskkillTimeoutMs ?? WINDOWS_TASKKILL_TIMEOUT_MS, 1);
+  const timeoutMs = resolveWindowsTaskkillWindowMs(commandWindowMs, options);
+  if (timeoutMs <= 0) {
+    debug(options, "跳过 Windows runtime 进程树 taskkill：绝对预算已不足以为退出观察留出窗口", {
+      commandWindowMs,
+      deadlineAtMs: options.windowsCleanupDeadlineAtMs,
+      force,
+      pid,
+    });
+    return;
+  }
   const runner = options.windowsTaskkillRunner ?? defaultWindowsTaskkillRunner;
   const startedAt = Date.now();
   debug(options, "Windows runtime 进程树 taskkill started", { force, pid, timeoutMs });
@@ -212,7 +251,16 @@ async function forceTerminateWindowsProcessTree(
   ) {
     targets.add(child.pid);
   }
-  await Promise.all([...targets].map((targetPid) => runWindowsTaskkill(targetPid, true, options)));
+  await Promise.all(
+    [...targets].map((targetPid) =>
+      runWindowsTaskkill(
+        targetPid,
+        true,
+        options,
+        options.windowsTaskkillTimeoutMs ?? WINDOWS_TASKKILL_TIMEOUT_MS,
+      ),
+    ),
+  );
   const hasVerifiedRoot = currentIdentities.some((identity) => identity.pid === child.pid);
   return {
     identities: currentIdentities,
@@ -242,14 +290,38 @@ function terminateWindowsProcessTreeWithOwnership(
   // ChildProcess 句柄可以证明 root 属于当前 Host。此时允许用 root /T 作为安全兜底，
   // 只扩大到该句柄对应的活进程，不沿裸 PID 重新发现或认领进程树。
   if (gracefulTargets.length === 0 && childHandleOwnsLiveRoot) gracefulTargets.push(pid);
-  const gracefulFlight = Promise.all(
-    [...new Set(gracefulTargets)].map((targetPid) => runWindowsTaskkill(targetPid, false, options)),
-  ).then(() => undefined);
-  // 等待式清理过去把 graceful taskkill fire-and-forget 后只等 force 窗口，
-  // taskkill callback/ChildProcess exit 稍晚到达时会把正常退出误报为 remaining PID。
-  // 非等待式调用仍不 await；等待式 waiter 通过回调把同一 flight 纳入完成屏障。
-  internalOptions.onGracefulCleanupScheduled?.(gracefulFlight);
-  void gracefulFlight;
+  // 礼貌阶段只能用 force 触发前的剩余礼貌预算：不带 /F 的 taskkill 对无窗口的 console
+  // agent 必然失败，实测却要 0.64–1.9s 才返回；它与强杀命令并发时会把强杀从 ~0.64s
+  // 拖到 ~1.9s，等于吃掉强杀窗口（实测 2 agent 并发：混合 1883/1988ms，只发强杀
+  // 1216/1309ms）。预算为 0 时（快照/EOF 已把礼貌窗口用光，或这是一次重试）直接跳过，
+  // 只留 debug 日志，而不是发一条注定失败的命令去抢占强杀窗口。
+  const gracefulCapMs =
+    options.windowsGracefulTaskkillTimeoutMs ??
+    options.windowsTaskkillTimeoutMs ??
+    WINDOWS_TASKKILL_TIMEOUT_MS;
+  const gracefulWindowMs = Math.min(
+    gracefulCapMs,
+    Math.max((options.forceAfterMs ?? DEFAULT_FORCE_AFTER_MS) - (Date.now() - startedAtMs), 0),
+  );
+  if (gracefulWindowMs > 0) {
+    const gracefulFlight = Promise.all(
+      [...new Set(gracefulTargets)].map((targetPid) =>
+        runWindowsTaskkill(targetPid, false, options, gracefulWindowMs),
+      ),
+    ).then(() => undefined);
+    // 等待式清理过去把 graceful taskkill fire-and-forget 后只等 force 窗口，
+    // taskkill callback/ChildProcess exit 稍晚到达时会把正常退出误报为 remaining PID。
+    // 非等待式调用仍不 await；等待式 waiter 通过回调把同一 flight 纳入完成屏障。
+    internalOptions.onGracefulCleanupScheduled?.(gracefulFlight);
+    void gracefulFlight;
+  } else {
+    debug(options, "跳过 Windows runtime 进程树礼貌阶段：force 触发前已无礼貌预算", {
+      forceAfterMs: options.forceAfterMs,
+      gracefulCapMs,
+      gracefulTargets: [...new Set(gracefulTargets)],
+      pid,
+    });
+  }
   const forceDelayMs = Math.max(
     (options.forceAfterMs ?? DEFAULT_FORCE_AFTER_MS) - (Date.now() - startedAtMs),
     0,

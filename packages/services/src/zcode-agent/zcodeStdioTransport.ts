@@ -27,8 +27,18 @@ interface ZCodeStdioTransportOptions {
 const STDIO_EOF_EXIT_WAIT_MS = 1_800;
 const DISPOSE_STDERR_DRAIN_MS = 3_250;
 const E2E_COVERAGE_STDIO_EOF_EXIT_WAIT_MS = 5_000;
+// 关闭预算分阶段表（详细依据见 packages/services/spec/process-tree-cleanup-budget.md）。
+// Windows 单次 attempt 的上界必须落在 Host service-dispose 的 3.5s 内，因此这里只重切、
+// 不放大：礼貌窗口 1500 + 强杀命令 1500 + 退出观察 250 = 3250。
+/** POSIX 下 force 触发前的礼貌窗口（无 taskkill 窗口需要让路，保持原值）。 */
 const PROCESS_TREE_FORCE_AFTER_MS = 2_000;
-const PROCESS_TREE_WINDOWS_TASKKILL_TIMEOUT_MS = 1_000;
+/** Windows 下 force 触发前的礼貌窗口：让出 500ms 给强杀命令（实测该命令需 0.64–1.4s）。 */
+const PROCESS_TREE_WINDOWS_POLITE_WINDOW_MS = 1_500;
+/** Windows 强杀命令 `taskkill /PID x /T /F` 上限：覆盖 2–4 路并发清理实测的 1.2–1.9s。 */
+const PROCESS_TREE_WINDOWS_FORCE_TASKKILL_TIMEOUT_MS = 1_500;
+/** Windows 礼貌命令 `taskkill /PID x /T` 上限；只允许用 force 触发前的剩余礼貌预算。 */
+const PROCESS_TREE_WINDOWS_GRACEFUL_TASKKILL_TIMEOUT_MS = 1_000;
+/** 强杀命令结束后留给「观察进程真的退出」的窗口（实测 exit 事件 0–25ms 内投递）。 */
 const PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS = 250;
 const processTreeLogger = createServiceLogger("zcode-agent-process-tree");
 
@@ -135,15 +145,25 @@ export class ZCodeStdioTransport implements ZCodeProtocolTransport {
     // 必须在发 EOF 前保存树成员，否则根退出、后代被系统接管后无法再按 PPID 找回。
     this.cleanupAttemptCount += 1;
     const cleanupStartedAtMs = Date.now();
-    const forceBudgetMs = this.cleanupAttemptCount > 1 ? 0 : PROCESS_TREE_FORCE_AFTER_MS;
+    const forceBudgetMs =
+      this.cleanupAttemptCount > 1
+        ? 0
+        : process.platform === "win32"
+          ? PROCESS_TREE_WINDOWS_POLITE_WINDOW_MS
+          : PROCESS_TREE_FORCE_AFTER_MS;
     // 只扣减 forceAfterMs 无法约束慢 CIM；force 触底为 0 后 waiter 还会重新
     // 获得 taskkill + exit 宽限。Windows 必须从 cleanup 起点固定同一个绝对 deadline，
     // 并贯穿快照、EOF 和 waiter，才能稳定落在 Host 3.5s service phase 内。
+    // 注意：快照不能像 EOF 等待那样被收窄到「deadline − 强杀窗口」。Windows 强杀必须以
+    // 快照里核对过的 root 身份为前提，拿不到身份时整轮 fail closed、一条 taskkill 都不发
+    // （processTreeOwnership 的 childStillOwned=false，防止误杀复用的 PID）。实测把快照
+    // 收窄到 1500ms 会让 PowerShell/CIM 查询（实测硬成本约 1.35s）在高负载下被掐断，
+    // 于是进程根本没被回收：宁可让慢快照吃掉预算，也不能让它变成「谁都不杀」。
     const windowsCleanupDeadlineAtMs =
       process.platform === "win32"
         ? cleanupStartedAtMs +
           forceBudgetMs +
-          PROCESS_TREE_WINDOWS_TASKKILL_TIMEOUT_MS +
+          PROCESS_TREE_WINDOWS_FORCE_TASKKILL_TIMEOUT_MS +
           PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS
         : undefined;
     this.cleanupProcessTreeSnapshot ??= await this.captureCleanupSnapshot(
@@ -156,7 +176,8 @@ export class ZCodeStdioTransport implements ZCodeProtocolTransport {
       // 这里先请求协议入口自然收尾；短时间无响应再进入进程树兜底，仍保证不残留子进程。
       this.requestStdioClose();
       // coverage CLI bundle 未压缩且带完整 source map，启动/收尾明显慢于发布包。
-      // coverage 下继续保留额外写盘宽限；普通窗口覆盖 CLI 的 1500ms 退出 deadline。
+      // coverage 下继续保留额外写盘宽限；POSIX 上该配置上限全额生效，Windows 上实际
+      // 可用量由上面的绝对 deadline 决定（CLI 自身的退出 deadline 是 1500ms）。
       const configuredEofWaitMs =
         process.env.ZCODE_E2E_COVERAGE === "1"
           ? E2E_COVERAGE_STDIO_EOF_EXIT_WAIT_MS
@@ -169,7 +190,8 @@ export class ZCodeStdioTransport implements ZCodeProtocolTransport {
       // 修复：EOF 只是让 agent 自然收尾的礼貌窗口，最多用到 deadline 减去强杀窗口，
       // 保证每个 attempt 都真的执行到强杀阶段；总时长上界（force + taskkill + 宽限）不变。
       const killWindowMs =
-        PROCESS_TREE_WINDOWS_TASKKILL_TIMEOUT_MS + PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS;
+        PROCESS_TREE_WINDOWS_FORCE_TASKKILL_TIMEOUT_MS +
+        PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS;
       const eofWaitDeadlineAtMs =
         windowsCleanupDeadlineAtMs === undefined
           ? undefined
@@ -194,9 +216,15 @@ export class ZCodeStdioTransport implements ZCodeProtocolTransport {
         : {}),
       ...(processTreeSnapshot ? { snapshot: processTreeSnapshot } : {}),
       log: processTreeLogger,
-      // Windows 等待式清理的绝对 deadline 是 force 余量 + taskkill 上限 + exit 宽限。
-      // 将命令上限控制在 1s，使完整 cleanup 仍落在 Host service phase 的 3.5s 内。
-      windowsTaskkillTimeoutMs: PROCESS_TREE_WINDOWS_TASKKILL_TIMEOUT_MS,
+      // Windows 等待式清理的绝对 deadline 是礼貌窗口 + 强杀命令上限 + 退出观察宽限；
+      // 强杀命令的上限必须覆盖一次真实 taskkill 的耗时（实测 0.64–1.4s，并发 1.2–1.9s），
+      // 否则命令会被自己的 execFile timeout 掐断，进程根本没被回收。
+      windowsTaskkillTimeoutMs: PROCESS_TREE_WINDOWS_FORCE_TASKKILL_TIMEOUT_MS,
+      // 礼貌命令只能在 force 触发前发；真实的上限由 terminator 按剩余礼貌预算夹取，
+      // 预算为 0 时直接跳过（见 spec 预算表）。
+      windowsGracefulTaskkillTimeoutMs: PROCESS_TREE_WINDOWS_GRACEFUL_TASKKILL_TIMEOUT_MS,
+      // 观察宽限与 waiter 共用同一份预算，显式传入避免两处默认值各自漂移。
+      waitAfterForceMs: PROCESS_TREE_WINDOWS_EXIT_OBSERVATION_GRACE_MS,
       ...(windowsCleanupDeadlineAtMs === undefined ? {} : { windowsCleanupDeadlineAtMs }),
       // 前一次 cleanup 若报告残留，app quit 的最终重试不能再等待完整
       // graceful 窗口；直接进入 force，确保仍落在 main 给 Host 的退出预算内。

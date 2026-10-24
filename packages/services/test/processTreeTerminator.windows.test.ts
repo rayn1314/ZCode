@@ -490,7 +490,9 @@ describe("terminateProcessTree Windows", () => {
     let result: Awaited<ReturnType<typeof terminateProcessTreeAndWait>> | undefined;
 
     const resultPromise = terminateProcessTreeAndWait(child, {
-      forceAfterMs: 0,
+      // 礼貌阶段（不带 /F 的 taskkill）只在 force 触发前还有礼貌预算时才会发出，
+      // 本用例要钉住的正是「等 graceful flight settle」这条路径，因此必须留出预算。
+      forceAfterMs: 1_000,
       snapshot: await captureProcessTreeSnapshotAsync(child),
       waitAfterForceMs: 30,
       windowsTaskkillRunner,
@@ -569,7 +571,8 @@ describe("terminateProcessTree Windows", () => {
     expect(snapshot?.identities.map((identity) => identity.pid)).toEqual([5000]);
 
     const resultPromise = terminateProcessTreeAndWait(child, {
-      forceAfterMs: 0,
+      // 该用例靠礼貌 taskkill（不带 /F）回收已退出 root 的旧后代，因此要留出礼貌预算。
+      forceAfterMs: 1_000,
       snapshot,
       waitAfterForceMs: 0,
     });
@@ -754,6 +757,7 @@ describe("terminateProcessTree Windows", () => {
       exitCode: null as number | null,
       pid: 4242,
       signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
     }) as unknown as ChildProcess;
     const windowsTaskkillRunner = vi.fn(() => new Promise<Record<string, never>>(() => {}));
     let result: Awaited<ReturnType<typeof terminateProcessTreeAndWait>> | undefined;
@@ -776,6 +780,7 @@ describe("terminateProcessTree Windows", () => {
       windowsCleanupDeadlineAtMs: Date.now() + 40,
       windowsTaskkillRunner,
       windowsTaskkillTimeoutMs: 100,
+      windowsGracefulTaskkillTimeoutMs: 100,
     });
     void resultPromise.then((value) => {
       result = value;
@@ -789,11 +794,150 @@ describe("terminateProcessTree Windows", () => {
     // 不能等待旧 deadline 导致 fake-timer 用例自身超时。
     expect(result).toEqual({ remainingPids: [4242] });
     await expect(resultPromise).resolves.toEqual(result);
+    // force 触发前已无礼貌预算（EOF 等待用光了它），礼貌命令不再发出，避免一条必然
+    // 失败、且与强杀并发的 /T 抢占强杀窗口；强杀命令仍发出，但窗口被「绝对剩余 40ms
+    // 减去退出观察 30ms」夹到 10ms。
     expect(windowsTaskkillRunner).toHaveBeenCalledWith({
-      force: false,
+      force: true,
+      pid: 4242,
+      timeoutMs: 10,
+    });
+    expect(windowsTaskkillRunner).not.toHaveBeenCalledWith(
+      expect.objectContaining({ force: false }),
+    );
+  });
+
+  // Bug 回归（与负载无关的确定性用例）：Windows 固定 3,250ms 预算下，快照 + stdin EOF
+  // 等待会把 force 触发前的礼貌预算用光，于是礼貌 taskkill 与强杀 taskkill 几乎同时发出、
+  // 各自吃满自己的 1000ms 上限被 SIGTERM，进程根本没被回收却被判成残留。
+  it("礼貌预算耗尽时跳过礼貌阶段，强杀命令仍真实发出", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      pid: 4242,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
+    }) as unknown as ChildProcess;
+    const windowsTaskkillRunner = vi.fn(() => new Promise<Record<string, never>>(() => {}));
+
+    const resultPromise = terminateProcessTreeAndWait(child, {
+      forceAfterMs: 0,
+      snapshot: await captureProcessTreeSnapshotAsync(child),
+      waitAfterForceMs: 30,
+      windowsTaskkillRunner,
+      windowsTaskkillTimeoutMs: 100,
+      windowsGracefulTaskkillTimeoutMs: 100,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 预算为 0 时礼貌命令必须被跳过（只留 debug 日志），而不是发一条对无窗口 agent
+    // 必然失败、且要和强杀抢进程创建/内核时间的 /T。
+    expect(windowsTaskkillRunner).not.toHaveBeenCalledWith(
+      expect.objectContaining({ force: false }),
+    );
+    expect(windowsTaskkillRunner).toHaveBeenCalledWith({
+      force: true,
       pid: 4242,
       timeoutMs: 100,
     });
+
+    // 强杀命令一直不返回：绝对 deadline（100ms 命令 + 30ms 观察）才判定残留。
+    await vi.advanceTimersByTimeAsync(130);
+    await expect(resultPromise).resolves.toEqual({ remainingPids: [4242] });
+  });
+
+  it("礼貌命令窗口被 force 触发前的剩余礼貌预算夹住", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      pid: 4242,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
+    }) as unknown as ChildProcess;
+    const windowsTaskkillRunner = vi.fn(() => new Promise<Record<string, never>>(() => {}));
+
+    const resultPromise = terminateProcessTreeAndWait(child, {
+      forceAfterMs: 800,
+      snapshot: await captureProcessTreeSnapshotAsync(child),
+      waitAfterForceMs: 30,
+      windowsTaskkillRunner,
+      windowsTaskkillTimeoutMs: 100,
+      windowsGracefulTaskkillTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 礼貌命令上限虽是 1000ms，但它的 execFile timeout 必须在 force 触发点（800ms）
+    // 结束：并发时实测强杀命令从 ~0.64s 被拖到 ~1.9s，等于吃掉强杀窗口。
+    expect(windowsTaskkillRunner).toHaveBeenCalledWith({
+      force: false,
+      pid: 4242,
+      timeoutMs: 800,
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    expect(windowsTaskkillRunner).toHaveBeenCalledWith({
+      force: true,
+      pid: 4242,
+      timeoutMs: 100,
+    });
+    await vi.advanceTimersByTimeAsync(830);
+    await expect(resultPromise).resolves.toEqual({ remainingPids: [4242] });
+  });
+
+  it("强杀命令窗口被绝对 deadline 减去退出观察窗口后夹住", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      pid: 4242,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
+    }) as unknown as ChildProcess;
+    const windowsTaskkillRunner = vi.fn(() => new Promise<Record<string, never>>(() => {}));
+
+    const resultPromise = terminateProcessTreeAndWait(child, {
+      forceAfterMs: 0,
+      snapshot: await captureProcessTreeSnapshotAsync(child),
+      waitAfterForceMs: 250,
+      windowsCleanupDeadlineAtMs: Date.now() + 1_000,
+      windowsTaskkillRunner,
+      windowsTaskkillTimeoutMs: 1_500,
+      windowsGracefulTaskkillTimeoutMs: 1_000,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // 命令上限 1500ms 被「绝对剩余 1000ms − 退出观察 250ms」夹到 750ms：命令必须在
+    // deadline 判定之前结束，否则它被掐断的时刻就是残留判定发生的时刻。
+    expect(windowsTaskkillRunner).toHaveBeenCalledWith({
+      force: true,
+      pid: 4242,
+      timeoutMs: 750,
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(resultPromise).resolves.toEqual({ remainingPids: [4242] });
+  });
+
+  it("绝对预算连退出观察窗口都不够时不再发送 taskkill 命令", async () => {
+    const child = Object.assign(new EventEmitter(), {
+      exitCode: null as number | null,
+      pid: 4242,
+      signalCode: null as NodeJS.Signals | null,
+      kill: vi.fn(),
+    }) as unknown as ChildProcess;
+    const windowsTaskkillRunner = vi.fn(() => new Promise<Record<string, never>>(() => {}));
+
+    const resultPromise = terminateProcessTreeAndWait(child, {
+      forceAfterMs: 0,
+      snapshot: await captureProcessTreeSnapshotAsync(child),
+      waitAfterForceMs: 100,
+      // 只剩 40ms，连 waitAfterForceMs 的 100ms 观察窗都放不下。
+      windowsCleanupDeadlineAtMs: Date.now() + 40,
+      windowsTaskkillRunner,
+      windowsTaskkillTimeoutMs: 100,
+      windowsGracefulTaskkillTimeoutMs: 100,
+    });
+    await vi.advanceTimersByTimeAsync(40);
+
+    // 发出去也只会被自己的 timeout 掐断，还留下「命令已发」的假象；直接不发，
+    // 由 waiter 按 OS 事实在 deadline 上报真实残留。
+    expect(windowsTaskkillRunner).not.toHaveBeenCalled();
+    await expect(resultPromise).resolves.toEqual({ remainingPids: [4242] });
   });
 
   it("CIM 硬不可用时缓存 capability 并跳过后续身份查询", async () => {

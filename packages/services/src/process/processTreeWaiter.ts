@@ -8,7 +8,11 @@ import type {
 } from "#src/process/processTreeTypes.js";
 
 const DEFAULT_FORCE_AFTER_MS = 2_000;
-const DEFAULT_WAIT_AFTER_FORCE_MS = 250;
+/**
+ * 强杀命令结束后固定留给「观察进程真的退出」的窗口。这里是这份预算的唯一来源：
+ * terminator 也用它来夹住单条 taskkill 命令窗口，命令不得把观察窗口吃掉。
+ */
+export const DEFAULT_WINDOWS_EXIT_OBSERVATION_MS = 250;
 const DEFAULT_WINDOWS_TASKKILL_TIMEOUT_MS = 2_000;
 const WINDOWS_LATE_EXIT_OBSERVATION_MS = 750;
 
@@ -65,7 +69,10 @@ export async function waitForProcessTreeTermination(
 
   const waiterStartedAtMs = Date.now();
   const forceAfterMs = Math.max(options.forceAfterMs ?? DEFAULT_FORCE_AFTER_MS, 0);
-  const waitAfterForceMs = Math.max(options.waitAfterForceMs ?? DEFAULT_WAIT_AFTER_FORCE_MS, 0);
+  const waitAfterForceMs = Math.max(
+    options.waitAfterForceMs ?? DEFAULT_WINDOWS_EXIT_OBSERVATION_MS,
+    0,
+  );
   const isWindows = process.platform === "win32";
   const windowsTaskkillBudgetMs = hasWindowsTaskkillTargets
     ? Math.max(options.windowsTaskkillTimeoutMs ?? DEFAULT_WINDOWS_TASKKILL_TIMEOUT_MS, 1)
