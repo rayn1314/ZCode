@@ -39,10 +39,11 @@ export type {
 /**
  * `isExcludedRelativePath(relativePath)` / `isDatabaseArchivePath(relativePath)`（`exportLogArchivePolicy.ts`）：
  * 导出包路径策略的**全部**判定（消费方是 `exportLogs.ts` 的收集阶段：按相对路径跳过即不进包；
- * 迄今该文件仍内联了一份同名规则副本，切换过来是遗留项 —— 见 CONTRACT.md）。
+ * 该文件只做 IO、脱敏与时间窗口保留，不再内联任何路径规则）。
  *
  * 立场是**默认拒绝**：宁可少收也不能漏收凭据。判定按 `/` 边界做路径段匹配（`repo-backup`、
- * `sessions-old` 不能被 `repo`、`sessions` 整目录丢掉），入参的 `\` 先归一成 `/`。
+ * `sessions-old` 不能被 `repo`、`sessions` 整目录丢掉），入参的 `\` 先归一成 `/`；
+ * 凭据文件名与 `debug` 目录段**折叠大小写**后比对（`CREDENTIALS.JSON`、`Debug/` 同样排除）。
  * 排除族：凭据存储文件（按文件名，不同提供商可能复用同名文件）、数据库文件（`.sqlite`/`.db` 及其
  * `-wal`/`-shm` 旁路，顶层单文件不受目录型规则约束）、非日志状态目录（`crash`：crashpad dump 是
  * 崩溃瞬间的内存快照、凭据与正文会随内存落盘）、高频轨迹（`dev`）、docshot 备份、已退役的 ACP

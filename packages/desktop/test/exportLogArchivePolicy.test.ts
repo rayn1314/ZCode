@@ -9,6 +9,7 @@ import {
   isExcludedRelativePath,
   shouldApplyLogExportRetention,
 } from "../src/main/exportLogArchivePolicy.js";
+import { readSourceText } from "./readSourceText.js";
 
 // logger 在模块加载期就 mkdir 日志目录并跑一次保留清理，必须先把出口重定向到临时目录，
 // 否则单测会在真实用户数据根里留下痕迹。
@@ -59,6 +60,58 @@ test("目录段匹配卡 / 边界，同前缀的兄弟目录不再被误丢", ()
   assert.equal(isExcludedRelativePath("certs2/server.key"), false);
   assert.equal(isExcludedRelativePath("sessions-old/2026/a.md"), false);
   assert.equal(isExcludedRelativePath("session-bindings/bind.json"), true);
+  // 退役 Repo 功能的产物（加密快照、wiki 正文）同样按目录段排除，不是 repo 的兄弟目录。
+  assert.equal(
+    isExcludedRelativePath("repo-snapshots/workspace-a/pending/snapshot.tar.gz.enc"),
+    true,
+  );
+  assert.equal(isExcludedRelativePath("repo-wiki/workspace-a/wiki.json"), true);
+});
+
+test("凭据文件名与排除目录段的判定大小写不敏感", () => {
+  // Windows / macOS 文件系统大小写不敏感，CREDENTIALS.JSON 与 credentials.json 指向同一份文件；
+  // 逐字符比对等于给绕开放行，而导出包会被用户转发出去——宁可少收，不能漏收凭据。
+  assert.equal(isExcludedRelativePath("CREDENTIALS.JSON"), true);
+  assert.equal(isExcludedRelativePath(".CREDENTIALS.JSON"), true);
+  assert.equal(isExcludedRelativePath("runtime-state/Claude/Work-A/Credentials.Json"), true);
+  assert.equal(isExcludedRelativePath("Debug"), true);
+  assert.equal(isExcludedRelativePath("Debug/nested/model-io.jsonl"), true);
+  assert.equal(isExcludedRelativePath("cli/DEBUG/trace.log"), true);
+  assert.equal(isDatabaseArchivePath("Tasks-Index.SQLITE-WAL"), true);
+  // 折叠大小写只作用于凭据文件名与 EXCLUDED_ARCHIVE_DIRECTORY_NAMES 目录段这两组名单；
+  // 目录前缀族（logs/sessions/dev 等）沿用原样比对，避免判定范围被无意放大。
+  assert.equal(isExcludedRelativePath("Logs/2026-10-02.LOG"), false);
+});
+
+test("exportLogs.ts 不再内联路径判定，规则只有本模块一份", () => {
+  const source = readSourceText(new URL("../src/main/exportLogs.ts", import.meta.url));
+  // 接线（import 本模块）被改回内联时这里会红。
+  assert.ok(source.includes('from "./exportLogArchivePolicy.js"'));
+
+  // 名单与判定函数只要重新出现在 exportLogs.ts，就说明规则又有了第二份副本。
+  const duplicatedDeclarations = [
+    "NON_LOG_STATE_ARCHIVE_PATHS",
+    "SENSITIVE_CREDENTIAL_ARCHIVE_FILE_NAMES",
+    "DATABASE_ARCHIVE_FILE_SUFFIXES",
+    "EXCLUDED_ARCHIVE_DIRECTORY_NAMES",
+    "RETIRED_ACP_RUNTIME_ARCHIVE_PATHS",
+    "HIGH_VOLUME_RUNTIME_ARCHIVE_PATHS",
+    "DOCSHOT_ARCHIVE_PATH",
+    "ZIP_EXCLUDE_PATTERNS",
+    "function normalizeArchivePath",
+    "function isExcludedRelativePath",
+    "function isDatabaseArchivePath",
+    "function isSensitiveCredentialArchivePath",
+    "function isExcludedDirectoryArchivePath",
+    "function isNonLogStateArchivePath",
+    "function isRetiredAcpRuntimePath",
+    "function isHighVolumeRuntimeArchivePath",
+    "function isDocshotArchivePath",
+    "function isExcludedCachePath",
+    "function shouldApplyLogExportRetention",
+  ];
+  const reintroduced = duplicatedDeclarations.filter((declaration) => source.includes(declaration));
+  assert.deepEqual(reintroduced, []);
 });
 
 test("保留期只作用于日志类路径", () => {

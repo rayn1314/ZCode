@@ -5,6 +5,7 @@
  * 路径策略本身没有任何 IO 需求，不该被这些依赖绑住。
  *
  * 立场是默认拒绝。导出产物会被用户转发出去，宁可少收也不能漏收凭据。
+ * 本模块是"什么能进包"判定的**唯一**来源：exportLogs.ts 只做 IO、脱敏与时间窗口保留。
  * 见 spec/export-log-archive-scope.md。
  */
 
@@ -28,10 +29,15 @@ const NON_LOG_STATE_ARCHIVE_PATHS = [
   // 它是排障材料，但不是日志：不导出，用户要看崩溃现场应单独取本地文件。
   "crash",
   "repo",
+  // 退役 Repo 功能的产物：加密快照与 wiki 正文，体积大且不是日志材料。
+  "repo-snapshots",
+  "repo-wiki",
   "sessions",
   "session-bindings",
   "checkpoints",
 ] as const;
+// 下面两组名单按**折叠大小写**后与本机文件名/目录段比对：Windows 与 macOS 的文件系统大小写不敏感，
+// `CREDENTIALS.JSON`、`Debug/` 与名单里的小写形态指向同一份内容，逐字符比对等于给绕开放行。
 const SENSITIVE_CREDENTIAL_ARCHIVE_FILE_NAMES = new Set(["credentials.json", ".credentials.json"]);
 // 任务索引库在导出根顶层，不受目录型规则约束；sqlite 与其 -wal/-shm 旁路文件一并排除。
 const DATABASE_ARCHIVE_FILE_SUFFIXES = [
@@ -90,7 +96,7 @@ function isNonLogStateArchivePath(relativePath: string): boolean {
 }
 
 function isSensitiveCredentialArchivePath(relativePath: string): boolean {
-  const fileName = relativePath.split("/").at(-1) ?? "";
+  const fileName = relativePath.split("/").at(-1)?.toLowerCase() ?? "";
   return SENSITIVE_CREDENTIAL_ARCHIVE_FILE_NAMES.has(fileName);
 }
 
@@ -100,7 +106,9 @@ export function isDatabaseArchivePath(relativePath: string): boolean {
 }
 
 function isExcludedDirectoryArchivePath(relativePath: string): boolean {
-  return relativePath.split("/").some((segment) => EXCLUDED_ARCHIVE_DIRECTORY_NAMES.has(segment));
+  return relativePath
+    .split("/")
+    .some((segment) => EXCLUDED_ARCHIVE_DIRECTORY_NAMES.has(segment.toLowerCase()));
 }
 
 function isExcludedCachePath(relativePath: string): boolean {

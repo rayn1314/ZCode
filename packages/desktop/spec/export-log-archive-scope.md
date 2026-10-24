@@ -43,9 +43,29 @@
 现有脱敏正则的设计前提就是键值结构，扫不出来。
 
 **路径策略抽成独立模块** `exportLogArchivePolicy.ts`：纯函数、无 IO、不依赖 electron / services，可单测；
-`exportLogs.ts` 只保留 IO 与脱敏，不再内联路径判断。
+`exportLogs.ts` 只保留 IO、脱敏与时间窗口保留（`filterRecentLogArchiveFiles`），路径判定全部 import 自该模块。
 
 **顺带修前缀边界缺陷**，让四个同类判断一致。
+
+## 接线与大小写语义（2026-10-24）
+
+**实现状态**：`exportLogs.ts` 里那份重复的 8 组名单常量与 9 个判定函数已删除，改为
+`import { isExcludedRelativePath, shouldApplyLogExportRetention } from "./exportLogArchivePolicy.js"`。
+此前产品走旧副本、只有契约测试引用本模块，本文件的所有权声明（`exportLogs.ts` 不得再内联路径规则）
+一直是**未兑现**的。
+
+**接线不是换 import**：两份副本已漂移两处，必须先对齐语义再切。
+
+1. **折叠大小写**：产品版对**凭据文件名**与 `debug` **目录段**先 `toLowerCase()` 再比对，模块版逐字符比对。
+   裁决为**保留产品那份更严格的语义**（模块侧改为大小写不敏感）。理由：Windows 与 macOS 文件系统大小写
+   不敏感，`CREDENTIALS.JSON` 与 `credentials.json` 是同一份文件；导出包会被用户转发出去，立场是默认拒绝
+   —— 宁可少收，也不能因为文件名换了个大小写就漏收凭据。
+2. **名单漂移**：上游 v3.15.1 给 `NON_LOG_STATE_ARCHIVE_PATHS` 补了 `repo-snapshots` / `repo-wiki`，
+   模块副本停在旧快照上没有跟。按上游现状补齐进模块，既不放宽也不新增排除项。
+
+裁决边界：**折叠只作用于凭据文件名与 `EXCLUDED_ARCHIVE_DIRECTORY_NAMES` 目录段这两组名单**。
+`Library/Caches`、目录前缀族（`dev`、`sessions`、`repo-*`、`acp-*`）等其余判定维持原样比对，
+不顺手折叠、不放大排除范围。
 
 ## 行为
 
@@ -56,7 +76,14 @@
 
 ## 所有权与不变式
 
-- `exportLogArchivePolicy.ts` 拥有"什么能进包"的**全部**判定；`exportLogs.ts` 不得再内联路径规则。
+- `exportLogArchivePolicy.ts` 拥有按路径排除的**全部**判定；`exportLogs.ts` 不得再内联路径规则。
+  （"从哪些目录采集、按什么文件名白名单采集"属于采集源清单，仍由 `exportLogs.ts` 拥有——例如 CUA run
+  目录只收 `*.exit.log`。两件事不要混，否则策略模块要认识每一个数据源。）
+- **实现已落地**：`exportLogs.ts` 只剩 IO（收集/复制/打包）、脱敏与时间窗口保留，不含任何路径判定。
+- **防漂移**：`test/exportLogArchivePolicy.test.ts` 直接读 `exportLogs.ts` 源码，断言被迁走的名单常量与判定
+  函数不再出现在该文件——重新内联一份副本会让该用例变红；接线断掉（`import` 被删）同样会红。
+- **大小写不变式**：凭据文件名与排除目录段按折叠大小写判定（`CREDENTIALS.JSON`、`Debug/` 与名单里的
+  小写形态等价）。上游新增排除名单时，先落到本模块，再由 `exportLogs.ts` 引用，不得就地写第二份。
 - **不变式**：导出包内不存在任何未经过 `sanitizeSensitiveLogContent` 的文本，也不存在任何非文本文件。
 
 ## 失败语义
@@ -67,6 +94,8 @@
 
 ## 迁移边界
 
+- **本次接线不改变产品导出范围**：逐条比对两份名单与折叠语义后等价（`repo-snapshots` / `repo-wiki` 补齐、
+  两处折叠大小写对齐），变化只发生在代码归属上——产品从"旧副本"切到模块。
 - **官方渠道**：`crash/` 下 dump 此前就存在，本次一并排除。对**反馈包无影响**——
   `createFeedbackLogArchiveFromExportLogs` 只取 `logs/`、`cli/log`、CUA run 三处，本来就不含 `crash`；
   受影响的是手动"导出日志"的全量路径。

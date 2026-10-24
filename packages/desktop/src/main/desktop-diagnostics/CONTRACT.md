@@ -13,15 +13,15 @@ services，路径策略不该被这些依赖绑住，所以独立成模块）。
 - 导出包**默认拒绝**：判不进去就不进包；路径段匹配卡 `/` 边界（`repo-backup` 不是 `repo`）。
   排除族含凭据文件、数据库（含 `-wal`/`-shm` 旁路）、非日志状态目录（`crash`：dump 是崩溃瞬间的
   内存快照）、高频轨迹、docshot、已退役 ACP runtime、`debug` 目录段、`Library/Caches`。
+  凭据文件名与 `debug` 目录段**折叠大小写**后比对：`CREDENTIALS.JSON`、`Debug/` 同样排除。
 - 策略**只看路径、不看内容**：minidump/sqlite 的敏感内容不是键值形态，脱敏正则的前提就是键值结构。
 - 保留（体积）策略只作用于 `logs/` 与 `.zcode/cli/log/`。
 
 交集与 hook 点：
 
-- 路径策略的消费方应是 `packages/desktop/src/main/exportLogs.ts` 的收集/复制阶段（按相对路径跳过；
-  复制阶段对非文本文件跳过并记 root cause：原样复制会绕过脱敏）。**当前该文件仍内联着一份同名规则
-  副本（约 741–795 行）**，尚未改为 import 本模块，因此本模块暂时只被自己的测试与契约引用；
-  「把 exportLogs.ts 切到本模块」是遗留项，不在本轮契约化范围内。
+- 路径策略的消费方是 `packages/desktop/src/main/exportLogs.ts` 的收集/复制阶段（按相对路径跳过；
+  复制阶段对非文本文件跳过并记 root cause：原样复制会绕过脱敏）。该文件只做 IO、脱敏与时间窗口保留，
+  路径判定 import 自本模块；`test/exportLogArchivePolicy.test.ts` 读它的源码挡住规则回流。
 - 崩溃捕获在 main 最早期注册（`packages/desktop/src/main/index.ts:316`）；「本地 crashReporter 还是
   ARMS crashpad」的选择由 `appCrashCaptureBootstrap.ts` 拥有，本模块只管 JS 层异常的日志与退出。
 

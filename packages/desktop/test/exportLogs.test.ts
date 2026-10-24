@@ -387,6 +387,37 @@ describe("export logs archive", () => {
     });
   });
 
+  it("导出日志应按大小写不敏感排除大写形态的凭据文件与 debug 目录", async () => {
+    // 回归护栏：产品版的凭据文件名与排除目录段先折叠大小写再比对（Windows / macOS 文件系统
+    // 大小写不敏感），接线到 exportLogArchivePolicy 时若丢掉这一点，换个大小写就能把凭据带进包。
+    const { collectLogArchiveFiles } = await import("@desktop/main/exportLogs.js");
+
+    await withTempDir(async (tempDir) => {
+      const sourceDir = join(tempDir, "source");
+      await mkdir(join(sourceDir, "logs"), { recursive: true });
+      await mkdir(join(sourceDir, "Debug", "nested"), { recursive: true });
+      await mkdir(join(sourceDir, "runtime-state", "claude", "workspace-a"), { recursive: true });
+
+      await writeFile(join(sourceDir, "logs", "main.log"), "main-log", "utf-8");
+      await writeFile(join(sourceDir, "CREDENTIALS.JSON"), '{"token":"upper-case"}', "utf-8");
+      await writeFile(join(sourceDir, "Debug", "nested", "model-io.jsonl"), "debug-log", "utf-8");
+      await writeFile(
+        join(sourceDir, "runtime-state", "claude", "workspace-a", ".CREDENTIALS.JSON"),
+        '{"token":"nested-upper-case"}',
+        "utf-8",
+      );
+
+      const archivePaths = (await collectLogArchiveFiles(sourceDir)).map(
+        (file) => file.archivePath,
+      );
+
+      expect(archivePaths).toContain("logs/main.log");
+      expect(archivePaths).not.toContain("CREDENTIALS.JSON");
+      expect(archivePaths).not.toContain("Debug/nested/model-io.jsonl");
+      expect(archivePaths).not.toContain("runtime-state/claude/workspace-a/.CREDENTIALS.JSON");
+    });
+  });
+
   it("导出日志时应额外带上 zcode-cli 用户日志", async () => {
     const originalHome = process.env["HOME"];
     try {
