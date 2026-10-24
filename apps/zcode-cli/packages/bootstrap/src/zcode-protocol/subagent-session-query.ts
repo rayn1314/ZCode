@@ -378,6 +378,27 @@ function endedStatus(input: {
   return input.childOutcome.status ?? "lost";
 }
 
+/**
+ * 结束时间取**所有可用终态证据里最晚的一条**，而不是按固定优先级取第一条非空。
+ *
+ * 固定优先级在这里是错的，因为父侧两条证据都可能描述「早就发生过的事」：
+ * - 后台 Agent 的父 tool part 在 launch ACK 后立刻 `completed`，`state.time.end` 结构上≈启动时刻；
+ * - `SubagentStopped` 只说明父进程「看见它停了」，被孤儿对账认领过的子代理事后还能被续跑跑完，
+ *   而复活跑完不会再补一条 stop。两者的时间都可能远早于子会话真实结束时刻。
+ *
+ * 2026-10-24 实测：三个子代理 03:29 派发、04:05 被孤儿对账认领、07:29~08:09 续跑跑完，
+ * 列表却显示「已完成 · 4小时前」——状态取自子会话实时投影（新），时间却取自 03:29 的 ACK part。
+ * 取最晚值在两个方向上都对：真被杀的子代理取「最后一次已知活动」，复活跑完的取真实结束时刻。
+ */
+function latestEndedAt(values: readonly (number | undefined)[]): number | undefined {
+  let latest: number | undefined;
+  for (const value of values) {
+    if (value === undefined) continue;
+    if (latest === undefined || value > latest) latest = value;
+  }
+  return latest;
+}
+
 function startedAt(
   candidate: SubagentCandidate,
   background?: BackgroundTaskInfo,
@@ -433,12 +454,14 @@ export function projectSessionSubagents(
       ...(candidate.summary || childOutcome.summary
         ? { summary: candidate.summary ?? childOutcome.summary }
         : {}),
+      // 终态证据可能全都缺席（子会话在写出首条消息前就被杀等）；会话行水位是最后兜底。
       endedAt:
-        background?.completedAt?.getTime() ??
-        candidate.stoppedAt ??
-        stateEndedAt ??
-        childOutcome.endedAt ??
-        childSession.time.updated,
+        latestEndedAt([
+          background?.completedAt?.getTime(),
+          candidate.stoppedAt,
+          stateEndedAt,
+          childOutcome.endedAt,
+        ]) ?? childSession.time.updated,
     });
   }
   running.sort(

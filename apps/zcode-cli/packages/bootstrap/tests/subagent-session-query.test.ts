@@ -110,12 +110,13 @@ function projection(status: SessionProjection["status"]): SessionProjection {
 function subagentEvent(
   type: typeof SessionEventType.SubagentSpawned | typeof SessionEventType.SubagentStopped,
   payload: Record<string, unknown>,
+  timestampMs = 15,
 ): SessionEvent {
   return {
     id: "event" as never,
     sessionId: "parent" as never,
     type,
-    timestamp: new Date(15),
+    timestamp: new Date(timestampMs),
     traceId: "trace" as never,
     sequenceNumber: 1,
     payload,
@@ -343,6 +344,83 @@ describe("subagent session query", () => {
         summary: "Finished foreground work",
         status: "success",
       }),
+    ]);
+  });
+
+  it("takes the latest terminal evidence as the ended time, not the parent launch ACK", () => {
+    // 后台 Agent 的父 tool part 在 launch ACK 后立刻 completed（state.time.end = 20），
+    // 子会话事后被续跑跑完（最后一条 assistant 完成于 500）。取最晚值，不能取 ACK 时刻。
+    const childSessionId = "sess_subagent_agent-child-late-finish";
+    const childFinal = toolMessage({ id: "child-final", runInBackground: true });
+    childFinal.parts = [];
+    childFinal.info.time.completed = 500;
+
+    const result = projectSessionSubagents({
+      revision: 9,
+      parentSession: session("parent", "interactive"),
+      messages: [
+        toolMessage({
+          childSessionId,
+          id: "m1",
+          output:
+            "Async agent launched successfully.\nagentId: agent-child-late-finish\nThe agent is working in the background.",
+          runInBackground: true,
+        }),
+      ],
+      childSessionsById: new Map([[childSessionId, session(childSessionId)]]),
+      childMessagesById: new Map([[childSessionId, [childFinal]]]),
+      childProjectionsById: new Map([[childSessionId, projection("completed")]]),
+    });
+
+    expect(result.ended).toEqual([
+      expect.objectContaining({ childSessionId, status: "success", endedAt: 500 }),
+    ]);
+  });
+
+  it("keeps a later stop relation as the ended time when it outranks the child's last message", () => {
+    // 反向：子会话最后一条消息停在 300（工具轮中途被杀），父侧 900 才看见它停——
+    // 结束时间要取 900，而不是子会话更早的那条消息。
+    const childSessionId = "sess_subagent_agent-child-cancelled-late";
+    const childStep = toolMessage({ id: "child-step", state: "running", tool: "Bash" });
+    childStep.info.time.completed = 300;
+
+    const result = projectSessionSubagents({
+      revision: 10,
+      parentSession: session("parent", "interactive"),
+      messages: [
+        toolMessage({
+          childSessionId,
+          id: "m1",
+          output:
+            "Async agent launched successfully.\nagentId: agent-child-cancelled-late\nThe agent is working in the background.",
+          runInBackground: true,
+        }),
+      ],
+      childSessionsById: new Map([[childSessionId, session(childSessionId)]]),
+      childMessagesById: new Map([[childSessionId, [childStep]]]),
+      childProjectionsById: new Map(),
+      parentEvents: [
+        subagentEvent(SessionEventType.SubagentSpawned, {
+          agentId: "agent-child-cancelled-late",
+          childSessionId,
+          parentToolCallId: "call-m1",
+          description: "Cancelled late Agent",
+        }),
+        subagentEvent(
+          SessionEventType.SubagentStopped,
+          {
+            agentId: "agent-child-cancelled-late",
+            childSessionId,
+            parentToolCallId: "call-m1",
+            status: "cancelled",
+          },
+          900,
+        ),
+      ],
+    });
+
+    expect(result.ended).toEqual([
+      expect.objectContaining({ childSessionId, status: "cancelled", endedAt: 900 }),
     ]);
   });
 
