@@ -18,6 +18,9 @@ export {
   type ProviderModelFetchResult,
   type ProviderModelFetcher,
 } from "./model-provider/providerModelFetch.js";
+// 拉取模型弹窗的 props 形状出自 provider-model-fetch 模块的 publicEntrypoint（contract.ts）；
+// UI 弹窗直接引它当入参类型，两侧任一改动都会在 typecheck 期暴露，不再依赖注释提醒同步。
+export type { ProviderModelFetchDialogProps } from "./model-provider/provider-model-fetch/contract.js";
 export {
   createAccountRequestAuthService,
   type IAccountRequestAuthService,

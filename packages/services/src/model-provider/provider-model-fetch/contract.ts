@@ -54,18 +54,15 @@ export type {
   ProviderModelFetcher,
 };
 
-/** UI 侧分组用：一个「供应商分组 + 组内模型」条目（`providerModelFetchCategories.ts` 的返回值形状）。 */
-export type FetchedProviderModelGroup = readonly [
-  category: string,
-  models: readonly FetchedProviderModel[],
-];
-
 /**
- * 「拉取模型」弹窗的 props（渲染方：`ProviderCardSections.tsx`）。
+ * 「拉取模型」弹窗的 props 形状——**唯一来源**。
  *
- * 这里是**形状契约**而不是实现位置：根 workspace 里 `services` 不能依赖 `ui`（反向依赖），所以
- * 无法 import `ProviderModelFetchDialog.tsx` 的 props 类型。改动那个 .tsx 的 props 时同步本文件，
- * 让契约继续是弹窗与外界的唯一口径（`onAddModels` 缺席即只读浏览）。
+ * 渲染方 `packages/ui/src/settings/model-provider-section/ProviderModelFetchDialog.tsx` 直接把这个
+ * 类型当作组件入参类型，不再自带一份等价形状；本文件经 `@zcode/services` 出口暴露给 UI。
+ * 因此改这里、或改 .tsx 里多写/少写/改名一个字段，都会在 `pnpm typecheck` 阶段报错（services 与 ui
+ * 都在根 workspace 的 tsc 工程列表内），不会静默漂移。
+ *
+ * 注：`onAddModels` 缺席即只读浏览。
  */
 export interface ProviderModelFetchDialogProps {
   open: boolean;

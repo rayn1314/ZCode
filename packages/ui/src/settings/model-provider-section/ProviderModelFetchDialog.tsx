@@ -1,11 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
-import type { ProviderApiType } from "@zcode/provider";
-import type {
-  FetchedProviderModel,
-  ProviderModelFetchRequest,
-  ProviderModelFetchResult,
-} from "@zcode/services";
+import type { FetchedProviderModel, ProviderModelFetchDialogProps } from "@zcode/services";
 import {
   TID_MODEL_PROVIDER_FETCH_MODELS_ADD_BUTTON,
   TID_MODEL_PROVIDER_FETCH_MODELS_DIALOG,
@@ -45,6 +40,7 @@ function isFetchModelsErrorCode(value: unknown): value is FetchModelsErrorCode {
   );
 }
 
+// props 形状的唯一来源是 services 契约（`ProviderModelFetchDialogProps`，经 @zcode/services 出口）。
 export function ProviderModelFetchDialog({
   open,
   onOpenChange,
@@ -55,17 +51,7 @@ export function ProviderModelFetchDialog({
   configuredModelIds,
   fetchModels,
   onAddModels,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  providerId: string;
-  baseUrl: string;
-  apiKey: string;
-  apiFormat?: ProviderApiType;
-  configuredModelIds: readonly string[];
-  fetchModels: (input: ProviderModelFetchRequest) => Promise<ProviderModelFetchResult>;
-  onAddModels?: (modelIds: readonly string[]) => Promise<void>;
-}) {
+}: ProviderModelFetchDialogProps) {
   const { intl } = useZCodeIntl();
   const [models, setModels] = useState<readonly FetchedProviderModel[] | null>(null);
   const [loading, setLoading] = useState(false);
