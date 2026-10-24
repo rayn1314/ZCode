@@ -26,10 +26,30 @@
         "**/apps/zcode-cli/packages/core/src/runtime/methods/steering.ts",
         "**/apps/zcode-cli/packages/core/src/runtime/methods/turn.ts",
         "**/apps/zcode-cli/packages/core/src/runtime/methods/turn-model-step.ts",
+        // 以下 7 个文件是**上游自己的**超限文件（上游 v3.16.2 分别为 901~5115 行），fork 侧只在其上叠加功能增量。
+        // 上游的“原样上游文件”准入只认逐字节未改过的路径，改过就不再覆盖，因此按 AGENTS.md
+        // “已确认的存量超限文件由根 .oxlintrc.json 精确登记为行数告警，不要为满足行数机械拆分”逐条登记。
+        // 行数为 max-lines 口径（非空非注释）：上游 v3.16.2 → 当前。
+        // 插件入口 901 → 905：hook handler 装载（http / mcp_tool 两类 handler 与安全模型）。
+        "**/apps/zcode-cli/packages/adapters/src/plugins/index.ts",
+        // 流式收尾 1580 → 1576：空 completion 判定不再依赖计费与推理条件（净删 4 行）。
+        "**/apps/zcode-cli/packages/adapters/src/model/runner-stream.ts",
+        // 话题发布 968 → 1026：冷打开窗口态首帧与滚动修复。
+        "**/apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/conversation-topic-publisher.ts",
+        // 产品投影 5115 → 5168：hook 事件投影、受限子会话字段、行级分叉入口投影。
+        "**/apps/zcode-cli/packages/bootstrap/src/zcode-protocol-v4/product-projection.ts",
+        // 模型契约 901 → 905：服务商每分钟请求数限速字段。
+        "**/apps/zcode-cli/packages/contracts/src/model/index.ts",
+        // 后台任务执行 970 → 982：通知投递期按 registry 消解过期终态快照。
+        "**/apps/zcode-cli/packages/core/src/tool/executor/background-tasks.ts",
+        // 会话分叉 1390 → 1444：按当前上下文分叉与压缩摘要展开。
+        "**/apps/zcode-cli/packages/core/src/runtime/methods/session-fork.ts",
         // core 包内以 --no-ignore 运行时，oxlint 按 cwd 相对路径匹配同一组存量文件。
         "src/runtime/methods/steering.ts",
         "src/runtime/methods/turn.ts",
         "src/runtime/methods/turn-model-step.ts",
+        "src/tool/executor/background-tasks.ts",
+        "src/runtime/methods/session-fork.ts",
         "**/packages/ui/src/remote-connection-flow/index.ts"
       ],
       "rules": {
