@@ -47,7 +47,10 @@ import {
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import { useServices } from "@/hooks/useServices.js";
 import { TECHNICAL_INPUT_ATTRIBUTES } from "@/lib/technicalInputAttributes.js";
-import { parseProviderRequestsPerMinuteDraft } from "./ProviderDraftSave.js";
+import {
+  parseProviderMaxConcurrentDraft,
+  parseProviderRequestsPerMinuteDraft,
+} from "./ProviderDraftSave.js";
 import { ApiKeyInput } from "./ApiKeyInput.js";
 import { ModelRowInput } from "./ProviderFormControls.js";
 import { PresetProviderApiKeyBanner } from "./PresetProviderApiKeyBanner.js";
@@ -352,26 +355,37 @@ export function ProviderApiKeySection({
 
 export function ProviderRequestPolicySection({
   requestsPerMinuteValue,
+  maxConcurrentValue,
   configured,
   readOnly,
   onRequestsPerMinuteChange,
   onRequestsPerMinuteBlur,
+  onMaxConcurrentChange,
+  onMaxConcurrentBlur,
 }: {
   requestsPerMinuteValue: string;
+  maxConcurrentValue: string;
   configured: boolean;
   readOnly?: boolean;
   onRequestsPerMinuteChange: (value: string) => void;
   onRequestsPerMinuteBlur: () => void;
+  onMaxConcurrentChange: (value: string) => void;
+  onMaxConcurrentBlur: () => void;
 }) {
   const { intl } = useZCodeIntl();
   const [expanded, setExpanded] = useState(false);
   const baseId = useId();
   const contentId = `${baseId}-content`;
   const requestsPerMinuteInputId = `${baseId}-requests-per-minute`;
+  const maxConcurrentInputId = `${baseId}-max-concurrent`;
   const requestsPerMinuteLabel = intl.formatMessage({
     id: "settings.modelProvider.requestsPerMinute",
   });
+  const maxConcurrentLabel = intl.formatMessage({
+    id: "settings.modelProvider.maxConcurrent",
+  });
   const effectiveRequestsPerMinute = parseProviderRequestsPerMinuteDraft(requestsPerMinuteValue);
+  const effectiveMaxConcurrent = parseProviderMaxConcurrentDraft(maxConcurrentValue);
 
   return (
     <div data-model-request-policy="true">
@@ -406,42 +420,80 @@ export function ProviderRequestPolicySection({
         <div className="min-h-0 overflow-hidden">
           <div className="space-y-4 px-1 pt-4 pb-1">
             {readOnly ? (
-              <ProviderReadOnlyField
-                label={requestsPerMinuteLabel}
-                value={
-                  effectiveRequestsPerMinute == null
-                    ? intl.formatMessage({
-                        id: "settings.modelProvider.requestsPerMinuteUnlimited",
-                      })
-                    : String(effectiveRequestsPerMinute)
-                }
-              />
-            ) : (
-              <div>
-                <label
-                  htmlFor={requestsPerMinuteInputId}
-                  className="mb-1 block text-ui-base text-foreground-subtle"
-                >
-                  {requestsPerMinuteLabel}
-                </label>
-                <Input
-                  {...TECHNICAL_INPUT_ATTRIBUTES}
-                  id={requestsPerMinuteInputId}
-                  data-testid="model-provider-requests-per-minute-input"
-                  // 数字键盘只是便利；越界与空值仍由 parseProviderRequestsPerMinuteDraft 收敛。
-                  inputMode="numeric"
-                  size="lg"
-                  value={requestsPerMinuteValue}
-                  placeholder={intl.formatMessage({
-                    id: "settings.modelProvider.requestsPerMinutePlaceholder",
-                  })}
-                  onChange={(event) => onRequestsPerMinuteChange(event.target.value)}
-                  onBlur={onRequestsPerMinuteBlur}
+              <>
+                <ProviderReadOnlyField
+                  label={requestsPerMinuteLabel}
+                  value={
+                    effectiveRequestsPerMinute == null
+                      ? intl.formatMessage({
+                          id: "settings.modelProvider.requestsPerMinuteUnlimited",
+                        })
+                      : String(effectiveRequestsPerMinute)
+                  }
                 />
-                <p className="mt-1 text-ui-sm text-foreground-subtle">
-                  {intl.formatMessage({ id: "settings.modelProvider.requestsPerMinuteHint" })}
-                </p>
-              </div>
+                <ProviderReadOnlyField
+                  label={maxConcurrentLabel}
+                  value={
+                    effectiveMaxConcurrent == null
+                      ? intl.formatMessage({
+                          id: "settings.modelProvider.maxConcurrentUnlimited",
+                        })
+                      : String(effectiveMaxConcurrent)
+                  }
+                />
+              </>
+            ) : (
+              <>
+                <div>
+                  <label
+                    htmlFor={requestsPerMinuteInputId}
+                    className="mb-1 block text-ui-base text-foreground-subtle"
+                  >
+                    {requestsPerMinuteLabel}
+                  </label>
+                  <Input
+                    {...TECHNICAL_INPUT_ATTRIBUTES}
+                    id={requestsPerMinuteInputId}
+                    data-testid="model-provider-requests-per-minute-input"
+                    // 数字键盘只是便利；越界与空值仍由 parseProviderRequestsPerMinuteDraft 收敛。
+                    inputMode="numeric"
+                    size="lg"
+                    value={requestsPerMinuteValue}
+                    placeholder={intl.formatMessage({
+                      id: "settings.modelProvider.requestsPerMinutePlaceholder",
+                    })}
+                    onChange={(event) => onRequestsPerMinuteChange(event.target.value)}
+                    onBlur={onRequestsPerMinuteBlur}
+                  />
+                  <p className="mt-1 text-ui-sm text-foreground-subtle">
+                    {intl.formatMessage({ id: "settings.modelProvider.requestsPerMinuteHint" })}
+                  </p>
+                </div>
+                <div>
+                  <label
+                    htmlFor={maxConcurrentInputId}
+                    className="mb-1 block text-ui-base text-foreground-subtle"
+                  >
+                    {maxConcurrentLabel}
+                  </label>
+                  <Input
+                    {...TECHNICAL_INPUT_ATTRIBUTES}
+                    id={maxConcurrentInputId}
+                    data-testid="model-provider-max-concurrent-input"
+                    inputMode="numeric"
+                    size="lg"
+                    value={maxConcurrentValue}
+                    placeholder={intl.formatMessage({
+                      id: "settings.modelProvider.maxConcurrentPlaceholder",
+                    })}
+                    onChange={(event) => onMaxConcurrentChange(event.target.value)}
+                    onBlur={onMaxConcurrentBlur}
+                  />
+                  <p className="mt-1 text-ui-sm text-foreground-subtle">
+                    {intl.formatMessage({ id: "settings.modelProvider.maxConcurrentHint" })}
+                  </p>
+                </div>
+              </>
             )}
           </div>
         </div>

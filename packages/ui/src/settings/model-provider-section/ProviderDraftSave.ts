@@ -16,29 +16,47 @@ export interface ProviderDraftValues {
   apiKeyValue: string;
   /** 原样保留用户输入；空串表示「不限制」。上界 600 与 `providerRateLimitRequestsPerMinuteDataSchema` 同源。 */
   requestsPerMinuteValue: string;
+  /** 原样保留用户输入；空串表示「不限制」。上界 128 与 `providerMaxConcurrentDataSchema` 同源。 */
+  maxConcurrentValue: string;
 }
 
 /** 与 `providerRateLimitRequestsPerMinuteDataSchema` 的值域同源，避免 UI 允许写出非法整数。 */
 export const PROVIDER_REQUESTS_PER_MINUTE_MIN = 1;
 export const PROVIDER_REQUESTS_PER_MINUTE_MAX = 600;
+/** 与 `providerMaxConcurrentDataSchema` 的值域同源。 */
+export const PROVIDER_MAX_CONCURRENT_MIN = 1;
+export const PROVIDER_MAX_CONCURRENT_MAX = 128;
 
 /**
- * 空串与任何非纯数字串都 → null（不限制）；越界值收敛到 [1,600]，手输 0/999 时也不会把非法值写进盘。
+ * 空串与任何非纯数字串都 → null（不限制）；越界值收敛到 [min,max]，手输 0/999 时也不会把非法值写进盘。
  *
  * 刻意**不**做「抽出其中数字」的宽松解析：那是把 8.5 猜成 8、把 1a 猜成 1，用户会得到一个自己从没
  * 填过的额度。非法输入宁可当成没填（保持草稿原样等用户改），也不要写进盘。
  */
-export function parseProviderRequestsPerMinuteDraft(value: string): number | null {
+function parseBoundedCountDraft(value: string, min: number, max: number): number | null {
   const trimmed = value.trim();
   if (!/^\d+$/.test(trimmed)) return null;
   const parsed = Number.parseInt(trimmed, 10);
-  return Math.min(
-    Math.max(parsed, PROVIDER_REQUESTS_PER_MINUTE_MIN),
+  return Math.min(Math.max(parsed, min), max);
+}
+
+export function parseProviderRequestsPerMinuteDraft(value: string): number | null {
+  return parseBoundedCountDraft(
+    value,
+    PROVIDER_REQUESTS_PER_MINUTE_MIN,
     PROVIDER_REQUESTS_PER_MINUTE_MAX,
   );
 }
 
+export function parseProviderMaxConcurrentDraft(value: string): number | null {
+  return parseBoundedCountDraft(value, PROVIDER_MAX_CONCURRENT_MIN, PROVIDER_MAX_CONCURRENT_MAX);
+}
+
 export function formatProviderRequestsPerMinuteDraft(value: number | null): string {
+  return value == null ? "" : String(value);
+}
+
+export function formatProviderMaxConcurrentDraft(value: number | null): string {
   return value == null ? "" : String(value);
 }
 
@@ -53,6 +71,39 @@ function applyRequestPolicyChanges(
   // 空策略对象与「没配」是同一件事，不该写进盘；省略键才表示继承 template。
   const merged = { ...base, ...changes };
   return Object.keys(merged).length > 0 ? merged : undefined;
+}
+
+/**
+ * 单个 requestPolicy 子字段的保存意图。两个补丁分开，是因为 effective 承载完整意图、
+ * personal 只收稀疏补丁，且「未改动」与「清空但无覆盖可撤」都不该往 personal 写键。
+ */
+interface RequestPolicyLeafChange<T> {
+  changed: boolean;
+  /** effective 视图应写入的值；清空即 null（用于压掉 template 继承值）。 */
+  effectiveValue: T | null;
+  /** personal 稀疏补丁应写入的值；undefined 表示不写这个键。 */
+  personalValue?: T | null;
+}
+
+function resolveRequestPolicyLeafChange<T>({
+  next,
+  effective,
+  personal,
+}: {
+  next: T | null;
+  effective: T | null;
+  personal: T | null;
+}): RequestPolicyLeafChange<T> {
+  if (next === effective) return { changed: false, effectiveValue: effective };
+  if (next == null) {
+    // 清空只在 personal 层确有覆盖时才写 null，否则会顺手把从 template 继承的值抹成不限制。
+    return {
+      changed: true,
+      effectiveValue: null,
+      ...(personal == null ? {} : { personalValue: null }),
+    };
+  }
+  return { changed: true, effectiveValue: next, personalValue: next };
 }
 
 function normalizeConfiguredBaseUrl(value: string): string {
@@ -99,12 +150,21 @@ export function resolvePendingProviderDraftSave({
     draft.apiKeyValue !== (provider.config.access.apiKey ?? "");
   // 表单展示 effective 值，脏检查因此与 effective 同源；personal 层只用来判断
   // 「清空是否真的有东西要撤」，避免把从未覆盖过的叶子写成 null 抹掉 template。
+  // 两个旋钮各自独立判定：只改并发时不能连带清掉速率，反之同理。
   const effectiveRequestPolicy = provider.config.requestPolicy;
   const personalRequestPolicy = provider.personalConfig.requestPolicy;
-  const effectiveRequestsPerMinute = effectiveRequestPolicy?.requestsPerMinute ?? null;
-  const requestsPerMinuteValue = parseProviderRequestsPerMinuteDraft(draft.requestsPerMinuteValue);
-  const requestsPerMinuteChanged = requestsPerMinuteValue !== effectiveRequestsPerMinute;
-  if (!labelChanged && !typeChanged && !urlChanged && !keyChanged && !requestsPerMinuteChanged) {
+  const requestsPerMinuteLeaf = resolveRequestPolicyLeafChange({
+    next: parseProviderRequestsPerMinuteDraft(draft.requestsPerMinuteValue),
+    effective: effectiveRequestPolicy?.requestsPerMinute ?? null,
+    personal: personalRequestPolicy?.requestsPerMinute ?? null,
+  });
+  const maxConcurrentLeaf = resolveRequestPolicyLeafChange({
+    next: parseProviderMaxConcurrentDraft(draft.maxConcurrentValue),
+    effective: effectiveRequestPolicy?.maxConcurrent ?? null,
+    personal: personalRequestPolicy?.maxConcurrent ?? null,
+  });
+  const requestPolicyTouched = requestsPerMinuteLeaf.changed || maxConcurrentLeaf.changed;
+  if (!labelChanged && !typeChanged && !urlChanged && !keyChanged && !requestPolicyTouched) {
     return null;
   }
 
@@ -116,24 +176,30 @@ export function resolvePendingProviderDraftSave({
   };
   const api =
     typeChanged || urlChanged ? { ...provider.config.api, ...apiChanges } : provider.config.api;
-  // requestPolicy 同样是稀疏嵌套对象：只把用户动过的叶子放进补丁。
-  // 写 null 的前提是 personal 层真的有东西要撤，否则会顺手把从 template 继承的额度抹成不限制。
-  const personalRequestsPerMinute = personalRequestPolicy?.requestsPerMinute ?? null;
-  const requestPolicyChanges: Partial<ProviderRequestPolicy> = !requestsPerMinuteChanged
-    ? {}
-    : requestsPerMinuteValue == null
-      ? personalRequestsPerMinute == null
-        ? {}
-        : { requestsPerMinute: null }
-      : { requestsPerMinute: requestsPerMinuteValue };
+  // requestPolicy 同样是稀疏嵌套对象：只把用户动过的叶子放进补丁，且逐子字段合并——
+  // schema 层（overlayRequestPolicy）按子字段叠加，UI 提交的 partial 也必须逐字段。
+  const effectiveRequestPolicyChanges: Partial<ProviderRequestPolicy> = {
+    ...(requestsPerMinuteLeaf.changed
+      ? { requestsPerMinute: requestsPerMinuteLeaf.effectiveValue }
+      : {}),
+    ...(maxConcurrentLeaf.changed ? { maxConcurrent: maxConcurrentLeaf.effectiveValue } : {}),
+  };
+  const personalRequestPolicyChanges: Partial<ProviderRequestPolicy> = {
+    ...(requestsPerMinuteLeaf.personalValue !== undefined
+      ? { requestsPerMinute: requestsPerMinuteLeaf.personalValue }
+      : {}),
+    ...(maxConcurrentLeaf.personalValue !== undefined
+      ? { maxConcurrent: maxConcurrentLeaf.personalValue }
+      : {}),
+  };
   // effective 视图承载用户刚表达的完整意图；personal 层只收稀疏补丁，两边都可能是「无键」。
   const nextEffectiveRequestPolicy = applyRequestPolicyChanges(
     effectiveRequestPolicy,
-    requestsPerMinuteChanged ? { requestsPerMinute: requestsPerMinuteValue } : {},
+    effectiveRequestPolicyChanges,
   );
   const nextPersonalRequestPolicy = applyRequestPolicyChanges(
     personalRequestPolicy,
-    requestPolicyChanges,
+    personalRequestPolicyChanges,
   );
   const access =
     keyChanged && isApiKeyAccess(provider.config.access)

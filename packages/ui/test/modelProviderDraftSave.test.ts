@@ -6,6 +6,8 @@ import type {
   ProviderSettingsFormProvider,
 } from "@/lib/providerSettingsFormTypes.js";
 import {
+  parseProviderMaxConcurrentDraft,
+  parseProviderRequestsPerMinuteDraft,
   resolvePendingProviderDraftSave,
   type ProviderDraftValues,
 } from "@/settings/model-provider-section/ProviderDraftSave.js";
@@ -64,6 +66,7 @@ function createDraft(overrides: Partial<ProviderDraftValues> = {}): ProviderDraf
     baseUrlValue: "https://new.example.com/v1/chat/completions",
     apiKeyValue: "sk-new",
     requestsPerMinuteValue: "",
+    maxConcurrentValue: "",
     ...overrides,
   };
 }
@@ -111,6 +114,7 @@ describe("Provider draft uses formal Provider Config", () => {
           baseUrlValue: "",
           apiKeyValue: "",
           requestsPerMinuteValue: "",
+          maxConcurrentValue: "",
         },
         now: () => 0,
       }),
@@ -229,6 +233,85 @@ describe("Provider draft uses formal Provider Config", () => {
       headers: { "x-old": "remove-on-edit" },
     });
     expect(result?.personalConfig.api).toEqual({ type: "openai-chat-completions" });
+  });
+});
+
+describe("Provider request policy 逐字段保存", () => {
+  function createPolicyProvider(requestPolicy: {
+    requestsPerMinute?: number | null;
+    maxConcurrent?: number | null;
+  }): ProviderSettingsFormProvider {
+    const provider = createProvider();
+    provider.config.requestPolicy = { ...requestPolicy };
+    provider.personalConfig.requestPolicy = { ...requestPolicy };
+    return provider;
+  }
+
+  it("只改并发上限时保留已存的每分钟请求数", () => {
+    const saved = resolvePendingProviderDraftSave({
+      provider: createPolicyProvider({ requestsPerMinute: 60 }),
+      draft: createDraft({
+        apiFormat: "anthropic-messages",
+        baseUrlValue: "https://old.example.com/v1",
+        apiKeyValue: "sk-old",
+        requestsPerMinuteValue: "60",
+        maxConcurrentValue: "4",
+      }),
+      now: () => 0,
+    });
+
+    expect(saved?.personalConfig.requestPolicy).toEqual({
+      requestsPerMinute: 60,
+      maxConcurrent: 4,
+    });
+    expect(saved?.config.requestPolicy).toEqual({ requestsPerMinute: 60, maxConcurrent: 4 });
+  });
+
+  it("清空并发上限提交 null，不影响已存的每分钟请求数", () => {
+    const saved = resolvePendingProviderDraftSave({
+      provider: createPolicyProvider({ requestsPerMinute: 60, maxConcurrent: 4 }),
+      draft: createDraft({
+        apiFormat: "anthropic-messages",
+        baseUrlValue: "https://old.example.com/v1",
+        apiKeyValue: "sk-old",
+        requestsPerMinuteValue: "60",
+        maxConcurrentValue: "",
+      }),
+      now: () => 0,
+    });
+
+    expect(saved?.personalConfig.requestPolicy).toEqual({
+      requestsPerMinute: 60,
+      maxConcurrent: null,
+    });
+    expect(saved?.config.requestPolicy).toEqual({ requestsPerMinute: 60, maxConcurrent: null });
+  });
+
+  it.each([
+    ["0", 1],
+    ["129", 128],
+    ["8.5", null],
+  ])("并发上限 %s 与每分钟请求数同一条归一/拒绝路径", (input, expected) => {
+    const saved = resolvePendingProviderDraftSave({
+      provider: createPolicyProvider({ maxConcurrent: 8 }),
+      draft: createDraft({
+        apiFormat: "anthropic-messages",
+        baseUrlValue: "https://old.example.com/v1",
+        apiKeyValue: "sk-old",
+        maxConcurrentValue: input,
+      }),
+      now: () => 0,
+    });
+    expect(saved?.personalConfig.requestPolicy?.maxConcurrent).toBe(expected);
+  });
+
+  it("两个额度共用同一条解析规则，只有上界不同", () => {
+    expect(parseProviderMaxConcurrentDraft("0")).toBe(1);
+    expect(parseProviderMaxConcurrentDraft("129")).toBe(128);
+    expect(parseProviderMaxConcurrentDraft("8.5")).toBeNull();
+    expect(parseProviderRequestsPerMinuteDraft("0")).toBe(1);
+    expect(parseProviderRequestsPerMinuteDraft("601")).toBe(600);
+    expect(parseProviderRequestsPerMinuteDraft("8.5")).toBeNull();
   });
 });
 

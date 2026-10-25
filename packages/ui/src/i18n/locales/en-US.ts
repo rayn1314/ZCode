@@ -3926,6 +3926,11 @@ const enUS: Record<string, string> = {
   "settings.modelProvider.requestsPerMinuteUnlimited": "No limit",
   "settings.modelProvider.requestsPerMinuteHint":
     "Caps how many requests per minute this provider accepts; all conversations share the same quota. About 80% of the provider's stated limit avoids long waits after being throttled. Leave blank for no limit.",
+  "settings.modelProvider.maxConcurrent": "Max concurrent requests",
+  "settings.modelProvider.maxConcurrentPlaceholder": "No limit",
+  "settings.modelProvider.maxConcurrentUnlimited": "No limit",
+  "settings.modelProvider.maxConcurrentHint":
+    "Maximum in-flight model requests. Required for providers that cap concurrency instead of rate; requests beyond it queue locally. This machine's ends (desktop + WSL) share the one budget.",
   "settings.modelProvider.readOnlyField": "{field} (read only)",
   "settings.modelProvider.endpointPath": "Endpoint path: {format}",
   "settings.modelProvider.apiFormat": "API format",

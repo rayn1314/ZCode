@@ -3669,6 +3669,11 @@ const zhCN: Record<string, string> = {
   "settings.modelProvider.requestsPerMinuteUnlimited": "不限制",
   "settings.modelProvider.requestsPerMinuteHint":
     "限制这个服务商每分钟最多接收几个请求，多个对话共享同一份额度。填站点标称上限的八成左右，可以避免被限流后长时间等待；留空则不限制。",
+  "settings.modelProvider.maxConcurrent": "最多并发请求数",
+  "settings.modelProvider.maxConcurrentPlaceholder": "不限制",
+  "settings.modelProvider.maxConcurrentUnlimited": "不限制",
+  "settings.modelProvider.maxConcurrentHint":
+    "同时最多在飞的请求数。服务商只限并发不限次数时必配；配置后本地硬性卡住，超出的请求排队等待。同机多端（桌面 + WSL）共用这一份额度。",
   "settings.modelProvider.readOnlyField": "{field}（只读）",
   "settings.modelProvider.endpointPath": "接口路径：{format}",
   "settings.modelProvider.apiFormat": "API 格式",

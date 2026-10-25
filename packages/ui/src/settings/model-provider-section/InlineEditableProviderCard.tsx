@@ -18,8 +18,11 @@ import { Switch } from "@/components/ui/switch.js";
 import { ControlHintTooltip } from "@/ControlHintTooltip.js";
 import { isImeComposingKeyEvent } from "@/lib/imeComposition.js";
 import {
+  formatProviderMaxConcurrentDraft,
   formatProviderRequestsPerMinuteDraft,
+  parseProviderMaxConcurrentDraft,
   parseProviderRequestsPerMinuteDraft,
+  PROVIDER_MAX_CONCURRENT_MAX,
   PROVIDER_REQUESTS_PER_MINUTE_MAX,
   resolvePendingProviderDraftSave,
   type ProviderDraftValues,
@@ -149,6 +152,15 @@ function projectModelsToOrder(
   return [...ordered, ...models.filter((model) => !orderedIds.has(model.modelId))];
 }
 
+/**
+ * 数值额度输入框只放行纯数字与空串：负号、小数点、字母整段拒绝，而不是「抽出其中数字」——
+ * 后者会把 8.5 悄悄存成 85，存盘值和用户眼睛看到的不是一回事。位数跟着上界走，
+ * 日后调整上界时这里不必同步跟改。
+ */
+function filterBoundedCountInput(value: string, previous: string, max: number): string {
+  return /^\d*$/.test(value) ? value.slice(0, String(max).length) : previous;
+}
+
 export function InlineEditableProviderCard({
   provider,
   onSave,
@@ -209,6 +221,9 @@ export function InlineEditableProviderCard({
   const [requestsPerMinuteValue, setRequestsPerMinuteValue] = useState(() =>
     formatProviderRequestsPerMinuteDraft(provider.config.requestPolicy?.requestsPerMinute ?? null),
   );
+  const [maxConcurrentValue, setMaxConcurrentValue] = useState(() =>
+    formatProviderMaxConcurrentDraft(provider.config.requestPolicy?.maxConcurrent ?? null),
+  );
   const [savingEnabled, setSavingEnabled] = useState(false);
   const authoritativeModels = useMemo(
     () => resolveVisibleProviderModelsForEdit(provider),
@@ -253,6 +268,9 @@ export function InlineEditableProviderCard({
     requestsPerMinuteValue: formatProviderRequestsPerMinuteDraft(
       provider.config.requestPolicy?.requestsPerMinute ?? null,
     ),
+    maxConcurrentValue: formatProviderMaxConcurrentDraft(
+      provider.config.requestPolicy?.maxConcurrent ?? null,
+    ),
   });
 
   useEffect(() => {
@@ -262,6 +280,9 @@ export function InlineEditableProviderCard({
     const resolvedLabel = getProviderFormLabel(provider);
     const resolvedRequestsPerMinute = formatProviderRequestsPerMinuteDraft(
       provider.config.requestPolicy?.requestsPerMinute ?? null,
+    );
+    const resolvedMaxConcurrent = formatProviderMaxConcurrentDraft(
+      provider.config.requestPolicy?.maxConcurrent ?? null,
     );
     if (providerIdRef.current !== provider.providerId) {
       providerIdRef.current = provider.providerId;
@@ -287,6 +308,7 @@ export function InlineEditableProviderCard({
     syncField("baseUrlValue", resolvedBaseUrl, setBaseUrlValue);
     syncField("apiKeyValue", resolvedApiKey, setApiKeyValue);
     syncField("requestsPerMinuteValue", resolvedRequestsPerMinute, setRequestsPerMinuteValue);
+    syncField("maxConcurrentValue", resolvedMaxConcurrent, setMaxConcurrentValue);
   }, [provider]);
 
   const markDraftDirty = useCallback((field: keyof ProviderDraftValues) => {
@@ -611,12 +633,11 @@ export function InlineEditableProviderCard({
 
   const handleRequestsPerMinuteValueChange = useCallback(
     (value: string) => {
-      // 只放行纯数字与空串：负号、小数点、字母在这里整段拒绝，而不是「抽出其中数字」——
-      // 后者会把 8.5 悄悄存成 85，存盘值和用户眼睛看到的不是一回事。位数跟着上界走，
-      // 日后调整 PROVIDER_REQUESTS_PER_MINUTE_MAX 时这里不必同步跟改。
-      const accepted = /^\d*$/.test(value)
-        ? value.slice(0, String(PROVIDER_REQUESTS_PER_MINUTE_MAX).length)
-        : draftRef.current.requestsPerMinuteValue;
+      const accepted = filterBoundedCountInput(
+        value,
+        draftRef.current.requestsPerMinuteValue,
+        PROVIDER_REQUESTS_PER_MINUTE_MAX,
+      );
       if (accepted === draftRef.current.requestsPerMinuteValue) return;
       markDraftDirty("requestsPerMinuteValue");
       draftRef.current.requestsPerMinuteValue = accepted;
@@ -644,6 +665,40 @@ export function InlineEditableProviderCard({
       setRequestsPerMinuteValue(normalized);
     }
     void commitPendingDraft("requests-per-minute-blur").catch(() => undefined);
+  }, [commitPendingDraft, provider]);
+
+  const handleMaxConcurrentValueChange = useCallback(
+    (value: string) => {
+      const accepted = filterBoundedCountInput(
+        value,
+        draftRef.current.maxConcurrentValue,
+        PROVIDER_MAX_CONCURRENT_MAX,
+      );
+      if (accepted === draftRef.current.maxConcurrentValue) return;
+      markDraftDirty("maxConcurrentValue");
+      draftRef.current.maxConcurrentValue = accepted;
+      setMaxConcurrentValue(accepted);
+      scheduleIdleDraftSave();
+    },
+    [markDraftDirty, scheduleIdleDraftSave],
+  );
+
+  const handleMaxConcurrentBlur = useCallback(() => {
+    // 与每分钟请求数同一条归一/无意图判定：越界值收敛到 [1,128]，回落到生效值即撤掉 dirty。
+    const effectiveMaxConcurrent = provider.config.requestPolicy?.maxConcurrent ?? null;
+    const normalized = formatProviderMaxConcurrentDraft(
+      parseProviderMaxConcurrentDraft(draftRef.current.maxConcurrentValue),
+    );
+    if (parseProviderMaxConcurrentDraft(normalized) === effectiveMaxConcurrent) {
+      draftRef.current.maxConcurrentValue =
+        formatProviderMaxConcurrentDraft(effectiveMaxConcurrent);
+      setMaxConcurrentValue(draftRef.current.maxConcurrentValue);
+      dirtyProviderFieldsRef.current.delete("maxConcurrentValue");
+    } else if (normalized !== draftRef.current.maxConcurrentValue) {
+      draftRef.current.maxConcurrentValue = normalized;
+      setMaxConcurrentValue(normalized);
+    }
+    void commitPendingDraft("max-concurrent-blur").catch(() => undefined);
   }, [commitPendingDraft, provider]);
 
   const handleApiKeyBlur = useCallback(() => {
@@ -901,9 +956,10 @@ export function InlineEditableProviderCard({
       ? provider.config.access.apiKeyPresets
       : EMPTY_API_KEY_PRESETS;
   const effectiveHeaderVisible = headerVisible && statusSection === undefined;
-  // 折叠态的唯一提示就是这枚徽标：配过额度就必须显示，否则用户只会以为这层是空的。
+  // 折叠态的唯一提示就是这枚徽标：配过任一额度就必须显示，否则用户只会以为这层是空的。
   const providerRequestPolicyConfigured =
-    (provider.config.requestPolicy?.requestsPerMinute ?? null) !== null;
+    (provider.config.requestPolicy?.requestsPerMinute ?? null) !== null ||
+    (provider.config.requestPolicy?.maxConcurrent ?? null) !== null;
 
   return (
     <div className="space-y-3">
@@ -1004,10 +1060,13 @@ export function InlineEditableProviderCard({
 
         <ProviderRequestPolicySection
           requestsPerMinuteValue={requestsPerMinuteValue}
+          maxConcurrentValue={maxConcurrentValue}
           configured={providerRequestPolicyConfigured}
           readOnly={readOnlyEndpoints}
           onRequestsPerMinuteChange={handleRequestsPerMinuteValueChange}
           onRequestsPerMinuteBlur={handleRequestsPerMinuteBlur}
+          onMaxConcurrentChange={handleMaxConcurrentValueChange}
+          onMaxConcurrentBlur={handleMaxConcurrentBlur}
         />
 
         <ProviderModelsSection

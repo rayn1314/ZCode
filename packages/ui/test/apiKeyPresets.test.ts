@@ -51,6 +51,7 @@ function buildDraft(apiKeyValue: string): ProviderDraftValues {
     baseUrlValue: "https://api.example.com",
     apiKeyValue,
     requestsPerMinuteValue: "",
+    maxConcurrentValue: "",
   };
 }
 

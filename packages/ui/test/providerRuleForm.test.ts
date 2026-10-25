@@ -35,6 +35,7 @@ describe("Todo104 Provider 规则外层元数据表单", () => {
     baseUrlValue: "https://example.test",
     apiKeyValue: "",
     requestsPerMinuteValue: "",
+    maxConcurrentValue: "",
   };
 
   it("读取外层名称/模板；未编辑不保存", () => {
