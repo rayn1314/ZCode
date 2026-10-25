@@ -278,7 +278,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
   }
 
   /**
-   * requestPolicy 是嵌套稀疏对象，必须逐子字段合并：personal 层只想改速率时整体替换会连带
+   * requestPolicy 是嵌套稀疏对象，必须逐子字段合并：personal 层只想改速率或并发时整体替换会连带
    * 清掉 template 层的值，反之同理。合并结果为空归一为 undefined——空策略对象与「没配」是同一
    * 件事，不该写进盘。
    */
@@ -292,6 +292,7 @@ export class ProviderConfig extends ConfigOverlay<ProviderConfig> {
         this.requestPolicy.requestsPerMinute,
         next.requestsPerMinute,
       ),
+      maxConcurrent: this.overlayValue(this.requestPolicy.maxConcurrent, next.maxConcurrent),
     });
     return Object.keys(merged).length > 0 ? Object.freeze(merged) : undefined;
   }
@@ -404,7 +405,7 @@ function freezeApiKeyPresets(
   return Object.freeze(presets.map((preset) => Object.freeze({ ...preset })));
 }
 
-/** requestPolicy 是纯数据（单个标量），冻结一层即可；空对象归一为 undefined 免得写进盘。 */
+/** requestPolicy 是纯数据（标量字段），冻结一层即可；空对象归一为 undefined 免得写进盘。 */
 function freezeProviderRequestPolicy(
   requestPolicy: ProviderRequestPolicy | null | undefined,
 ): ProviderRequestPolicy | null | undefined {

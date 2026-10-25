@@ -104,15 +104,30 @@ export const personalProviderApiDataSchema = providerApiDataSchema.extend({
 export const providerRateLimitRequestsPerMinuteDataSchema = z.number().int().min(1).max(600);
 
 /**
+ * per-provider 并发上限（同时在飞的模型请求数）的值域：1 ~ 128。
+ *
+ * 下界 1：0 会让并发永久为 0（闸门永不放行），那不是限流是死锁。
+ * 上界 128：这是**单机客户端**同时挂起的推理流；再大的量级该横向拆账号（多建一条 provider），
+ * 而不是调大这一个数。
+ */
+export const providerMaxConcurrentDataSchema = z.number().int().min(1).max(128);
+
+/**
  * per-provider 请求策略：与「用哪个 Key」无关，只约束**发请求的节奏**。
  *
- * 这里刻意只有速率一个旋钮。服务商侧的「每分钟 N 次」才是真正的约束来源：按它限速后并发自然
- * 被压住（见 bootstrap 的 provider-rate-limiter），而 429 处理策略是多余的——不主动撞墙就不会
- * 触发，真撞了走既有的指数退避即可。
+ * 两个旋钮对应服务商侧的两种真实约束：
+ * - `requestsPerMinute`（每分钟 N 次）：按它限速后突发自然被压平，429 处理是多余的——不主动撞墙
+ *   就不会触发，真撞了走既有的指数退避（见 bootstrap 的 provider-rate-limiter）。
+ * - `maxConcurrent`（同时 N 个在飞）：有的服务商**只限并发不限次数**，且超发时不返回 429 而是
+ *   静默排队——AIMD 学不到墙在哪，只能靠这条声明硬性卡住总在飞数（见 bootstrap 的
+ *   workflow-concurrency-governor 的 provider 闸门）。两个都配时同时生效。
+ *   语义是**上游**的总量：同机多端（Windows 桌面 + WSL 远端）共用这一份，各端只按
+ *   `N − 对方在飞数` 放行（见 bootstrap 的 provider-concurrency-shared）。
  */
 export const providerRequestPolicyDataSchema = z
   .object({
     requestsPerMinute: providerRateLimitRequestsPerMinuteDataSchema.nullable().optional(),
+    maxConcurrent: providerMaxConcurrentDataSchema.nullable().optional(),
   })
   .strict();
 
