@@ -123,6 +123,10 @@ const TERMINAL_STATUSES = new Set<RuntimeTaskSnapshot["status"]>([
   "killed",
   "stopped",
   "lost",
+  // interrupted 是孤儿对账认领后的终态（契约注释：与 lost 是同一情形的两个阶段，lost 是尚未被认领的形态）。
+  // 漏掉它会让所有终态判定把它当成「runner 持有的运行中任务」：SendMessage 不走复活分支而是入队，
+  // 被唤醒开轮后输入复活钩子也不认领（不登记 running、不结算、不通知），复活轮变成无主之轮。
+  "interrupted",
 ]);
 
 /**

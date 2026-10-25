@@ -1,13 +1,17 @@
 import { Buffer } from "node:buffer";
 import {
   createSessionId,
+  mapSubagentLifecycleStatus,
+  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   SessionEventType,
   selectActiveConversationBranch,
   type BackgroundTaskInfo,
   type MessageWithParts,
+  type SessionEntryInfo,
   type SessionEvent,
   type SessionInfo,
   type SessionProjection,
+  type SubagentTaskStatus,
   type ToolPart,
   STREAM_RECOVERY_DISCARDED_ERROR_NAME,
 } from "@zcode/contracts";
@@ -58,6 +62,71 @@ export interface ProjectSessionSubagentsInput {
   childProjectionsById: ReadonlyMap<string, SessionProjection>;
   parentProjection?: SessionProjection;
   parentEvents?: readonly SessionEvent[];
+  /**
+   * 父会话 `runtime/subagent_lifecycle` entry 的 agentId 索引（见 buildSubagentLifecycleIndex）。
+   * 进程重启后注册表/投影全部清零，它是唯一跨进程存活的终态证据；缺席时保持既有投影行为。
+   */
+  lifecycleByAgentId?: ReadonlyMap<string, SubagentLifecycleEvidence>;
+}
+
+/** 目录查询可消费的一条 lifecycle 证据。status 为 `running` 表示只有 spawn、尚无终态。 */
+export interface SubagentLifecycleEvidence {
+  status: SubagentTaskStatus;
+  endedAt?: number;
+}
+
+/**
+ * 从父会话 entry 里构建 agentId → lifecycle 证据索引。供两个目录查询调用方共用。
+ *
+ * spawn-only entry（只有 SubagentSpawned、status 为 `running`）保持原词不归一成 lost：
+ * 它不是终态证据——活体进程里父投影可能暂时缺 background task（上游 fallback 的设计场景），
+ * 只有终态（含孤儿对账写入的 `interrupted`）才有资格压掉 running 判定。
+ */
+export function buildSubagentLifecycleIndex(
+  entries: readonly SessionEntryInfo[],
+): ReadonlyMap<string, SubagentLifecycleEvidence> {
+  const index = new Map<string, SubagentLifecycleEvidence>();
+  for (const entry of entries) {
+    if (entry.type !== SESSION_ENTRY_SUBAGENT_LIFECYCLE) continue;
+    const data = asRecord(entry.data);
+    const agentId = nonEmptyString(data.agentId);
+    if (!agentId) continue;
+    const raw = nonEmptyString(data.status);
+    const status = !raw || raw === "running" ? "running" : mapSubagentLifecycleStatus(raw);
+    const endedAt = typeof data.endedAt === "number" ? data.endedAt : undefined;
+    index.set(agentId, { status, ...(endedAt === undefined ? {} : { endedAt }) });
+  }
+  return index;
+}
+
+function terminalLifecycle(
+  evidence: SubagentLifecycleEvidence | undefined,
+): SubagentLifecycleEvidence | undefined {
+  return evidence && evidence.status !== "running" ? evidence : undefined;
+}
+
+/** lifecycle 终态 → ended 协议词表（success/failed/cancelled/lost，无 interrupted/killed）。 */
+function lifecycleEndedStatus(
+  evidence: SubagentLifecycleEvidence | undefined,
+): ZCodeSessionEndedSubagent["status"] | undefined {
+  switch (evidence?.status) {
+    case "completed":
+      return "success";
+    case "failed":
+      return "failed";
+    case "cancelled":
+    case "stopped":
+      // stopped 是父进程显式停掉（TaskStop），ended 词表里最接近的诚实词是 cancelled。
+      return "cancelled";
+    case "interrupted":
+    case "killed":
+    case "lost":
+      // interrupted 是进程崩溃后孤儿对账认领的终态，契约层视作 lost 的已认领形态；
+      // ended 协议词表没有这个词，落 lost（「进程丢失」）。
+      return "lost";
+    default:
+      return undefined;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -300,6 +369,7 @@ function runningStatus(input: {
   candidate: SubagentCandidate;
   childOutcome: ReturnType<typeof lastChildOutcome>;
   childProjection?: SessionProjection;
+  lifecycle?: SubagentLifecycleEvidence;
   parentProjection?: SessionProjection;
 }): ZCodeSessionRunningSubagent["status"] | undefined {
   if (input.background?.status === "running") {
@@ -312,12 +382,15 @@ function runningStatus(input: {
   // tool part 会把 child 误判为 ended，并在 cold seed 时清空 V4 running 行。
   // child 还没有终态输出、spawn relation 也没有 stop 时，background input 本身
   // 是可恢复的 running 事实；真实终态仍由 background/child projection/outcome 优先。
+  // 但进程重启后注册表与投影全部清零，这条 fallback 会把早已被杀的子代理永远显示成
+  // running——lifecycle 里有终态登记（含孤儿对账的 interrupted）时必须让位。
   if (
     input.candidate.runInBackground &&
     input.background === undefined &&
     input.childProjection === undefined &&
     input.candidate.stoppedStatus === undefined &&
-    input.childOutcome.status === undefined
+    input.childOutcome.status === undefined &&
+    !terminalLifecycle(input.lifecycle)
   ) {
     return "running";
   }
@@ -361,6 +434,7 @@ function endedStatus(input: {
   candidate: SubagentCandidate;
   childOutcome: ReturnType<typeof lastChildOutcome>;
   childProjection?: SessionProjection;
+  lifecycle?: SubagentLifecycleEvidence;
 }): ZCodeSessionEndedSubagent["status"] {
   const backgroundStatus = terminalBackgroundStatus(input.background);
   if (backgroundStatus) return backgroundStatus;
@@ -373,9 +447,20 @@ function endedStatus(input: {
   const outputStatus = stringField(input.candidate.output ?? {}, "status");
   if (outputStatus === "cancelled" || outputStatus === "stopped") return "cancelled";
   if (outputStatus === "failed" || outputStatus === "error") return "failed";
-  if (outputStatus === "async_launched") return input.childOutcome.status ?? "lost";
-  if (input.candidate.part.state.status === "completed") return "success";
-  return input.childOutcome.status ?? "lost";
+  // lifecycle 终态比三条「结构上不可信」的兜底更硬：
+  // - async_launched 只说明「后台已启动，别的一概不知」；
+  // - launch ACK part 的 completed 在结构上≈启动时刻，后台 Agent 被杀后它仍停在 completed，
+  //   直接落 success 会把死代理标成「已完成」；
+  // - 最后的 childOutcome ?? lost 之前，终态 lifecycle 是唯一跨进程存活的证据。
+  // 但它压不过上面全部真实终态证据，也压不过 childOutcome（子会话自己的终态消息）。
+  const lifecycleStatus = lifecycleEndedStatus(input.lifecycle);
+  if (outputStatus === "async_launched") {
+    return input.childOutcome.status ?? lifecycleStatus ?? "lost";
+  }
+  if (input.candidate.part.state.status === "completed") {
+    return lifecycleStatus ?? "success";
+  }
+  return input.childOutcome.status ?? lifecycleStatus ?? "lost";
 }
 
 /**
@@ -423,11 +508,16 @@ export function projectSessionSubagents(
     const childProjection = input.childProjectionsById.get(candidate.childSessionId);
     const background = findBackgroundTask(input.parentProjection, candidate);
     const childOutcome = lastChildOutcome(input.childMessagesById.get(candidate.childSessionId));
+    // lifecycle entry 按 agentId 寻址；candidate 无 agentId 时（历史遗留 part）拿不到即保持原行为。
+    const lifecycle = candidate.agentId
+      ? input.lifecycleByAgentId?.get(candidate.agentId)
+      : undefined;
     const liveStatus = runningStatus({
       background,
       candidate,
       childOutcome,
       childProjection,
+      lifecycle,
       parentProjection: input.parentProjection,
     });
     const common = {
@@ -450,7 +540,7 @@ export function projectSessionSubagents(
         : undefined;
     ended.push({
       ...common,
-      status: endedStatus({ background, candidate, childOutcome, childProjection }),
+      status: endedStatus({ background, candidate, childOutcome, childProjection, lifecycle }),
       ...(candidate.summary || childOutcome.summary
         ? { summary: candidate.summary ?? childOutcome.summary }
         : {}),
@@ -461,6 +551,9 @@ export function projectSessionSubagents(
           candidate.stoppedAt,
           stateEndedAt,
           childOutcome.endedAt,
+          // 孤儿对账的 endedAt 是「进程重启后确认死亡」的时刻：比真实死亡晚、
+          // 但早于之后任何续跑的完成时间，作为最晚终态证据的一条参加取大不会喧宾夺主。
+          terminalLifecycle(lifecycle)?.endedAt,
         ]) ?? childSession.time.updated,
     });
   }

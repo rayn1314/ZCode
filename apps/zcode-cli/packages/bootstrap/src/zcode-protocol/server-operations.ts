@@ -28,6 +28,7 @@ import {
 } from "@zcode/core";
 import {
   CoreErrorType,
+  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   SESSION_ENTRY_TARGET_COMPLETION_VERIFICATION,
   createMessageId,
   createPartId,
@@ -156,6 +157,7 @@ import { mapComputerUseOperationEvent } from "./computer-use-operation-event.js"
 import { protocolMcpServersToRuntimeMcpConfig } from "./protocol-mcp-config.js";
 import { projectIdFromDirectory } from "../app/paths.js";
 import {
+  buildSubagentLifecycleIndex,
   collectSubagentChildSessionIds,
   paginateEndedSubagents,
   projectSessionSubagents,
@@ -1870,10 +1872,18 @@ export async function listSessionSubagents(
   const parentProjection = liveParent
     ? await liveParent.app.runtime.getProjection().catch(() => undefined)
     : undefined;
+  // lifecycle entry 是唯一跨进程存活的终态证据；store 不支持 entry 读取时保持既有行为。
+  const lifecycleEntries = store.sessionEntries
+    ? await store.sessionEntries({
+        sessionID: parentSession.id,
+        type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+      })
+    : [];
   const projection = projectSessionSubagents({
     revision: liveParent?.stateRevision ?? parentSession.time.updated,
     parentSession,
     messages,
+    lifecycleByAgentId: buildSubagentLifecycleIndex(lifecycleEntries),
     childSessionsById: new Map(
       persistedChildren.map((entry) => [entry.childSessionId, entry.childSession]),
     ),

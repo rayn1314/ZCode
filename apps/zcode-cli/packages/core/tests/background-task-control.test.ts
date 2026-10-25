@@ -864,6 +864,117 @@ describe("background task control", () => {
     }
   });
 
+  it("resumes an interrupted runtime task in the background instead of queueing the message", async () => {
+    // 孤儿对账把进程崩溃前在跑的后台子代理认领成 `interrupted`。TERMINAL_STATUSES 漏掉
+    // 该词时，SendMessage 对它判「仍在运行」，把消息排进 pendingMessages（重启后永远
+    // 无人消费）；正确行为是走复活分支：重新登记 running + SubagentSpawned(resumed)。
+    const sessionId = createSessionId("background-control-agent-interrupted-resume");
+    const turnId = createTurnId("turn_background_control_agent_interrupted_resume");
+    const childSessionId = createSessionId("subagent_agent_interrupted_resume");
+    const outputRootDir = await mkdtemp(
+      join(tmpdir(), "zcode-background-control-agent-interrupted-"),
+    );
+    const aborted = deferred();
+    const parentEvents: SessionEvent[] = [];
+    const notifications: string[] = [];
+    const registry = new InMemoryRuntimeTaskRegistry();
+    registry.register({
+      agentId: "agent_interrupted_resume",
+      agentType: "general-purpose",
+      childSessionId,
+      description: "Resume after restart",
+      isBackgrounded: true,
+      parentSessionId: sessionId,
+      parentToolCallId: "tool_agent_interrupted_resume",
+      prompt: "Original prompt",
+      startedAt: new Date(0),
+      status: "interrupted",
+      taskId: "agent_interrupted_resume",
+      taskType: "local_agent",
+      traceContext: {
+        traceId: "trace_background_control_agent_interrupted_resume",
+        spanId: "span_background_control_agent_interrupted_resume",
+        sessionId,
+        turnId,
+      },
+      turnId,
+      type: "local_agent",
+    } as never);
+    const port = createExploreSubagentPort({
+      createAgentId: () => "unused_agent_id",
+      emitParentEvent: async (event) => {
+        parentEvents.push(event);
+      },
+      enqueueParentTaskNotification: (notification) => {
+        notifications.push(notification.text);
+      },
+      outputRootDir,
+      runtimeTaskRegistry: registry,
+      async runExploreAgent(request, options) {
+        await request.onSessionReady?.();
+        await new Promise((_, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              aborted.resolve();
+              reject(options.signal?.reason ?? new Error("aborted"));
+            },
+            { once: true },
+          );
+        });
+      },
+    });
+
+    try {
+      const result = await port.sendMessage?.({
+        message: "Continue after restart",
+        parentToolCallId: "tool_agent_interrupted_resume_send",
+        sessionId,
+        summary: "Continue after restart",
+        to: "agent_interrupted_resume",
+        trace: {
+          traceId: "trace_background_control_agent_interrupted_resume_send",
+          spanId: "span_background_control_agent_interrupted_resume_send",
+          sessionId,
+          turnId,
+        },
+        turnId,
+        workingDirectory: outputRootDir,
+        workspaceRoot: outputRootDir,
+      });
+
+      expect(result).toMatchObject({
+        agentId: "agent_interrupted_resume",
+        delivery: "resumed_background",
+        status: "success",
+      });
+      // 复活把 registry 重新登记成 running（修复前这里仍是 interrupted）。
+      expect(registry.get("agent_interrupted_resume")).toMatchObject({ status: "running" });
+      const spawned = parentEvents.filter(
+        (event) => event.type === SessionEventType.SubagentSpawned,
+      );
+      expect(spawned.at(-1)?.payload).toMatchObject({
+        agentId: "agent_interrupted_resume",
+        resumed: true,
+        status: "running",
+      });
+
+      // 复活后的任务仍走正常结算：停止 → killed 终态 + 结算通知。
+      const stopped = await port.stopTask?.("agent_interrupted_resume", { initiator: "user" });
+      await Promise.race([
+        aborted.promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("resumed subagent was not aborted")), 100),
+        ),
+      ]);
+      expect(stopped).toMatchObject({ status: "killed", taskId: "agent_interrupted_resume" });
+      expect(notifications).toHaveLength(1);
+      expect(notifications[0]).toContain("was stopped by the user.");
+    } finally {
+      await rm(outputRootDir, { force: true, recursive: true });
+    }
+  });
+
   it("does not overwrite a terminal runtime task when a late tracker snapshot arrives", () => {
     const runtimeTaskRegistry = new InMemoryRuntimeTaskRegistry();
     runtimeTaskRegistry.register({

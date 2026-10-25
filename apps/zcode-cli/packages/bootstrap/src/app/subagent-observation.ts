@@ -1,6 +1,7 @@
 import {
   EventReducer,
   SessionEventType,
+  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   type SessionEvent,
   type SessionId,
   type SessionStorePort,
@@ -9,6 +10,7 @@ import type { AgentRuntime } from "@zcode/core";
 import type { ZCodeSessionSubagentsResult } from "@zcode/shared";
 import { projectSessionTranscript, type SessionTranscriptMessage } from "../session-transcript.js";
 import {
+  buildSubagentLifecycleIndex,
   collectSubagentChildSessionIds,
   paginateEndedSubagents,
   projectSessionSubagents,
@@ -63,12 +65,20 @@ export function createSubagentObservation(deps: ObservationDeps) {
         }),
       );
       const valid = children.filter((child) => child !== null);
+      // lifecycle entry 是唯一跨进程存活的终态证据；store 不支持 entry 读取时保持既有行为。
+      const lifecycleEntries = deps.sessionStore.sessionEntries
+        ? await deps.sessionStore.sessionEntries({
+            sessionID: deps.sessionId,
+            type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+          })
+        : [];
       const projection = projectSessionSubagents({
         revision: await eventStore.getLatestSequenceNumber(deps.sessionId),
         parentSession,
         messages,
         parentEvents,
         parentProjection: await deps.runtime.getProjection(),
+        lifecycleByAgentId: buildSubagentLifecycleIndex(lifecycleEntries),
         childSessionsById: new Map(valid.map((child) => [child.session.id, child.session])),
         childMessagesById: new Map(valid.map((child) => [child.session.id, child.messages])),
         childProjectionsById: new Map(

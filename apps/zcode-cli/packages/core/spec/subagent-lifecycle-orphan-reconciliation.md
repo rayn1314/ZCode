@@ -84,3 +84,34 @@ entry 停在 spawn；23:15 用户让 AI「让它们继续」，`ListAgents` 报�
 - **A6** 失败降级：读 / 写抛错只 `warn`，`resumeFromStore` 正常返回。
 - **A7** 投影：`interrupted` 经 `mapSubagentLifecycleStatus` 原样返回，`ListAgents` 输出
   `status="interrupted"`（不再是 `lost`）。
+
+## 2026-10-25 增补：`interrupted` 必须进入 runtime task 终态词表
+
+### 背景与问题
+
+对账把孤儿行认领成 `interrupted`，但 core `runtime-task/registry.ts` 的 `TERMINAL_STATUSES`
+没有这个词。所有「是否终态」的判定（`isTerminalRuntimeTask`）都把它当成 **runner 持有的
+运行中任务**，连锁后果：
+
+- SendMessage（`runner.ts` 的 `sendMessageToLocalAgent`）不走复活分支，把消息排进
+  `pendingMessages`——重启后无人消费，永远送不到；
+- 输入复活钩子（`reviveSubagentTaskForInputTurn`）不认领：被唤醒开轮后不重新登记 running、
+  不结算、不发通知，复活轮变成无主之轮（2026-10-24 实测：三个被认领的 coder 续跑跑完了，
+  父会话却收不到任何 task-notification，DB 里 lifecycle 行停在 04:05:17 的认领瞬间）。
+
+### 设计决策
+
+`TERMINAL_STATUSES` 补 `"interrupted"`，并让契约层注释的「与 lost 是同一情形的两个阶段」
+成为词表的单一依据。修复后复活链路自动闭合：SendMessage → `resumeTerminalAgentInBackground`
+（重新登记 running + `SubagentSpawned{resumed:true}`）→ 跑完 → `finalizeBackgroundCompletion`
+（`SubagentStopped` + 结算通知）。
+
+### 行为与验收
+
+- 对 interrupted 任务 SendMessage → `delivery: "resumed_background"`，registry 重新登记
+  running；复活后的任务仍正常结算。回归用例：
+  `core/tests/background-task-control.test.ts` 的
+  `resumes an interrupted runtime task in the background instead of queueing the message`
+  （已做红绿验证：摘掉词表项后 delivery 落 queued）。
+- 展示侧配套：目录查询消费 lifecycle 终态压掉上游「可恢复 running」fallback，见
+  `bootstrap/spec/subagent-ended-time.md` D2（2026-10-25 修订）。

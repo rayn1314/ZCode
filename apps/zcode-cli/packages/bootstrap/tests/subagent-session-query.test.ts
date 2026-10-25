@@ -1,15 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   SessionEventType,
   STREAM_RECOVERY_DISCARDED_ERROR_NAME,
   STREAM_RECOVERY_DISCARDED_FINISH,
   type MessageWithParts,
+  type SessionEntryInfo,
   type SessionEvent,
   type SessionInfo,
   type SessionProjection,
   type ToolPart,
 } from "@zcode/contracts";
 import {
+  buildSubagentLifecycleIndex,
   paginateEndedSubagents,
   projectSessionSubagents,
 } from "../src/zcode-protocol/subagent-session-query.js";
@@ -120,6 +123,21 @@ function subagentEvent(
     traceId: "trace" as never,
     sequenceNumber: 1,
     payload,
+  };
+}
+
+function lifecycleEntry(agentId: string, status: string, endedAt?: number): SessionEntryInfo {
+  return {
+    id: `entry-${agentId}` as never,
+    sessionID: "parent" as never,
+    type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+    time: { created: 5, updated: 6 },
+    data: {
+      agentId,
+      childSessionId: `sess_subagent_${agentId}`,
+      status,
+      ...(endedAt === undefined ? {} : { endedAt }),
+    },
   };
 }
 
@@ -236,6 +254,109 @@ describe("subagent session query", () => {
     expect(result.running).toEqual([
       expect.objectContaining({ childSessionId, status: "running" }),
     ]);
+  });
+
+  it("folds a reconciled interrupted lifecycle entry into ended instead of recoverable running", () => {
+    // 进程重启后注册表/投影全部清零，只剩 launch ACK part（结构上停在 completed）。
+    // 没有终态 lifecycle 时上游 fallback 会把死代理永远显示成 running；
+    // 有 `interrupted` 登记时必须落到 ended，且不能被 ACK part 的 completed 误标成 success。
+    const childSessionId = "sess_subagent_agent-dead";
+    const result = projectSessionSubagents({
+      revision: 6,
+      parentSession: session("parent", "interactive"),
+      messages: [
+        toolMessage({
+          childSessionId,
+          id: "m1",
+          output:
+            "Async agent launched successfully.\nagentId: agent-dead\nThe agent is working in the background.",
+          runInBackground: true,
+        }),
+      ],
+      childSessionsById: new Map([[childSessionId, session(childSessionId)]]),
+      childMessagesById: new Map([[childSessionId, []]]),
+      childProjectionsById: new Map(),
+      lifecycleByAgentId: buildSubagentLifecycleIndex([lifecycleEntry("agent-dead", "interrupted", 999)]),
+    });
+
+    expect(result.running).toEqual([]);
+    expect(result.ended).toEqual([
+      expect.objectContaining({ childSessionId, status: "lost", endedAt: 999 }),
+    ]);
+  });
+
+  it("keeps the recoverable-running fallback when the lifecycle entry is spawn-only", () => {
+    // spawn-only entry 不是终态证据：活体进程里父投影暂时缺 background task 时，
+    // fallback 仍是「可恢复 running」的正确判定，不能被 lifecycle 压掉。
+    const childSessionId = "sess_subagent_agent-keepalive";
+    const result = projectSessionSubagents({
+      revision: 6,
+      parentSession: session("parent", "interactive"),
+      messages: [
+        toolMessage({
+          childSessionId,
+          id: "m1",
+          output:
+            "Async agent launched successfully.\nagentId: agent-keepalive\nThe agent is working in the background.",
+          runInBackground: true,
+        }),
+      ],
+      childSessionsById: new Map([[childSessionId, session(childSessionId)]]),
+      childMessagesById: new Map([[childSessionId, []]]),
+      childProjectionsById: new Map(),
+      lifecycleByAgentId: buildSubagentLifecycleIndex([lifecycleEntry("agent-keepalive", "running")]),
+    });
+
+    expect(result.ended).toEqual([]);
+    expect(result.running).toEqual([
+      expect.objectContaining({ childSessionId, status: "running" }),
+    ]);
+  });
+
+  it("lets a live child projection outrank a terminal lifecycle entry", () => {
+    // 复活续跑的窗口期：子会话已在本进程真实运行，lifecycle 可能还停在旧终态——
+    // 活体证据必须赢，lifecycle 只压 fallback、不压真实运行态。
+    const childSessionId = "sess_subagent_agent-revived";
+    const result = projectSessionSubagents({
+      revision: 6,
+      parentSession: session("parent", "interactive"),
+      messages: [
+        toolMessage({
+          childSessionId,
+          id: "m1",
+          output:
+            "Async agent launched successfully.\nagentId: agent-revived\nThe agent is working in the background.",
+          runInBackground: true,
+        }),
+      ],
+      childSessionsById: new Map([[childSessionId, session(childSessionId)]]),
+      childMessagesById: new Map([[childSessionId, []]]),
+      childProjectionsById: new Map([[childSessionId, projection("running")]]),
+      lifecycleByAgentId: buildSubagentLifecycleIndex([lifecycleEntry("agent-revived", "interrupted", 999)]),
+    });
+
+    expect(result.ended).toEqual([]);
+    expect(result.running).toEqual([
+      expect.objectContaining({ childSessionId, status: "running" }),
+    ]);
+  });
+
+  it("indexes lifecycle entries by agentId, keeping spawn-only as running and skipping malformed rows", () => {
+    const malformed = { ...lifecycleEntry("ignored", "completed") } as SessionEntryInfo;
+    (malformed.data as Record<string, unknown>).agentId = "";
+    const index = buildSubagentLifecycleIndex([
+      lifecycleEntry("agent-a", "running"),
+      lifecycleEntry("agent-b", "interrupted", 123),
+      lifecycleEntry("agent-c", "completed"),
+      malformed,
+      { ...lifecycleEntry("agent-d", "completed"), type: "unrelated" as never },
+    ]);
+
+    expect(index.get("agent-a")).toEqual({ status: "running" });
+    expect(index.get("agent-b")).toEqual({ status: "interrupted", endedAt: 123 });
+    expect(index.get("agent-c")).toEqual({ status: "completed" });
+    expect(index.has("ignored")).toBe(false);
+    expect(index.has("agent-d")).toBe(false);
   });
 
   it("does not treat a completed child tool-call model step as a terminal child outcome", () => {
