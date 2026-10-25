@@ -20,8 +20,10 @@ import {
 import { createRegistryBackedTestApp } from "./helpers/registry-backed-test-app.js";
 
 /**
- * 每分钟请求数的覆盖面：`Workflow` 工具（legacy script workflow）与 expert workflow facade 的子
- * runtime 都不进进程级并发治理，但发的是**同一个 provider 账号**的请求，必须与主代理共享配额。
+ * 请求策略的覆盖面：`Workflow` 工具（legacy script workflow）与 expert workflow facade 的子
+ * runtime 不参与 run 级排队，但发的是**同一个 provider 账号**的请求——请求策略（限速 + 并发上限）
+ * 必须与主代理共用。本轮起它们拿到的是主代理同款的 observer + 限速装饰端口：并发上不再直通
+ * （配置了 `maxConcurrent` 的 provider 上，它们和主代理一样守 provider 总量、排优先通道）。
  *
  * 断言缝是模型句柄上的**调用上下文**：`createRuntimeModel` 把 runtime 的准入端口绑在句柄工厂上
  * （`core/runtime/methods/runtime-model.ts` 的 `withRuntimeInvocationLayer`），所以模型在
@@ -126,12 +128,13 @@ function recordingModelAdapter(options: {
   } as never;
 }
 
-/** 受限路径的共同形状：限速层在场，且**没有**并发闸门（`tryAcquire` 缺席）。 */
-function expectQuotaOnlyAdmission(seen: readonly (ModelRequestAdmission | undefined)[]): void {
+/** 受限路径的共同形状：限速层在场，并发走主代理同款 observer（配置了 maxConcurrent 时守 provider 总量）。 */
+function expectGovernedAdmission(seen: readonly (ModelRequestAdmission | undefined)[]): void {
   expect(seen.length).toBeGreaterThan(0);
   for (const admission of seen) {
     expect(admission).toBeDefined();
-    expect(admission?.tryAcquire).toBeUndefined();
+    expect(admission?.tryAcquire).toBeTypeOf("function");
+    expect(admission?.acquire).toBeTypeOf("function");
     expect(admission?.awaitRateLimit).toBeTypeOf("function");
   }
 }
@@ -179,7 +182,7 @@ describe("每分钟请求数的覆盖面", () => {
 
       const result = await app.runWorkflowScript?.({ scriptPath });
       expect(result?.status).toBe("completed");
-      expectQuotaOnlyAdmission(seen);
+      expectGovernedAdmission(seen);
       await app.close?.();
     } finally {
       sessionStore.close();
@@ -210,7 +213,7 @@ describe("每分钟请求数的覆盖面", () => {
 
       const result = await app.runExpertWorkflow({ task: "verify quota coverage" });
       expect(["completed", "paused"]).toContain(result.status);
-      expectQuotaOnlyAdmission(seen);
+      expectGovernedAdmission(seen);
       await app.close?.();
     } finally {
       sessionStore.close();

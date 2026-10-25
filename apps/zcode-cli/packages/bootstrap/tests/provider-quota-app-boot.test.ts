@@ -14,11 +14,11 @@ import { createRegistryBackedTestApp } from "./helpers/registry-backed-test-app.
  * 而唯一构造它的地方就是 create-app。所以这一段只能用「先起 app、再用同一个单例发一次配额请求、
  * 看共享文件有没有出现」来钉。单例在这个文件里首次构造，故本文件不能出现第二个 app 启动。
  *
- * 键由探针给（探针只关心「扣减落没落到共享文件」）；账号指纹那部分由
+ * 键就是 providerId（这里用探针 provider「probe」）；账本位置与装配决策的其余部分由
  * provider-quota-wiring.test.ts 覆盖。
  */
 
-const PROBE_KEY = "probe-account--0000000000000000";
+const PROBE_PROVIDER = "probe";
 const PROBE_RPM = 3;
 
 interface StoredQuotaFile {
@@ -57,22 +57,21 @@ describe("create-app 装配跨进程共享账本", () => {
 
         const port = getProviderRateLimiter({
           resolveRequestsPerMinute: () => PROBE_RPM,
-          resolveSharedBucketKey: () => PROBE_KEY,
         });
-        await port.awaitRateLimit({ model: { providerId: "probe", modelId: "model-a" } });
+        await port.awaitRateLimit({ model: { providerId: PROBE_PROVIDER, modelId: "model-a" } });
         let stored = await readQuotaFile(quotaFile);
-        expect(Object.keys(stored.buckets)).toEqual([PROBE_KEY]);
-        expect(stored.buckets[PROBE_KEY]).toMatchObject({
+        expect(Object.keys(stored.buckets)).toEqual([PROBE_PROVIDER]);
+        expect(stored.buckets[PROBE_PROVIDER]).toMatchObject({
           requestsPerMinute: PROBE_RPM,
           tokens: PROBE_RPM - 1,
         });
 
         // 第二次仍在同一个桶里递减：证明读的不是「每次新建」的账本。
         // 用 toBeCloseTo 是因为两次扣减之间桶会按真实时钟补一点点令牌（这里没有可注入的时钟）。
-        await port.awaitRateLimit({ model: { providerId: "probe", modelId: "model-a" } });
+        await port.awaitRateLimit({ model: { providerId: PROBE_PROVIDER, modelId: "model-a" } });
         stored = await readQuotaFile(quotaFile);
-        expect(Object.keys(stored.buckets)).toEqual([PROBE_KEY]);
-        expect(stored.buckets[PROBE_KEY]!.tokens).toBeCloseTo(PROBE_RPM - 2, 1);
+        expect(Object.keys(stored.buckets)).toEqual([PROBE_PROVIDER]);
+        expect(stored.buckets[PROBE_PROVIDER]!.tokens).toBeCloseTo(PROBE_RPM - 2, 1);
       } finally {
         await app.close?.();
       }

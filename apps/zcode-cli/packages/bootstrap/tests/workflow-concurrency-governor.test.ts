@@ -1,8 +1,9 @@
 /**
- * 进程级并发治理器（docs/dynamic-workflow/concurrency.md「The governor」）：按 provider key
+ * 进程级并发治理器（docs/dynamic-workflow/concurrency.md「The governor」）：AIMD 按 provider key
  * 分桶、**每个模型请求**准入（tryAdmit 快路径 / admit 排队）、run 间轮转、ticket 上的状态事件映射与去重、
  * epoch 阻尼、cap 变化扇出、Retry-After 冷却唤醒、空闲重置、主代理 observer。控制器用真的（纯 AIMD
- * 状态机），时钟与定时器注入。
+ * 状态机），时钟与定时器注入。另有一层 provider 硬上限闸门（`requestPolicy.maxConcurrent`）跨模型桶
+ * 结算，见文件末尾的用例。
  */
 
 import { describe, expect, it } from "vitest";
@@ -16,6 +17,7 @@ import {
   createWorkflowConcurrencyGovernor,
   workflowConcurrencyKey,
 } from "../src/app/workflow-concurrency-governor.js";
+import type { ProviderConcurrencySharedView } from "../src/app/provider-concurrency-shared.js";
 import {
   resolveWorkflowDefaultConcurrency,
   WORKFLOW_DEFAULT_CONCURRENCY_MAX,
@@ -145,8 +147,8 @@ function makeGovernor(defaultConcurrency = CEILING) {
     schedule: clock.schedule,
   });
   /** 快路径必命中（测试前提：闸门开、无人排队），否则测试本身写错。 */
-  const admitNow = (runId = "runA", key = KEY_A): ModelRequestAdmissionTicket => {
-    const ticket = governor.tryAdmit(runId, key);
+  const admitNow = (runId = "runA", model = MODEL_A): ModelRequestAdmissionTicket => {
+    const ticket = governor.tryAdmit(runId, model);
     if (ticket === undefined) throw new Error("tryAdmit unexpectedly missed");
     return ticket;
   };
@@ -194,8 +196,8 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
   it("首个 run 从天花板起步：ceiling 个 tryAdmit 命中，第 ceiling+1 个未命中并在 admit 里等待", async () => {
     const { governor, admitNow } = makeGovernor();
     const tickets = Array.from({ length: CEILING }, () => admitNow());
-    expect(governor.tryAdmit("runA", KEY_A)).toBeUndefined();
-    const waiting = track(governor.admit("runA", KEY_A, new AbortController().signal));
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    const waiting = track(governor.admit("runA", MODEL_A, new AbortController().signal));
     await flush();
     expect(waiting.settled).toBe(false);
     expect(governor.snapshot(KEY_A)).toMatchObject({ cap: CEILING, inFlight: CEILING, waiters: 1 });
@@ -210,14 +212,14 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
   it("tryAdmit 的公平性：有人排队时即便闸门开着也不走快路径（决策 9）", async () => {
     const { governor, admitNow } = makeGovernor(1);
     const first = admitNow("A");
-    const waiting = track(governor.admit("B", KEY_A, new AbortController().signal));
+    const waiting = track(governor.admit("B", MODEL_A, new AbortController().signal));
     await flush();
     // 释放 first 让闸门开一瞬：排队的 B 先拿到；A 再来 tryAdmit 不能越过 B。
     outcome.completed(first);
     await flush();
     expect(waiting.ticket).toBeDefined();
-    expect(governor.tryAdmit("A", KEY_A)).toBeUndefined();
-    const another = track(governor.admit("A", KEY_A, new AbortController().signal));
+    expect(governor.tryAdmit("A", MODEL_A)).toBeUndefined();
+    const another = track(governor.admit("A", MODEL_A, new AbortController().signal));
     await flush();
     expect(another.settled).toBe(false);
     // 有 A 在排队时闸门若开，快路径对任何 run 都关着。
@@ -232,7 +234,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     outcome.throttled429(main);
     expect(governor.snapshot(KEY_A)?.cap).toBe(6); // 8 × 0.75
 
-    const hits = Array.from({ length: 7 }, () => governor.tryAdmit("runB", KEY_A));
+    const hits = Array.from({ length: 7 }, () => governor.tryAdmit("runB", MODEL_A));
     expect(hits.filter((t) => t !== undefined)).toHaveLength(6);
     expect(hits[6]).toBeUndefined();
   });
@@ -253,7 +255,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     expect(third).toBeDefined();
     expect(governor.snapshot(KEY_A)?.inFlight).toBe(3);
     // workflow 请求此刻拿不到快路径。
-    expect(governor.tryAdmit("run-x", KEY_A)).toBeUndefined();
+    expect(governor.tryAdmit("run-x", MODEL_A)).toBeUndefined();
     first!.release();
     second!.release();
     third!.release();
@@ -271,7 +273,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     // 冷却中：observer 照样放行；workflow 请求不行。
     const again = await observe();
     expect(again).toBeDefined();
-    expect(governor.tryAdmit("A", KEY_A)).toBeUndefined();
+    expect(governor.tryAdmit("A", MODEL_A)).toBeUndefined();
     outcome.completed(busy);
     outcome.completed(again);
     expect(governor.snapshot(KEY_A)?.inFlight).toBe(0);
@@ -282,7 +284,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     outcome.throttled429(await observe());
     expect(governor.snapshot(KEY_A)?.cap).toBe(6);
     expect(governor.snapshot(KEY_B)).toBeUndefined();
-    const hits = Array.from({ length: CEILING }, () => governor.tryAdmit("runB", KEY_B));
+    const hits = Array.from({ length: CEILING }, () => governor.tryAdmit("runB", MODEL_B));
     expect(hits.every((t) => t !== undefined)).toBe(true);
     expect(governor.snapshot(KEY_B)?.cap).toBe(CEILING);
   });
@@ -293,7 +295,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     const tickets: ModelRequestAdmissionTicket[] = [];
     const enqueue = (runId: string, n: number) => {
       for (let i = 0; i < n; i++) {
-        void governor.admit(runId, KEY_A, new AbortController().signal).then((ticket) => {
+        void governor.admit(runId, MODEL_A, new AbortController().signal).then((ticket) => {
           order.push(runId);
           tickets.push(ticket);
         });
@@ -316,7 +318,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     const { governor, admitNow } = makeGovernor(1);
     const first = admitNow("A");
     const controller = new AbortController();
-    const waiting = track(governor.admit("A", KEY_A, controller.signal));
+    const waiting = track(governor.admit("A", MODEL_A, controller.signal));
     await flush();
     expect(waiting.settled).toBe(false);
     expect(governor.snapshot(KEY_A)?.waiters).toBe(1);
@@ -336,7 +338,7 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     const { governor } = makeGovernor();
     const controller = new AbortController();
     controller.abort();
-    await expect(governor.admit("A", KEY_A, controller.signal)).rejects.toBeInstanceOf(Error);
+    await expect(governor.admit("A", MODEL_A, controller.signal)).rejects.toBeInstanceOf(Error);
   });
 
   it("Retry-After 冷却冻结新准入直到 deadline，定时器到期唤醒等待者（决策 11）", async () => {
@@ -346,8 +348,8 @@ describe("workflow concurrency governor — 桶与闸门（决策 34）", () => 
     expect(snapshot.cap).toBe(6);
     expect(snapshot.cooldownUntil).toBe(clock.now() + 20_000);
 
-    expect(governor.tryAdmit("A", KEY_A)).toBeUndefined();
-    const waiting = track(governor.admit("A", KEY_A, new AbortController().signal));
+    expect(governor.tryAdmit("A", MODEL_A)).toBeUndefined();
+    const waiting = track(governor.admit("A", MODEL_A, new AbortController().signal));
     await flush();
     expect(waiting.settled).toBe(false);
     expect(clock.pendingTimers()).toBe(1);
@@ -415,7 +417,7 @@ describe("workflow concurrency governor — ticket 上的事件映射（决策 2
       const snapshot = governor.snapshot(KEY_A)!;
       expect(snapshot).toMatchObject({ inFlight: 0, cap: CEILING });
       expect(snapshot.cooldownUntil).toBeUndefined();
-      expect(governor.tryAdmit("resumed-run", KEY_A)).toBeDefined();
+      expect(governor.tryAdmit("resumed-run", MODEL_A)).toBeDefined();
     },
   );
 
@@ -515,7 +517,7 @@ describe("workflow concurrency governor — epoch 阻尼（决策 35）", () => 
     outcome.throttled429(stale[0]!);
     expect(governor.snapshot(KEY_A)).toMatchObject({ cap: 1, inFlight: 1 });
     // 让一个等待者排着（决策 15：有需求才加 cap）。
-    const waiting = track(governor.admit("runA", KEY_A, new AbortController().signal));
+    const waiting = track(governor.admit("runA", MODEL_A, new AbortController().signal));
     await flush();
     outcome.completed(stale[1]!);
     expect(governor.snapshot(KEY_A)?.successStreak).toBe(0);
@@ -524,14 +526,14 @@ describe("workflow concurrency governor — epoch 阻尼（决策 35）", () => 
     expect(waiting.ticket).toBeDefined();
     let current = waiting.ticket!;
     for (let i = 0; i < 3; i++) {
-      const next = track(governor.admit("runA", KEY_A, new AbortController().signal));
+      const next = track(governor.admit("runA", MODEL_A, new AbortController().signal));
       outcome.completed(current);
       await flush();
       expect(next.ticket).toBeDefined();
       current = next.ticket!;
     }
     expect(governor.snapshot(KEY_A)).toMatchObject({ cap: 1, successStreak: 3 });
-    const last = track(governor.admit("runA", KEY_A, new AbortController().signal));
+    const last = track(governor.admit("runA", MODEL_A, new AbortController().signal));
     outcome.completed(current);
     await flush();
     expect(governor.snapshot(KEY_A)).toMatchObject({ cap: 2, successStreak: 0 });
@@ -549,8 +551,8 @@ describe("workflow concurrency governor — 扇出与遗忘", () => {
     governor.subscribe("B", (change) => seenB.push(change));
     governor.subscribe("C", (change) => seenC.push(change));
     // A 在 alpha 上有在飞；B 只订阅了；C 在 beta 上有在飞。
-    const a = admitNow("A", KEY_A);
-    admitNow("C", KEY_B);
+    const a = admitNow("A", MODEL_A);
+    admitNow("C", MODEL_B);
 
     outcome.throttled429(await observe(), 5_000);
     expect(seenA).toHaveLength(1);
@@ -571,7 +573,7 @@ describe("workflow concurrency governor — 扇出与遗忘", () => {
     const seen: ConcurrencyChange[] = [];
     const unsubscribe = governor.subscribe("A", (change) => seen.push(change));
     const busy = admitNow("B");
-    track(governor.admit("A", KEY_A, new AbortController().signal));
+    track(governor.admit("A", MODEL_A, new AbortController().signal));
     await flush();
     outcome.throttled429(await observe(), 1_000);
     expect(seen).toHaveLength(1);
@@ -588,7 +590,7 @@ describe("workflow concurrency governor — 扇出与遗忘", () => {
     expect(governor.snapshot(KEY_A)).toMatchObject({ cap: 6, inFlight: 0 });
 
     clock.advance(300_000);
-    const hits = Array.from({ length: CEILING }, () => governor.tryAdmit("runNext", KEY_A));
+    const hits = Array.from({ length: CEILING }, () => governor.tryAdmit("runNext", MODEL_A));
     expect(hits.every((t) => t !== undefined)).toBe(true);
     expect(governor.snapshot(KEY_A)?.cap).toBe(CEILING);
     for (const t of hits) outcome.completed(t!);
@@ -600,7 +602,7 @@ describe("workflow concurrency governor — 扇出与遗忘", () => {
     const busy = admitNow();
     outcome.throttled429(await observe());
     clock.advance(300_000);
-    expect(governor.tryAdmit("runA", KEY_A)).toBeDefined();
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
     expect(governor.snapshot(KEY_A)?.cap).toBe(6);
     outcome.completed(busy);
   });
@@ -616,7 +618,7 @@ describe("workflow concurrency governor — 增长上限（docs/dynamic-workflow
   ): Promise<ModelRequestAdmissionTicket[]> {
     let live = [...tickets];
     for (let i = 0; i < successes; i++) {
-      const next = track(governor.admit(runId, KEY_A, new AbortController().signal));
+      const next = track(governor.admit(runId, MODEL_A, new AbortController().signal));
       const done = live.shift()!;
       outcome.completed(done);
       await flush();
@@ -624,7 +626,7 @@ describe("workflow concurrency governor — 增长上限（docs/dynamic-workflow
       if (next.ticket !== undefined) live.push(next.ticket);
       // 每轮把能放行的都补满，保持「有人在等」。
       for (;;) {
-        const extra = governor.tryAdmit(runId, KEY_A);
+        const extra = governor.tryAdmit(runId, MODEL_A);
         if (extra === undefined) break;
         live.push(extra);
       }
@@ -645,7 +647,7 @@ describe("workflow concurrency governor — 增长上限（docs/dynamic-workflow
     const { governor, admitNow } = makeGovernor(4);
     governor.setRunBound("big", 20);
     governor.setRunBound("elsewhere", 50);
-    admitNow("elsewhere", KEY_B);
+    admitNow("elsewhere", MODEL_B);
     const tickets = Array.from({ length: 4 }, () => admitNow("big"));
     expect(governor.snapshot(KEY_A)?.growthLimit).toBe(20);
     expect(governor.snapshot(KEY_B)?.growthLimit).toBe(50);
@@ -747,5 +749,271 @@ describe("workflow concurrency governor — 调高上界即起跳（docs/dynamic
     for (const t of tickets.slice(0, 20)) outcome.throttled429(t);
     expect(governor.snapshot(KEY_A)?.cap).toBe(24);
     for (const t of tickets.slice(20)) outcome.completed(t);
+  });
+});
+
+describe("workflow concurrency governor — provider 硬上限闸门（requestPolicy.maxConcurrent）", () => {
+  /** ceilings 用可变对象：模拟设置页改配置（resolver 每次准入重读）。 */
+  function makeCappedGovernor(
+    ceilings: Record<string, number | undefined>,
+    defaultConcurrency = CEILING,
+  ) {
+    const clock = fakeClock();
+    const governor = createWorkflowConcurrencyGovernor({
+      defaultConcurrency,
+      resolveMaxConcurrent: (providerId) => ceilings[providerId],
+      now: clock.now,
+      schedule: clock.schedule,
+    });
+    return { clock, governor, ceilings };
+  }
+
+  it("总在飞数跨模型桶封顶：alpha 与 beta 各有 AIMD cap，但共用 provider 的 2 个名额", () => {
+    const { governor } = makeCappedGovernor({ prov: 2 });
+    const a = governor.tryAdmit("runA", MODEL_A)!;
+    const b = governor.tryAdmit("runB", MODEL_B)!;
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    // 两个桶的 AIMD cap 都还是 8——卡住它们的是 provider 闸门，不是模型桶。
+    expect(governor.snapshot(KEY_A)?.cap).toBe(CEILING);
+    expect(governor.snapshot(KEY_B)?.cap).toBe(CEILING);
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    expect(governor.tryAdmit("runB", MODEL_B)).toBeUndefined();
+
+    a.release();
+    // 释放的是 alpha 的名额，beta 的请求同样能拿到——闸门是 provider 级的。
+    expect(governor.tryAdmit("runB", MODEL_B)).toBeDefined();
+  });
+
+  it("上限热更新：调大立刻放行、调小只拦新请求（在飞的自然结束）", () => {
+    const { governor, ceilings } = makeCappedGovernor({ prov: 1 });
+    const first = governor.tryAdmit("runA", MODEL_A)!;
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    ceilings.prov = 2;
+    const second = governor.tryAdmit("runA", MODEL_A);
+    expect(second).toBeDefined();
+
+    ceilings.prov = 1;
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    first.release();
+    second!.release();
+  });
+
+  it("取消配置就恢复原行为：provider 闸门不存在", () => {
+    const { governor, ceilings } = makeCappedGovernor({ prov: 1 });
+    const first = governor.tryAdmit("runA", MODEL_A)!;
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    ceilings.prov = undefined;
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
+    first.release();
+  });
+
+  it("主代理优先级：名额满时排优先通道，释放后先于 run 的等待者放行", async () => {
+    const { governor } = makeCappedGovernor({ prov: 2 });
+    const first = governor.tryAdmit("runA", MODEL_A)!;
+    const second = governor.tryAdmit("runA", MODEL_A)!;
+    // 名额满：主代理的快路径也不命中（配置了上限就守闸门）。
+    expect(governor.observer().tryAcquire!({ model: MODEL_A })).toBeUndefined();
+
+    const main = track(governor.observer().acquire({ model: MODEL_A }));
+    const runWaiting = track(governor.admit("runB", MODEL_B, new AbortController().signal));
+    await flush();
+    expect(main.settled).toBe(false);
+    expect(runWaiting.settled).toBe(false);
+
+    outcome.completed(first);
+    await flush();
+    // 优先通道先走：主代理拿到名额，run 仍在等。
+    expect(main.ticket).toBeDefined();
+    expect(runWaiting.settled).toBe(false);
+
+    main.ticket!.release();
+    await flush();
+    expect(runWaiting.ticket).toBeDefined();
+    outcome.completed(second);
+    outcome.completed(runWaiting.ticket!);
+  });
+
+  it("跨模型桶唤醒：alpha 的请求结算后放行 beta 的等待者", async () => {
+    const { governor } = makeCappedGovernor({ prov: 1 });
+    const a = governor.tryAdmit("runA", MODEL_A)!;
+    const waiting = track(governor.admit("runB", MODEL_B, new AbortController().signal));
+    await flush();
+    expect(waiting.settled).toBe(false);
+
+    outcome.completed(a);
+    await flush();
+    expect(waiting.ticket).toBeDefined();
+    outcome.completed(waiting.ticket!);
+  });
+
+  it("主代理绕开模型桶的 AIMD cap 与冷却，但守 provider 总量", () => {
+    const { governor } = makeCappedGovernor({ prov: 3 }, 1);
+    // 模型桶 cap=1 刚撞过 429 并带 Retry-After：run 的新请求既没快路径也要等冷却。
+    const run = governor.tryAdmit("runA", MODEL_A)!;
+    outcome.throttled429(run, 60_000);
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    // observer 只守 provider 总量：3 个名额都空着，冷却不拦它。
+    const mainA = governor.observer().tryAcquire!({ model: MODEL_A });
+    const mainB = governor.observer().tryAcquire!({ model: MODEL_B });
+    const mainC = governor.observer().tryAcquire!({ model: MODEL_A });
+    expect(mainA).toBeDefined();
+    expect(mainB).toBeDefined();
+    expect(mainC).toBeDefined();
+    // 总量到顶：主代理也要排队（快路径不命中，runner 据此报「在等并发」）。
+    expect(governor.observer().tryAcquire!({ model: MODEL_A })).toBeUndefined();
+  });
+});
+
+describe("workflow concurrency governor — 同机跨端共享同一份并发额度", () => {
+  /**
+   * 假共享视图。**两个读数要分开**，这是真实语义：`othersInFlight()` 是「最后观察到的值」（快路径
+   * 用它，同步、陈旧），`refresh()` 才是去读盘。测试想模拟「对方放掉了」，改的是 `onDisk`；想让这一
+   * 侧知道，得等它重读（被挡住时重读，或轮询到点）。
+   */
+  function fakeSharedView(initial: number) {
+    const state = {
+      cached: initial,
+      onDisk: initial,
+      reported: [] as Array<{ providerId: string; count: number }>,
+      refreshCalls: 0,
+    };
+    const view: ProviderConcurrencySharedView = {
+      othersInFlight: () => state.cached,
+      refresh: async () => {
+        state.refreshCalls += 1;
+        state.cached = state.onDisk;
+        return state.cached;
+      },
+      report: (providerId, count) => {
+        state.reported.push({ providerId, count });
+      },
+      dispose: async () => {},
+    };
+    return { view, state };
+  }
+
+  function makeSharedGovernor(options: {
+    ceiling?: number;
+    others?: number;
+    defaultConcurrency?: number;
+  }) {
+    const clock = fakeClock();
+    const shared = fakeSharedView(options.others ?? 0);
+    const governor = createWorkflowConcurrencyGovernor({
+      defaultConcurrency: options.defaultConcurrency ?? CEILING,
+      resolveMaxConcurrent: () => options.ceiling,
+      resolveSharedConcurrency: () => shared.view,
+      now: clock.now,
+      schedule: clock.schedule,
+    });
+    return { clock, governor, shared, options };
+  }
+
+  it("别人占着的份额从本进程额度里扣：上限 2、别人占 1 ⇒ 本进程只能有 1 个在飞", () => {
+    const { governor, shared } = makeSharedGovernor({ ceiling: 2, others: 1 });
+    const first = governor.tryAdmit("runA", MODEL_A);
+    expect(first).toBeDefined();
+    // 额度 = 2 − 1 = 1，已经用掉。
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    // 对方放掉：重读之后额度回到 2，还差 1 个名额。
+    shared.state.onDisk = 0;
+    void shared.view.refresh("prov");
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    first!.release();
+  });
+
+  it("快路径用的是「最后观察到的」读数：对方放掉了也不会自动变宽，要靠重读", () => {
+    const { governor, shared } = makeSharedGovernor({ ceiling: 2, others: 1 });
+    const held = governor.tryAdmit("runA", MODEL_A)!;
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    shared.state.onDisk = 0; // 对方放掉了，但我们还没重读
+    expect(shared.state.cached).toBe(1);
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    // 重读一次：额度立刻回到 2。
+    void shared.view.refresh("prov");
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
+    held.release();
+  });
+
+  it("别人报满（甚至报得比上限还大）仍留 1：下限钳制保证任何一侧都还在往前挪", () => {
+    for (const others of [2, 5]) {
+      const { governor } = makeSharedGovernor({ ceiling: 2, others });
+      expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
+      // 留的那 1 个用掉之后仍然要等——下限是「不僵死」，不是「不受限」。
+      expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+    }
+  });
+
+  it("挡住我们的是别人时，排队前先重读一次：视图偏旧不会排假队", async () => {
+    const { governor, shared } = makeSharedGovernor({ ceiling: 3, others: 2 });
+    const held = governor.tryAdmit("runA", MODEL_A)!; // 可用额度 = max(1, 3−2) = 1，用掉
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeUndefined();
+
+    // 对方已经放掉 1 个，只是我们还没重读：这次准入应当重读后直接拿到票，而不是排进队列。
+    shared.state.onDisk = 1;
+    const ticket = await governor.admit("runB", MODEL_B, new AbortController().signal);
+    expect(ticket).toBeDefined();
+    expect(shared.state.refreshCalls).toBeGreaterThan(0);
+    ticket.release();
+    held.release();
+  });
+
+  it("有在飞就轮询另一端：对方放掉后由重读定时器唤醒（别人放行不会通知我们）", async () => {
+    const { clock, governor, shared } = makeSharedGovernor({ ceiling: 2, others: 1 });
+    const held = governor.tryAdmit("runA", MODEL_A)!; // 可用额度 = 1，用掉 ⇒ 本进程已顶满
+    const waiting = track(governor.admit("runB", MODEL_B, new AbortController().signal));
+    await flush();
+    // 挡住它的不是本进程的 AIMD：额度只有 1，而对方还占着 —— 这条队列只能靠重读解开。
+    expect(waiting.settled).toBe(false);
+
+    shared.state.onDisk = 0;
+    clock.advance(250);
+    await flush();
+    expect(waiting.ticket).toBeDefined();
+    waiting.ticket!.release();
+    held.release();
+  });
+
+  it("上报本进程在飞数：配了硬上限才报（没配就没有要分的额度，一次 IO 都不做）", () => {
+    const { governor, shared } = makeSharedGovernor({ ceiling: 2, others: 0 });
+    const ticket = governor.tryAdmit("runA", MODEL_A)!;
+    expect(shared.state.reported).toEqual([{ providerId: "prov", count: 1 }]);
+    ticket.release();
+    expect(shared.state.reported).toEqual([
+      { providerId: "prov", count: 1 },
+      { providerId: "prov", count: 0 },
+    ]);
+
+    const uncapped = makeSharedGovernor({ ceiling: undefined, others: 0 });
+    const free = uncapped.governor.tryAdmit("runA", MODEL_A)!;
+    free.release();
+    expect(uncapped.shared.state.reported).toEqual([]);
+  });
+
+  it("取消上限后不再共享上报：闸门不存在，也就没有份额可分", () => {
+    const { governor, shared, options } = makeSharedGovernor({ ceiling: 1, others: 0 });
+    const held = governor.tryAdmit("runA", MODEL_A)!;
+    const before = shared.state.reported.length;
+    expect(before).toBe(1);
+
+    options.ceiling = undefined;
+    const after = governor.tryAdmit("runA", MODEL_A);
+    expect(after).toBeDefined();
+    expect(shared.state.reported.length).toBe(before);
+    held.release();
+  });
+
+  it("跨模型桶仍然是一份额度：另一个模型上的在飞也扣在同一个 provider 上", () => {
+    const { governor } = makeSharedGovernor({ ceiling: 2, others: 1 });
+    expect(governor.tryAdmit("runA", MODEL_A)).toBeDefined();
+    // 本进程额度已满（1），换个模型桶也一样要等——共享读数按 provider 算，不按模型算。
+    expect(governor.tryAdmit("runB", MODEL_B)).toBeUndefined();
   });
 });

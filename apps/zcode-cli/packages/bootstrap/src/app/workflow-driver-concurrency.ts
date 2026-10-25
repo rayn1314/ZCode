@@ -24,7 +24,6 @@ import type {
 } from "@zcode/dynamic-workflow";
 import { createActorToolActivity, type ActorToolCounts } from "./workflow-driver-tool-activity.js";
 import {
-  workflowConcurrencyKey,
   type WorkflowConcurrencyPort,
 } from "./workflow-concurrency-governor.js";
 import type { ProviderRateLimitPort } from "./provider-rate-limiter.js";
@@ -190,14 +189,11 @@ export function createActorModelActivity(input: {
       ? undefined
       : {
           ...(rateLimit === undefined ? {} : { awaitRateLimit: rateLimit.awaitRateLimit }),
-          tryAcquire: ({ model }) => port.tryAdmit(runId, workflowConcurrencyKey(model)),
-          acquire: async ({ model, signal }) => {
-            const key = workflowConcurrencyKey(model);
-            return (
-              port.tryAdmit(runId, key) ??
-              (await port.admit(runId, key, signal ?? new AbortController().signal))
-            );
-          },
+          // 端口吃模型身份而不是桶键：桶（模型级 AIMD）与 provider 硬上限是两个粒度。
+          tryAcquire: ({ model }) => port.tryAdmit(runId, model),
+          acquire: async ({ model, signal }) =>
+            port.tryAdmit(runId, model) ??
+            (await port.admit(runId, model, signal ?? new AbortController().signal)),
         };
   // 本 run 自己的上界在**共享 cap 之上**再包一层（两条界的分工见
   // docs/dynamic-workflow/concurrency.md「Two bounds on a run」）。闸门要的那条子代理事实——

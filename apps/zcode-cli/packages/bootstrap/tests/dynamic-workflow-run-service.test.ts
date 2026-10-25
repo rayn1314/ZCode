@@ -1296,8 +1296,8 @@ describe("dynamic workflow run service — retuneConcurrency", () => {
     });
     const calls: string[] = [];
     const concurrency: WorkflowConcurrencyPort = {
-      tryAdmit: (runId, key) => governor.tryAdmit(runId, key),
-      admit: (runId, key, signal) => governor.admit(runId, key, signal),
+      tryAdmit: (runId, model) => governor.tryAdmit(runId, model),
+      admit: (runId, model, signal) => governor.admit(runId, model, signal),
       subscribe: (runId, listener) => governor.subscribe(runId, listener),
       setRunBound: (runId, bound) => {
         calls.push(`set:${runId}:${bound}`);

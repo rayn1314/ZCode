@@ -98,9 +98,9 @@ export function createScriptWorkflowAgentRuntime(input: {
    * 模型请求准入端口，与两个工具端口同路进 runtime deps。
    *
    * dwf actor 由 driver 给出（每次模型请求尝试先过进程级**并发**闸门）；legacy `Workflow` 工具的
-   * 子代理由 `script-workflow-runtime.ts` 转交装配侧给的**只带速率配额**的端口——它们不进并发
-   * 治理、不喂治理器信号，但发的是同一个 provider 账号的请求，每分钟配额必须与主代理共用
-   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`）。
+   * 子代理由 `script-workflow-runtime.ts` 转交装配侧给的**主代理同款 observer + 限速**端口——
+   * 它们不参与 run 级排队，但发的是同一个 provider 的请求，RPM 配额与 `maxConcurrent` 并发上限
+   * 都必须共用（配置了并发上限的 provider 上，它们和主代理一样守 provider 总量）。
    */
   modelRequestAdmission?: ModelRequestAdmission;
   /**

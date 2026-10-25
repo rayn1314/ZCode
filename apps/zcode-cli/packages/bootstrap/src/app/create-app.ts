@@ -86,7 +86,6 @@ import {
 import { getWorkflowConcurrencyGovernor } from "./workflow-concurrency-governor.js";
 import { createProviderQuotaSharing } from "./provider-quota-wiring.js";
 import {
-  createRateLimitOnlyAdmission,
   getProviderRateLimiter,
   withProviderRateLimit,
 } from "./provider-rate-limiter.js";
@@ -614,38 +613,50 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
       network: configResult.config.network,
       sourceTitle: options.sourceTitle,
     });
+    // 同机跨端（Windows 桌面 + WSL 远端）的**同一份额度**：两端数据根虽隔离，但摸得到同一块磁盘，
+    // 于是 RPM 余额落到一个共享文件（文件锁下原子扣减）、并发在飞数落到旁边一个目录（各进程广告
+    // 自己那一份，见 provider-concurrency-shared.ts 为什么不做成分布式信号量）。位置算不出来
+    // （非 Windows / 非 WSL）或用户显式关掉就不共享，各限各的；两样都读不到时降级为进程内限制，
+    // 绝不 fail-open。「落在哪」在 provider-quota-wiring.ts 里（可单测）。
+    const providerQuotaSharing = createProviderQuotaSharing({
+      env: options.env,
+      logger,
+    });
     // 进程级并发治理器：run service 拿它的窄端口给
     // driver（每个 actor runtime 一个请求级准入端口）；主 runtime 挂它的 observer（下面 deps）——
     // 不排队、不看冷却，但计入在飞并喂信号。进程级单例——配额本就在账号上，不按会话分。
     // 不再经 adapter 级 addStatusSink 喂信号：同一事件只能沿 ticket 喂一次。
-    const workflowConcurrencyGovernor = getWorkflowConcurrencyGovernor();
+    const workflowConcurrencyGovernor = getWorkflowConcurrencyGovernor({
+      // per-provider 并发硬上限（requestPolicy.maxConcurrent）：治理器是单例、拿不到 per-request
+      // 的 provider 配置，与限速器同一条注入约定。每次准入重读——设置页改完立刻生效。
+      resolveMaxConcurrent: (providerId) =>
+        options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.maxConcurrent ??
+        undefined,
+      // 同机另一端的在飞读数：`maxConcurrent` 声明的是**上游**的墙，另一端占着的份额要从本进程
+      // 可用额度里扣掉，否则两端各限 N、上游看见 2N。
+      ...(providerQuotaSharing.concurrencyShared === undefined
+        ? {}
+        : { sharedConcurrency: providerQuotaSharing.concurrencyShared }),
+    });
     // per-provider 每分钟限速：治理器是单例、拿不到 per-request 的 provider 配置，唯一读得到
     // 已解析策略的地方就是这个 Registry。限速器自己也是进程单例（配额在账号上，跨会话共享），
-    // 每次请求重读配置——用户在设置里改完立刻生效。
-    //
-    // 同机跨端（Windows 桌面 + WSL 远端）还要共用**同一份额度**：两端数据根虽隔离，但摸得到同一块
-    // 磁盘，于是把余额落到一个共享文件，由文件锁保证两端原子扣减。位置算不出来（非 Windows / 非
-    // WSL）就不共享，各限各的；账本不可达时降级为进程内限速，绝不 fail-open。
-    // 「账本落在哪、桶按什么键分」在 provider-quota-wiring.ts 里（可单测）。
-    const providerQuotaSharing = createProviderQuotaSharing({
-      readProviderConfig: (providerId) => options.providerRegistry.getProvider(providerId)?.config,
-      env: options.env,
-      logger,
-    });
+    // 每次请求重读配置——用户在设置里改完立刻生效。桶键就是 providerId。
     const providerRateLimit = getProviderRateLimiter({
       resolveRequestsPerMinute: (providerId) =>
         options.providerRegistry.getProvider(providerId)?.config.requestPolicy?.requestsPerMinute ??
         undefined,
-      resolveSharedBucketKey: providerQuotaSharing.resolveSharedBucketKey,
       ...(providerQuotaSharing.sharedStore === undefined
         ? {}
         : { sharedStore: providerQuotaSharing.sharedStore }),
     });
-    // legacy workflow 的子代理（`Workflow` 工具与 expert workflow facade）不进进程级并发治理，
-    // 没有治理器端口可装饰；但它们发的是同一个 provider 账号的请求，配额必须与主代理、dwf actor
-    // 共用——否则它们会在主代理看不见的地方把配额吃光。给它们一个只带配额、不设并发闸门的端口，
-    // 并发语义逐字不变（见 provider-rate-limiter.ts 的 createRateLimitOnlyAdmission）。
-    const legacyWorkflowModelAdmission = createRateLimitOnlyAdmission(providerRateLimit);
+    // 一站式端口：主代理与 legacy workflow 的子代理（`Workflow` 工具、expert workflow facade）都拿
+    // 这同一个装饰后的 observer。legacy 子代理不参与 run 级排队，但发的是同一个 provider 的请求——
+    // RPM 配额与并发上限都要被它们遵守；给它们单独发「并发直通」票会在主代理看不见的地方绕开
+    // provider 闸门。未配置并发上限的 provider 上，observer 语义与从前逐字相同（无条件放行）。
+    const legacyWorkflowModelAdmission = withProviderRateLimit(
+      workflowConcurrencyGovernor.observer(),
+      providerRateLimit,
+    );
     // 差异清单 1：子会话不建第二份模型适配器与 ApiProviderModelRuntime（各自都是进程级资源的
     // 第二份）；模型工厂取覆盖包里父派生的继承工厂（绑定本次派发选型，含调用级覆盖）。
     let modelAdapter: AiSdkModelAdapter | undefined;
@@ -921,13 +932,11 @@ export async function createZCodeApp(options: ZCodeAppOptions): Promise<ZCodeApp
           }
         : {}),
       agentTelemetry: agentTelemetryPort,
-      // 主代理的模型请求过治理器的 observer：立即放行，但让治理器看见它的 429 / 成功。
-      // 并发上 observer 无条件放行（主代理的 turn 永不被 workflow 流量阻塞），**限速上不放行**：
-      // 每分钟配额是 provider 侧的账，主代理和 workflow 共用同一份，不限它就会从这里撞墙。
-      modelRequestAdmission: withProviderRateLimit(
-        workflowConcurrencyGovernor.observer(),
-        providerRateLimit,
-      ),
+      // 主代理的模型请求过治理器的 observer：未配置并发上限时立即放行（主代理的 turn 永不被
+      // workflow 流量阻塞），配置了 requestPolicy.maxConcurrent 时守 provider 总量、排优先通道。
+      // **限速上不放行**：每分钟配额是 provider 侧的账，主代理和 workflow 共用同一份，不限它就
+      // 会从这里撞墙。与 legacy 子代理拿的是同一个装饰后的端口（legacyWorkflowModelAdmission）。
+      modelRequestAdmission: legacyWorkflowModelAdmission,
       eventStore: options.eventStore ?? createInMemorySessionEventStore(),
       sessionStore,
       sessionMailboxPort,

@@ -11,15 +11,19 @@
 //    代价只是合计可能超配额；反过来「读不到就不限速」会让一次挂载失败变成完全不限速。
 // 2. **跨环境不认 pid**。Windows 的进程号在 WSL 里毫无意义，用 pid 判活会把**活锁**当成僵尸偷走，
 //    于是两个进程同时进临界区。判僵尸只看锁文件的 mtime 年龄。
-// 3. 写是「同目录临时文件 + rename」，读者不会看到半截 JSON。
+// 3. **判年龄必须用同一个时钟**。锁的 mtime 出自文件系统，而 WSL2 的内核时钟与 NTFS 时钟有漂移：
+//    拿本端 `now()` 去减会让一把活锁被判死。所以「现在」也取自文件系统（探针文件读 mtime）——
+//    这段抽在 provider-shared-fs-clock.ts，与并发共享那份实现同源。
+// 4. 写是「同目录临时文件 + rename」，读者不会看到半截 JSON。
 //
-// 键是**账号指纹**而不是 providerId：配额长在账号上，同一台机器上两个不同的 Key（比如同一个中转
-// 站的两个账号）共用一个 providerId 时不该互相限流。
+// 键是 **providerId**：一条 provider 配置 = 一份策略 = 一个桶，Windows 与 WSL 同名即共享。
+// 同一家供应商的不同 Key 会合用一个桶——要各算各的配额就多建 provider 配置，账本不替你猜。
+// 凭据不进键、不进文件。
 
-import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Logger } from "@zcode/contracts";
+import { createSharedFsClock } from "./provider-shared-fs-clock.js";
 import {
   MINUTE_MS,
   msUntilNextQuotaToken,
@@ -34,7 +38,7 @@ export const PROVIDER_QUOTA_SHARED_FILE_ENV = "ZCODE_PROVIDER_QUOTA_SHARED_FILE"
 const SHARED_FILE_NAME = "provider-quota.json";
 const SHARED_DIR_NAME = "zcode";
 
-/** 锁被持有多久算僵尸。临界区只有几次文件 IO，10 秒足够宽松，也吸得住两端之间的时钟偏差。 */
+/** 锁被持有多久算僵尸。临界区只有几次文件 IO，10 秒足够宽松。 */
 const LOCK_STALE_MS = 10_000;
 /** 抢锁的重试间隔与总时限：**必须短**，抢不到就降级，不能把模型请求挂在文件锁上。 */
 const LOCK_RETRY_DELAY_MS = 8;
@@ -101,28 +105,6 @@ export function resolveProviderQuotaSharedFilePath(
     return `/mnt/c/ProgramData/${SHARED_DIR_NAME}/${SHARED_FILE_NAME}`;
   }
   return undefined;
-}
-
-/**
- * 账号指纹：providerId + 协议 + 端点 + 凭据摘要。凭据只进哈希，文件里看不到 Key 本身。
- * 同一个 providerId 配了不同 Key（中转站的两个账号）会被分到两个桶，不会互相限流。
- */
-export function computeSharedQuotaKey(input: {
-  providerId: string;
-  apiType?: string | undefined;
-  baseUrl?: string | undefined;
-  apiKey?: string | undefined;
-}): string {
-  const secretDigest =
-    input.apiKey === undefined || input.apiKey === ""
-      ? "no-secret"
-      : createHash("sha256").update(input.apiKey).digest("hex");
-  const accountDigest = createHash("sha256")
-    .update([input.apiType ?? "", input.baseUrl ?? "", secretDigest].join("\n"))
-    .digest("hex")
-    .slice(0, 16);
-  // providerId 明文留在键里：不是秘密，且出问题时能直接看出是哪条供应商。
-  return `${input.providerId}--${accountDigest}`;
 }
 
 function emptyStoreFile(): StoreFile {
@@ -197,12 +179,29 @@ export function createFileProviderQuotaStore(
     }
   };
 
+  /**
+   * 判锁龄必须让被减数和减数来自**同一个时钟**（见 provider-shared-fs-clock.ts）：不能拿本端
+   * `now()` 去减锁的 mtime——WSL2 的内核时钟与 NTFS 时钟存在漂移，偏差超过判定阈值时一把**活锁**
+   * 会被立刻判成僵尸、两端同时进临界区，账本就废了。只在锁已被占用（EEXIST）时才走这里——临界区是
+   * 毫秒级，这种路径很少。
+   */
+  const fsNowMs = createSharedFsClock({
+    directory: dirname(options.filePath),
+    prefix: basename(options.filePath),
+  });
+
   /** 锁是「独占创建」的文件，内容只是给排障看的线索；判僵尸只看 mtime 年龄，不看 pid（见文件头）。 */
   const isLockStale = async (): Promise<boolean> => {
+    let metadata;
     try {
-      const metadata = await stat(lockPath);
-      return now() - metadata.mtimeMs >= LOCK_STALE_MS;
+      metadata = await stat(lockPath);
     } catch {
+      return false;
+    }
+    try {
+      return (await fsNowMs()) - metadata.mtimeMs >= LOCK_STALE_MS;
+    } catch {
+      // 探针写不进去（目录只读等）：宁可等超时后降级，也不要偷一把可能活着的锁。
       return false;
     }
   };
@@ -223,8 +222,7 @@ export function createFileProviderQuotaStore(
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         if (await isLockStale()) {
-          // 上一个持锁者崩了（或另一个环境的时钟快了）：接管。并发接管由 wx 独占创建兜住，
-          // 只有一个能成功，其余的继续重试。
+          // 上一个持锁者崩了：接管。并发接管由 wx 独占创建兜住，只有一个能成功，其余的继续重试。
           await unlink(lockPath).catch(() => undefined);
           continue;
         }

@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelRequestAdmission, ModelRequestTarget } from "@zcode/contracts";
 import {
-  computeSharedQuotaKey,
   createProviderRateLimiter,
-  createRateLimitOnlyAdmission,
   normalizeRequestsPerMinute,
   PROVIDER_QUOTA_SHARED_FILE_ENV,
   refillQuotaState,
@@ -87,32 +85,11 @@ describe("provider-request-policy contract", () => {
     expect(decorated.tryAcquire).toBe(inner.tryAcquire);
     expect(decorated.acquire).toBe(inner.acquire);
     expect(await decorated.awaitRateLimit!({ model })).toBe(0);
-
-    const quotaOnly = createRateLimitOnlyAdmission(port);
-    // 没有快路径，runner 因此不发并发那一条排队事件；并发语义逐字不变。
-    expect(quotaOnly.tryAcquire).toBeUndefined();
-    expect(await quotaOnly.awaitRateLimit!({ model })).toBe(0);
-    await expect(quotaOnly.acquire({ model })).resolves.toMatchObject({
-      publish: expect.any(Function),
-      release: expect.any(Function),
-    });
   });
 
-  it("共享账本按账号指纹分桶，位置读不到就不共享且不回落到硬编码路径", () => {
-    const base = {
-      providerId: "relay",
-      apiType: "openai-chat",
-      baseUrl: "https://relay.example/v1",
-    };
-    const first = computeSharedQuotaKey({ ...base, apiKey: "key-a" });
-    const second = computeSharedQuotaKey({ ...base, apiKey: "key-b" });
-    expect(computeSharedQuotaKey({ ...base, apiKey: "key-a" })).toBe(first);
-    // 同一个 providerId 配两个 Key（中转站的两个账号）各算各的，不互相限流。
-    expect(second).not.toBe(first);
-    // 凭据只进哈希：文件里的键看不到 Key 本身。
-    expect(first).not.toContain("key-a");
-    expect(first.startsWith("relay--")).toBe(true);
-
+  it("共享账本按 providerId 分桶，位置读不到就不共享且不回落到硬编码路径", () => {
+    // 键是 providerId：一条 provider 配置 = 一份策略 = 一个桶。同一家供应商的不同 Key 合用一个桶
+    // 是既定语义（多账号 = 多建 provider 配置），客户端不再按凭据猜分桶。
     expect(
       resolveProviderQuotaSharedFilePath(
         { [PROVIDER_QUOTA_SHARED_FILE_ENV]: "D:\\zcode\\quota.json" },

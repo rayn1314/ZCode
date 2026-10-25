@@ -3,11 +3,14 @@
 // ============================================================
 // 「这个 provider 每分钟最多发 N 个模型请求」，N 可空（不限制）。配额长在**账号**上，不在会话
 // 上，所以桶是进程级的：主代理、workflow 的所有 run、legacy Workflow 工具的子代理、工具内部的
-// 模型调用共用同一份额度。
+// 模型调用共用同一份额度。桶键就是 providerId——一条 provider 配置 = 一份策略 = 一个桶；同一家
+// 供应商的多个 Key 要各算各的配额，就多建一条 provider 配置。
 //
-// 为什么只有这一个旋钮：服务商侧的约束本来就是「每分钟 N 次」。按它限速后并发自然被压住——
-// N=15/min 意味着每 4 秒一个令牌，单次请求约 3 秒，同一时刻最多 1 个在飞，并发上限是冗余的。
-// 反过来，429 处理策略也是多余的：不主动撞墙就不会触发，真撞了走既有的指数退避即可。
+// 速率不是唯一的节奏约束：有的服务商**只限并发不限次数**（N 个在飞），且超发时不返回 429 而是
+// 静默排队。那种约束下「按速率限完并发自然被压住」不成立——长时间流（一次 60s）会把平均在飞数
+// 顶到 `RPM × 时长 / 60`，本地若没有并发闸门就只能等上游队列变长、超时、重试。并发那半边由
+// `requestPolicy.maxConcurrent` + 治理器的 provider 闸门负责（见 workflow-concurrency-governor）。
+// 429 处理策略依旧多余：不主动撞墙就不会触发，真撞了走既有的指数退避即可。
 //
 // **与并发闸门的关系是「先它后槽」**，见 contracts 的 ModelRequestAdmission 注释：限速层只读
 // 自己的令牌桶、不碰任何并发槽，因此等待它不会与等待槽位形成环。反过来（持槽等令牌）会死锁：
@@ -24,7 +27,6 @@
 import type {
   Logger,
   ModelRequestAdmission,
-  ModelRequestAdmissionTicket,
   ModelRequestTarget,
 } from "@zcode/contracts";
 import {
@@ -48,19 +50,11 @@ export interface ProviderRateLimitPort {
  */
 export type ProviderRequestsPerMinuteResolver = (providerId: string) => number | undefined;
 
-/**
- * 读某个 provider 的共享配额键（账号指纹，见 `computeSharedQuotaKey`）。
- * 答 undefined = 这个 provider 不参与共享，走进程内桶。
- */
-export type ProviderSharedQuotaKeyResolver = (providerId: string) => string | undefined;
-
 export interface ProviderRateLimiterOptions {
   /** 每分钟请求数的查询（可注入）。 */
   resolveRequestsPerMinute: ProviderRequestsPerMinuteResolver;
   /** 跨进程共享账本；缺席则一切照旧（各进程各限各的）。 */
   sharedStore?: ProviderQuotaSharedStore;
-  /** 共享配额键的查询；缺席则共享模式下不生效。 */
-  resolveSharedBucketKey?: ProviderSharedQuotaKeyResolver;
   /** 时钟（可注入）：毫秒。 */
   now?: () => number;
   /** 定时器（可注入）：令牌补齐时唤醒等待者。返回取消函数。 */
@@ -236,7 +230,6 @@ export function createProviderRateLimiter(
   const awaitSharedQuota = async (
     providerId: string,
     requestsPerMinute: number,
-    bucketKey: string,
     signal: AbortSignal | undefined,
   ): Promise<number> => {
     const store = options.sharedStore;
@@ -247,7 +240,7 @@ export function createProviderRateLimiter(
       let outcome;
       try {
         outcome = await store.tryConsume({
-          key: bucketKey,
+          key: providerId,
           requestsPerMinute,
           atMs: now(),
         });
@@ -265,7 +258,6 @@ export function createProviderRateLimiter(
               module: "bootstrap.app",
               providerId,
               requestsPerMinute,
-              bucketKey,
               reason: error instanceof Error ? error.message : String(error),
             },
           );
@@ -286,10 +278,9 @@ export function createProviderRateLimiter(
       );
       // 不限速：不建桶、不排定时器、不留任何状态。绝大多数 provider 走这条路。
       if (requestsPerMinute === undefined) return 0;
-      const sharedKey = options.resolveSharedBucketKey?.(providerId);
       const waitedMs =
-        options.sharedStore !== undefined && sharedKey !== undefined
-          ? await awaitSharedQuota(providerId, requestsPerMinute, sharedKey, input.signal)
+        options.sharedStore !== undefined
+          ? await awaitSharedQuota(providerId, requestsPerMinute, input.signal)
           : await awaitLocalQuota(providerId, requestsPerMinute, input.signal);
       // 每分钟配额是「攒出来的一分钟里的一小段等待」，值得一条 info 让用户知道转圈是在等什么；
       // 只报真正等了的那次（>0），不限速的 provider 不会刷屏。
@@ -313,8 +304,6 @@ let processRateLimiter: ProviderRateLimitPort | undefined;
  * 间接层：进程里的多个 app 先后取用单例时，后一个要能把 resolver 换成自己的 Registry。
  */
 let processResolver: ProviderRequestsPerMinuteResolver | undefined;
-/** 同上，共享账本的键查询也是「进程级一份、跟着 app 换」。 */
-let processSharedKeyResolver: ProviderSharedQuotaKeyResolver | undefined;
 
 /**
  * 进程级单例：配额长在账号上，同一进程里的多个会话（app）必须共用一份桶，否则每个会话各发 N 次，
@@ -325,13 +314,10 @@ let processSharedKeyResolver: ProviderSharedQuotaKeyResolver | undefined;
 export function getProviderRateLimiter(options: {
   readonly resolveRequestsPerMinute: ProviderRequestsPerMinuteResolver;
   readonly sharedStore?: ProviderQuotaSharedStore;
-  readonly resolveSharedBucketKey?: ProviderSharedQuotaKeyResolver;
 }): ProviderRateLimitPort {
   processResolver = options.resolveRequestsPerMinute;
-  processSharedKeyResolver = options.resolveSharedBucketKey;
   processRateLimiter ??= createProviderRateLimiter({
     resolveRequestsPerMinute: (providerId) => processResolver?.(providerId),
-    resolveSharedBucketKey: (providerId) => processSharedKeyResolver?.(providerId),
     ...(options.sharedStore === undefined ? {} : { sharedStore: options.sharedStore }),
   });
   return processRateLimiter;
@@ -350,31 +336,4 @@ export function withProviderRateLimit(
 ): ModelRequestAdmission | undefined {
   if (inner === undefined) return undefined;
   return { ...inner, awaitRateLimit: rateLimit.awaitRateLimit };
-}
-
-/** 直通票：不占任何并发槽，`release` 幂等。 */
-const PASS_THROUGH_TICKET: ModelRequestAdmissionTicket = {
-  publish() {},
-  release() {},
-};
-
-/**
- * 只带速率配额、不设并发闸门的准入端口。
- *
- * 给「本来就不参与进程级并发治理」的调用方用——legacy `Workflow` 工具与 expert workflow facade
- * 的子代理是各自独立的执行体，不排队、不喂治理器信号。但它们发的是**同一个 provider 账号**的
- * 请求，配额必须与主代理、dwf actor 共用；否则它们会在主代理看不见的地方把配额吃光，用户只看到
- * 「限了速还在撞 429」。
- *
- * 刻意不给 `tryAcquire`：runner 据此不发并发那一条 `model_request_queued` / `model_request_admitted`
- * （没有快路径就分不清「排了队」与「立即放行」，见 contracts 的 `ModelRequestAdmission` 约定）。
- * 限速那一条不受影响——它由 `awaitRateLimit` 的返回时长单独决定。
- */
-export function createRateLimitOnlyAdmission(
-  rateLimit: ProviderRateLimitPort,
-): ModelRequestAdmission {
-  return {
-    awaitRateLimit: rateLimit.awaitRateLimit,
-    acquire: () => Promise.resolve(PASS_THROUGH_TICKET),
-  };
 }

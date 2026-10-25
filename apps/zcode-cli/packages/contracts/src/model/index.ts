@@ -85,8 +85,10 @@ export type ModelAdmissionWaitReason = "concurrency" | "rate_limit";
  *
  * 端口绑定在 runtime 的模型工厂上：runtime 交出的每一个模型句柄——turn step、工具内部
  * 的模型调用、压缩、标题 sidecar——都带它；缺席即不设闸门（runner 行为逐字不变）。主代理拿的是
- * 治理器的 observer 实现：`tryAcquire` 总命中、只喂信号——**并发**上它无条件放行，但
- * `awaitRateLimit` 照样生效：限速约束的是 provider 配额，主代理与 workflow 共用同一份额度。
+ * 治理器的 observer 实现：`awaitRateLimit` 照样生效（限速约束的是 provider 配额，主代理与
+ * workflow 共用同一份额度）；**并发**上未配置 provider 硬上限时无条件放行、只喂信号；配置了
+ * `requestPolicy.maxConcurrent` 时守 provider 总量、排优先通道（用户交互先于 workflow 队列），
+ * 但模型桶的 AIMD cap 与冷却不拦它。
  */
 export interface ModelRequestAdmission {
   /**

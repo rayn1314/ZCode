@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  computeSharedQuotaKey,
   createFileProviderQuotaStore,
   PROVIDER_QUOTA_SHARED_FILE_ENV,
   resolveProviderQuotaSharedFilePath,
@@ -20,6 +19,10 @@ function createClock() {
   return {
     now: () => (current += 1),
     advanceBy: (ms: number) => {
+      current += ms;
+    },
+    /** 直接把时钟跳到未来（模拟 WSL 与 NTFS 之间的时钟漂移）。 */
+    jumpBy: (ms: number) => {
       current += ms;
     },
   };
@@ -59,36 +62,6 @@ describe("共享账本的位置", () => {
         resolveProviderQuotaSharedFilePath({ [PROVIDER_QUOTA_SHARED_FILE_ENV]: off }, "win32"),
       ).toBeUndefined();
     }
-  });
-});
-
-describe("账号指纹", () => {
-  it("同一个 providerId 配不同 Key 是两个账号，分两个桶", () => {
-    const first = computeSharedQuotaKey({ providerId: "relay", apiKey: "key-one" });
-    const second = computeSharedQuotaKey({ providerId: "relay", apiKey: "key-two" });
-    expect(first).not.toBe(second);
-  });
-
-  it("同一个 Key 换了端点也算两个账号", () => {
-    const first = computeSharedQuotaKey({ providerId: "relay", apiKey: "k", baseUrl: "https://a" });
-    const second = computeSharedQuotaKey({
-      providerId: "relay",
-      apiKey: "k",
-      baseUrl: "https://b",
-    });
-    expect(first).not.toBe(second);
-  });
-
-  it("键里带 providerId 明文（排障要看），但不回显凭据", () => {
-    const key = computeSharedQuotaKey({ providerId: "relay", apiKey: "super-secret-value" });
-    expect(key.startsWith("relay--")).toBe(true);
-    expect(key).not.toContain("super-secret-value");
-  });
-
-  it("没凭据的 provider 也稳定成键", () => {
-    expect(computeSharedQuotaKey({ providerId: "local" })).toBe(
-      computeSharedQuotaKey({ providerId: "local" }),
-    );
   });
 });
 
@@ -214,6 +187,20 @@ describe("文件共享账本", () => {
   it("锁被活人持着时超时报错（由调用方降级，不是无限等）", async () => {
     const clock = createClock();
     const filePath = join(tempRoot, "held.json");
+    await writeFile(`${filePath}.lock`, "{}", "utf-8");
+    const store = createStore({ clock, filePath });
+    await expect(
+      store.tryConsume({ key: KEY, requestsPerMinute: 1, atMs: clock.now() }),
+    ).rejects.toThrow(/lock timeout/);
+  });
+
+  it("本端时钟与文件系统时钟漂移时不偷活锁：判年龄只用文件系统时钟", async () => {
+    // WSL2 的内核时钟与 NTFS 时钟存在漂移。旧实现拿本端 now() 减锁的 mtime：漂移超过阈值时，
+    // 一把刚被活人持有的锁会立刻被判成僵尸、两端同时进临界区。新实现「现在」取自探针文件的
+    // mtime（与锁同一个文件系统时钟），本端时钟漂移多远都偷不走。
+    const clock = createClock();
+    clock.jumpBy(3_600_000); // 本端时钟快了一个小时——模拟漂移，锁其实刚被活人拿到。
+    const filePath = join(tempRoot, "skew.json");
     await writeFile(`${filePath}.lock`, "{}", "utf-8");
     const store = createStore({ clock, filePath });
     await expect(

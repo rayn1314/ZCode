@@ -169,7 +169,10 @@ for (const row of STOP_ROWS) {
           const snapshot = obs.governor.snapshot(obs.key);
           expect(snapshot?.cooldownUntil).toBeUndefined();
           expect(snapshot?.cap).toBe(snapshot?.initial);
-          const resumed = obs.governor.tryAdmit("resumed-run", obs.key);
+          const resumed = obs.governor.tryAdmit("resumed-run", {
+            providerId: FAULT_PROVIDER_ID,
+            modelId: FAULT_MODEL_ID,
+          });
           expect(resumed).toBeDefined();
           resumed?.release();
         } finally {

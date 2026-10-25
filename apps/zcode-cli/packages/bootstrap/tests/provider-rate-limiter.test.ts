@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 import type { ModelRequestAdmissionTicket, ModelRequestTarget } from "@zcode/contracts";
 import {
   createProviderRateLimiter,
-  createRateLimitOnlyAdmission,
   withProviderRateLimit,
   type ProviderRateLimiterOptions,
 } from "../src/app/provider-rate-limiter.js";
@@ -169,52 +168,6 @@ describe("provider 速率限制器", () => {
   });
 });
 
-describe("createRateLimitOnlyAdmission", () => {
-  it("不设并发闸门：提供 awaitRateLimit，刻意不提供 tryAcquire（runner 据此不发并发排队事件）", () => {
-    const { limiter } = createLimiterHarness();
-    const admission = createRateLimitOnlyAdmission(limiter);
-    expect(admission.awaitRateLimit).toBeTypeOf("function");
-    expect(admission.tryAcquire).toBeUndefined();
-  });
-
-  it("acquire 立即给票且 release 幂等，不占任何并发槽", async () => {
-    const { clock, limiter } = createLimiterHarness();
-    const admission = createRateLimitOnlyAdmission(limiter);
-    const ticket = await admission.acquire({ model: MODEL });
-    expect(clock.pending()).toBe(0);
-    expect(() => {
-      ticket.release();
-      ticket.release();
-      ticket.publish({ type: "model_request_started" } as never);
-    }).not.toThrow();
-  });
-
-  it("与主代理共享同一份 provider 配额：主代理用掉令牌后，工作流子代理的请求要等", async () => {
-    const { clock, limiter } = createLimiterHarness();
-    const governed = withProviderRateLimit(GOVERNOR_LIKE, limiter)!;
-    const quotaOnly = createRateLimitOnlyAdmission(limiter);
-
-    await expect(governed.awaitRateLimit!({ model: MODEL })).resolves.toBe(0);
-
-    const waiting = quotaOnly.awaitRateLimit!({ model: MODEL });
-    expect(clock.pending()).toBe(1);
-    clock.advanceBy(60_000);
-    await expect(waiting).resolves.toBe(60_000);
-  });
-
-  it("配额是按 provider 分的：另一个 provider 不受同一份桶影响", async () => {
-    const { clock, limiter } = createLimiterHarness({
-      resolveRequestsPerMinute: (providerId) => (providerId === "provider-a" ? 1 : 5),
-    });
-    const quotaOnly = createRateLimitOnlyAdmission(limiter);
-    await expect(quotaOnly.awaitRateLimit!({ model: MODEL })).resolves.toBe(0);
-    await expect(
-      quotaOnly.awaitRateLimit!({ model: { providerId: "provider-b", modelId: "model-a" } }),
-    ).resolves.toBe(0);
-    expect(clock.pending()).toBe(0);
-  });
-});
-
 describe("withProviderRateLimit", () => {
   it("inner 缺席时原样返回 undefined：没有并发闸门的调用方不该被凭空加上限速", () => {
     const { limiter } = createLimiterHarness();
@@ -227,6 +180,29 @@ describe("withProviderRateLimit", () => {
     expect(decorated.acquire).toBe(GOVERNOR_LIKE.acquire);
     expect(decorated.tryAcquire).toBeUndefined();
     expect(decorated.awaitRateLimit).toBeTypeOf("function");
+  });
+
+  it("legacy 子代理拿同一个装饰端口：与主代理共用一份 provider 配额", async () => {
+    const { clock, limiter } = createLimiterHarness();
+    const admission = withProviderRateLimit(GOVERNOR_LIKE, limiter)!;
+    await expect(admission.awaitRateLimit!({ model: MODEL })).resolves.toBe(0);
+
+    const waiting = admission.awaitRateLimit!({ model: MODEL });
+    expect(clock.pending()).toBe(1);
+    clock.advanceBy(60_000);
+    await expect(waiting).resolves.toBe(60_000);
+  });
+
+  it("配额是按 provider 分的：另一个 provider 不受同一份桶影响", async () => {
+    const { clock, limiter } = createLimiterHarness({
+      resolveRequestsPerMinute: (providerId) => (providerId === "provider-a" ? 1 : 5),
+    });
+    const admission = withProviderRateLimit(GOVERNOR_LIKE, limiter)!;
+    await expect(admission.awaitRateLimit!({ model: MODEL })).resolves.toBe(0);
+    await expect(
+      admission.awaitRateLimit!({ model: { providerId: "provider-b", modelId: "model-a" } }),
+    ).resolves.toBe(0);
+    expect(clock.pending()).toBe(0);
   });
 });
 
@@ -244,7 +220,6 @@ describe("跨进程共享账本（同机多端）", () => {
     const { store } = createInMemorySharedStore();
     const clock = createTestClock();
     const shared = {
-      resolveSharedBucketKey: () => "provider-a--fingerprint",
       now: clock.now,
       schedule: clock.schedule,
       sharedStore: store,
@@ -261,22 +236,11 @@ describe("跨进程共享账本（同机多端）", () => {
     await expect(waiting).resolves.toBe(60_000);
   });
 
-  it("算不出账号指纹（key 为 undefined）就不走账本，退回进程内桶", async () => {
-    const { store, calls } = createInMemorySharedStore();
-    const { limiter } = createLimiterHarness({
-      resolveSharedBucketKey: () => undefined,
-      sharedStore: store,
-    });
-    await expect(limiter.awaitRateLimit({ model: MODEL })).resolves.toBe(0);
-    expect(calls).toEqual([]);
-  });
-
   it("账本不可达时降级为进程内限速：仍然限速，绝不 fail-open", async () => {
     const broken: ProviderQuotaSharedStore = {
       tryConsume: () => Promise.reject(new Error("shared store offline")),
     };
     const { clock, limiter, warn } = createLimiterHarness({
-      resolveSharedBucketKey: () => "provider-a--fingerprint",
       sharedStore: broken,
     });
     // 第一次：账本挂了，退回进程内桶 —— 桶里有一个令牌，立即放行。
@@ -298,7 +262,6 @@ describe("跨进程共享账本（同机多端）", () => {
     // 本地配额给足，让三次请求都即刻放行——不同时刻的降级才会各记一条，节流看的是同一个窗口内。
     const { limiter, warn } = createLimiterHarness({
       resolveRequestsPerMinute: () => 3,
-      resolveSharedBucketKey: () => "provider-a--fingerprint",
       sharedStore: broken,
     });
     await limiter.awaitRateLimit({ model: MODEL });
@@ -310,7 +273,6 @@ describe("跨进程共享账本（同机多端）", () => {
   it("共享模式不影响不限速的 provider", async () => {
     const { store, calls } = createInMemorySharedStore();
     const { limiter } = createLimiterHarness({
-      resolveSharedBucketKey: () => "provider-b--fingerprint",
       sharedStore: store,
     });
     await expect(

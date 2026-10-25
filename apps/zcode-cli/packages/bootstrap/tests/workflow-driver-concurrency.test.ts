@@ -15,6 +15,7 @@ import {
   SessionEventType,
   type ModelRequestAdmission,
   type ModelRequestAdmissionTicket,
+  type ModelRequestTarget,
   type SessionEvent,
   type SessionEventSink,
 } from "@zcode/contracts";
@@ -155,10 +156,10 @@ function fakeTicket(): ModelRequestAdmissionTicket {
 function fakePort() {
   const state = {
     fast: true,
-    tryAdmits: [] as Array<{ runId: string; key: string }>,
+    tryAdmits: [] as Array<{ runId: string; model: ModelRequestTarget }>,
     admits: [] as Array<{
       runId: string;
-      key: string;
+      model: ModelRequestTarget;
       signal: AbortSignal;
       resolve: (t: ModelRequestAdmissionTicket) => void;
     }>,
@@ -166,13 +167,13 @@ function fakePort() {
     unsubscribe: vi.fn(),
   };
   const port: WorkflowConcurrencyPort = {
-    tryAdmit: (runId, key) => {
-      state.tryAdmits.push({ runId, key });
+    tryAdmit: (runId, model) => {
+      state.tryAdmits.push({ runId, model });
       return state.fast ? fakeTicket() : undefined;
     },
-    admit: (runId, key, signal) =>
+    admit: (runId, model, signal) =>
       new Promise((resolve, reject) => {
-        state.admits.push({ runId, key, signal, resolve });
+        state.admits.push({ runId, model, signal, resolve });
         if (signal.aborted) reject(signal.reason ?? new Error("aborted"));
         else
           signal.addEventListener("abort", () => reject(signal.reason ?? new Error("aborted")), {
@@ -372,7 +373,7 @@ describe("workflow driver — per-actor 准入（§4，决策 34/36）", () => {
 
     const ticket = await admission!.acquire({ model: MODEL });
     expect(ticket).toBeDefined();
-    expect(state.tryAdmits).toEqual([{ runId: RUN, key: "prov/alpha" }]);
+    expect(state.tryAdmits).toEqual([{ runId: RUN, model: MODEL }]);
     expect(state.admits).toEqual([]);
     expect(calls.waiting).toEqual([]);
 
@@ -400,7 +401,7 @@ describe("workflow driver — per-actor 准入（§4，决策 34/36）", () => {
     const admission = factoryInputs[0]!.modelRequestAdmission!;
 
     expect(admission.tryAcquire!({ model: MODEL })).toBeUndefined();
-    expect(state.tryAdmits).toEqual([{ runId: RUN, key: "prov/alpha" }]);
+    expect(state.tryAdmits).toEqual([{ runId: RUN, model: MODEL }]);
     // 包装本身不再报 waiting：那是 runner 看到 tryAcquire 未命中后发 queued 事件的事。
     expect(calls.waiting).toEqual([]);
     runtime.emitStatus({ type: "model_request_queued", toolCallId: "tc-1" });
@@ -410,7 +411,7 @@ describe("workflow driver — per-actor 准入（§4，决策 34/36）", () => {
     const pending = admission.acquire({ model: MODEL, signal });
     await flush();
     expect(state.admits).toHaveLength(1);
-    expect(state.admits[0]).toMatchObject({ runId: RUN, key: "prov/alpha", signal });
+    expect(state.admits[0]).toMatchObject({ runId: RUN, model: MODEL, signal });
     state.admits[0]!.resolve(fakeTicket());
     await pending;
     // 拿到票：admitted 即 executing（持槽），随后的 started 不重发。

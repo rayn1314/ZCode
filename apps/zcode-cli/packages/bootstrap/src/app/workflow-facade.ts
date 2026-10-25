@@ -63,9 +63,9 @@ interface CreateWorkflowFacadeDeps {
   /** 父会话的 model factory（与 script-workflow-child-runtime.ts 同一约定）。 */
   modelFactory: NonNullable<AgentRuntimeDeps["modelFactory"]>;
   /**
-   * expert workflow 子 runtime 的模型请求准入端口。这个子 runtime 不进进程级并发治理，但发的是
-   * 同一个 provider 账号的请求：装配侧给的是只带速率配额、不设并发闸门的端口
-   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`），配额与主代理共用。
+   * expert workflow 子 runtime 的模型请求准入端口。这个子 runtime 不参与 run 级排队，但发的是
+   * 同一个 provider 的请求：装配侧给的是主代理同款的 observer + 限速装饰端口——RPM 配额与
+   * `maxConcurrent` 并发上限都与主代理共用。
    */
   modelRequestAdmission?: ModelRequestAdmission;
   permissionService: PermissionService;

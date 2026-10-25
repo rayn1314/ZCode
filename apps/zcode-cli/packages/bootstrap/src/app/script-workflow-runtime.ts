@@ -46,9 +46,9 @@ const MAX_WORKFLOW_AGENT_CALLS = 1000;
 
 export interface ScriptWorkflowRuntimeDeps extends ScriptWorkflowAgentRuntimeDeps {
   /**
-   * 子代理的模型请求准入端口。legacy `Workflow` 工具的子代理不参与进程级并发治理，但发的是同一个
-   * provider 账号的请求：装配侧给的是只带速率配额、不设并发闸门的端口
-   * （`provider-rate-limiter.ts` 的 `createRateLimitOnlyAdmission`），配额与主代理共用。
+   * 子代理的模型请求准入端口。legacy `Workflow` 工具的子代理不参与 run 级排队，但发的是同一个
+   * provider 的请求：装配侧给的是主代理同款的 observer + 限速装饰端口——RPM 配额与
+   * `maxConcurrent` 并发上限都必须与主代理共用，否则它们会在治理器看不见的地方撞上游的墙。
    */
   modelRequestAdmission?: ModelRequestAdmission;
   prepareUserExecutionBoundary: PrepareUserExecutionBoundary;
