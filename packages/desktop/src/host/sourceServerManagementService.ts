@@ -82,6 +82,8 @@ export function createSourceServerManagementService(options: {
   onDirectorySnapshot?: (snapshot: SourceServerDirectorySnapshot) => void;
   onBeforeSourceServerRemoved?: (sourceServerId: string) => Promise<void>;
   onConnectionLog?: NonNullable<ConnectSourceServerOptions["context"]>["onLog"];
+  /** 连接真正上线后回调；用于自愈升级丢失的远程项目入口，失败不得影响连接结果。 */
+  onConnected?: (connection: ManagedSourceServerConnection) => void | Promise<void>;
   now?: () => number;
 }): SourceServerManagementService {
   let generation = 0;
@@ -166,8 +168,9 @@ export function createSourceServerManagementService(options: {
         readProfile(profileId),
         options.directory.resolveProfileTarget(profileId),
       ]);
+      let connected: ManagedSourceServerConnection | undefined;
       try {
-        await options.manager.connect({
+        connected = await options.manager.connect({
           profile,
           target,
           ...(connectOptions?.retainedOnly ? { membershipIntent: "retain" as const } : {}),
@@ -183,6 +186,8 @@ export function createSourceServerManagementService(options: {
           throw error;
         }
       }
+      // 身份变更待确认时连接并未上线，不能触发入口自愈。
+      if (connected) await options.onConnected?.(connected);
       return await getSnapshot();
     },
     async confirmIdentityChange(profileId) {

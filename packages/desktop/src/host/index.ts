@@ -4163,6 +4163,39 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
             windowHostAttachmentRegistry.detachSourceSettingsAttachments(sourceServerId);
             sourceServerDisplayNameById.delete(sourceServerId);
           },
+          // 升级迁移会从旧 settings 重建远程项目入口；settings 丢失时该 host 的入口表为空，
+          // 项目列表就再也显示不出来。连接成功是「用户仍保留该设备」的明确信号：
+          // 若此 host 没有任何入口，从远端项目树自动补齐，避免升级后历史项目永久消失。
+          onConnected: async (connected) => {
+            try {
+              const hostId = remoteHostIdFromWorkspaceIdentity(
+                buildServerRemoteWorkspaceIdentity({
+                  serverId: connected.sourceServerId,
+                  workspacePath: "/",
+                }),
+              );
+              if (!hostId) return;
+              const remoteProjectService = services.get(IRemoteProjectService);
+              const directory = await remoteProjectService.readDirectory();
+              const host = directory.hosts.find((item) => item.id === hostId);
+              if (!host) return;
+              if (directory.entries.some((entry) => entry.hostId === hostId)) return;
+              const projectService = connected.services.projectService;
+              if (!projectService) return;
+              const tree = await projectService.readTree({ hostId, includeDeleted: false });
+              for (const project of tree.projects) {
+                if (project.deleted) continue;
+                await remoteProjectService.addEntry({
+                  hostId,
+                  expectedMembershipId: host.membershipId,
+                  project: { projectId: project.id, name: project.name, roots: project.roots },
+                });
+              }
+            } catch (error) {
+              // 自愈失败不应破坏已建立的连接；留日志便于排查，侧栏仍可手动添加。
+              logger.warn("Failed to backfill remote project entries", error);
+            }
+          },
         });
         sourceSettingsStateSubscription = sourceServerConnectionManager.onDidChangeState(
           (state) => {

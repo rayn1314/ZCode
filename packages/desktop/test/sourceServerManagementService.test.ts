@@ -734,4 +734,126 @@ describe("SourceServerManagementService", () => {
     expect(result.servers).toEqual([expect.objectContaining({ displayName: "fresh-name" })]);
     service.dispose();
   });
+
+  it("连接成功上线后触发 onConnected 且透传连接对象", async () => {
+    const stateEmitter = new Emitter<SourceServerConnectionStateSnapshot>();
+    const profile = {
+      profileId,
+      sourceServerId,
+      transport: "docker" as const,
+      target: { kind: "docker" as const, container: "dev" },
+      createdAt: 1,
+    };
+    const connection = {
+      sourceServerId,
+      profileId,
+      serverInfo: {} as never,
+      services: {} as never,
+    };
+    const onConnected = vi.fn();
+    const connect = vi.fn(async () => connection);
+    const service = createSourceServerManagementService({
+      directory: {
+        snapshot: async () => ({
+          profiles: [profile],
+          servers: [{ sourceServerId, displayName: "dev" }],
+          workspaceHistory: [],
+        }),
+        resolveProfileTarget: async () => ({ kind: "docker" as const, container: "dev" }),
+      } as never,
+      manager: {
+        listStates: () => [],
+        onDidChangeState: stateEmitter.event,
+        getOnlineConnection: () => undefined,
+        connect,
+      } as never,
+      onConnected,
+    });
+
+    await service.connectProfile(profileId, { retainedOnly: true });
+
+    expect(connect).toHaveBeenCalledWith(
+      expect.objectContaining({ profile, membershipIntent: "retain" }),
+    );
+    expect(onConnected).toHaveBeenCalledTimes(1);
+    expect(onConnected).toHaveBeenCalledWith(connection);
+    service.dispose();
+  });
+
+  it("身份变更待确认时连接未上线，不触发 onConnected", async () => {
+    const stateEmitter = new Emitter<SourceServerConnectionStateSnapshot>();
+    const onConnected = vi.fn();
+    const connect = vi.fn(async () => {
+      throw Object.assign(new Error("identity change pending"), {
+        code: "source-server-identity-change-pending",
+      });
+    });
+    const service = createSourceServerManagementService({
+      directory: {
+        snapshot: async () => ({
+          profiles: [
+            {
+              profileId,
+              transport: "docker" as const,
+              target: { kind: "docker" as const, container: "dev" },
+              sourceServerId,
+              createdAt: 1,
+            },
+          ],
+          servers: [],
+          workspaceHistory: [],
+        }),
+        resolveProfileTarget: async () => ({ kind: "docker" as const, container: "dev" }),
+      } as never,
+      manager: {
+        listStates: () => [],
+        onDidChangeState: stateEmitter.event,
+        getOnlineConnection: () => undefined,
+        connect,
+      } as never,
+      onConnected,
+    });
+
+    await service.connectProfile(profileId, {});
+
+    expect(onConnected).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("其他连接错误直接上抛且不触发 onConnected", async () => {
+    const stateEmitter = new Emitter<SourceServerConnectionStateSnapshot>();
+    const onConnected = vi.fn();
+    const connect = vi.fn(async () => {
+      throw new Error("connection refused");
+    });
+    const service = createSourceServerManagementService({
+      directory: {
+        snapshot: async () => ({
+          profiles: [
+            {
+              profileId,
+              transport: "docker" as const,
+              target: { kind: "docker" as const, container: "dev" },
+              sourceServerId,
+              createdAt: 1,
+            },
+          ],
+          servers: [],
+          workspaceHistory: [],
+        }),
+        resolveProfileTarget: async () => ({ kind: "docker" as const, container: "dev" }),
+      } as never,
+      manager: {
+        listStates: () => [],
+        onDidChangeState: stateEmitter.event,
+        getOnlineConnection: () => undefined,
+        connect,
+      } as never,
+      onConnected,
+    });
+
+    await expect(service.connectProfile(profileId, {})).rejects.toThrow("connection refused");
+    expect(onConnected).not.toHaveBeenCalled();
+    service.dispose();
+  });
 });
