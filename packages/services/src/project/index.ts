@@ -314,6 +314,7 @@ export function bindRemoteProjectIdentities(
         ...new Set([
           ...tree.projects.flatMap((project) => project.roots.map((root) => root.rootPath)),
           ...tree.tasks.map((task) => task.workspacePath),
+          ...(tree.deletedTasks ?? []).map((task) => task.workspacePath),
         ]),
       ];
       const identities = new Map(
@@ -325,6 +326,19 @@ export function bindRemoteProjectIdentities(
           ...task,
           workspaceIdentity: identities.get(task.workspacePath)!,
         })),
+        // 已删除任务若透传 storage 行，workspace_identity 是 canonical 命名空间
+        // （remote:wsl:*），与控制面 host_id（remote:server:*）成对出边界即违反
+        // task-groups 的 remoteHostIdFromWorkspaceIdentity(identity) === hostId 不变式；
+        // useTaskGroups 又把它与活任务合进同一批 admit，一条坏身份会整批拒绝登记。
+        // 必须与活任务走同一张映射重写。
+        ...(tree.deletedTasks
+          ? {
+              deletedTasks: tree.deletedTasks.map((task) => ({
+                ...task,
+                workspaceIdentity: identities.get(task.workspacePath)!,
+              })),
+            }
+          : {}),
       };
     },
     readDirectory: (params) => service.readDirectory(params),
