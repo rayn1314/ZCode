@@ -32,6 +32,14 @@ export interface SessionResidencyFacts {
    * 只挡父被回收，不改子会话自己的资格；回收仍单会话、不级联。
    */
   hasResidentChildren: boolean;
+  /**
+   * 本会话自己的 idle TTL；缺省回落到 pool 的全局值。
+   *
+   * 子代理子会话的驻留只有父进程里的一份 JS 堆、没有子进程，热窗口价值仅是「刚结束还能
+   * 立刻续跑」，不需要普通会话那样的长窗口；而它同时钉住父会话（`hasResidentChildren`），
+   * 两段 TTL 串行相加会成倍拉长父会话的回收延迟。见 spec `subagent-idle-release.md`。
+   */
+  idleTimeoutMs?: number;
   lastActivityAt: number;
 }
 
@@ -56,6 +64,7 @@ export interface SessionResidentPoolOptions {
 
 interface ResidencyCandidate {
   eligibleSinceAt: number;
+  idleTimeoutMs: number;
   lastUsedAt: number;
   sessionId: string;
 }
@@ -165,7 +174,7 @@ export class SessionResidentPool {
       this.pruneMetadata(new Set(initialResidentIds));
       const initialCandidates = this.readCandidates(initialResidentIds, observedAt);
       const expiredCandidates = initialCandidates
-        .filter((candidate) => observedAt - candidate.eligibleSinceAt >= this.idleTimeoutMs)
+        .filter((candidate) => observedAt - candidate.eligibleSinceAt >= candidate.idleTimeoutMs)
         .sort(
           (left, right) =>
             left.eligibleSinceAt - right.eligibleSinceAt ||
@@ -183,14 +192,17 @@ export class SessionResidentPool {
           this.eligibleSinceAt.delete(candidate.sessionId);
           continue;
         }
+        // TTL 可能随事实变化（例如子会话从派发态转入终态），二次校验用新值而不是候选快照。
+        const freshIdleTimeoutMs = this.resolveIdleTimeout(freshFacts);
         const eligibleSinceAt = this.eligibleSinceAt.get(candidate.sessionId);
-        if (eligibleSinceAt === undefined || observedAt - eligibleSinceAt < this.idleTimeoutMs) {
+        if (eligibleSinceAt === undefined || observedAt - eligibleSinceAt < freshIdleTimeoutMs) {
           continue;
         }
         const decision = this.createDecision(
           "idle_timeout",
           residentCount,
           observedAt - eligibleSinceAt,
+          freshIdleTimeoutMs,
         );
         if (this.executeDeactivation(candidate.sessionId, decision)) {
           residentCount -= 1;
@@ -220,6 +232,7 @@ export class SessionResidentPool {
           "high_water_lru",
           residentCount,
           observedAt - eligibleSinceAt,
+          this.resolveIdleTimeout(freshFacts),
         );
         if (this.executeDeactivation(candidate.sessionId, decision)) {
           residentCount -= 1;
@@ -263,6 +276,7 @@ export class SessionResidentPool {
       }
       candidates.push({
         eligibleSinceAt,
+        idleTimeoutMs: this.resolveIdleTimeout(facts),
         lastUsedAt: Math.max(
           facts.lastActivityAt,
           this.lastTouchedAt.get(sessionId) ?? Number.NEGATIVE_INFINITY,
@@ -273,15 +287,24 @@ export class SessionResidentPool {
     return candidates;
   }
 
+  /** 事实级 TTL 覆盖；非法值（负数 / NaN）回落到全局值，不让坏事实永久保活。 */
+  private resolveIdleTimeout(facts: SessionResidencyFacts): number {
+    const override = facts.idleTimeoutMs;
+    return typeof override === "number" && Number.isFinite(override) && override >= 0
+      ? override
+      : this.idleTimeoutMs;
+  }
+
   private createDecision(
     reason: SessionDeactivationReason,
     residentCountBefore: number,
     idleMs: number,
+    idleTimeoutMs: number = this.idleTimeoutMs,
   ): SessionDeactivationDecision {
     return {
       highWaterCount: this.highWaterCount,
       idleMs: Math.max(0, idleMs),
-      idleTimeoutMs: this.idleTimeoutMs,
+      idleTimeoutMs,
       reason,
       residentCountBefore,
       targetCount: this.targetCount,

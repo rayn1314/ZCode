@@ -47,8 +47,10 @@ import {
 } from "../src/zcode-protocol/session-resident-pool.js";
 import {
   acquireSessionResidencyFinalization,
+  createSessionResidentPoolHost,
   deactivateSessionRecord,
   runWithSessionResidencyFinalization,
+  SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS,
 } from "../src/zcode-protocol/session-residency.js";
 import type {
   ZCodeProtocolAgentDependencies,
@@ -215,6 +217,52 @@ describe("SessionResidentPool", () => {
     pool.rebalance();
     await pool.waitForDeactivation("sess-idle");
     expect(sessionIds(fake.deactivated)).toEqual(["sess-idle"]);
+  });
+
+  it("事实级 TTL 覆盖优先于全局值，互不影响", async () => {
+    const fake = makeFakeHost();
+    const clock = createTestClock();
+    fake.sessions.set("sess-child", idleFacts({ idleTimeoutMs: 10 }));
+    fake.sessions.set("sess-parent", idleFacts({ idleTimeoutMs: 100 }));
+    const pool = makePool(fake, {
+      highWaterCount: 16,
+      idleTimeoutMs: 1_000,
+      now: clock.now,
+      targetCount: 8,
+    });
+
+    pool.rebalance();
+    clock.advance(10);
+    pool.rebalance();
+    await pool.waitForDeactivation("sess-child");
+
+    // 子会话按自己的短 TTL 回收，普通会话仍按全局 1000ms 保活。
+    expect(sessionIds(fake.deactivated)).toEqual(["sess-child"]);
+    expect(fake.deactivated[0]?.decision).toMatchObject({ idleMs: 10, idleTimeoutMs: 10 });
+    expect(fake.sessions.has("sess-parent")).toBe(true);
+  });
+
+  it("非法 TTL 覆盖回落到全局值，不让坏事实永久保活", async () => {
+    const fake = makeFakeHost();
+    const clock = createTestClock();
+    fake.sessions.set("sess-bad-ttl", idleFacts({ idleTimeoutMs: -5 }));
+    const pool = makePool(fake, {
+      highWaterCount: 16,
+      idleTimeoutMs: 100,
+      now: clock.now,
+      targetCount: 8,
+    });
+
+    pool.rebalance();
+    clock.advance(99);
+    pool.rebalance();
+    expect(fake.sessions.has("sess-bad-ttl")).toBe(true);
+
+    clock.advance(1);
+    pool.rebalance();
+    await pool.waitForDeactivation("sess-bad-ttl");
+    expect(sessionIds(fake.deactivated)).toEqual(["sess-bad-ttl"]);
+    expect(fake.deactivated[0]?.decision.idleTimeoutMs).toBe(100);
   });
 
   it("保护事实会清除旧 TTL，保护解除后从新的 eligible 时刻计时", async () => {
@@ -639,6 +687,60 @@ describe("deactivateSessionRecord（执行面）", () => {
     // 仍在注册表里但 runtime event subscription 已拆除；预检失败必须完整保留可用状态。
     expect(harness.context.sessions.has("sess-pinned")).toBe(true);
     expect(harness.calls).not.toContain("unsubscribe");
+  });
+});
+
+// ── 常驻事实（host 侧：TTL 按会话类型下发）─────────────────────────────────
+
+describe("createSessionResidentPoolHost（常驻事实）", () => {
+  function stubContext(
+    records: Record<string, Partial<ZCodeProtocolSessionRecord>>,
+  ): ZCodeProtocolAgentServerContext {
+    const sessions = new Map(
+      Object.entries(records).map(([sessionId, record]) => [
+        sessionId,
+        {
+          app: { runtime: { hasResidencyBlockingWork: () => false } },
+          persistence: "immediate",
+          updatedAt: 0,
+          ...record,
+        } as unknown as ZCodeProtocolSessionRecord,
+      ]),
+    );
+    return {
+      sessions,
+      v4Interactions: { hasPendingForSession: () => false },
+      v4Gateway: {
+        hasConversationSubscribers: () => false,
+        hasResidencyBlockingCommands: () => false,
+      },
+    } as unknown as ZCodeProtocolAgentServerContext;
+  }
+
+  it("子代理子会话拿短 TTL，普通会话回落到 pool 全局值", () => {
+    const context = stubContext({
+      "sess-child": { taskType: "subagent_child" },
+      "sess-parent": { taskType: "interactive" },
+    });
+    const host = createSessionResidentPoolHost(context);
+
+    // 子会话 5 分钟：它只占一份 JS 堆，却钉住父会话的回收时钟。
+    expect(host.readResidencyFacts("sess-child")?.idleTimeoutMs).toBe(
+      SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS,
+    );
+    expect(SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS).toBe(5 * 60 * 1_000);
+    // 普通会话不给覆盖值，语义与改动前一致。
+    expect(host.readResidencyFacts("sess-parent")?.idleTimeoutMs).toBeUndefined();
+  });
+
+  it("有驻留子会话的父会话仍不可回收（借用不变式不变）", () => {
+    const context = stubContext({
+      "sess-child": { parentSessionId: "sess-parent", taskType: "subagent_child" },
+      "sess-parent": { taskType: "interactive" },
+    });
+    const host = createSessionResidentPoolHost(context);
+
+    expect(host.readResidencyFacts("sess-parent")?.hasResidentChildren).toBe(true);
   });
 });
 

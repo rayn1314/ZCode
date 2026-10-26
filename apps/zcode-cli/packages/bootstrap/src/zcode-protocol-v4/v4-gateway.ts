@@ -793,13 +793,32 @@ export class ConversationV4Gateway {
     this.inbox = new CommandInbox(
       {
         prepareDecision: async (envelope) => {
-          if (
-            envelope.sessionId &&
-            (envelope.type === "renameSession" || envelope.type === "deleteSession") &&
-            !this.host.sessionExists(envelope.sessionId)
-          ) {
-            // 历史行的重命名 / 删除仍由 CLI 原命令写持久事实；只在真实命令 admission 后冷恢复。
+          if (!envelope.sessionId) return;
+          const resident = this.host.sessionExists(envelope.sessionId);
+          // 历史行的重命名 / 删除仍由 CLI 原命令写持久事实；sendText 必须先有常驻 record
+          // 才能准入（decide 在 getRevision 为 null 时直接判 sessionNotFound）。会话被空闲
+          // 回收后用户再发消息走的就是这条路——冷恢复把 record 拉回来，重新激活不需要用户
+          // 感知。
+          //
+          // 但「不在册」不等于「该激活」：运行中的 subagent 没有 record，只有 raw child
+          // events 建立的 detached publisher，此时再冷恢复就是第二个 runtime（spec
+          // `subagent-session-as-first-class.md` 的不变式）。因此 sendText 用
+          // hasLiveConversation 而不是 sessionExists 作判据。
+          const coldResumeTarget =
+            envelope.type === "renameSession" || envelope.type === "deleteSession"
+              ? !resident
+              : envelope.type === "sendText"
+                ? !this.hasLiveConversation(envelope.sessionId)
+                : false;
+          if (!coldResumeTarget) return;
+          // 恢复失败不在这里改判，交给 decide 产出既有的 sessionNotFound。
+          try {
             await this.ensureColdReadyPublisher(envelope.sessionId);
+          } catch (error) {
+            this.host.onError?.("v4.command.cold_resume", error, {
+              phase: "prepareDecision",
+              sessionId: envelope.sessionId,
+            });
           }
         },
         getRevision: (sessionId) => {

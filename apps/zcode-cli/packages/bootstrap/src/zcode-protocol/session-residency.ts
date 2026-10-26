@@ -8,6 +8,18 @@ import type {
 import type { ZCodeProtocolAgentServerContext } from "./server-types.js";
 import { listSubagentChildSessionIds } from "./session-tree.js";
 
+/**
+ * 子代理子会话的 idle TTL。
+ *
+ * 子 record 的驻留成本只有父进程里一份 JS 堆（没有子进程），热窗口价值仅是「刚结束还能
+ * 立刻续跑」；而它同时把父会话钉在 `hasResidentChildren` 上，两段 30 分钟 TTL 串行相加
+ * 会把父会话的回收延迟翻倍。5 分钟覆盖结算与即时追问，超出后走冷恢复。
+ */
+export const SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS = 5 * 60 * 1_000;
+
+/** 子会话边判据与 `session-tree.ts` 同源：只有 `subagent_child` 才是子代理会话。 */
+const SUBAGENT_CHILD_TASK_TYPE = "subagent_child";
+
 export {
   acquireSessionResidencyFinalization,
   runWithSessionResidencyFinalization,
@@ -65,6 +77,10 @@ export function createSessionResidentPoolHost(
           (record.residencyFinalizationCount ?? 0) > 0 ||
           record.app.runtime.hasResidencyBlockingWork(),
         hasSubscribers: context.v4Gateway?.hasConversationSubscribers(sessionId) ?? false,
+        // 子代理子会话只留短热窗口；普通会话回落到 pool 的全局 TTL。
+        ...(record.taskType === SUBAGENT_CHILD_TASK_TYPE
+          ? { idleTimeoutMs: SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS }
+          : {}),
         lastActivityAt: record.updatedAt,
         persisted: record.persistence === "immediate",
       };

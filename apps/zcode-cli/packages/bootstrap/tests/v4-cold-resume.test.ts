@@ -1374,6 +1374,62 @@ describe("v4 冷恢复（集成：真 sqlite + server + binder）", () => {
     }
   });
 
+  it("sendText 直发非驻留会话：准入前冷恢复，不被 sessionNotFound 拒绝", async () => {
+    const dbPath = join(tempRoot, "cold-send-direct.db");
+    await seedPersistedSession(dbPath);
+    const sentInputs: Array<{ text: string }> = [];
+    const { server, store } = await bootRestartedServer(dbPath, sentInputs);
+    try {
+      // 全程没有 conversationSubscribe：record 完全不在册。空闲回收后用户从面板直接发消息
+      // 走的就是这条路，准入前的冷恢复必须把 record 拉回来。
+      const ack = commandAckSchema.parse(
+        await requestResult(server, {
+          id: "cold-send-direct",
+          method: V4_METHODS.command,
+          params: {
+            commandId: "cmd-cold-send-direct",
+            clientId: "client-cold-direct",
+            sessionId: SESSION_ID,
+            type: "sendText",
+            payload: { text: "空闲回收后的追问" },
+            issuedAt: 1_700_000_200_000,
+          },
+        }),
+      );
+      expect(ack.status).toBe("accepted");
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sentInputs).toEqual([{ text: "空闲回收后的追问" }]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("sendText 直发库里也没有的会话：仍按 sessionNotFound 拒绝", async () => {
+    const dbPath = join(tempRoot, "cold-send-missing.db");
+    await seedPersistedSession(dbPath);
+    const { server, store } = await bootRestartedServer(dbPath, []);
+    try {
+      const ack = commandAckSchema.parse(
+        await requestResult(server, {
+          id: "cold-send-missing",
+          method: V4_METHODS.command,
+          params: {
+            commandId: "cmd-cold-send-missing",
+            clientId: "client-cold-missing",
+            sessionId: "session_does_not_exist",
+            type: "sendText",
+            payload: { text: "无主消息" },
+            issuedAt: 1_700_000_300_000,
+          },
+        }),
+      );
+      expect(ack.status).toBe("rejected");
+      expect(JSON.stringify(ack)).toContain("sessionNotFound");
+    } finally {
+      store.close();
+    }
+  });
+
   it.each(["desktop-continuous", "web-remote-replayable"] as const)(
     "Todo123: %s 缺档位旧选择仍按 Registry 展示 1M，执行选择不被补齐",
     async (clientMode) => {
