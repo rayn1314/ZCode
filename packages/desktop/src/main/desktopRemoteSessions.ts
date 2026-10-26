@@ -83,6 +83,19 @@ interface RemoteAttachmentRoute {
     resolve: () => void;
     reject: (error: Error) => void;
   };
+  /**
+   * 等待「任一」renderer attachment 提升的观察者。
+   * Bug 原因：Host connected 事件可能早于首个 attachment 到齐——route 刚建、
+   * providerProvisioning initialSync 尚未驱动 attachRendererPort，或 renderer
+   * 重启后尚未注册。这两个空档期里 pending 与 rendererAttachmentId 都不存在，
+   * 是合法中间态而非故障；立即 reject 会把已连上的会话判失败（导航随之取消）。
+   * 等待者只在 attachment 提升、route 失效或超时时结算，不绑定具体 candidate。
+   */
+  attachmentWaiters?: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    timeout: NodeJS.Timeout;
+  }>;
   attachmentState: "attachable" | "closed";
   connectedAtMonotonicMs: number;
   connectFinalized: boolean;
@@ -396,6 +409,16 @@ export function createRemoteWorkspaceSessionManager(options: {
     return ready;
   }
 
+  function rejectAttachmentWaiters(route: RemoteAttachmentRoute, error: Error): void {
+    const waiters = route.attachmentWaiters;
+    if (!waiters) return;
+    route.attachmentWaiters = undefined;
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(error);
+    }
+  }
+
   function waitForRendererAttachmentReady(route: RemoteAttachmentRoute): Promise<void> {
     if (route.pendingRendererAttachment) {
       return route.pendingRendererAttachment.ready();
@@ -403,11 +426,33 @@ export function createRemoteWorkspaceSessionManager(options: {
     if (route.rendererAttachmentId) {
       return Promise.resolve();
     }
-    return Promise.reject(
-      new Error(
-        `远程 workspace route 尚无可用 renderer attachment，sessionId=${route.descriptor.remoteSessionId}`,
-      ),
-    );
+    // 没有 pending 也没有已提升 attachment：等到首个 attachment 出现再放行，
+    // 不再立即判失败（见 attachmentWaiters 注释）。与 attachRendererPort 共用
+    // 同一个 ready 超时额度，超时同样 fail-closed。
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          const current = route.attachmentWaiters;
+          if (current) {
+            const index = current.indexOf(waiter);
+            if (index >= 0) current.splice(index, 1);
+          }
+          options.logger.warn("[window-host-remote] renderer attachment wait timeout", {
+            sessionId: route.descriptor.remoteSessionId,
+          });
+          reject(
+            new Error(
+              `renderer attachment 等待超时，sessionId=${route.descriptor.remoteSessionId}`,
+            ),
+          );
+        }, options.rendererAttachmentReadyTimeoutMs ?? 15_000),
+      };
+      waiter.timeout.unref?.();
+      route.attachmentWaiters ??= [];
+      route.attachmentWaiters.push(waiter);
+    });
   }
 
   function buildWorkspaceContextBindKey(params: {
@@ -468,6 +513,15 @@ export function createRemoteWorkspaceSessionManager(options: {
       // Host generation bind 会 fail-closed 立即失效 A；Main 仍需等 renderer 注册 B
       // 后再提升 route 并做幂等清理。reload 复挂没有 generation 换代，也因此不会提前拆掉可用旧 port。
       detachServicePort(child, pending.previousAttachmentId, "candidate-promoted");
+    }
+    // 首个 attachment 提升：放行所有在空档期等待的 connect/bind 调用方。
+    const waiters = route.attachmentWaiters;
+    if (waiters) {
+      route.attachmentWaiters = undefined;
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timeout);
+        waiter.resolve();
+      }
     }
     options.logger.info(
       `[window-host-remote] renderer attachment ready, sessionId=${payload.sessionId}, reason=${pending.reason}`,
@@ -598,6 +652,7 @@ export function createRemoteWorkspaceSessionManager(options: {
           requestId: randomUUID(),
           remoteSessionId: descriptor.remoteSessionId,
         });
+        rejectAttachmentWaiters(route, error instanceof Error ? error : new Error(String(error)));
         emitConnectionLog(pending.win, {
           requestId,
           sessionId: descriptor.remoteSessionId,
@@ -750,6 +805,7 @@ export function createRemoteWorkspaceSessionManager(options: {
       if (child) detachServicePort(child, pending.attachmentId, reason);
       pending.reject(error);
     }
+    rejectAttachmentWaiters(route, error);
     if (route.rendererAttachmentId) {
       if (child) detachServicePort(child, route.rendererAttachmentId, reason);
       route.rendererAttachmentId = undefined;
@@ -919,6 +975,10 @@ export function createRemoteWorkspaceSessionManager(options: {
               requestId: randomUUID(),
               remoteSessionId: descriptor.remoteSessionId,
             });
+            rejectAttachmentWaiters(
+              route,
+              error instanceof Error ? error : new Error(String(error)),
+            );
           }
           pending.reject(error instanceof Error ? error : new Error(String(error)));
         },
@@ -1385,6 +1445,10 @@ export function createRemoteWorkspaceSessionManager(options: {
     });
     route.providerProvisioningDispose?.();
     const child = options.windowHostProcessMap.get(route.webContentsId);
+    rejectAttachmentWaiters(
+      route,
+      new Error(`远程 workspace session 已释放，sessionId=${sessionId}`),
+    );
     if (route.pendingRendererAttachment) {
       const pending = route.pendingRendererAttachment;
       clearTimeout(pending.timeout);
