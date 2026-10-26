@@ -14,17 +14,23 @@ import {
 } from "@zcode/contracts";
 import { InMemoryRuntimeTaskRegistry } from "../src/runtime-task/registry.js";
 import {
+  getInputRevivalBinding,
   registerInputRevivalBinding,
+  releaseInputRevivalBindingsForSession,
   requestStopInputRevivalTurn,
 } from "../src/subagent/input-revival-bridge.js";
 import {
   createExploreSubagentPort,
+  registerPersistedInputRevivalBinding,
   reviveSubagentTaskForInputTurn,
   settleSubagentInputRevivalFailure,
   settleSubagentInputRevivalSuccess,
   type ExploreSubagentPortOptions,
   type SubagentInputTurnHost,
 } from "../src/subagent/runner.js";
+import { restorePersistedSubagentInputRevival } from "../src/runtime/methods/resume.js";
+import type { AgentRuntimeInternal } from "../src/runtime/internal.js";
+import { SESSION_ENTRY_SUBAGENT_LIFECYCLE } from "@zcode/contracts";
 
 // 复活桥是进程级登记表，测试之间不清理：每个用例用独立 ID，避免残留绑定串扰。
 interface TestIds {
@@ -322,7 +328,8 @@ describe("subagent input revival (复活归一)", () => {
   it("degrades to current behavior when no binding exists (spec D6)", async () => {
     const ids = createIds(outputRootDir);
     const harness = createHarness(outputRootDir, ids);
-    // 未登记的子会话（如进程重启后）：复活与结算都不抛错、不产事件、不入通知。
+    // 父会话不在场（从未由本进程派发，也没有冷恢复登记）：复活与结算都不抛错、
+    // 不产事件、不入通知。进程重启这条已由 D10 覆盖，不再是本用例的场景。
     const context = turnContext(ids);
     await expect(
       reviveSubagentTaskForInputTurn(ids.childSessionId, createHost(), context),
@@ -366,6 +373,187 @@ describe("subagent input revival (复活归一)", () => {
     // stopTurn 消费即清：再次请求停止不会二次触发。
     requestStopInputRevivalTurn(ids.childSessionId);
     expect(host.stopCalls).toHaveLength(1);
+  });
+});
+
+describe("跨进程复活（spec D10）", () => {
+  let outputRootDir: string;
+
+  beforeEach(async () => {
+    outputRootDir = await mkdtemp(join(tmpdir(), "zcode-input-revival-persisted-"));
+  });
+
+  afterEach(async () => {
+    await rm(outputRootDir, { recursive: true, force: true });
+  });
+
+  /** `readPersistedSubagentTask` 的重建形状：终态、已通知过、没有 outputFile / prompt。 */
+  function persistedTerminalTask(ids: TestIds) {
+    return {
+      taskId: ids.agentId,
+      agentId: ids.agentId,
+      agentType: "general-purpose",
+      childSessionId: ids.childSessionId,
+      description: "revive target",
+      isBackgrounded: true,
+      notified: true,
+      parentSessionId: ids.parentSessionId,
+      parentToolCallId: ids.parentToolCallId,
+      startedAt: new Date(Date.now() - 60_000),
+      completedAt: new Date(Date.now() - 30_000),
+      status: "interrupted" as const,
+      taskType: "local_agent" as const,
+      type: "local_agent" as const,
+    };
+  }
+
+  it("父会话恢复时按 lifecycle entry 重建绑定，已存在的活绑定不覆盖", async () => {
+    const ids = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    const entries = [
+      {
+        id: `subagent-lifecycle:${ids.agentId}`,
+        sessionID: ids.parentSessionId,
+        type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+        time: { created: Date.now(), updated: Date.now() },
+        data: {
+          agentId: ids.agentId,
+          agentType: "general-purpose",
+          childSessionId: ids.childSessionId,
+          description: "revive target",
+          status: "interrupted",
+          startedAt: Date.now() - 1_000,
+          endedAt: Date.now(),
+          parentToolCallId: ids.parentToolCallId,
+          background: true,
+        },
+      },
+    ];
+    const runtime = {
+      sessionId: ids.parentSessionId,
+      subagentPortOptions: harness.options,
+      runtimeTaskRegistry: harness.registry,
+      workingDirectory: outputRootDir,
+      workspaceRoot: outputRootDir,
+      rootTraceContext: { traceId: createTraceId(), sessionId: ids.parentSessionId },
+    } as unknown as AgentRuntimeInternal;
+
+    restorePersistedSubagentInputRevival.call(runtime, entries);
+
+    const binding = getInputRevivalBinding<{
+      agentId: string;
+      request: SubagentRunRequest;
+    }>(ids.childSessionId);
+    expect(binding?.agentId).toBe(ids.agentId);
+    expect(binding?.request).toMatchObject({
+      sessionId: ids.parentSessionId,
+      parentToolCallId: ids.parentToolCallId,
+      agentType: "general-purpose",
+      description: "revive target",
+      // 原文 prompt 不落 entry，留给复活开轮时从子会话历史补回。
+      prompt: "",
+    });
+
+    // 同进程派发/续跑已经登记过的子会话：重建不得覆盖活绑定（它带着活请求与 sink）。
+    const liveRequest = { ...ids.request, prompt: "live dispatch prompt" };
+    const replaced = registerPersistedInputRevivalBinding({
+      options: harness.options,
+      registry: harness.registry,
+      request: liveRequest,
+      agentId: ids.agentId,
+      childSessionId: ids.childSessionId,
+      parentSessionId: ids.parentSessionId,
+    });
+    expect(replaced).toBe(false);
+    expect(
+      getInputRevivalBinding<{ request: SubagentRunRequest }>(ids.childSessionId)?.request.prompt,
+    ).toBe("");
+  });
+
+  it("注册表为空但持久化里有终态快照时仍复活并结算（含 prompt 补回）", async () => {
+    const ids = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    harness.options.findPersistedSubagentTask = async (agentId) =>
+      agentId === ids.agentId ? persistedTerminalTask(ids) : undefined;
+    // 冷恢复重建的绑定；注册表故意留空，模拟新进程。
+    bindingFor(harness, ids);
+    const context = turnContext(ids);
+    const host = createHost();
+    host.readInitialPrompt = () => "original dispatch prompt";
+
+    await reviveSubagentTaskForInputTurn(ids.childSessionId, host, context);
+
+    const revived = harness.registry.get(ids.agentId);
+    expect(revived?.status).toBe("running");
+    expect(revived?.inputRevival).toBe(true);
+    expect(revived?.notified).toBe(false);
+    expect(revived?.parentToolCallId).toBe(ids.parentToolCallId);
+    expect(harness.notifications).toHaveLength(1);
+    expect(harness.notifications[0]?.text).toContain("was resumed and is running again");
+
+    await settleSubagentInputRevivalSuccess(ids.childSessionId, context, {
+      events: [],
+      response: "revived after restart",
+    });
+
+    expect(harness.notifications).toHaveLength(2);
+    expect(harness.notifications[1]?.text).toContain("<status>completed</status>");
+    expect(harness.notifications[1]?.text).toContain("<result>revived after restart</result>");
+    expect(harness.registry.get(ids.agentId)?.status).toBe("completed");
+    // metadata 的 prompt 由子会话历史补回，不被空串覆盖（D10 边界 2）。
+    const metadata = JSON.parse(
+      await readFile(join(outputRootDir, ids.parentSessionId, ids.agentId, "metadata.json"), "utf8"),
+    ) as { prompt?: string; status?: string };
+    expect(metadata.prompt).toBe("original dispatch prompt");
+    expect(metadata.status).toBe("completed");
+  });
+
+  it("持久化快照仍是非终态时不复活（那是本进程正在跑的语义）", async () => {
+    const ids = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    harness.options.findPersistedSubagentTask = async () => ({
+      ...persistedTerminalTask(ids),
+      status: "running" as const,
+    });
+    bindingFor(harness, ids);
+
+    await reviveSubagentTaskForInputTurn(ids.childSessionId, createHost(), turnContext(ids));
+
+    expect(harness.registry.get(ids.agentId)).toBeUndefined();
+    expect(harness.notifications).toHaveLength(0);
+    expect(harness.emitted).toHaveLength(0);
+  });
+
+  it("父 runtime 关闭时只释放自己名下的绑定", async () => {
+    const ids = createIds(outputRootDir);
+    const otherIds = createIds(outputRootDir);
+    const harness = createHarness(outputRootDir, ids);
+    const parentA = createSessionId("release-parent-a");
+    const parentB = createSessionId("release-parent-b");
+    registerInputRevivalBinding({
+      agentId: ids.agentId,
+      childSessionId: ids.childSessionId,
+      parentSessionId: parentA,
+      options: harness.options,
+      registry: harness.registry,
+      request: ids.request,
+    });
+    registerInputRevivalBinding({
+      agentId: otherIds.agentId,
+      childSessionId: otherIds.childSessionId,
+      parentSessionId: parentB,
+      options: harness.options,
+      registry: harness.registry,
+      request: otherIds.request,
+    });
+
+    releaseInputRevivalBindingsForSession(parentA);
+
+    expect(getInputRevivalBinding(ids.childSessionId)).toBeUndefined();
+    expect(getInputRevivalBinding(otherIds.childSessionId)).toBeDefined();
+    // 收尾：桥是进程级登记表，别把本用例的绑定留给后续用例。
+    releaseInputRevivalBindingsForSession(parentB);
+    expect(getInputRevivalBinding(otherIds.childSessionId)).toBeUndefined();
   });
 });
 

@@ -7,8 +7,9 @@
 // `childSessionId` 登记两侧共需的引用，让子 runtime 的轮开/收两点能找到结算 owner。
 //
 // 桥是**纯内存登记表**，不是第二份任务状态：任务权威永远在 `runtimeTaskRegistry`，
-// 通知能力永远在 `ExploreSubagentPortOptions` 指向的父 runtime。不落库、不跨进程——
-// 进程重启后登记表为空，复活与结算降级为现状（spec D6）。
+// 通知能力永远在 `ExploreSubagentPortOptions` 指向的父 runtime。不落库、不跨进程；
+// 跨进程的那一半由父会话冷恢复按持久化生命周期重新登记（spec D10），而不是让桥自己
+// 变成持久化容器。
 
 import type { SessionId } from "@zcode/contracts";
 
@@ -54,4 +55,17 @@ export function requestStopInputRevivalTurn(childSessionId: SessionId | undefine
   const stopTurn = binding.stopTurn;
   binding.stopTurn = undefined;
   stopTurn();
+}
+
+/**
+ * 释放某个父会话登记的全部绑定（spec D10 边界 3）。
+ *
+ * 绑定持有父 runtime 的 `options` / `registry`，也就是整个 runtime 的活引用。父会话被
+ * 空闲回收后若还留着这些登记，登记表会把已关闭的 runtime 钉在内存里，回收形同虚设。
+ * 按 `parentSessionId` 而不是按 key 清：key 是**子会话** id，属于父会话的绑定不止一条。
+ */
+export function releaseInputRevivalBindingsForSession(parentSessionId: SessionId): void {
+  for (const [childSessionId, binding] of bindings) {
+    if (binding.parentSessionId === parentSessionId) bindings.delete(childSessionId);
+  }
 }

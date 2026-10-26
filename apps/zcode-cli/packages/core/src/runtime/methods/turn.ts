@@ -12,6 +12,7 @@ import {
   createModelUsageSummaryFromEvents,
   createMessageId,
   createTurnId,
+  firstUserPromptText,
   runWithContextAsync,
   traceContextToLogContext,
   TurnMachineImpl,
@@ -201,10 +202,18 @@ export async function executeTurnCommand(
   // 生命周期。仅 subagent_child 且任务已终态才真正注册；派发轮/复活轮由 runner 持有，
   // 内部按 inputRevival 所有权判据自行 no-op。
   if (this.config.taskType === "subagent_child") {
-    await reviveSubagentTaskForInputTurn(this.sessionId, this, {
-      turnId,
-      traceContext: turnTraceContext,
-    });
+    await reviveSubagentTaskForInputTurn(
+      this.sessionId,
+      {
+        steerTurn: (input) => this.steerTurn(input),
+        stopActiveForegroundExecution: (stopOptions) =>
+          this.stopActiveForegroundExecution(stopOptions),
+        // 跨进程复活重建的请求不含原文 prompt，用子会话首条真实 user 消息补回
+        // （spec `subagent-input-revival.md` D10 边界 2）。
+        readInitialPrompt: () => firstUserPromptText(this.messageHistory),
+      },
+      { turnId, traceContext: turnTraceContext },
+    );
   }
 
   const turnAbortScope = createTurnAbortScope(options?.abortSignal);

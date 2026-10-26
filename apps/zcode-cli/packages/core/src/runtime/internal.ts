@@ -52,6 +52,7 @@ import type {
 } from "./types.js";
 import type { RuntimeCommandQueue } from "./command-queue.js";
 import type { RuntimeTaskRegistry } from "../runtime-task/registry.js";
+import type { ExploreSubagentPortOptions } from "../subagent/runner.js";
 import type { WorkflowBlockedReminderClock } from "../runtime-task/workflow-blocked-reminder.js";
 import type { DynamicWorkflowActivationSource } from "./methods/dynamic-workflow-activation.js";
 import type { AgentRuntimeCoreMethods } from "./internal-methods.js";
@@ -119,6 +120,14 @@ export interface AgentRuntimeInternal
   mcpToolsSignature?: string;
   mcpToolListRevision?: number;
   subagentPort?: SubagentPort;
+  /**
+   * 自建子代理端口的选项对象（`createDefaultSubagentPort` 留下）。
+   *
+   * 冷恢复要按持久化生命周期重建输入复活绑定（spec `subagent-input-revival.md` D10），
+   * 而绑定里的 `options` / `registry` 必须是当前父 runtime 的活引用。宿主注入端口时
+   * 这里缺席——那种宿主自己负责装配，不参与重建。
+   */
+  subagentPortOptions?: ExploreSubagentPortOptions;
   getAgentDefinitions: NonNullable<AgentRuntimeDeps["getAgentDefinitions"]>;
   prepareAgentDefinitions: (input: {
     signal: AbortSignal;

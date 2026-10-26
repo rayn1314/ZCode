@@ -16,8 +16,10 @@ import {
 import type {
   EnvInfo,
   MessageWithParts,
+  SessionEntryInfo,
   SessionEvent,
   SessionGoal,
+  SessionId,
   SessionInfo,
   SessionTitleSource,
   TodoItem,
@@ -37,6 +39,7 @@ import {
 import { resetProjectMemoryRecall } from "../helpers/project-memory-recall.js";
 import { restoreDynamicWorkflowActivationOnResume } from "./dynamic-workflow-activation.js";
 import { reconcileOrphanedSubagentLifecycles } from "./subagent-lifecycle-reconciliation.js";
+import { registerPersistedInputRevivalBinding } from "../../subagent/runner.js";
 import { readLifecycleData } from "./subagent-lifecycle-persistence.js";
 import { SESSION_ENTRY_SUBAGENT_LIFECYCLE } from "../deps.js";
 import { repairPersistedRemoteSessionPaths } from "../helpers/persisted-remote-session-path-repair.js";
@@ -161,6 +164,12 @@ export async function resumeFromStore(
   // 进程异常退出不会给正在跑的子代理任何结算机会，那类行会永久停在「只有 spawn」并被 roster
   // 报成 lost。这里把它落定成 interrupted，条数随 SessionResumed 事件一并留痕。
   const reconciledOrphanCount = await reconcileOrphanedSubagentLifecycles.call(this, traceContext);
+  // 生命周期 entry 读一次、两个消费者共用。复活桥是纯内存登记表，进程重启后为空：按
+  // 持久化 entry 把子代理重新挂回桥，让面板直发（v4 sendText）在重启后仍能找到结算 owner，
+  // 否则那一轮跑完没有任何人通知父会话（spec `subagent-input-revival.md` D10）。放在对账
+  // 之后：陈旧 running 已落定为终态。
+  const lifecycleEntries = await readSubagentLifecycleEntries.call(this);
+  restorePersistedSubagentInputRevival.call(this, lifecycleEntries);
   const hydration = await hydrateMessageHistoryFromSession({
     logger: this.logger,
     artifactStore: this.artifactStore,
@@ -172,7 +181,7 @@ export async function resumeFromStore(
     rewindTargetMessageId,
     // 中断的 Agent 派发要把句柄写回模型面，否则父代理读历史时只剩「重开」一个选项，
     // 已花的 token 与已产出的工作全部作废（spec `subagent-continuation-copy.md` D4c）。
-    subagentHandles: await buildSubagentHandleTable.call(this),
+    subagentHandles: buildSubagentHandleTable(lifecycleEntries),
   });
   announceSessionShellEnvironmentNoticeAfterResume(this, {
     persistedEnvInfo,
@@ -473,41 +482,52 @@ export function injectTargetStateIntoMessageHistory(
 }
 
 /**
- * 父侧工具调用 id → agentId 的句柄表，供 hydration 把「中断的 Agent 派发」对回具体子代理
- * （spec `subagent-continuation-copy.md` D4c）。
+ * 读一次本会话的全部子代理生命周期 entry，供恢复期的两个消费者共用：
+ * hydration 的句柄表（`subagent-continuation-copy.md` D4c）与复活绑定重建
+ * （`subagent-input-revival.md` D10）。
  *
  * 读侧只有一处：`runtime/subagent_lifecycle` entry 经 `readLifecycleData` 解析（孤儿对账与
- * roster 投影共用同一函数，不为这里再写一份字段判读）。缺 `parentToolCallId` 的行跳过——
- * 那是 spawn 早于本字段存在的旧数据，硬猜一个键只会让 hydration 查不到、白绕一圈。
+ * roster 投影共用同一函数，不为这里再写一份字段判读）。
  *
- * 失败只降级返回空表：句柄是「把已知事实递给模型」的优化，不是恢复的前提；读存储失败时
- *  hydration 退回泛化中断文案（既有行为），会话本身必须能恢复。
+ * 失败只降级返回 undefined：两件事都是「把已知事实接回去」的优化，不是恢复的前提；读存储
+ * 失败时会话仍必须能恢复。
  */
-async function buildSubagentHandleTable(
+async function readSubagentLifecycleEntries(
   this: AgentRuntimeInternal,
-): Promise<Map<string, string> | undefined> {
+): Promise<SessionEntryInfo[] | undefined> {
   const store = this.sessionStore;
   const sessionEntries = store?.sessionEntries;
   if (!store || !sessionEntries) return undefined;
 
-  let entries;
   try {
     // 保留接收者再调用：`SqliteSessionStore.sessionEntries` 是原型方法，解构后裸调用会丢 `this`。
-    entries = await sessionEntries.call(store, {
+    return await sessionEntries.call(store, {
       sessionID: this.sessionId,
       type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
     });
   } catch (error) {
-    this.logger?.warn("Failed to read subagent lifecycle entries for resume handles", {
+    this.logger?.warn("Failed to read subagent lifecycle entries on resume", {
       errorMessage: error instanceof Error ? error.message : String(error),
-      event: "subagent.handle_table.read_failed",
+      event: "subagent.lifecycle.read_failed",
       module: "core.runtime",
       sessionId: this.sessionId,
       status: "failed",
     });
     return undefined;
   }
+}
 
+/**
+ * 父侧工具调用 id → agentId 的句柄表，供 hydration 把「中断的 Agent 派发」对回具体子代理
+ * （spec `subagent-continuation-copy.md` D4c）。
+ *
+ * 缺 `parentToolCallId` 的行跳过——那是 spawn 早于本字段存在的旧数据，硬猜一个键只会让
+ * hydration 查不到、白绕一圈。
+ */
+function buildSubagentHandleTable(
+  entries: readonly SessionEntryInfo[] | undefined,
+): Map<string, string> | undefined {
+  if (!entries) return undefined;
   const handles = new Map<string, string>();
   for (const entry of entries) {
     const facts = readLifecycleData(entry);
@@ -515,4 +535,60 @@ async function buildSubagentHandleTable(
     handles.set(facts.parentToolCallId, facts.agentId);
   }
   return handles.size > 0 ? handles : undefined;
+}
+
+/**
+ * 把持久化的子代理重新挂回输入复活桥（spec `subagent-input-revival.md` D10）。
+ *
+ * 桥是纯内存登记表，进程重启后为空；但子会话、生命周期 entry 和父会话本身都还在库里。
+ * 用户从父会话的子代理面板直发（v4 sendText）时，子 runtime 开轮找不到结算 owner，那一轮
+ * 跑完父会话完全无感知：卡片停在中断、`ListAgents` 停在旧终态，父代理只能重开一个子代理。
+ *
+ * 这里按 entry 重建绑定——`options` / `registry` 取自**当前**父 runtime（所以必须由父会话
+ * 自己恢复时登记），请求由 entry 重建。已存在活绑定（同进程派发/续跑）时跳过，绝不覆盖。
+ */
+export function restorePersistedSubagentInputRevival(
+  this: AgentRuntimeInternal,
+  entries: readonly SessionEntryInfo[] | undefined,
+): void {
+  const options = this.subagentPortOptions;
+  // 没有自建端口（子代理被禁用 / 宿主注入了端口）就没有可登记的结算能力，保持无绑定降级。
+  if (!options || !entries) return;
+
+  let restored = 0;
+  for (const entry of entries) {
+    const facts = readLifecycleData(entry);
+    if (!facts) continue;
+    const registered = registerPersistedInputRevivalBinding({
+      agentId: facts.agentId,
+      // 持久化 JSON 丢品牌，但该值由 createSessionId 产出，跨这个边界收回 SessionId 是安全的。
+      childSessionId: facts.childSessionId as SessionId,
+      parentSessionId: this.sessionId,
+      options,
+      registry: this.runtimeTaskRegistry,
+      request: {
+        sessionId: this.sessionId,
+        parentToolCallId: facts.parentToolCallId ?? facts.agentId,
+        agentType: facts.agentType,
+        description: facts.description,
+        // 原文 prompt 不落 lifecycle entry；复活开轮时由子 runtime 从自己的首条真实
+        // user 消息补回（runner 的 `readInitialPrompt`），不在这里编一个。
+        prompt: "",
+        workingDirectory: this.workingDirectory,
+        workspaceRoot: this.workspaceRoot,
+        trace: this.rootTraceContext,
+      },
+    });
+    if (registered) restored += 1;
+  }
+
+  if (restored > 0) {
+    this.logger?.info("Restored subagent input revival bindings", {
+      event: "subagent.input_revival.restored",
+      module: "core.runtime",
+      restoredCount: restored,
+      sessionId: this.sessionId,
+      status: "completed",
+    });
+  }
 }

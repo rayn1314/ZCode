@@ -36,9 +36,8 @@
   含产物写盘（output.txt/metadata）、`SubagentStopped` 事件、SubagentStop hook、
   `notified` 幂等闸、父通知入队。复活开轮时补发 `SubagentSpawned(resumed: true)` 与
   SubagentStart hook，与 SendMessage 复活路径同形（roster / 冷事件合并按 resumed 对识别）。
-- **D6 无绑定即降级为现状。** 桥缺席（进程重启、父 runtime 未派发过该子会话、注册表
-  终态被驱逐）时复活与结算都 no-op——不伪造状态、不报错；该缺口属跨进程持久化范畴
-  （另行立项），本 spec 不覆盖。
+- **D6 无绑定即降级。** 桥缺席时复活与结算都 no-op——不伪造状态、不报错。跨进程重启
+  这条已由 D10 覆盖；剩下的边界是「父会话不在本进程」，那种情况下也没有父代理需要通知。
 - **D7 复活注册同步补发 `BackgroundTaskStarted(running)`。** 投影
   （`projection.backgroundTasks`）只由 `BackgroundTask*` 事件驱动，`SubagentSpawned`
   不进投影；不补发则投影永久停在旧生命终态——TaskStop 以「not running (status:
@@ -51,19 +50,32 @@
   重复子代理（spec `background-notification-supersession.md` D5）。该通知不复用
   终态格式化器、不 claim `notified`（否则堵死终态通知）；SendMessage 续跑的工具回执
   已自带同义句，D8 只覆盖 input revival。
+- **D10 桥在父会话冷恢复时按持久化生命周期重建（2026-10-27）。** 桥本身仍是纯内存登记
+  表，但「进程重启后为空」不再等于「复活与结算永远缺席」：父 runtime 在 `resumeFromStore`
+  读完 lifecycle entry 后，把每个子会话重新登记回桥——`options` / `registry` / 重建的请求
+  都取自**当前**父 runtime。复活钩子在注册表未命中时按同一条 entry 重建终态任务快照
+  （与 `subagent-session-messaging.md` D9 同一个回落），因此面板直发在重启后仍能找到
+  结算 owner。三条边界：
+  1. 父会话必须驻留——面板只能从父会话进入，所以这条天然成立；
+  2. 重建的请求不含原文 `prompt`（lifecycle entry 不存正文），复活开轮时由子 runtime
+     从自己首条真实 user 消息补回，不拿描述或新消息冒充；
+  3. 父 runtime 关闭时按 `parentSessionId` 释放这些绑定，避免登记表把已回收的 runtime
+     钉在内存里——这条同时修掉了派发路径既有的同款滞留。
 
 ## 行为
 
 复活（`reviveSubagentTaskForInputTurn`，挂在 `executeTurnCommand` 入口，仅
 `taskType === "subagent_child"`）：
 
-1. 查桥 → 查注册表任务；任务不存在、非终态、或非 `local_agent` → no-op。
-   非终态说明本轮由 runner 持有（派发/复活中），归 runner 结算。
+1. 查桥 → 解析任务：注册表命中且终态 → 用它；命中但非终态 → no-op（本轮由 runner
+   持有，派发/复活中）；注册表未命中 → 按父会话 lifecycle entry 重建终态快照（D10），
+   重建不出终态 `local_agent` → no-op。
 2. 重建快照：`status: running`、`notified: false`、`inputRevival: true`、
    `isBackgrounded: true`（无前台等待者）、`startedAt/turnId/traceContext` 取本轮，
    清 `completedAt/error/usage`，保留 `parentToolCallId`（父卡片锚点）、`parentSessionId`、
    `outputFile`、`prompt`、`pendingMessages`。附 messageSink（steer 注入）并 flush 积压消息，
-   与 runner 的 sink 注册同一条实现。
+   与 runner 的 sink 注册同一条实现。重建路径下 `prompt` 为空，由本轮宿主从子会话首条
+   真实 user 消息补回（D10 边界 2）。
 3. 安装 `stopTurn` 句柄到桥（供 `port.stopTask` 停掉真实执行的轮），随后补发
    `BackgroundTaskStarted(running)`（D7，投影追齐新生命）、向父代理入队
    `status: running` 复活通知（D8）、`SubagentSpawned(resumed: true)`
@@ -87,6 +99,8 @@
 ## 所有权与不变式
 
 - 任务状态唯一 owner：父 runtime 的 `runtimeTaskRegistry`；桥不存状态、只存引用。
+- 桥上的 `options` / `registry` 必须指向**当前**父 runtime：冷恢复重建（D10）只在父
+  runtime 自己恢复时登记，并由它在关闭时释放；跨进程不会复用上一进程的对象。
 - 结算唯一入口：runner 的 `finalize*`（派发轮由执行体调用，输入轮经本 spec 的结算钩调用），
   两者的互斥由 `inputRevival` 标记 + 终态守卫 + `notified` 幂等闸三重保证。
 - `SubagentSpawned`/`SubagentStopped` 仍只从 runner 侧发射，事件汇归属不变。
@@ -95,7 +109,10 @@
 
 ## 失败语义
 
-- 复活失败（桥/注册表异常）→ warn + 本轮照常执行（退化为现状：无通知），不阻断用户输入。
+- 复活失败（桥/注册表/持久化读取异常）→ warn + 本轮照常执行（退化为现状：无通知），
+  不阻断用户输入。
+- 重建绑定失败（父会话读 lifecycle entry 抛错）→ warn + 保持无绑定降级，不把存储异常
+  断言成「该子代理不存在」。
 - 结算失败 → warn，原轮结果/错误原样透出；任务可能滞留 running，下一轮复活/结算或
   `stopTask` 可收敛（终态守卫防重复）。
 - 复活轮期间父 runtime 关闭 → 通知入队被既有 `shuttingDown` 守卫丢弃（留日志），不崩溃。
@@ -104,8 +121,8 @@
 
 ## 迁移边界
 
-- 不覆盖：进程重启后的复活（桥与注册表均为内存态）、注册表终态驱逐后的复活、
-  跨机器父子。这三类维持 D6 降级（现状），如需根治另行立项（持久化父子关联 + 通知补投）。
+- 不覆盖：父会话不在本进程（桥没有登记方）、注册表终态驱逐后的复活、跨机器父子。
+  后两类维持 D6 降级。进程重启后的复活由 D10 覆盖，不再属于缺口。
 - 不改：sendText 三档投递、guide 注入、准入与队列语义；本机制只在轮的开/收两个点搭挂。
 - 不改：派发轮与 SendMessage 复活轮的既有路径（标记缺席，钩子不触碰）。
 
@@ -118,7 +135,13 @@
 - A3 复活轮再次被中断 → 父收到 failed 通知（错误原文），不出现第二次重复通知。
 - A4 派发轮（前台/后台）与 SendMessage 复活轮全程：输入轮钩子零副作用（无 `inputRevival`
   标记 → 不注册、不结算），既有通知数不变。
-- A5 桥缺席（新进程直接 sendText 子会话）：轮照常执行，无通知、无报错（现状行为）。
+- A5 桥缺席（父会话不在本进程 / 该子会话从未由本进程派发）：轮照常执行，无通知、
+  无报错（现状行为）。
+- A9 进程重启后：父会话恢复（lifecycle entry 重建出绑定）→ 面板直发子会话 → 子轮开跑
+  即向父代理入队 `status: running` 通知；轮末父收到 `completed` 通知，lifecycle entry
+  更新为 completed，`ListAgents` 不再停在中断时刻的旧终态。
+- A10 父 runtime 关闭后，其名下子会话的复活绑定全部释放（登记表不残留指向已回收
+  runtime 的引用）；重新恢复父会话会重新登记。
 - A6 复活轮运行中父调 `stopTask` → 真实轮被停止，父收到 stopped 通知，轮末结算 no-op
   （终态守卫），无双通知。
 - A7 复活轮运行中父调 TaskStop（strict）→ 放行并停掉真实轮（不再报

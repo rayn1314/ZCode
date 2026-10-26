@@ -147,6 +147,7 @@ import type { ProjectMemoryRecallPrefetch } from "./helpers/project-memory-recal
 import type { ProjectMemoryExtractionScheduler } from "./helpers/project-memory-extraction.js";
 import type { ProjectMemoryUpdate } from "./helpers/project-memory-dream.js";
 import { projectPersistentAgentMemoryTools } from "../subagent/persistent-memory.js";
+import { releaseInputRevivalBindingsForSession } from "../subagent/input-revival-bridge.js";
 import { RuntimeTelemetryFacade } from "../telemetry/runtime-telemetry.js";
 import type { WorkspaceHookRuntimeAdmissionPort } from "../hooks/workspace-hook-runtime-admission.js";
 import { disposeNodeReplSession } from "../tool/handlers/node-repl.js";
@@ -409,6 +410,9 @@ export class AgentRuntime {
     // ExecutionPort.close() 会把后台 Bash 收口为 cancelled；若允许
     // teardown terminal event 再唤醒模型，并与随后关闭的 session store 竞态。
     this.shuttingDown = true;
+    // 复活绑定持有本 runtime 的 options / registry，留着会把已回收的 runtime 钉在内存里
+    // （spec `subagent-input-revival.md` D10 边界 3）。按父会话释放，子会话自己的登记不受影响。
+    releaseInputRevivalBindingsForSession(this.sessionId);
     // 同一条理由：会话在关，提醒钟不能再到点唤起一轮。
     this.workflowBlockedReminder.stop();
     // 关闭单个 session 后进程仍存活，

@@ -263,7 +263,11 @@ export {
 export type { SessionHistoryHydrationResult } from "../agent/session-history-hydrator.js";
 export { hydrateReadFileStateFromSession } from "../agent/read-file-state-hydrator.js";
 export type { ReadFileStateHydrationResult } from "../agent/read-file-state-hydrator.js";
-export { countContextPrefixMessages, MessageHistoryImpl } from "../agent/message-history.js";
+export {
+  countContextPrefixMessages,
+  firstUserPromptText,
+  MessageHistoryImpl,
+} from "../agent/message-history.js";
 export type { MessageHistory } from "../agent/message-history.js";
 export { TurnMachineImpl } from "../agent/turn-machine.js";
 export {

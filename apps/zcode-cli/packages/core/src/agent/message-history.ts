@@ -156,6 +156,26 @@ export interface MessageHistory {
   reset(): void;
 }
 
+/**
+ * 首条**真实** user 消息的正文（spec `subagent-input-revival.md` D10 边界 2）。
+ *
+ * 子代理跨进程复活时，执行请求由 lifecycle entry 重建、不含原文 prompt；子会话自己的
+ * 历史才是原文的唯一权威。优先取 `source: "real_user"` 的条目，避免把上下文注入的
+ * 合成 user 消息当成派发任务。
+ */
+export function firstUserPromptText(history: MessageHistory): string | undefined {
+  let fallback: string | undefined;
+  for (const entry of history.borrowReadOnlyRuntimeEntries()) {
+    if (entry.kind === "attachment") continue;
+    if (entry.message.role !== "user") continue;
+    const text = modelMessageContentToText(entry.message.content).trim();
+    if (text.length === 0) continue;
+    if (entry.metadata?.source === "real_user") return text;
+    fallback ??= text;
+  }
+  return fallback;
+}
+
 // ============================================================
 // Message History Implementation
 // ============================================================

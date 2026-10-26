@@ -2260,6 +2260,14 @@ async function emitRuntimeTaskSubagentStoppedEvent(
 export interface SubagentInputTurnHost {
   steerTurn(input: string | TurnSteerInput): Promise<TurnSteerResult>;
   stopActiveForegroundExecution?(options?: { reason?: string }): unknown;
+  /**
+   * 子会话首条**真实** user 消息的正文（spec D10 边界 2）。
+   *
+   * 跨进程重建的请求来自 lifecycle entry，那里没有原文 prompt；而结算会把 prompt 写进
+   * metadata.json，缺了它就会用空串覆盖掉派发时那份。子会话自己的历史才是原文的唯一
+   * 权威，所以由宿主在复活开轮时补回，不拿描述或本轮新消息冒充。
+   */
+  readInitialPrompt?(): string | undefined;
 }
 
 interface SubagentInputRevivalBinding extends SubagentInputRevivalBindingBase {
@@ -2286,6 +2294,33 @@ function registerInputRevivalBindingForTask(
   });
 }
 
+/**
+ * 冷恢复重建登记（spec D10）：父会话按持久化 lifecycle entry 把子会话重新挂回桥。
+ *
+ * 与上面的执行体登记走同一个 `registerInputRevivalBinding`，区别只在**请求来源**——
+ * 这里没有派发时的活对象，`request` 由调用方从 entry 重建（不含 prompt，复活开轮时补）。
+ * 返回是否真的写入：已存在活绑定（同进程派发/续跑）时不覆盖，调用方据此记账。
+ */
+export function registerPersistedInputRevivalBinding(input: {
+  options: ExploreSubagentPortOptions;
+  registry: RuntimeTaskRegistry;
+  request: SubagentRunRequest;
+  agentId: string;
+  childSessionId: SessionId;
+  parentSessionId: SessionId;
+}): boolean {
+  if (getInputRevivalBinding(input.childSessionId)) return false;
+  registerInputRevivalBinding({
+    agentId: input.agentId,
+    childSessionId: input.childSessionId,
+    parentSessionId: input.parentSessionId,
+    options: input.options,
+    registry: input.registry,
+    request: input.request,
+  });
+  return true;
+}
+
 function resolveInputRevivalProfile(
   binding: SubagentInputRevivalBinding,
   agentType: string,
@@ -2305,6 +2340,27 @@ function inputRevivalRequest(
 }
 
 /**
+ * 复活轮的任务来源（spec D10）：注册表优先——同进程派发/续跑的任务在内存里，最新且权威；
+ * 未命中时按父会话的 lifecycle entry 重建终态快照。进程重启后注册表为空，但子会话与
+ * 那条 entry 都还在库里，agent 没有消失、只是不在内存。
+ *
+ * 非终态一律不复活：那意味着「本进程正在跑」，注册表必然命中；重建路径上出现非终态
+ * 只能是陈旧值（spawn-only），重建器已把它归一为 `lost`，这里再守一道。
+ */
+async function resolveRevivableTask(
+  binding: SubagentInputRevivalBinding,
+): Promise<RuntimeTaskSnapshot | undefined> {
+  const live = binding.registry.get(binding.agentId);
+  if (live) {
+    return live.type === "local_agent" && isTerminalRuntimeTask(live) ? live : undefined;
+  }
+  const persisted = await binding.options.findPersistedSubagentTask?.(binding.agentId);
+  return persisted && persisted.type === "local_agent" && isTerminalRuntimeTask(persisted)
+    ? persisted
+    : undefined;
+}
+
+/**
  * 输入轮开轮钩（`executeTurnCommand` 入口，仅 subagent_child）。
  * 只在任务已终态时复活：非终态说明本轮由 runner 执行体持有（开轮前已注册 running），
  * 归 runner 结算。任何失败只 warn——复活失败退化为现状（该轮无通知），不阻断用户输入。
@@ -2317,10 +2373,20 @@ export async function reviveSubagentTaskForInputTurn(
   const binding = getInputRevivalBinding<SubagentInputRevivalBinding>(childSessionId);
   if (!binding) return;
   try {
-    const task = binding.registry.get(binding.agentId);
-    if (!task || task.type !== "local_agent" || !isTerminalRuntimeTask(task)) return;
+    const task = await resolveRevivableTask(binding);
+    if (!task) return;
 
     const request = inputRevivalRequest(binding, context);
+    // D10 边界 2：跨进程重建的请求没有原文 prompt。结算会把它写进 metadata.json，
+    // 缺了就会用空串覆盖派发时那份，所以从子会话自己的首条真实 user 消息补回并缓存，
+    // 轮末结算复用同一个请求对象。
+    if (!request.prompt) {
+      const initialPrompt = host.readInitialPrompt?.();
+      if (initialPrompt) {
+        request.prompt = initialPrompt;
+        binding.request.prompt = initialPrompt;
+      }
+    }
     const lifecycle = createSubagentLifecycleFromTask(
       binding.options,
       request,

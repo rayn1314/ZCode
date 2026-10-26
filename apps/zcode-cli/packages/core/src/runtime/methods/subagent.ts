@@ -16,6 +16,7 @@ import {
   createCoreError,
   CoreErrorType,
 } from "../deps.js";
+import type { ExploreSubagentPortOptions } from "../../subagent/runner.js";
 import type {
   ExploreSubagentRuntimeRequest,
   McpConnectionSnapshot,
@@ -76,7 +77,7 @@ export function createDefaultSubagentPort(
     return undefined;
   }
 
-  return createExploreSubagentPort({
+  const options: ExploreSubagentPortOptions = {
     logger: this.logger,
     hookRunner: this.hookRunner,
     // P3：子代理生命周期 hook 的 additionalContext 由父 runtime 注入消息历史。
@@ -582,7 +583,11 @@ export function createDefaultSubagentPort(
         childBinding?.release();
       }
     },
-  });
+  };
+  // 冷恢复按持久化生命周期重建输入复活绑定要用这份选项（spec `subagent-input-revival.md`
+  // D10）；只在自建端口时留下，宿主注入端口时缺席即不参与重建。
+  this.subagentPortOptions = options;
+  return createExploreSubagentPort(options);
 }
 
 function resolveSubagentEmbeddedSearchEnabled(): boolean {

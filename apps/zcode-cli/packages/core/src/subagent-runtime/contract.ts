@@ -21,8 +21,9 @@
  * - launch spec 只存**推导不出来**的身份事实（工具白名单来自父 runtime 实时注册表、persona 只存
  *   `profileName`/`profileSource` 寻址键、`permissionMode`/`modelSelection` 各有专用 entry）；
  *   落盘失败只 warn，读取侧按「缺规格 → 受限模式」兜底。
- * - 输入复活桥是**纯内存**登记表，不落库、不跨进程：它承载「子 runtime 的轮由父侧结算」这层引用，
- *   任务权威仍在注册表、通知能力仍在父 runtime。
+ * - 输入复活桥是**纯内存**登记表，不落库：它承载「子 runtime 的轮由父侧结算」这层引用，
+ *   任务权威仍在注册表、通知能力仍在父 runtime。跨进程的一半由父会话冷恢复按持久化生命周期
+ *   重新登记（spec `subagent-input-revival.md` D10），桥自己不持久化。
  */
 import type {
   ListAgentsAgent,
