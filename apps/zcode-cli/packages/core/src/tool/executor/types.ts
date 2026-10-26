@@ -42,7 +42,7 @@ import type {
 } from "@zcode/contracts";
 import type { HookRunner } from "../../hooks/index.js";
 import type { PermissionService } from "../../permission/service.js";
-import type { RuntimeTaskRegistry } from "../../runtime-task/registry.js";
+import type { RuntimeTaskRegistry, RuntimeTaskSnapshot } from "../../runtime-task/registry.js";
 import type { ToolRegistry } from "../registry.js";
 import type { ToolSchedule } from "../scheduler.js";
 import type {
@@ -130,6 +130,13 @@ export interface ToolExecutorOptions {
   /** 模型目录端口；缺席则 ListModels 报能力缺席，CreateWorkflow 的 subagent_model 被拒。 */
   modelCatalogPort?: ModelCatalogPort;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
+  /**
+   * 按 agentId 从父会话持久化数据重建终态任务快照（spec D9）。透传到 handler 与
+   * `validateInput`，让 `TaskOutput` 在重启后仍能读到上一命的子代理。
+   */
+  findPersistedSubagentTask?: (
+    agentId: string,
+  ) => Promise<RuntimeTaskSnapshot | undefined> | RuntimeTaskSnapshot | undefined;
   readFileState?: ReadFileStateMap;
   /** 技能门的探针（ToolInputResolutionContext.hasLoadedSkill）；runtime 按 provider 可见历史回答。 */
   hasLoadedSkill?: (skillName: string) => boolean;
@@ -256,6 +263,9 @@ export interface ToolExecutorDeps {
   /** 模型目录端口；缺席则 ListModels 报能力缺席，CreateWorkflow 的 subagent_model 被拒。 */
   modelCatalogPort?: ModelCatalogPort;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
+  findPersistedSubagentTask?: (
+    agentId: string,
+  ) => Promise<RuntimeTaskSnapshot | undefined> | RuntimeTaskSnapshot | undefined;
   readFileState: ReadFileStateMap;
   hasLoadedSkill?: (skillName: string) => boolean;
   subagentBackgroundBashMaxMs?: number;

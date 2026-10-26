@@ -48,30 +48,27 @@ const TASK_OUTPUT_ERROR_CODE = {
 
 const taskOutputHandler: ToolHandler = async (input, context) => {
   const parsed = TaskOutputInputSchema.parse(input) as TaskOutputInput;
-  const inputFailure = getTaskOutputInputFailure(parsed, context.runtimeTaskRegistry);
-  if (inputFailure) return inputFailure;
+  if (!parsed.task_id) return missingTaskIdFailure();
 
   const registry = requireRuntimeTaskRegistry(context);
-
-  const initialTask = registry.get(parsed.task_id);
+  const registryTask = registry.get(parsed.task_id);
+  // 注册表缺席不等于任务不存在（spec `subagent-session-messaging.md` D9）：进程重启后注册表
+  // 为空，但上一命的子代理、生命周期 entry 与产物都还在。只在未命中时读持久化，热路径不额外打库。
+  const initialTask = registryTask ?? (await context.findPersistedSubagentTask?.(parsed.task_id));
   if (!initialTask) {
-    return taskOutputFailure(
-      TASK_OUTPUT_ERROR_CODE.TASK_NOT_FOUND,
-      `No task found with ID: ${parsed.task_id}`,
-    );
+    return taskNotFoundFailure(parsed.task_id);
+  }
+
+  // 从持久化重建的任务只能是终态，不会再变化：直接投影交付，不进等待循环。
+  if (!registryTask && !isTaskActive(initialTask.status)) {
+    return completeTerminalTask(initialTask, context);
   }
 
   if (!parsed.block) {
     if (isTaskActive(initialTask.status)) {
       return taskOutputResult("not_ready", await projectTask(initialTask, context));
     }
-    const projectedTask = await projectTask(initialTask, context);
-    // notified 是完成结果已成功交付的 claim；投影前写入会在读取失败或
-    // abort 时吞掉后续 completion notification。异步投影不会被外层取消竞态强制
-    // 停止，因此 await 返回后必须再次检查 signal，再提交 claim。
-    throwIfAborted(context.abortSignal);
-    markTaskNotified(initialTask, context);
-    return taskOutputResult("success", projectedTask);
+    return completeTerminalTask(initialTask, context);
   }
 
   await emitWaitingProgress(context);
@@ -82,10 +79,7 @@ const taskOutputHandler: ToolHandler = async (input, context) => {
   if (isTaskActive(task.status)) {
     return taskOutputResult("timeout", await projectTask(task, context));
   }
-  const projectedTask = await projectTask(task, context);
-  throwIfAborted(context.abortSignal);
-  markTaskNotified(task, context);
-  return taskOutputResult("success", projectedTask);
+  return completeTerminalTask(task, context);
 };
 
 export const taskOutputToolEntry: ToolEntry = {
@@ -157,28 +151,49 @@ function taskOutputFailure(errorCode: number, message: string): ToolHandlerFailu
   return { result: false, errorCode, message };
 }
 
-function validateTaskOutputInput(
-  input: unknown,
-  context: ToolInputValidationContext,
-): ToolInputValidationResult {
-  const parsed = TaskOutputInputSchema.parse(input) as TaskOutputInput;
-  return getTaskOutputInputFailure(parsed, context.runtimeTaskRegistry) ?? { result: true };
+function missingTaskIdFailure(): ToolHandlerFailure {
+  return taskOutputFailure(TASK_OUTPUT_ERROR_CODE.TASK_ID_REQUIRED, "Task ID is required");
 }
 
-function getTaskOutputInputFailure(
-  input: TaskOutputInput,
-  registry: ToolInputValidationContext["runtimeTaskRegistry"],
-): ToolHandlerFailure | undefined {
-  if (!input.task_id) {
-    return taskOutputFailure(TASK_OUTPUT_ERROR_CODE.TASK_ID_REQUIRED, "Task ID is required");
-  }
-  if (registry && !registry.get(input.task_id)) {
-    return taskOutputFailure(
-      TASK_OUTPUT_ERROR_CODE.TASK_NOT_FOUND,
-      `No task found with ID: ${input.task_id}`,
-    );
-  }
-  return undefined;
+function taskNotFoundFailure(taskId: string): ToolHandlerFailure {
+  return taskOutputFailure(
+    TASK_OUTPUT_ERROR_CODE.TASK_NOT_FOUND,
+    `No task found with ID: ${taskId}`,
+  );
+}
+
+/**
+ * 终态任务的唯一交付出口：投影 → 复查 abort → 提交 `notified` claim。
+ *
+ * 顺序不能反：`notified` 是「完成结果已成功交付」的 claim，投影前写入会在读取失败或 abort
+ * 时吞掉后续 completion notification；异步投影不会被外层取消竞态强制停止，所以 await
+ * 返回后必须再看一次 signal。
+ */
+async function completeTerminalTask(
+  task: RuntimeTaskSnapshot,
+  context: ToolExecutionContext,
+): Promise<TaskOutputResult> {
+  const projectedTask = await projectTask(task, context);
+  throwIfAborted(context.abortSignal);
+  markTaskNotified(task, context);
+  return taskOutputResult("success", projectedTask);
+}
+
+/**
+ * 语义校验保持「hook 与权限之前收口」，但允许异步：`TaskOutput` 的 id 可能只存在于
+ * 持久化层（上一命的子代理）。注册表命中即放行，不额外打库。
+ */
+async function validateTaskOutputInput(
+  input: unknown,
+  context: ToolInputValidationContext,
+): Promise<ToolInputValidationResult> {
+  const parsed = TaskOutputInputSchema.parse(input) as TaskOutputInput;
+  if (!parsed.task_id) return missingTaskIdFailure();
+  // 注册表缺席是装配错误，交给 handler 的 requireRuntimeTaskRegistry 报，别在这里说成「找不到任务」。
+  if (!context.runtimeTaskRegistry) return { result: true };
+  if (context.runtimeTaskRegistry.get(parsed.task_id)) return { result: true };
+  if (await context.findPersistedSubagentTask?.(parsed.task_id)) return { result: true };
+  return taskNotFoundFailure(parsed.task_id);
 }
 
 export function formatTaskOutputModelContent(output: unknown): string {

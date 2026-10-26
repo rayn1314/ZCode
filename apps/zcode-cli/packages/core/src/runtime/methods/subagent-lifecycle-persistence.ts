@@ -8,6 +8,8 @@
 // 稳定 id 的 session entry —— 与 `user-input-auto-resolution` 同款「需要跨重启的派生事实」
 // 做法（业务侧只读 entry 的最终状态，不重放事件）。
 
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   SESSION_ENTRY_SUBAGENT_LIFECYCLE,
   SessionEventType,
@@ -204,25 +206,37 @@ export function readLifecycleData(
 }
 
 /**
- * 从父会话的 lifecycle entry 重建一个**终态** task 快照（spec `subagent-session-messaging.md` D9）。
+ * 重建持久化子代理任务时可用的额外事实。日志与输出根都不属于「生命周期」本身，
+ * 所以不落 entry，由调用方按当前进程的装配传进来。
+ */
+export interface PersistedSubagentTaskLookup {
+  logger?: Logger;
+  /**
+   * 派发时冻结的输出根（`config.subagents.outputRootDir`）。给出时按 runner 建目录的同一公式
+   * 推出 `outputFile`——entry 本身不存这个路径，但公式是确定的：`<root>/<父会话>/<agentId>/output.txt`。
+   * 缺省时与 runner 一致回落到 `<tmp>/zcode-agents`，让 `TaskOutput` 仍能读到上一命的产物。
+   */
+  outputRootDir?: string;
+}
+
+/**
+ * 按 agentId 从持久化数据重建一个**终态** task 快照（spec `subagent-session-messaging.md` D9）。
  *
- * 进程重启或会话重新接管后 `RuntimeTaskRegistry` 是空的，`SendMessage(to: "agent_*")` 本来
- * 只能报「No active local_agent task found」——但子会话和这条 entry 都还在库里，agent 没消失、
- * 只是不在内存。重建出的快照交给既有 `resumeTerminalAgentInBackground` 续跑同一子会话，
- * 不新开执行路径。
+ * 调用方：`SendMessage` 的 `agent_*` 寻址、输入复活（D10）、`TaskOutput`。三处都是「注册表
+ * 未命中不等于 agent 不存在」——子会话、生命周期 entry 与产物都还在，只是不在内存。
  *
- * 状态归一与 `ListAgents` 同口径：spawn-only 或仍是 `running` 的陈旧 entry 落成 `lost`
- * （进程重启后那个 runtime 已不存在；`running` 只能由本进程注册表断言）。
- *
- * `notified: true`：这条任务在上一条命里已经宣告过终态，重建不得再触发一遍通知——本次续跑
- * 产生的终态由 resume 新注册的快照负责宣告。
+ * 重建出的快照只能用于续跑或只读投影，绝不能当成活体状态：状态经
+ * `mapSubagentLifecycleStatus` 归一，`running` 一律落成 `lost`（`running` 只能由本进程
+ * 注册表断言）。`notified: true`：这条任务在上一条命里已经宣告过终态，重建不得再触发一遍
+ * 通知——续跑产生的终态由新注册的快照负责宣告。
  */
 export async function readPersistedSubagentTask(
   store: SessionStorePort | undefined,
   sessionId: SessionId,
   agentId: string,
-  logger?: Logger,
+  lookup: PersistedSubagentTaskLookup = {},
 ): Promise<RuntimeTaskSnapshot | undefined> {
+  const { logger, outputRootDir } = lookup;
   if (!store) return undefined;
   const entryId = subagentLifecycleEntryId(agentId);
   let entry: SessionEntryInfo | null | undefined;
@@ -253,6 +267,13 @@ export async function readPersistedSubagentTask(
 
   const facts = readLifecycleData(entry ?? undefined);
   if (!facts?.childSessionId) return undefined;
+  // runner 建目录的同一公式（`createSubagentLifecycle`）：entry 不存路径，但路径是确定的。
+  // 有了它 `TaskOutput` 才能读到上一命的产物，而不是只报一个状态、正文空白。
+  const agentOutputDir = join(
+    outputRootDir ?? join(tmpdir(), "zcode-agents"),
+    sessionId,
+    facts.agentId,
+  );
   return {
     taskId: facts.agentId,
     agentId: facts.agentId,
@@ -264,6 +285,7 @@ export async function readPersistedSubagentTask(
     // 持久化 JSON 丢品牌，但该值由 createSessionId 产出，跨这个边界收回 SessionId 是安全的。
     childSessionId: facts.childSessionId as SessionId,
     ...(facts.parentToolCallId ? { parentToolCallId: facts.parentToolCallId } : {}),
+    outputFile: join(agentOutputDir, "output.txt"),
     isBackgrounded: facts.background,
     notified: true,
     type: "local_agent",

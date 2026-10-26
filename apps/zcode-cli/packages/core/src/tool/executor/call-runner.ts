@@ -279,7 +279,8 @@ async function executeToolCallImpl(
       return result;
     }
 
-    const toolInputValidation = entry.validateInput?.(executionInput, {
+    const toolInputValidation = await entry.validateInput?.(executionInput, {
+      findPersistedSubagentTask: deps.findPersistedSubagentTask,
       runtimeTaskRegistry: deps.runtimeTaskRegistry,
     });
     if (toolInputValidation && isToolHandlerFailure(toolInputValidation)) {
@@ -543,6 +544,7 @@ async function executeToolCallImpl(
         dynamicWorkflowSnippetPort: deps.dynamicWorkflowSnippetPort,
         modelCatalogPort: deps.modelCatalogPort,
         runtimeTaskRegistry: deps.runtimeTaskRegistry,
+        findPersistedSubagentTask: deps.findPersistedSubagentTask,
         readFileState: deps.readFileState,
         recordReadFileStateMetadata: (metadata) => {
           readFileStateMetadata = metadata;

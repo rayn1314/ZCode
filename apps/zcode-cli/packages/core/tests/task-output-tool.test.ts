@@ -890,8 +890,94 @@ describe("TaskOutput tool", () => {
     });
   });
 
-  it("projects schema and TaskOutput handler failures through the executor", async () => {
-    const sessionId = createSessionId("task-output-validation");
+  // spec `subagent-session-messaging.md` D9 / `subagent-input-revival.md` D10：
+  // 重启后注册表为空，但上一命的子代理与产物都还在——读得到，不该报「找不到任务」。
+  it("重启后按持久化快照读上一命的子代理产物，终态不进入等待", async () => {
+    const outputRoot = await mkdtemp(join(tmpdir(), "zcode-task-output-persisted-"));
+    const outputFile = join(outputRoot, "output.txt");
+    await writeFile(outputFile, "previous life output", "utf8");
+    // 注册表故意留空：模拟新进程。
+    const registry = new InMemoryRuntimeTaskRegistry();
+
+    try {
+      const output = await taskOutputToolEntry.handler(
+        { task_id: "agent_prev", block: true, timeout: 60_000 },
+        toolContext(registry, {
+          findPersistedSubagentTask: async (agentId) =>
+            agentId === "agent_prev"
+              ? runtimeTask({
+                  agentId: "agent_prev",
+                  completedAt: new Date("2026-07-25T00:00:01.000Z"),
+                  outputFile,
+                  status: "interrupted",
+                  taskId: "agent_prev",
+                })
+              : undefined,
+        }),
+      );
+
+      expect(output).toMatchObject({
+        retrieval_status: "success",
+        task: {
+          task_id: "agent_prev",
+          status: "interrupted",
+          output: "previous life output",
+          outputFile,
+        },
+      });
+    } finally {
+      await rm(outputRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("持久化里存在的任务 id 通过 pre-hook 校验，不在 hook 前被判未知", async () => {
+    const sessionId = createSessionId("task-output-persisted-validation");
+    const turnId = createTurnId("task-output-persisted-validation");
+    const traceContext = createRootTraceContext({ sessionId, turnId });
+    const registry = createToolRegistry();
+    registry.register(taskOutputToolEntry);
+    let preToolUseCalls = 0;
+    const hookRunner = createInMemoryHookRunner({
+      hooks: [
+        {
+          event: HookEventName.PreToolUse,
+          matcher: TASK_OUTPUT_TOOL_NAME,
+          callback: async () => {
+            preToolUseCalls += 1;
+            return {};
+          },
+        },
+      ],
+    });
+    const executor = createToolExecutor({
+      emitEvent: async () => undefined,
+      findPersistedSubagentTask: async (agentId) =>
+        agentId === "agent_prev"
+          ? runtimeTask({ agentId: "agent_prev", status: "completed", taskId: "agent_prev" })
+          : undefined,
+      hookRunner,
+      permissionService: new PermissionService(defaultPermissionConfig),
+      registry,
+      runtimeTaskRegistry: new InMemoryRuntimeTaskRegistry(),
+      sessionId,
+      traceContext,
+      turnId,
+    });
+
+    const result = await executor.execute(
+      {
+        id: createToolCallId("task-output-persisted"),
+        input: { task_id: "agent_prev", block: false },
+        name: TASK_OUTPUT_TOOL_NAME,
+      },
+      { traceContext },
+    );
+
+    expect(result.success).toBe(true);
+    expect(preToolUseCalls).toBe(1);
+  });
+
+  it("projects schema and TaskOutput handler failures through the executor", async () => {    const sessionId = createSessionId("task-output-validation");
     const turnId = createTurnId("task-output-validation");
     const traceContext = createRootTraceContext({ sessionId, turnId });
     const registry = createToolRegistry();

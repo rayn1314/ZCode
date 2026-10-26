@@ -98,8 +98,12 @@ export function createDefaultSubagentPort(
     runtimeTaskRegistry: this.runtimeTaskRegistry,
     // spec D9：registry 未命中不等于 agent 不存在——按 lifecycle entry 重建终态快照，
     // 让 `agent_*` 在进程重启 / 会话重新接管后仍可寻址，走同一条续跑路径。
+    // 输出根一并带上，`TaskOutput` 才读得到上一命的产物（entry 不存路径，公式确定）。
     findPersistedSubagentTask: (agentId) =>
-      readPersistedSubagentTask(this.sessionStore, this.sessionId, agentId, this.logger),
+      readPersistedSubagentTask(this.sessionStore, this.sessionId, agentId, {
+        logger: this.logger,
+        outputRootDir: this.config.subagents?.outputRootDir,
+      }),
     emitParentEvent: async (event, traceContext) => {
       if (isStaleBranchRuntimeTaskEvent(this, event)) return;
       await this.appendEvent(event, traceContext);

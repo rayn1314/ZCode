@@ -61,7 +61,7 @@ import type {
   WorkflowPort,
   WorkflowSubmitPort,
 } from "@zcode/contracts";
-import type { RuntimeTaskRegistry } from "../runtime-task/registry.js";
+import type { RuntimeTaskRegistry, RuntimeTaskSnapshot } from "../runtime-task/registry.js";
 import type {
   PersistedReadFileStateMetadata,
   PersistedReadFileStateTool,
@@ -210,6 +210,15 @@ export interface ToolExecutionContext {
   /** 模型目录端口；缺席则 ListModels 报能力缺席，CreateWorkflow 的 subagent_model 被拒。 */
   modelCatalogPort?: ModelCatalogPort;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
+  /**
+   * 按 agentId 从父会话持久化数据重建终态任务快照（spec `subagent-session-messaging.md` D9）。
+   *
+   * `TaskOutput` 用它回答「注册表里没有、但上一命真的跑过」的读取；缺席即本装配没有这项
+   * 能力，handler 只查注册表。只读：不得写注册表或生命周期 entry。
+   */
+  findPersistedSubagentTask?: (
+    agentId: string,
+  ) => Promise<RuntimeTaskSnapshot | undefined> | RuntimeTaskSnapshot | undefined;
   readFileState?: ReadFileStateMap;
   recordReadFileStateMetadata?: (metadata: PersistedReadFileStateMetadata) => void;
   /** 记录 Skill resolved metadata；仅用于 telemetry，不改变模型可见结果。 */
@@ -269,6 +278,13 @@ export interface ToolHandlerFailure {
 
 export interface ToolInputValidationContext {
   runtimeTaskRegistry?: RuntimeTaskRegistry;
+  /**
+   * 同 {@link ToolExecutionContext.findPersistedSubagentTask}：校验也要能看见「上一命跑过」
+   * 的任务，否则 `TaskOutput` 会在 hook / 权限之前被误判成未知 id。
+   */
+  findPersistedSubagentTask?: (
+    agentId: string,
+  ) => Promise<RuntimeTaskSnapshot | undefined> | RuntimeTaskSnapshot | undefined;
 }
 
 export type ToolInputValidationResult = { result: true } | ToolHandlerFailure;
@@ -354,10 +370,14 @@ export interface ToolEntry extends ToolContractDeclaration {
     description?: string;
     inputSchema?: JsonSchema;
   };
+  /**
+   * 语义校验：仍在 PreToolUse hook 与权限之前收口，但允许异步——「这个 id 存不存在」
+   * 可能只有持久化层答得上来（`TaskOutput` 读上一命的子代理）。同步实现照旧返回结果即可。
+   */
   validateInput?: (
     input: unknown,
     context: ToolInputValidationContext,
-  ) => ToolInputValidationResult;
+  ) => ToolInputValidationResult | Promise<ToolInputValidationResult>;
   /**
    * 把模型发出的入参**归一化成将要发生的执行事实**。executor 在 `validateInput` 之后、
    * PreToolUse hook 之前调用，返回值直接替换 `executionInput`。

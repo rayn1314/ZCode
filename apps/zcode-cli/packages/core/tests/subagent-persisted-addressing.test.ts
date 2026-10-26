@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   SessionEventType,
   createSessionEvent,
@@ -89,12 +91,39 @@ describe("readPersistedSubagentTask（spec D9）", () => {
   it("读存储抛错只降级，不断言 agent 不存在", async () => {
     const store = {
       sessionEntry: async () => {
-        throw new Error("disk on fire");
+        throw new Error("database is locked");
       },
     } as unknown as SessionStorePort;
 
     await expect(
       readPersistedSubagentTask(store, sessionId, "agent_broken"),
     ).resolves.toBeUndefined();
+  });
+
+  // TaskOutput 重启后要读上一命的产物：entry 不存路径，按 runner 建目录的同一公式推出来。
+  it("按输出根推导 outputFile（与 runner 的建目录公式一致）", async () => {
+    const store = storeWith([lifecycleRow("agent_output", { status: "completed" })]);
+
+    const snapshot = await readPersistedSubagentTask(store, sessionId, "agent_output", {
+      outputRootDir: "/data/cli/exec",
+    });
+
+    expect(snapshot?.outputFile).toBe(
+      join("/data/cli/exec", sessionId, "agent_output", "output.txt"),
+    );
+  });
+
+  it("没给输出根时与 runner 一样回落到 <tmp>/zcode-agents", async () => {
+    const store = storeWith([lifecycleRow("agent_output_default", { status: "completed" })]);
+
+    const snapshot = await readPersistedSubagentTask(
+      store,
+      sessionId,
+      "agent_output_default",
+    );
+
+    expect(snapshot?.outputFile).toBe(
+      join(tmpdir(), "zcode-agents", sessionId, "agent_output_default", "output.txt"),
+    );
   });
 });

@@ -122,6 +122,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - 状态归一用 `mapSubagentLifecycleStatus`：spawn-only 或仍是 `running` 的陈旧 entry 落成 `lost`（与 D8「history 行只报 lost，不报 running」同一口径）。`lost` 在终态表内，因此走续跑。
 - 重建的快照带 `notified: true`：它在上一条命里已经宣告过，不能因为这次重建再触发一遍终态通知；本次续跑产生的终态由 resume 新注册的快照负责宣告。
 - 重建是**纯读**：不写 registry、不写 entry。续跑失败（profile 已删、子会话缺失等）按既有语义回失败，不留下半条 running。
+- **第三个消费者：`TaskOutput`。** 同一个 `findPersistedSubagentTask` 也接到工具上下文：注册表未命中时读上一命的产物，终态直接交付、不进等待循环。`outputFile` 由 `<outputRootDir>/<父会话>/<agentId>/output.txt` 推出——entry 不存路径，但 runner 建目录的公式是确定的，缺输出根时与 runner 同样回落到 `<tmp>/zcode-agents`。随之语义校验允许异步：校验仍必须在 PreToolUse hook 与权限之前收口，只是「这个 id 存不存在」只有持久化层答得上来；注册表命中即放行，不额外打库。
 
 **不变式**
 
@@ -270,6 +271,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 - core 单测：默认立即返回 `agentId`；`wait:true` 阻塞并返回正文；`ListAgents` 投影；`SendMessage` 目标解析（`agent_*`/`sess_*`）。
 - **D9 验收**：注册表里**没有**该 agent、但父会话有对应 lifecycle entry 时，`SendMessage(to: "agent_*")` 仍走续跑（返回 `resumed_background`，不是「No active local_agent task found」）；entry 也不存在时维持原失败文案；spawn-only / `running` 的陈旧 entry 归一为 `lost` 后仍可续跑；重建快照带 `notified: true`（不重复宣告终态）。
+- **TaskOutput 验收**：注册表为空、父会话有 lifecycle entry 时按重建快照返回上一命的产物（`retrieval_status: success`，`output` 来自推导出的 `outputFile`），`block: true` 也不进等待；该校验发生在 PreToolUse 之前；entry 不存在时维持 `No task found with ID: …`。
 - bootstrap 集成：同进程投递恒用 `guide`（忙 → steered/排队，闲 → 开新轮唤醒，不抢占）；冷会话先 `ensureResumed`。
 - services 单测：`deliverSessionMessage` 实时投递（统一 `guide`，不抢占）、不可达落 mailbox、命中后 `consume` 去重、回执投回源会话。
 - 门禁：`pnpm typecheck:cli`、`pnpm lint`；触及根包补 `pnpm typecheck`。
