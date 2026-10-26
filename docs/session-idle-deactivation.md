@@ -14,10 +14,11 @@ workspace 的全局池，也不按 RSS 设置硬上限。
 
 ## 产品合同
 
-1. 每个 CLI 对满足安全条件的空闲 session 使用 `10 分钟` idle TTL；TTL 到期后无论当前
+1. 每个 CLI 对满足安全条件的空闲 session 使用 `30 分钟` idle TTL；TTL 到期后无论当前
    resident 数量多少都回收。
-2. 每个 CLI 同时使用 `highWater = 16`、`lowWater = 8` 的数量迟滞：超过高水位时不等待
-   TTL，按 LRU 回收可安全冷恢复的 session，直到低水位或没有候选。
+2. 每个 CLI 同时使用 `highWater = 6`、`lowWater = 3` 的数量迟滞：超过高水位时不等待
+   TTL，按 LRU 回收可安全冷恢复的 session，直到低水位或没有候选。高水位只统计主会话；
+   子代理子会话不占此配额（见 `apps/zcode-cli/packages/bootstrap/spec/subagent-idle-release.md`）。
 3. 正在运行、排队、等待交互、被订阅或有协议操作在途的 session 永不回收。“正在运行”不仅
    包含前台 turn 和 background task registry，还包含 runtime 自己拥有的 detached sidecar，以及
    协议层释放 active lock 后尚未完成的持久化、快照和广播收尾。若这些 session 本身已经超过
@@ -56,8 +57,8 @@ workspace 的全局池，也不按 RSS 设置硬上限。
                     │ 记录 eligibleSinceAt      │
                     └───────┬──────────┬───────┘
                             │          │
-                 idle>=10min│          │resident>16
-                            │          │按 LRU 回收到 8
+                 idle>=30min│          │resident>6
+                            │          │按 LRU 回收到 3
                             └────┬─────┘
                                  v
                     ┌──────────────────────────┐
@@ -77,22 +78,22 @@ workspace 的全局池，也不按 RSS 设置硬上限。
 并发 session 可以超过目标：
 
 ```text
-highWater = 16
-lowWater = 8
+highWater = 6
+lowWater = 3
 
 18 个 session 都在运行/订阅中
   -> resident = 18
   -> 可回收 = 0
   -> 不终止任何任务，暂时保持 18
 
-其中 12 个变为空闲
-  -> 已超过 highWater，按 LRU 回收 10 个
-  -> resident = 8
+其中 15 个变为空闲
+  -> 已超过 highWater，按 LRU 回收 15 个
+  -> resident = 3
 
-11 个最近使用且已退订的 session
+5 个最近使用且已退订的 session
   -> resident 未超过 highWater
-  -> 10 分钟内继续保持热状态
-  -> 各自 TTL 到期后回收，即使 resident 已少于 8
+  -> 30 分钟内继续保持热状态
+  -> 各自 TTL 到期后回收，即使 resident 已少于 3
 ```
 
 ## 生命周期与释放矩阵
@@ -132,11 +133,11 @@ record/runtime 的异步 owner”：
 ```text
 存在任一 owner
   -> ACTIVE_PROTECTED
-  -> 即使 resident > 16 也不能回收
+  -> 即使 resident > 6 也不能回收
 
 所有 owner 已释放 + session 可从磁盘恢复
   -> IDLE_WARM
-  -> idle TTL 到期，或 resident > 16 时按 LRU，才允许回收
+  -> idle TTL 到期，或 resident > 6 时按 LRU，才允许回收
 ```
 
 ### 用户操作与功能场景
@@ -249,8 +250,8 @@ workspace 配置同步，避免只给显式 `{sessionId}` 请求加锁后仍留�
 - 一次 rebalance 先回收 TTL 到期项，再用剩余 resident 数判断是否超过 highWater；超过时回收到
   lowWater 或没有候选。
 - 每个协议请求结束后触发一次 rebalance，使 create/resume/unsubscribe 后及时更新计时或收敛。
-- 既有 process resource sampler 每 60 秒兜底，不新增 per-session 定时器；因此 10 分钟 TTL 的
-  实际回收窗口是成为 eligible 后约 10～11 分钟。
+- 既有 process resource sampler 每 60 秒兜底，不新增 per-session 定时器；因此 30 分钟 TTL 的
+  实际回收窗口是成为 eligible 后约 30～31 分钟。
 - 默认参数是代码常量，测试可注入较小值与时钟；本期不新增环境变量或用户设置，也不读取 RSS
   做回收决策。
 - server 装配层的兼容字段 `sessionResidentTargetCount` 只覆盖 low-water；未显式提供
@@ -293,7 +294,7 @@ pane 关闭/切走
   -> ConversationProjectionStore.close()
   -> 从 SessionDataLayer 删除该 topic store
   -> CLI 观察到 subscriber=0
-  -> 进入 CLI 10 分钟 idle TTL；突发超过 highWater 时也可参与 LRU
+  -> 进入 CLI 30 分钟 idle TTL；突发超过 highWater 时也可参与 LRU
 ```
 
 如果 renderer 仍持有需要实时更新的重 projection，它就仍有 subscription，CLI 不会回收；如果 CLI

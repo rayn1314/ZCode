@@ -152,9 +152,9 @@ async function waitForAll(pool: SessionResidentPool, sessionIds: string[]): Prom
 }
 
 describe("SessionResidentPool", () => {
-  it("默认混合策略为 idle 30 分钟、highWater 16、target 8", () => {
-    expect(DEFAULT_SESSION_RESIDENT_TARGET_COUNT).toBe(8);
-    expect(DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT).toBe(16);
+  it("默认混合策略为 idle 30 分钟、highWater 6、target 3", () => {
+    expect(DEFAULT_SESSION_RESIDENT_TARGET_COUNT).toBe(3);
+    expect(DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT).toBe(6);
     expect(DEFAULT_SESSION_RESIDENT_IDLE_TIMEOUT_MS).toBe(30 * 60 * 1_000);
   });
 

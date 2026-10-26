@@ -4,8 +4,11 @@
 // 安全事实和去激活执行面；pool 只维护 idle TTL、LRU touch、operation lease 与
 // deactivation gate。
 
-export const DEFAULT_SESSION_RESIDENT_TARGET_COUNT = 8;
-export const DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT = 16;
+// 高水位只统计主会话（子代理子会话不占配额，见 SessionResidencyFacts.countsTowardResidentCap），
+// 单个常驻主会话约 0.8 GB（完整 ZCodeApp + 内存事件库 + 插件 MCP 宿主），
+// 6 个 ≈ 4.8 GB 上限，是「桌面可用内存」与「点回来冷恢复两三秒」之间的取舍点。
+export const DEFAULT_SESSION_RESIDENT_TARGET_COUNT = 3;
+export const DEFAULT_SESSION_RESIDENT_HIGH_WATER_COUNT = 6;
 export const DEFAULT_SESSION_RESIDENT_IDLE_TIMEOUT_MS = 30 * 60 * 1_000;
 
 export type SessionDeactivationReason = "high_water_lru" | "idle_timeout";
@@ -117,22 +120,17 @@ export class SessionResidentPool {
    * 获取协议请求租约。全进程计数防跨 session 的 async workspace 操作与 sampler
    * 回收并发；按 session 计数表达精确所有权并参与该 session 的 eligibility。
    */
-  async acquireOperation(
-    sessionIdsInput?: string | readonly string[],
-  ): Promise<() => void> {
+  async acquireOperation(sessionIdsInput?: string | readonly string[]): Promise<() => void> {
     const sessionIds = [
       ...new Set(
-        (typeof sessionIdsInput === "string" ? [sessionIdsInput] : sessionIdsInput ?? []).filter(
+        (typeof sessionIdsInput === "string" ? [sessionIdsInput] : (sessionIdsInput ?? [])).filter(
           (sessionId) => sessionId.length > 0,
         ),
       ),
     ];
     this.activeOperationCount += 1;
     for (const sessionId of sessionIds) {
-      this.operationLeaseCounts.set(
-        sessionId,
-        (this.operationLeaseCounts.get(sessionId) ?? 0) + 1,
-      );
+      this.operationLeaseCounts.set(sessionId, (this.operationLeaseCounts.get(sessionId) ?? 0) + 1);
     }
 
     let released = false;
