@@ -204,6 +204,183 @@ describe("session history hydrator", () => {
     });
   });
 
+  // spec `subagent-continuation-copy.md` D4c / 验收 A3：冷恢复的中断 Agent 派发必须带句柄，
+  // 否则父代理读历史时只剩「重开」一个选项，已花的 token 与已产出的工作全部作废。
+  it("gives an interrupted Agent dispatch its subagent handle", async () => {
+    const sessionID = createSessionId("hydrate-interrupted-agent");
+    const userID = createMessageId("user");
+    const assistantID = createMessageId("assistant");
+    const agentToolCallId = "tool_agent_dispatch";
+    const readToolCallId = "tool_read_sibling";
+    const history = new MessageHistoryImpl();
+    history.init("system prompt");
+
+    const result = await hydrateMessageHistoryFromSession({
+      history,
+      messages: [
+        {
+          info: {
+            id: userID,
+            sessionID,
+            role: "user",
+            time: { created: 1 },
+            agent: "zcode-agent",
+            model: { providerID, modelID },
+          },
+          parts: [
+            {
+              id: createPartId("user-text"),
+              messageID: userID,
+              sessionID,
+              text: "survey the codebase",
+              type: "text",
+            },
+          ],
+        },
+        {
+          info: {
+            id: assistantID,
+            sessionID,
+            role: "assistant",
+            time: { created: 2 },
+            parentID: userID,
+            modelID,
+            providerID,
+            mode: "build",
+            agent: "zcode-agent",
+            path: { cwd: "/tmp/project", root: "/tmp/project" },
+            cost: 0,
+            tokens: {
+              input: 100,
+              output: 20,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+              total: 120,
+            },
+          },
+          parts: [
+            {
+              id: createPartId("agent-tool"),
+              callID: agentToolCallId,
+              messageID: assistantID,
+              sessionID,
+              state: {
+                input: { description: "survey", prompt: "survey the codebase" },
+                status: "running",
+                time: { start: 3 },
+              },
+              tool: "Agent",
+              type: "tool",
+            },
+            {
+              id: createPartId("read-tool"),
+              callID: readToolCallId,
+              messageID: assistantID,
+              sessionID,
+              state: {
+                input: { file_path: "README.md" },
+                status: "running",
+                time: { start: 3 },
+              },
+              tool: "Read",
+              type: "tool",
+            },
+          ],
+        },
+      ],
+      subagentHandles: new Map([[agentToolCallId, "agent_1234"]]),
+    });
+
+    expect(result.interruptedToolCount).toBe(2);
+    const toolResults = history
+      .toRuntimeEntries()
+      .filter((entry) => entry.message.role === "tool")
+      .map((entry) => (entry.message.role === "tool" ? entry.message.content : ""));
+    const agentResult = toolResults.find((content) => content.includes("agent_1234"));
+    expect(agentResult).toContain("SendMessage with to: 'agent_1234'");
+    // 中断没有 provider 错误链可读，所以不得声称知道失败类型（D4 的姿态）。
+    expect(agentResult).not.toContain("Failure kind:");
+    // 同批的普通工具必须逐字节不变——它们本来就没有「续跑」这回事。
+    expect(toolResults).toContain("[Tool execution was interrupted before resume]");
+  });
+
+  // 验收 A4：句柄缺席（旧会话没有 lifecycle entry）时退回泛化文案，不编造 agentId。
+  it("falls back to the generic copy when no subagent handle is known", async () => {
+    const sessionID = createSessionId("hydrate-interrupted-agent-no-handle");
+    const userID = createMessageId("user");
+    const assistantID = createMessageId("assistant");
+    const history = new MessageHistoryImpl();
+    history.init("system prompt");
+
+    await hydrateMessageHistoryFromSession({
+      history,
+      messages: [
+        {
+          info: {
+            id: userID,
+            sessionID,
+            role: "user",
+            time: { created: 1 },
+            agent: "zcode-agent",
+            model: { providerID, modelID },
+          },
+          parts: [
+            {
+              id: createPartId("user-text"),
+              messageID: userID,
+              sessionID,
+              text: "survey the codebase",
+              type: "text",
+            },
+          ],
+        },
+        {
+          info: {
+            id: assistantID,
+            sessionID,
+            role: "assistant",
+            time: { created: 2 },
+            parentID: userID,
+            modelID,
+            providerID,
+            mode: "build",
+            agent: "zcode-agent",
+            path: { cwd: "/tmp/project", root: "/tmp/project" },
+            cost: 0,
+            tokens: {
+              input: 100,
+              output: 20,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+              total: 120,
+            },
+          },
+          parts: [
+            {
+              id: createPartId("agent-tool"),
+              callID: "tool_agent_dispatch",
+              messageID: assistantID,
+              sessionID,
+              state: {
+                input: { description: "survey", prompt: "survey the codebase" },
+                status: "running",
+                time: { start: 3 },
+              },
+              tool: "Agent",
+              type: "tool",
+            },
+          ],
+        },
+      ],
+    });
+
+    const toolResults = history
+      .toRuntimeEntries()
+      .filter((entry) => entry.message.role === "tool")
+      .map((entry) => (entry.message.role === "tool" ? entry.message.content : ""));
+    expect(toolResults).toEqual(["[Tool execution was interrupted before resume]"]);
+  });
+
   it.each([
     {
       name: "a complete provider total",
@@ -2316,6 +2493,104 @@ describe("session history hydrator", () => {
       expect(JSON.stringify(projected)).not.toContain(stalePath);
     },
   );
+
+  // spec `subagent-continuation-copy.md` D4c 的端到端契约：落库的 lifecycle entry 是 hydration
+  // 唯一的句柄来源。这条用例把「entry → 句柄表 → 模型面 tool result」整条链钉住——断在任何一环
+  // （字段没落盘 / 键对不上 / hydration 没用表）父代理读历史时都只剩「重开」一个选项。
+  it("carries a subagent handle from the lifecycle entry into the model-visible tool result", async () => {
+    const { buildSubagentLifecycleEntry, readLifecycleData } =
+      await import("../src/runtime/methods/subagent-lifecycle-persistence.js");
+    const { createSessionEvent, SessionEventType } = await import("@zcode/contracts");
+
+    const sessionID = createSessionId("hydrate-subagent-handle-e2e");
+    const spawnRow = buildSubagentLifecycleEntry({
+      event: createSessionEvent(SessionEventType.SubagentSpawned, sessionID, {
+        agentId: "agent_e2e",
+        childSessionId: "sess_subagent_e2e",
+        agentType: "explore",
+        parentToolCallId: "tool_agent_e2e",
+      }),
+    });
+
+    // resume 侧的建表逻辑：entry → Map<parentToolCallId, agentId>。
+    const handles = new Map<string, string>();
+    for (const row of [spawnRow]) {
+      const facts = readLifecycleData(row);
+      if (facts?.parentToolCallId) handles.set(facts.parentToolCallId, facts.agentId);
+    }
+
+    const history = new MessageHistoryImpl();
+    history.init("system prompt");
+    await hydrateMessageHistoryFromSession({
+      history,
+      messages: [
+        {
+          info: {
+            id: createMessageId("user"),
+            sessionID,
+            role: "user",
+            time: { created: 1 },
+            agent: "zcode-agent",
+            model: { providerID, modelID },
+          },
+          parts: [
+            {
+              id: createPartId("user-text"),
+              messageID: createMessageId("user"),
+              sessionID,
+              text: "survey",
+              type: "text",
+            },
+          ],
+        },
+        {
+          info: {
+            id: createMessageId("assistant"),
+            sessionID,
+            role: "assistant",
+            time: { created: 2 },
+            parentID: createMessageId("user"),
+            modelID,
+            providerID,
+            mode: "build",
+            agent: "zcode-agent",
+            path: { cwd: "/tmp/project", root: "/tmp/project" },
+            cost: 0,
+            tokens: {
+              input: 100,
+              output: 20,
+              reasoning: 0,
+              cache: { read: 0, write: 0 },
+              total: 120,
+            },
+          },
+          parts: [
+            {
+              id: createPartId("agent-tool"),
+              callID: "tool_agent_e2e",
+              messageID: createMessageId("assistant"),
+              sessionID,
+              state: {
+                input: { description: "survey", prompt: "survey the codebase" },
+                status: "running",
+                time: { start: 3 },
+              },
+              tool: "Agent",
+              type: "tool",
+            },
+          ],
+        },
+      ],
+      subagentHandles: handles,
+    });
+
+    const toolResults = history
+      .toRuntimeEntries()
+      .filter((entry) => entry.message.role === "tool")
+      .map((entry) => (entry.message.role === "tool" ? entry.message.content : ""));
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0]).toContain("SendMessage with to: 'agent_e2e'");
+  });
 });
 
 function userMessage(

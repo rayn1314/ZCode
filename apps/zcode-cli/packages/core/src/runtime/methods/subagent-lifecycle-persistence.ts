@@ -27,6 +27,14 @@ export interface SubagentLifecycleEntryData {
   agentType: string;
   description: string;
   background: boolean;
+  /**
+   * 派发这次子代理的父侧工具调用 id（spawn 事件 payload 的 `parentToolCallId`）。
+   *
+   * 它同时就是父侧那个 Agent tool part 的 `callID`，因此冷恢复时能凭它把「中断的派发」
+   * 与「这个 agentId」对上——没有它，hydration 只能把中断的 Agent 调用浇成泛化文案，
+   * 父代理手里就不剩 `agentId` 了（spec `subagent-continuation-copy.md` D4c）。
+   */
+  parentToolCallId?: string;
   /** 事件里的原词（spawn="running"、stop="completed"/"failed"/"stopped"…）；归一交给读取侧。 */
   status?: string;
   startedAt: number;
@@ -69,6 +77,9 @@ export function buildSubagentLifecycleEntry(input: {
   const created = existing?.time.created ?? timestamp;
   const startedAt = previous?.startedAt ?? created;
   const status = nonEmptyString(payload.status);
+  // stop 事件不带 parentToolCallId，必须沿用 spawn 行上的值，否则覆写会把关联键丢掉
+  // （与 created/startedAt 同一条约束 b 的理由：stop 只更新终态相关字段）。
+  const parentToolCallId = nonEmptyString(payload.parentToolCallId) ?? previous?.parentToolCallId;
 
   const data: SubagentLifecycleEntryData = {
     agentId,
@@ -76,6 +87,7 @@ export function buildSubagentLifecycleEntry(input: {
     agentType: nonEmptyString(payload.agentType) ?? previous?.agentType ?? "subagent",
     description: nonEmptyString(payload.description) ?? previous?.description ?? "",
     background: payload.background === true || previous?.background === true,
+    ...(parentToolCallId ? { parentToolCallId } : {}),
     ...(status ? { status } : {}),
     startedAt,
     // spawn（含 resume 复活）清掉旧终态，回到「无终态」；stop 写入结束时刻。
@@ -173,6 +185,9 @@ export function readLifecycleData(
     agentType: nonEmptyString(data.agentType) ?? "subagent",
     description: nonEmptyString(data.description) ?? "",
     background: data.background === true,
+    ...(nonEmptyString(data.parentToolCallId)
+      ? { parentToolCallId: nonEmptyString(data.parentToolCallId)! }
+      : {}),
     ...(status ? { status } : {}),
     startedAt: typeof data.startedAt === "number" ? data.startedAt : entry.time.created,
     ...(typeof data.endedAt === "number" ? { endedAt: data.endedAt } : {}),

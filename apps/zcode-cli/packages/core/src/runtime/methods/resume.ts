@@ -37,6 +37,8 @@ import {
 import { resetProjectMemoryRecall } from "../helpers/project-memory-recall.js";
 import { restoreDynamicWorkflowActivationOnResume } from "./dynamic-workflow-activation.js";
 import { reconcileOrphanedSubagentLifecycles } from "./subagent-lifecycle-reconciliation.js";
+import { readLifecycleData } from "./subagent-lifecycle-persistence.js";
+import { SESSION_ENTRY_SUBAGENT_LIFECYCLE } from "../deps.js";
 import { repairPersistedRemoteSessionPaths } from "../helpers/persisted-remote-session-path-repair.js";
 import {
   restoreWorkspaceCheckpointEntries,
@@ -168,6 +170,9 @@ export async function resumeFromStore(
     rewindCreatedMessageId,
     rewindKeptMessageIds,
     rewindTargetMessageId,
+    // 中断的 Agent 派发要把句柄写回模型面，否则父代理读历史时只剩「重开」一个选项，
+    // 已花的 token 与已产出的工作全部作废（spec `subagent-continuation-copy.md` D4c）。
+    subagentHandles: await buildSubagentHandleTable.call(this),
   });
   announceSessionShellEnvironmentNoticeAfterResume(this, {
     persistedEnvInfo,
@@ -465,4 +470,49 @@ export function injectTargetStateIntoMessageHistory(
       "A completed plan, todo list, checklist, or planning phase is not completion evidence unless the objective was only to produce that artifact.",
     ].join("\n"),
   );
+}
+
+/**
+ * 父侧工具调用 id → agentId 的句柄表，供 hydration 把「中断的 Agent 派发」对回具体子代理
+ * （spec `subagent-continuation-copy.md` D4c）。
+ *
+ * 读侧只有一处：`runtime/subagent_lifecycle` entry 经 `readLifecycleData` 解析（孤儿对账与
+ * roster 投影共用同一函数，不为这里再写一份字段判读）。缺 `parentToolCallId` 的行跳过——
+ * 那是 spawn 早于本字段存在的旧数据，硬猜一个键只会让 hydration 查不到、白绕一圈。
+ *
+ * 失败只降级返回空表：句柄是「把已知事实递给模型」的优化，不是恢复的前提；读存储失败时
+ *  hydration 退回泛化中断文案（既有行为），会话本身必须能恢复。
+ */
+async function buildSubagentHandleTable(
+  this: AgentRuntimeInternal,
+): Promise<Map<string, string> | undefined> {
+  const store = this.sessionStore;
+  const sessionEntries = store?.sessionEntries;
+  if (!store || !sessionEntries) return undefined;
+
+  let entries;
+  try {
+    // 保留接收者再调用：`SqliteSessionStore.sessionEntries` 是原型方法，解构后裸调用会丢 `this`。
+    entries = await sessionEntries.call(store, {
+      sessionID: this.sessionId,
+      type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+    });
+  } catch (error) {
+    this.logger?.warn("Failed to read subagent lifecycle entries for resume handles", {
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.handle_table.read_failed",
+      module: "core.runtime",
+      sessionId: this.sessionId,
+      status: "failed",
+    });
+    return undefined;
+  }
+
+  const handles = new Map<string, string>();
+  for (const entry of entries) {
+    const facts = readLifecycleData(entry);
+    if (!facts?.parentToolCallId) continue;
+    handles.set(facts.parentToolCallId, facts.agentId);
+  }
+  return handles.size > 0 ? handles : undefined;
 }

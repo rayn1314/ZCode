@@ -98,6 +98,20 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   追加到模型可见的 `modelContent`（只有显式设置才追加，其余工具逐字节不变）。这是通用能力，
   不在执行器里写子代理特判。
 
+- **D4c 冷恢复的第三条路径同样必须带句柄。** 前两条路径（后台通知、前台失败回执）只覆盖
+  「子代理在本进程内走到终态」；用户中断后重新打开会话时走的是第三条：`resumeFromStore` →
+  `hydrateMessageHistoryFromSession` 把 pending/running 状态的 tool part 统一浇成
+  `[Tool execution was interrupted before resume]`（`session-history-hydrator.ts`）。
+  这句话没有 `agentId`、没有失败类型、没有任何下一步，**父代理手里只剩「重开」这一个选项**——
+  而子代理的 `agentId` 就在同一份持久化数据里（`runtime/subagent_lifecycle` entry 的
+  `agentId` / `childSessionId`），会话重新接管后 `SendMessage(agent_*)` 走
+  `resumeTerminalAgentInBackground` 用同一子会话续跑。因此：hydration 的中断分支对
+  Agent 派发工具必须把句柄写回模型面。
+
+  与 D4b 的分工：D4b 是「失败现场知道分类」，这里**不知道**——中断没有 provider 错误链
+  可读，`classifySubagentFailure` 拿不到事实。所以这里给的是句柄 + 条件式判据（D4 的
+  `unknown` 档姿态），不编造失败类型。
+
 - **D5 续跑的消息内容由父代理写，且必须包含判断。** 复用 `SendMessage(agent_*)`：
   终态走 `resumeTerminalAgentInBackground`，消息以 `coordinator` 身份 steer 进新轮的输入
   （`message-steering.ts` 的 guide 投递），子会话 `resumeFromStore` 恢复历史。因此父代理写的
@@ -111,11 +125,11 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - **D8 `stopped` 必须说清「谁停的」，因为这个事实在运行时是已知的。** `local_agent` 进入
   `stopped` 只有三条真实路径，每条都知道发起方：
 
-  | 路径 | 发起方 | 依据 |
-  | --- | --- | --- |
-  | 模型调 `TaskStop` | `"model"` | `task-stop.ts` 显式传 `initiator: "model"` |
-  | 用户点 GUI / 面板 / 远端的停止 | `"user"` | `runtime.cancelBackgroundTask` 的唯一调用者就是用户的手 |
-  | rewind 丢弃分支时的清扫 | 不填（系统） | `cancelRemovedBranchBackgroundTasks` 不传发起方 |
+  | 路径                           | 发起方       | 依据                                                    |
+  | ------------------------------ | ------------ | ------------------------------------------------------- |
+  | 模型调 `TaskStop`              | `"model"`    | `task-stop.ts` 显式传 `initiator: "model"`              |
+  | 用户点 GUI / 面板 / 远端的停止 | `"user"`     | `runtime.cancelBackgroundTask` 的唯一调用者就是用户的手 |
+  | rewind 丢弃分支时的清扫        | 不填（系统） | `cancelRemovedBranchBackgroundTasks` 不传发起方         |
 
   运行时层早已有 `RuntimeBackgroundStopOptions.initiator`（workflow 分支据此措辞），缺口只在
   `stopLocalAgentBackgroundTask` 没把它转交给 `subagentPort.stopTask`。因此不是「加一个新事实」，
@@ -188,12 +202,36 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 （见 D4b）。内容与后台同源，都由 `formatSubagentFailureGuidance` 生成，只是多带一句
 「工具结果里没有 agentId，所以这里给你」的语义。
 
+### 5. 冷恢复的中断 tool result（D4c）
+
+`hydrateMessageHistoryFromSession` 的中断分支当前对所有工具一视同仁地写
+`[Tool execution was interrupted before resume]`。Agent 派发工具（`Agent` 与其兼容别名
+`Task`，判据用 `isSubagentDispatchToolName`）在这里改写为带句柄的版本：
+
+- **句柄来源**：hydration 调用方传入可选的 `subagentHandles`（`Map<parentToolCallId, agentId>`），
+  由 `resumeFromStore` 从父会话的 `runtime/subagent_lifecycle` entry 读出后传入。hydration
+  自身不读存储——它只消费调用方给的事实，保持纯函数与可测性。
+- **寻址**：tool part 的 `state.input` 里没有 agentId（那是模型的入参），所以**不能**从
+  part 自身反推。用 `callID` 反查：spawn 事件 payload 带 `parentToolCallId`，而它正是父侧
+  那次派发的工具调用 id，与 tool part 的 `callID` 同一个值。
+- **文案**：句柄一定给（`SendMessage with to: '<agentId>'`），动作给条件式判据——与 D4 的
+  `unknown` 档同姿态：如果它中断的是已做完的工作就续跑，否则收窄范围重派。不声称知道失败
+  类型（中断没有错误链可读）。
+- **取不到句柄时**（旧会话、entry 缺失、宿主无持久化）保持原文案不变，不猜、不编 id。
+
+其余工具（Read / Bash / MCP …）的文案**逐字节不变**——它们本来就没有「续跑」这回事。
+
 ## 所有权与不变式
 
 - **口径唯一来源**：续跑语义的表述分布在 Agent 描述、SendMessage 描述、Session guidance 三处，
   但它们描述的是同一条运行时事实（`runner.ts` 的 `sendMessageToLocalAgent` 三态）。三处按 D1b
   分工，不得把分类与动作再抄回去；golden 测试保证前两处不漂移，guidance 段由本 spec 的用例
   保证存在，单条指引长度由 D1b 的预算用例兜住。
+- **D4c 冷恢复路径的句柄来自 lifecycle entry，不来自 tool part。** tool part 的 `state.input`
+  是模型入参（description/prompt/subagent_type/wait/model），结构上没有 agentId；句柄只能从
+  父会话的 `runtime/subagent_lifecycle` entry 读。hydration 因此接受调用方传入的句柄表，
+  自己不碰存储。表的键是 `parentToolCallId`（spawn 事件 payload 的字段），值与 tool part 的
+  `callID` 同一个。
 - **不新增发送通道**：续跑只经 `SendMessage(agent_*)`，不为「自愈」新增自动化重试。
   runner 的重试/看门狗保持不变。
 - **不碰终态所有权**：通知的 `notified` 幂等闸、复活时的 `notified: false` 重置、
@@ -228,10 +266,15 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
   `<next-steps>` 是 local_agent 分支内的字符串节，UI 只读 result/summary，不受影响）。
 - 不改 runner 的三态分派、不改 ready gate、不改 Seat Gate。
 - 不改 workflow / bash 的通知文案。
+- hydration 的 `subagentHandles` 是**可选入参**：旧调用方（rewind 重建分支）不传即维持现状，
+  不构成行为回归。
 - 遗留（有意不做）：通知不带结构化失败分类字段；空 result 的成因（provider 截断）未根治；
   跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）；`stopped` 只有 `user` /
   `model` / 系统三档，**没有 `parent` 档**——父代理停子代理只经 `TaskStop`，与模型自己停是
   同一只手，硬分出来是伪区分。
+- 遗留（D4c 有意不做）：**同进程内中断不经过 hydration**——那一次的工具结果由 executor 的
+  cancel 路径落成 error，模型当场就能读到 `Failure kind: cancelled …` 与 agentId（D4b 已覆盖）。
+  D4c 只补「会话重新打开后模型面只剩一句泛化文案」这个缺口。
 
 ## 验收场景
 
@@ -240,11 +283,17 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - A2 failed 通知带分类：`transient` 明说「provider 请求失败、不是 agent 的活失败」并给出
   `agentId`；`configuration` 明说「续跑会撞同一堵墙」；无分类时退回条件式判据，且不声称
   自己能判断成因。
+- A3 **冷恢复**：会话带着一个 pending 的 Agent tool part 重新打开，hydration 后的 provider
+  历史里该 tool result 含 `SendMessage with to: '<agentId>'` 与条件式续跑判据，且**不含**
+  「重新派发」字样；同一份历史里的 Read / Bash 中断 tool result 仍是
+  `[Tool execution was interrupted before resume]` 逐字节不变。
+- A4 句柄缺席（旧会话没有 lifecycle entry）时，Agent 的中断 tool result 退回原文案，
+  不出现编造的 agentId。
 - A2b 前台失败的工具结果里同时出现根因文案、`Failure kind: …` 与 `SendMessage with to: 'agent_x'`
   ——父代理不再因为拿不到句柄而只能重开。
 - A2c 分类来自错误链：wrapper → cause 两层时仍能读出 `server_error` / `retryable`。
 - A2d 意外中断按真实成因分类：看门狗无活动 → `Failure kind: inactivity timeout (no activity
-  for Nms)` 且**不出现**「provider 请求失败」；父轮取消（`turn_cancelled` / `tool_cancelled`）
+for Nms)` 且**不出现**「provider 请求失败」；父轮取消（`turn_cancelled` / `tool_cancelled`）
   → `Failure kind: cancelled`；上下文超窗 → `configuration`。默认的 `retryable: false`
   不出现在文案里。
 - A3 stopped 通知按发起方分三档：`user` 明说「用户的决定、不要续跑/重派」；`model` 明说

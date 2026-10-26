@@ -45,8 +45,26 @@ import {
 import { compactActiveSessionMessages, isActiveCompactionBoundaryPart } from "./compact-session.js";
 import { filePartToContentBlock, projectPersistedToolMediaContent } from "./file-part-hydration.js";
 import { selectToolPartsForHistory } from "./tool-part-order.js";
+import { isSubagentDispatchToolName } from "../tool/compat.js";
 
 const INTERRUPTED_TOOL_RESULT = "[Tool execution was interrupted before resume]";
+
+/**
+ * 子代理派发工具被中断时，替代泛化文案的模型面 tool result（spec D4c）。
+ *
+ * 中断没有 provider 错误链可读，`classifySubagentFailure` 拿不到事实，所以**不编失败类型**：
+ * 句柄一定给（它就在 `runtime/subagent_lifecycle` entry 里），动作给条件式判据——与
+ * `formatSubagentFailureGuidance` 的 `unknown` 档同姿态。没有这句，父代理读历史时只剩
+ * 「重开」一个选项，而已花的 token 与已产出的工作全部作废。
+ */
+function interruptedSubagentToolResult(agentId: string): string {
+  return (
+    `${INTERRUPTED_TOOL_RESULT} This interrupted an Agent dispatch. ` +
+    `Resume that subagent with SendMessage with to: '${agentId}' if it had already done work worth keeping — ` +
+    `say what it already covered, what is still missing, and what not to redo. ` +
+    `If it had done nothing worth keeping, dispatch a fresh agent with a narrower scope instead.`
+  );
+}
 
 export interface SessionHistoryHydrationResult {
   appliedMessageCount: number;
@@ -64,6 +82,15 @@ export async function hydrateMessageHistoryFromSession(input: {
   rewindCreatedMessageId?: MessageId;
   rewindKeptMessageIds?: readonly MessageId[];
   rewindTargetMessageId?: MessageId;
+  /**
+   * 父工具调用 id → agentId 的句柄表，供中断的 Agent 派发工具把句柄写回模型面（spec D4c）。
+   *
+   * hydration 只消费调用方给的事实，自己不读存储：句柄来自父会话的
+   * `runtime/subagent_lifecycle` entry（其 spawn 事件的 payload 带 `parentToolCallId`），
+   * 由 `resumeFromStore` 读好后建表传入。键必须取 `parentToolCallId`——tool part 的
+   * `state.input` 是模型入参，结构上没有 agentId，而 `callID` 正是那次派发的工具调用 id。
+   */
+  subagentHandles?: ReadonlyMap<string, string>;
 }): Promise<SessionHistoryHydrationResult> {
   const activeMessages = activeSessionMessages(input.messages, {
     branchCutAfterMessageId: input.branchCutAfterMessageId,
@@ -232,7 +259,7 @@ export async function hydrateMessageHistoryFromSession(input: {
       input.history.addToolResult(
         part.callID,
         toolName,
-        INTERRUPTED_TOOL_RESULT,
+        interruptedToolResultForPart(part, toolName, input.subagentHandles),
         false,
         true,
         modelCallWrapper,
@@ -581,6 +608,24 @@ function assistantReasoningFromParts(parts: MessagePart[]): ModelReasoningConten
 
 function isToolPart(part: MessagePart): part is ToolPart {
   return part.type === "tool";
+}
+
+/**
+ * 中断 tool part 的模型面文案：Agent 派发工具带句柄与条件式续跑判据，其余逐字节不变。
+ *
+ * 句柄取不到（旧会话没有 lifecycle entry、宿主无持久化、`subagentHandles` 缺席）时退回
+ * 泛化文案——不猜、不编 id。`Task` 是 `Agent` 的兼容别名，判据复用 `isSubagentDispatchToolName`
+ * 以免两处各写一份工具名清单后静默漂移。
+ */
+function interruptedToolResultForPart(
+  part: ToolPart,
+  toolName: string,
+  subagentHandles: ReadonlyMap<string, string> | undefined,
+): string {
+  if (!subagentHandles || subagentHandles.size === 0) return INTERRUPTED_TOOL_RESULT;
+  if (!isSubagentDispatchToolName(toolName)) return INTERRUPTED_TOOL_RESULT;
+  const agentId = subagentHandles.get(part.callID);
+  return agentId === undefined ? INTERRUPTED_TOOL_RESULT : interruptedSubagentToolResult(agentId);
 }
 
 function modelCallWrapperFromPart(part: ToolPart) {

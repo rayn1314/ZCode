@@ -121,6 +121,48 @@ describe("生命周期终态行", () => {
     expect(mapSubagentLifecycleStatus(facts?.status)).toBe("completed");
   });
 
+  it("parentToolCallId 从 spawn 落行，stop 覆写时沿用不丢", () => {
+    // 这个字段是冷恢复把「中断的 Agent 派发」对回具体子代理的唯一关联键
+    //（spec `subagent-continuation-copy.md` D4c）：stop 事件不带它，覆写时必须沿用 spawn 行。
+    const spawnRow = buildSubagentLifecycleEntry({
+      event: lifecycleEvent({
+        type: SessionEventType.SubagentSpawned,
+        payload: {
+          agentId: "agent_1",
+          childSessionId: "sess_subagent_1",
+          agentType: "explore",
+          parentToolCallId: "tool_agent_1",
+        },
+      }),
+    });
+    expect(readLifecycleData(spawnRow)?.parentToolCallId).toBe("tool_agent_1");
+
+    const stopRow = buildSubagentLifecycleEntry({
+      event: lifecycleEvent({
+        type: SessionEventType.SubagentStopped,
+        payload: { agentId: "agent_1", status: "completed" },
+      }),
+      existing: spawnRow,
+    });
+    expect(readLifecycleData(stopRow)?.parentToolCallId).toBe("tool_agent_1");
+
+    // spawn 早于本字段存在的旧数据：没有就没有，读侧不得凭空补一个键。
+    const legacySpawnRow = buildSubagentLifecycleEntry({
+      event: lifecycleEvent({
+        type: SessionEventType.SubagentSpawned,
+        payload: {
+          agentId: "agent_legacy",
+          childSessionId: "sess_subagent_legacy",
+          agentType: "explore",
+        },
+      }),
+    });
+    expect(readLifecycleData(legacySpawnRow)?.parentToolCallId).toBeUndefined();
+  });
+
+  // spec `subagent-continuation-copy.md` D4c 的端到端契约：落库的 lifecycle entry 是 hydration
+  // 唯一的句柄来源。这条用例把「entry → 句柄表 → hydration 的模型面 tool result」整条链钉住，
+  // 断在任何一环（字段没落盘 / 键对不上 / hydration 没用表）父代理都只剩「重开」一个选项。
   it("没有对应 spawn 的 stop 不落行；缺 agentId/childSessionId 也不落半条", () => {
     const orphanStop = buildSubagentLifecycleEntry({
       event: lifecycleEvent({
