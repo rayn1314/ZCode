@@ -37,7 +37,11 @@ import {
   useDynamicWorkflowUserModeSync,
 } from "@/hooks/useDynamicWorkflowAvailability.js";
 import { DirectoryBrowser } from "@/DirectoryBrowser.js";
-import { attachRemoteProjectWorkspace, resolveEntryProject } from "@/project-sidebar/index.js";
+import {
+  attachRemoteProjectWorkspace,
+  entryClaimsDirectoryPath,
+  resolveRemoteProjectDirectorySelection,
+} from "@/project-sidebar/index.js";
 import { useTabPersistence, type WorkspacePersistenceGate } from "@/hooks/useTabPersistence.js";
 import { useTokenRefresh } from "@/hooks/useTokenRefresh.js";
 import { useWorkspaceServices } from "@/hooks/useWorkspaceServices.js";
@@ -1302,6 +1306,8 @@ function RootInner({
       const session = useRemoteWorkspaceSessionStore.getState().sessionsById[sessionId];
       if (!session?.target || !services.remoteProjectService)
         throw new Error("project.connection-unavailable");
+      // 入口解析与新建都落在项目服务上；缺了它无法判定目录归属，不能猜。
+      if (!services.projectService) throw new Error("project.service-unavailable");
       const identity = session.sourceServerId
         ? buildServerRemoteWorkspaceIdentity({
             serverId: session.sourceServerId,
@@ -1313,36 +1319,26 @@ function RootInner({
       if (epoch !== remoteProjectIntentEpoch.current) throw new Error("project.creation-cancelled");
       const host = directory.hosts.find((item) => item.id === hostId);
       if (!host) throw new Error("remote-project.host-removed");
-      if (
-        remoteConnectionOpenPreference?.preferredWorkspaceTabId ||
-        remoteConnectionOpenPreference?.preferredProjectEntryId
-      ) {
-        // 原项目的认证/安装/升级完成应回到原目录，不能误入新建项目编辑。
-        const retained = directory.entries.find(
-          (entry) =>
-            entry.hostId === host.id &&
-            (!remoteConnectionOpenPreference.preferredProjectEntryId ||
-              entry.id === remoteConnectionOpenPreference.preferredProjectEntryId) &&
-            (entry.roots.some((root) => root.rootPath === path) ||
-              entry.legacyWorkspace?.workspacePath === path),
-        );
-        if (!retained)
-          throw Object.assign(new Error("remote-project.entry-not-found"), {
-            code: "remote-connection-canceled",
-          });
-        let draftProjectId: string | undefined;
-        // 会话重连只恢复原选择；打开项目才解析草稿归属，避免阻止已删除项目的历史会话重连。
-        if (!remoteConnectionOpenPreference.preferredWorkspaceTabId) {
-          if (!services.projectService) throw new Error("project.service-unavailable");
-          // 入口 ID 只校验成员，不会初始化草稿归属；不能沿用本地同目录旧缓存。
-          const project = resolveEntryProject(
-            retained,
-            await services.projectService.readTree({ hostId: host.id }),
-          );
-          if (!project || project.deleted || !project.roots.some((root) => root.rootPath === path))
-            throw new Error("project.not-found");
-          draftProjectId = project.id;
-        }
+      // 项目树只服务「该目录是否已有活项目」这一判据：没有它就只能猜，宁可失败也不能当成新建。
+      const tree = await services.projectService.readTree({ hostId: host.id });
+      if (epoch !== remoteProjectIntentEpoch.current) throw new Error("project.creation-cancelled");
+      // 目录 → 入口解析只有这一处：同一 root 上会残留已删除项目的入口，先命中它就会
+      // 把活项目顶成 project.not-found，或把重连退化成在已有目录重新新建项目。
+      // 见 packages/ui/spec/remote-project-root-identity.md。
+      const selection = resolveRemoteProjectDirectorySelection({
+        directory,
+        hostId: host.id,
+        path,
+        tree,
+        preference: remoteConnectionOpenPreference ?? undefined,
+      });
+      if (selection.kind === "cancelled")
+        throw Object.assign(new Error("remote-project.entry-not-found"), {
+          code: "remote-connection-canceled",
+        });
+      if (selection.kind === "not-found") throw new Error("project.not-found");
+      if (selection.kind === "open-project") {
+        const retained = selection.entry;
         await remoteWorkspaceController.dispatch({
           type: "open-project",
           sourceServerId: session.sourceServerId ?? "",
@@ -1350,7 +1346,7 @@ function RootInner({
           path,
           localWorkspacePath,
           preparedWorkspaceIdentity: identity,
-          draftProjectId,
+          draftProjectId: selection.draftProjectId,
           isCurrent: async () => {
             if (epoch !== remoteProjectIntentEpoch.current) return false;
             // bind 会等待远端 IO；初检快照不能授权迟到结果复活已移除/换代的成员。
@@ -1364,8 +1360,7 @@ function RootInner({
                 (entry) =>
                   entry.id === retained.id &&
                   entry.hostId === host.id &&
-                  (entry.roots.some((root) => root.rootPath === path) ||
-                    entry.legacyWorkspace?.workspacePath === path),
+                  entryClaimsDirectoryPath(entry, path),
               )
             );
           },

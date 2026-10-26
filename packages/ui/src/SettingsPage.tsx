@@ -2074,6 +2074,7 @@ export function SettingsPage({
                                               sourceServerId,
                                               path,
                                               profileId,
+                                              tree: projectDirectory.tree,
                                             },
                                           );
                                         if (!preference) {

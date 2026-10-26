@@ -81,6 +81,11 @@ function readTask(db: DatabaseSync, task: ProjectTaskRef) {
     .get(resolveWorkspaceKey(task), task.taskId);
 }
 
+/** 根集合的身份键：与顺序无关，JSON 编码保证路径本身含分隔字符也不会拼接歧义。 */
+function rootSetKey(roots: readonly string[]): string {
+  return JSON.stringify([...roots].sort());
+}
+
 function resolveDirectories(
   db: DatabaseSync,
   task: ProjectTaskRef,
@@ -224,6 +229,26 @@ export class ProjectRepository implements ProjectRepositoryContract {
     return this.db.isTransaction ? read() : transaction(this.db, read, false);
   }
 
+  /**
+   * 同 Host 中根集合与 `roots` 完全相同的活项目（可排除自身）。
+   * 只认「集合完全相同」：多 root 项目之间共享部分目录仍是合法组织态，
+   * 只有完全同根才会让入口/任务归属无法判定身份。
+   */
+  private claimedRootsProject(
+    hostId: string,
+    roots: readonly string[],
+    excludeId?: string,
+  ): VirtualProject | undefined {
+    if (!roots.length) return undefined;
+    const claimed = rootSetKey(roots);
+    return readProjects(this.db, false).find(
+      (project) =>
+        project.hostId === hostId &&
+        project.id !== excludeId &&
+        rootSetKey(project.roots.map((root) => root.rootPath)) === claimed,
+    );
+  }
+
   saveProject(input: SaveProjectInput): VirtualProject {
     return transaction(this.db, () => {
       const old =
@@ -243,6 +268,13 @@ export class ProjectRepository implements ProjectRepositoryContract {
           roots.some((root) => !old.roots.some((entry) => entry.rootPath === root)))
       )
         throw new Error("project.restore-roots-mismatch");
+      const claimed = this.claimedRootsProject(hostId, roots, old?.id);
+      if (claimed) {
+        // 同一 Host 的同根活项目不保留第二份：根是入口与任务归属的身份依据，
+        // 两个活项目同根会让目录解析无法判定「打开哪一个」（新建直接采纳已有项目）。
+        if (input.restoreProjectId) throw new Error("project.restore-root-claimed");
+        if (!old) return claimed;
+      }
       const primary =
         input.primaryRoot ??
         old?.roots.find((root) => root.isPrimary && roots.includes(root.rootPath))?.rootPath ??

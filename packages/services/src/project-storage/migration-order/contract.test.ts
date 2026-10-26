@@ -163,8 +163,11 @@ describe("project-storage migration order", () => {
       expect(repo.readTree().tasks.map((task) => task.taskId)).toContain("/a-history");
       expect(repo.readTree().tasks.map((task) => task.taskId)).not.toContain("deleted");
       // 已升级的项目不能按旧 settings 清理；同目录新建项目也不能重新归入已处理的历史任务。
+      // 该目录已有活项目时 saveProject 采纳它（同根不再产生第二个活项目），重排因此按唯一 ID 构造。
       const existing = repo.saveProject({ roots: ["/a-history"], name: "User project" });
-      const reordered = [existing.id, ...projects.map((project) => project.id).reverse()];
+      const reordered = [existing.id, ...projects.map((project) => project.id).reverse()].filter(
+        (id, index, ids) => ids.indexOf(id) === index,
+      );
       repo.reorderProjects(reordered);
       // 核对持久行；旧 fixture 未保存 traceId，readTree 会生成临时 traceId，不能当作迁移写入。
       const persisted = () =>

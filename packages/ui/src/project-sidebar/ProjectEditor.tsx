@@ -289,13 +289,20 @@ export function ProjectEditor({
         }
         const candidates = tree?.projects ?? projects;
         if (!canCommit()) return;
-        const deleted = candidates.find(
-          (candidate) =>
-            candidate.deleted &&
-            (!hostId || candidate.hostId === hostId) &&
-            candidate.roots.length === roots.length &&
-            candidate.roots.every((root) => roots.includes(root.rootPath)),
-        );
+        const sameRoots = (candidate: VirtualProject) =>
+          (!hostId || candidate.hostId === hostId) &&
+          candidate.roots.length === roots.length &&
+          candidate.roots.every((root) => roots.includes(root.rootPath));
+        // 同根活项目优先：服务端对同根新建直接采纳该活项目，恢复一个已被占用的根必然
+        // 失败（project.restore-root-claimed），因此不再提供这条确定走不通的恢复确认。
+        const liveSameRoots =
+          roots.length > 0 &&
+          candidates.some((candidate) => !candidate.deleted && sameRoots(candidate));
+        // 同根活项目优先：服务端对同根新建直接采纳该活项目，恢复一个已被占用的根必然
+        // 失败（project.restore-root-claimed），因此不再提供这条确定走不通的恢复确认。
+        const deleted = liveSameRoots
+          ? undefined
+          : candidates.find((candidate) => candidate.deleted && sameRoots(candidate));
         if (
           deleted &&
           (await confirm({

@@ -57,6 +57,11 @@ import { useZCodeStore } from "@/store/StoreProvider.js";
 import { useCodingPlanUpgradeDialog } from "@/settings/CodingPlanUpgradeDialogProvider.js";
 export { attachRemoteProjectWorkspace } from "@/project-sidebar/remote-navigation.js";
 export { resolveEntryProject } from "@/project-sidebar/view.js";
+export {
+  entryClaimsDirectoryPath,
+  resolveRemoteProjectDirectorySelection,
+  resolveRemoteProjectEntryForDirectory,
+} from "@/project-sidebar/remote-project-entry.js";
 export type {
   SidebarFileTreeOpenRequest,
   ProjectSidebarProps,

@@ -44,15 +44,16 @@ describe("设置最近远程项目的打开意图", () => {
       preferredProjectEntryId: "entry-1",
     });
   });
-  it("入口移除、Host 移除或同目录多个项目时不生成创建意图或猜选第一项", () => {
+  it("入口或 Host 移除时不生成创建意图，同目录多条入口仍按目录顺序取唯一一条", () => {
     expect(resolveRecentRemoteProjectPreference({ ...directory, entries: [] }, input)).toBeNull();
     expect(resolveRecentRemoteProjectPreference({ ...directory, hosts: [] }, input)).toBeNull();
+    // 同一 root 的重复入口必须收敛到唯一结果，不能整条降级成「没有偏好」。
     expect(
       resolveRecentRemoteProjectPreference(
         { ...directory, entries: [entry, { ...entry, id: "entry-2", projectId: "project-2" }] },
         input,
       ),
-    ).toBeNull();
+    ).toHaveProperty("preferredProjectEntryId", "entry-1");
   });
   it("旧项目入口仍按保留的远程目录解析", () => {
     const legacy: RemoteProjectEntry = {

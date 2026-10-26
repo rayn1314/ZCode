@@ -1,7 +1,12 @@
-import type { IRemoteProjectService, RemoteProjectDirectory } from "@/project-sidebar/contract.js";
+import type {
+  IRemoteProjectService,
+  ProjectTree,
+  RemoteProjectDirectory,
+} from "@/project-sidebar/contract.js";
 import {
-  buildRemoteHostWorkspaceIdentity,
   buildServerRemoteWorkspaceIdentity,
+  parseRemoteWorkspaceIdentity,
+  remoteHostIdFromWorkspaceIdentity,
 } from "@/project-sidebar/contract.js";
 import type { SourceServerManagementSnapshot } from "@zcode/shared";
 import type { RemoteConnectionOpenPreference } from "@/app-shell/types.js";
@@ -11,31 +16,38 @@ import {
   findPreferredSourceConnectionProfile,
 } from "@/lib/remoteConnectionWizard.js";
 import { resolveRemoteConnectionPresentation } from "@/lib/remoteConnectionPresentation.js";
+import {
+  entryClaimsDirectoryPath,
+  resolveRemoteProjectEntryForDirectory,
+} from "@/project-sidebar/remote-project-entry.js";
 import { requestRemoteProjectConnection } from "@/remote-connection-flow/contract.js";
 
 /** 最近目录不是新建请求；连接前固定已有入口，避免连接完成后误入创建器。 */
 export function resolveRecentRemoteProjectPreference(
   directory: RemoteProjectDirectory,
-  input: { sourceServerId: string; path: string; profileId?: string },
+  input: { sourceServerId: string; path: string; profileId?: string; tree?: ProjectTree },
 ): RemoteConnectionOpenPreference | null {
   const identity = buildServerRemoteWorkspaceIdentity({
     serverId: input.sourceServerId,
     workspacePath: input.path,
   });
-  const entries = directory.entries.filter(
-    (entry) =>
-      directory.hosts.some((host) => host.id === entry.hostId) &&
-      [...entry.roots.map((root) => root.rootPath), entry.legacyWorkspace?.workspacePath].some(
-        (path) => path && buildRemoteHostWorkspaceIdentity(entry.hostId, path) === identity,
-      ),
-  );
-  if (entries.length !== 1) return null;
+  const hostId = remoteHostIdFromWorkspaceIdentity(identity);
+  if (!hostId || !directory.hosts.some((host) => host.id === hostId)) return null;
+  const resolution = resolveRemoteProjectEntryForDirectory({
+    directory,
+    hostId,
+    path: input.path,
+    tree: input.tree,
+  });
+  // 同一目录上已删除项目的残留入口不再让它退化成「没有偏好」；只有确实没有活项目才放弃固定入口。
+  if (!resolution) return null;
+  if (input.tree && (!resolution.project || resolution.project.deleted)) return null;
   return {
     ...(input.profileId
       ? { preferredProfileId: input.profileId }
       : { preferredSourceServerId: input.sourceServerId }),
-    preferredDirectoryPath: input.path,
-    preferredProjectEntryId: entries[0]!.id,
+    preferredDirectoryPath: resolution.rootPath,
+    preferredProjectEntryId: resolution.entry.id,
   };
 }
 
@@ -44,23 +56,25 @@ export async function requestRetainedRemoteProjectConnection(input: {
   workspaceKey: string;
   service: IRemoteProjectService;
   getSnapshot?: () => Promise<SourceServerManagementSnapshot>;
+  /** 远端项目树读取：同根可能残留已删除项目的入口，靠它才能把偏好固定到活项目。 */
+  readTree?: (hostId: string) => Promise<ProjectTree>;
   openWizard: (preference: RemoteConnectionOpenPreference) => void;
 }) {
+  const parsed = parseRemoteWorkspaceIdentity(input.workspaceKey);
+  const hostId = remoteHostIdFromWorkspaceIdentity(input.workspaceKey);
+  if (!parsed || !hostId) throw new Error("remote-project.entry-not-found");
   const directory = await input.service.readDirectory();
-  const pathForEntry = (entry: (typeof directory.entries)[number]) =>
-    entry.roots.find(
-      (root) =>
-        buildRemoteHostWorkspaceIdentity(entry.hostId, root.rootPath) === input.workspaceKey,
-    )?.rootPath ??
-    (entry.legacyWorkspace &&
-    buildRemoteHostWorkspaceIdentity(entry.hostId, entry.legacyWorkspace.workspacePath) ===
-      input.workspaceKey
-      ? entry.legacyWorkspace.workspacePath
-      : undefined);
-  const entry = directory.entries.find((candidate) => pathForEntry(candidate));
-  const host = directory.hosts.find((candidate) => candidate.id === entry?.hostId);
-  const path = entry && pathForEntry(entry);
-  if (!entry || !host || !path) throw new Error("remote-project.entry-not-found");
+  const host = directory.hosts.find((candidate) => candidate.id === hostId);
+  if (!host) throw new Error("remote-project.entry-not-found");
+  const resolution = resolveRemoteProjectEntryForDirectory({
+    directory,
+    hostId,
+    path: parsed.workspacePath,
+    tree: await input.readTree?.(hostId),
+  });
+  if (!resolution) throw new Error("remote-project.entry-not-found");
+  const entry = resolution.entry;
+  const path = resolution.rootPath;
   // Direct Server 不属于 Source Profile 管理域，保留其原有连接与错误出口。
   if (host.kind === "server") {
     await input.service.connectHost(host.id);
@@ -72,8 +86,10 @@ export async function requestRetainedRemoteProjectConnection(input: {
       current.hosts.some(
         (candidate) => candidate.id === host.id && candidate.membershipId === host.membershipId,
       ) &&
+      // 只复验原入口是否仍在同一目录；这里不能走「活项目优先」，否则软删残留入口会顶掉原入口。
       current.entries.some(
-        (candidate) => candidate.id === entry.id && pathForEntry(candidate) === path,
+        (candidate) =>
+          candidate.id === entry.id && entryClaimsDirectoryPath(candidate, parsed.workspacePath),
       )
     );
   };

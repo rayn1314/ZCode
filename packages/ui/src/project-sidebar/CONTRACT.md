@@ -2,9 +2,9 @@
 
 Host projectService 的 readTree 决定行集合、项目归属和 CLI 事实镜像；UI 只保存折叠、视图与表单草稿。实时 sessions-index 只附加 activity，不补行、不写回归属。读取以请求序号拒绝迟到结果；workspace/remote endpoint 变化立即取消旧结果资格。
 
-设置页复用公开的 `useOptionalProjectDirectory` 读取同一目录 owner；最近项目通过 `resolveRecentRemoteProjectPreference` 按 Source + 目录固定唯一入口 ID，继续既有项目恢复链路。缺失或歧义不生成创建意图，连接完成仍复验原入口。
+设置页复用公开的 `useOptionalProjectDirectory` 读取同一目录 owner；最近项目通过 `resolveRecentRemoteProjectPreference` 按 Source + 目录固定唯一入口 ID，继续既有项目恢复链路。同根多条入口（含已删除项目的残留入口）由 `resolveRemoteProjectEntryForDirectory` 收敛到唯一一条，活项目优先；只有该目录确实没有活项目时才不生成打开意图，连接完成仍复验原入口。
 
-恢复时通过公开的 `resolveEntryProject` 从所属 Host 项目树解析有效项目，复用旧入口的唯一匹配规则。原项目 ID 显式传给 Root 草稿 owner，同时更新内存与持久化草稿范围，不从同目录缓存反推归属。
+恢复时通过公开的 `resolveEntryProject` 从所属 Host 项目树解析有效项目，复用旧入口的唯一匹配规则。原项目 ID 显式传给 Root 草稿 owner，同时更新内存与持久化草稿范围，不从同目录缓存反推归属。目录已有活项目时一律打开它，绝不退化成新建项目编辑；同根唯一的写侧校验归 Host 的 `saveProject`（同根新建采纳已有活项目，恢复被占用的根报 `project.restore-root-claimed`）。详见 [同根项目身份](spec/remote-project-root-identity.md)。
 
 创建经 Host prepareSession 固化 cwd，草稿持有 projectId，首发前由 Host 原子预留归属。选择其他项目会重建尚未提升的预热实例，已提交任务不受影响。拖动只发 moveTask，缺 root 经确认重试，失败保持原树。软删项目保留任务归属；时间线可见；恢复需用户显式选择同 roots 的已删项目。
 
@@ -112,3 +112,7 @@ Root 的原项目完成 guard 从成员目录异步复验 entryId、membershipId
 分组手工移动提交节点/来源/锚点，Host 事务处理并广播刷新。`grouped/` 的嵌套 view 只做展示和当前手势预览，不恢复旧任务事实缓存或整表 applyOrder。吸顶浮层位于统一渐隐容器之外，Hash/收起全部操作挂在既有列表工具栏。关闭草稿行只从 Composer 草稿 owner 清除分组意图。
 
 Composer 头部通过 `ProjectComposerMenu.showEditProject` 启用当前项目 Plus 编辑入口；`children` 放置分支等既有控件，顺序为项目、children、编辑按钮。当前项目解析仍由菜单持有。复用 ProjectEditor 与目录服务，在线且非 legacySingleRoot 才能编辑；Host/project 身份、会话或草稿切换使已打开编辑器失效。保存/删除仅刷新目录，不调用导航；其他选择器默认不启用入口。
+
+## 2026-10-27 同根项目身份与活项目优先解析
+
+同一 Host 的同一 root 最多由一个活项目占用（软删项目不占用根）；同根新建不再写入第二行，直接采纳已有活项目，恢复被占用的根报 `project.restore-root-claimed`。所有「按目录找项目入口」的路径只走 `resolveRemoteProjectEntryForDirectory`，活项目优先、其余按目录顺序取首条；没有项目树时无法判定软删，只能按目录顺序取首条。Root 的目录选择与设置页最近项目共用 `resolveRemoteProjectDirectorySelection`：目录已有活项目就打开它，只有确实没有活项目且无恢复意图才进入项目编辑。详见 [同根项目身份](spec/remote-project-root-identity.md)。

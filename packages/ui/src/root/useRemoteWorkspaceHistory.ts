@@ -1932,6 +1932,10 @@ export function useRemoteWorkspaceHistory({
           await requestRetainedRemoteProjectConnection({
             workspaceKey,
             service: services.remoteProjectService,
+            // 同根可能残留已删除项目的入口；项目树缺失时只能按目录顺序取首条。
+            readTree: services.projectService
+              ? (hostId) => services.projectService!.readTree({ hostId, includeDeleted: true })
+              : undefined,
             getSnapshot: services.sourceServerManagementService
               ? () => services.sourceServerManagementService!.getSnapshot()
               : undefined,
@@ -1985,6 +1989,7 @@ export function useRemoteWorkspaceHistory({
       tabStoreApi,
       services.sourceServerManagementService,
       services.remoteProjectService,
+      services.projectService,
       reconnectingRemoteWorkspaceLogsByWorkspaceKey,
     ],
   );
