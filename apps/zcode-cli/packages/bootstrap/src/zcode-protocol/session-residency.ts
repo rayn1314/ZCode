@@ -77,9 +77,13 @@ export function createSessionResidentPoolHost(
           (record.residencyFinalizationCount ?? 0) > 0 ||
           record.app.runtime.hasResidencyBlockingWork(),
         hasSubscribers: context.v4Gateway?.hasConversationSubscribers(sessionId) ?? false,
-        // 子代理子会话只留短热窗口；普通会话回落到 pool 的全局 TTL。
+        // 子代理子会话只留短热窗口，且不占主会话的常驻配额（它们的冷恢复代价只在自身，
+        // 用户感知不到；混进配额会把想保留的主会话按 LRU 挤掉）。
         ...(record.taskType === SUBAGENT_CHILD_TASK_TYPE
-          ? { idleTimeoutMs: SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS }
+          ? {
+              countsTowardResidentCap: false,
+              idleTimeoutMs: SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS,
+            }
           : {}),
         lastActivityAt: record.updatedAt,
         persisted: record.persistence === "immediate",

@@ -265,6 +265,63 @@ describe("SessionResidentPool", () => {
     expect(fake.deactivated[0]?.decision.idleTimeoutMs).toBe(100);
   });
 
+  it("不占配额的子会话不计入高水位，也不会被 LRU 踢掉", () => {
+    const fake = makeFakeHost();
+    const clock = createTestClock();
+    // 1 个主会话（最久没用）+ 3 个子会话（刚用过、声明不占配额）
+    fake.sessions.set("sess-main", idleFacts({ lastActivityAt: 1 }));
+    for (const [index, sessionId] of ["sess-child-1", "sess-child-2", "sess-child-3"].entries()) {
+      fake.sessions.set(
+        sessionId,
+        idleFacts({ countsTowardResidentCap: false, lastActivityAt: 100 + index }),
+      );
+    }
+    const pool = makePool(fake, {
+      highWaterCount: 1,
+      idleTimeoutMs: 10_000,
+      now: clock.now,
+      targetCount: 1,
+    });
+
+    pool.rebalance();
+
+    // 配额内只有主会话 1 个，没超过 highWater=1：不该发生任何回收。
+    expect(fake.deactivated).toEqual([]);
+    expect([...fake.sessions.keys()].sort()).toEqual([
+      "sess-child-1",
+      "sess-child-2",
+      "sess-child-3",
+      "sess-main",
+    ]);
+  });
+
+  it("超配额时只按 LRU 回收主会话，子会话不动", async () => {
+    const fake = makeFakeHost();
+    const clock = createTestClock();
+    fake.sessions.set("sess-main-old", idleFacts({ lastActivityAt: 1 }));
+    fake.sessions.set("sess-main-mid", idleFacts({ lastActivityAt: 2 }));
+    fake.sessions.set("sess-main-new", idleFacts({ lastActivityAt: 3 }));
+    // 子会话 lastUsedAt 最新：若混进 LRU，被踢的会是主会话。
+    fake.sessions.set(
+      "sess-child",
+      idleFacts({ countsTowardResidentCap: false, lastActivityAt: 999 }),
+    );
+    const pool = makePool(fake, {
+      highWaterCount: 2,
+      idleTimeoutMs: 10_000,
+      now: clock.now,
+      targetCount: 2,
+    });
+
+    pool.rebalance();
+    await pool.waitForDeactivation("sess-main-old");
+
+    expect(sessionIds(fake.deactivated)).toEqual(["sess-main-old"]);
+    expect(fake.sessions.has("sess-child")).toBe(true);
+    expect(fake.sessions.has("sess-main-mid")).toBe(true);
+    expect(fake.sessions.has("sess-main-new")).toBe(true);
+  });
+
   it("保护事实会清除旧 TTL，保护解除后从新的 eligible 时刻计时", async () => {
     const fake = makeFakeHost();
     const clock = createTestClock();
@@ -729,8 +786,11 @@ describe("createSessionResidentPoolHost（常驻事实）", () => {
       SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS,
     );
     expect(SUBAGENT_CHILD_RESIDENT_IDLE_TIMEOUT_MS).toBe(5 * 60 * 1_000);
+    // 子会话不占主会话的常驻配额，避免按 LRU 把用户想保留的主会话挤掉。
+    expect(host.readResidencyFacts("sess-child")?.countsTowardResidentCap).toBe(false);
     // 普通会话不给覆盖值，语义与改动前一致。
     expect(host.readResidencyFacts("sess-parent")?.idleTimeoutMs).toBeUndefined();
+    expect(host.readResidencyFacts("sess-parent")?.countsTowardResidentCap).toBeUndefined();
   });
 
   it("有驻留子会话的父会话仍不可回收（借用不变式不变）", () => {

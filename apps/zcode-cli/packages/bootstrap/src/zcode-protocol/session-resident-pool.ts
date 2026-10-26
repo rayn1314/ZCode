@@ -21,6 +21,13 @@ export interface SessionDeactivationDecision {
 
 export interface SessionResidencyFacts {
   persisted: boolean;
+  /**
+   * 是否占用常驻配额（高水位计数）。缺省 true。
+   *
+   * 子代理子会话天然是瞬态的：它们没有自己的进程、只借父 App 的适配器，冷恢复代价也只在
+   * 子会话自身。让它们占主会话的额度会把用户想保留的主会话挤掉，所以显式声明不计数。
+   */
+  countsTowardResidentCap?: boolean;
   hasResidencyBlockingWork: boolean;
   hasPendingInteractions: boolean;
   hasQueuedCommands: boolean;
@@ -63,6 +70,7 @@ export interface SessionResidentPoolOptions {
 }
 
 interface ResidencyCandidate {
+  countsTowardResidentCap: boolean;
   eligibleSinceAt: number;
   idleTimeoutMs: number;
   lastUsedAt: number;
@@ -209,11 +217,18 @@ export class SessionResidentPool {
         }
       }
 
-      const remainingResidentIds = this.host.listSessionIds();
-      residentCount = remainingResidentIds.length;
+      // 高水位只统计占配额的会话。子代理子会话天然瞬态（无自己的进程、只借父 App 适配器），
+      // 且它们的 lastUsedAt 通常最新——混在一起按 LRU 排，被踢的反而是用户想保留的主会话。
+      // 复用本轮的候选快照，不再重复读一遍事实。
+      const remainingResidentIdSet = new Set(this.host.listSessionIds());
+      const capCandidates = initialCandidates.filter(
+        (candidate) =>
+          candidate.countsTowardResidentCap && remainingResidentIdSet.has(candidate.sessionId),
+      );
+      residentCount = capCandidates.length;
       if (residentCount <= this.highWaterCount) return;
 
-      const highWaterCandidates = this.readCandidates(remainingResidentIds, observedAt).sort(
+      const highWaterCandidates = capCandidates.sort(
         (left, right) =>
           left.lastUsedAt - right.lastUsedAt || left.sessionId.localeCompare(right.sessionId),
       );
@@ -275,6 +290,7 @@ export class SessionResidentPool {
         this.eligibleSinceAt.set(sessionId, eligibleSinceAt);
       }
       candidates.push({
+        countsTowardResidentCap: facts.countsTowardResidentCap !== false,
         eligibleSinceAt,
         idleTimeoutMs: this.resolveIdleTimeout(facts),
         lastUsedAt: Math.max(

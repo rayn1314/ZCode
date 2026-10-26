@@ -42,7 +42,13 @@
    全局调小会同时缩短普通会话的热窗口，与「再点回来不卡」冲突。`SessionResidencyFacts`
    新增可选 `idleTimeoutMs`，host 按 record 类型给出；pool 缺省回落到全局值。
 
-4. **`sendText` 在准入前冷恢复，但「不在册」不等于「该激活」。**
+4. **子会话不占主会话的常驻配额（高水位）。**
+   高水位 LRU 原本把主会话与子会话放在同一个池子里按 `lastUsedAt` 排序，而子会话刚结束
+   回合、`lastUsedAt` 最新，被踢的反而是用户想保留的主会话——顺序是反的。
+   `SessionResidencyFacts` 新增可选 `countsTowardResidentCap`，子会话声明为 false；
+   pool 的高水位计数与 LRU 候选都只取占配额的会话。子会话仍由自己的短 TTL 回收。
+
+5. **`sendText` 在准入前冷恢复，但「不在册」不等于「该激活」。**
    复用 `CommandInbox` 既有的 `prepareDecision` 钩子（`renameSession` / `deleteSession` 已是
    同一习语），在幂等查询之后、`decide` 之前把非驻留会话拉成常驻 record。
    判据是 `hasLiveConversation`（常驻 record 或 detached publisher），不是 `sessionExists`：
@@ -55,6 +61,7 @@
 - `taskType === "subagent_child"` 的常驻 record：空闲 5 分钟后进入回收候选，其余保护事实
   （运行中、后台任务、订阅、待处理交互、队列、协议操作租约）仍然优先保活。
 - 普通会话：行为不变，30 分钟。
+- 高水位：只统计占配额的会话（主会话）。子会话再多也不会把主会话挤出常驻池。
 - 子 record 被回收后，父会话的 `hasResidentChildren` 变为 false，父会话从**子 record 消失的
   那一刻**开始计自己的 30 分钟。
 - 对非驻留会话的 `sendText`：先冷恢复再准入；会话在库里不存在时仍返回 `proto.sessionNotFound`。
