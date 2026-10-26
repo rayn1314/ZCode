@@ -1,10 +1,38 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createMcpAdapter } from "../src/mcp/index.js";
+import { createMcpAdapter, resolveStdioTransportPid } from "../src/mcp/index.js";
 import { terminateMcpStdioProcessTree } from "../src/mcp/process-tree.js";
+import { ProcessTreeStdioClientTransport } from "../src/mcp/stdio-transport.js";
 import { createMcpTelemetryTracker } from "../src/mcp/telemetry.js";
+
+describe("resolveStdioTransportPid", () => {
+  const makeTransport = () => new StdioClientTransport({ args: ["-e", ""], command: "node" });
+
+  it("优先用 transport 上仍可观测的 pid", () => {
+    const transport = makeTransport();
+    (transport as unknown as { _process?: { pid: number } })._process = { pid: 4242 };
+    expect(resolveStdioTransportPid(transport as never, 999)).toBe(4242);
+  });
+
+  it("transport pid 读不到时回退到连接时记录的 pid", () => {
+    // 生产现场：关闭时 `_process` 已空，但进程仍活着，必须靠记录值兜住进程树回收。
+    expect(resolveStdioTransportPid(makeTransport() as never, 999)).toBe(999);
+  });
+
+  it("transport 已报告退出时不回退，避免按被复用的 pid 误杀", () => {
+    const transport = new ProcessTreeStdioClientTransport({ args: ["-e", ""], command: "node" });
+    (transport as unknown as { lastProcessExit?: { exitCode: number | null; signal: null } })
+      .lastProcessExit = { exitCode: 0, signal: null };
+    expect(resolveStdioTransportPid(transport as never, 999)).toBeUndefined();
+  });
+
+  it("非 stdio transport 不做回退", () => {
+    expect(resolveStdioTransportPid(undefined, 999)).toBeUndefined();
+  });
+});
 
 describe("MCP stdio process lifecycle", () => {
   const cleanupPids = new Set<number>();
@@ -278,6 +306,47 @@ describe("MCP stdio process lifecycle", () => {
       cleanupPids.add(childPid);
       expect(isPidAlive(serverPid)).toBe(true);
       expect(isPidAlive(childPid)).toBe(true);
+
+      await adapter.close();
+
+      await waitForPidExit(serverPid);
+      await waitForPidExit(childPid);
+      cleanupPids.delete(serverPid);
+      cleanupPids.delete(childPid);
+      await rm(fixture.root, { force: true, recursive: true });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "still reaps the process tree when transport.pid is already cleared at close",
+    async () => {
+      const fixture = await createMcpProcessFixture();
+      const adapter = createMcpAdapter();
+
+      await expect(
+        adapter.connectServer("tree", {
+          args: [fixture.serverPath],
+          command: process.execPath,
+          env: fixture.env,
+          timeoutMs: 5_000,
+          type: "stdio",
+        }),
+      ).resolves.toMatchObject({ status: "connected" });
+
+      const serverPid = await readPidFile(fixture.serverPidFile);
+      const childPid = await readPidFile(fixture.childPidFile);
+      cleanupPids.add(serverPid);
+      cleanupPids.add(childPid);
+
+      // 生产现场（301/301 关闭事件）：连接时有 pid，关闭时 transport 上的 `_process` 已空，
+      // 此时 SDK close 也拿不到子进程，只有连接时记录的 pid 能兜住整棵进程树。
+      const record = (
+        adapter as unknown as {
+          records: Map<string, { transport?: { _process?: unknown } }>;
+        }
+      ).records.get("tree");
+      expect(record?.transport).toBeDefined();
+      record!.transport!._process = undefined;
 
       await adapter.close();
 

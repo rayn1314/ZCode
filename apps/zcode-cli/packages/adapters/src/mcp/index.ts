@@ -177,6 +177,14 @@ interface McpServerRecord {
   /** 收到 tools/list_changed 后置位，下一次 listTools 重拉。 */
   toolsStale?: boolean;
   transport?: McpTransport;
+  /**
+   * 连接成功时观测到的 stdio 子进程 pid。
+   *
+   * 关闭时不能只从 `transport.pid` 重读：生产日志里同一条连接「连接成功有 pid、关闭时
+   * 没有 pid」是常态（301/301），而进程当时仍活着，于是 `terminateMcpStdioProcessTree`
+   * 每次都提前返回，进程树回收形同虚设。pid 是连接时已知的事实，随 record 带下来。
+   */
+  transportPid?: number;
 }
 
 /** resources/list 项：只透传标准字段（含 _meta），丢掉 SDK 附加的运行时字段。 */
@@ -1597,16 +1605,17 @@ class NodeMcpAdapter implements McpPort {
         return this.records.get(name)?.status ?? status;
       }
       this.connectionDiagnosticByServer.delete(name);
+      const mcpTransportPid = getStdioTransportPid(transport);
       this.records.set(name, {
         client,
         config,
         status,
         tools,
         transport,
+        transportPid: mcpTransportPid,
       });
       // A3：重连（同一 adapter 实例）后按登记表重放订阅；首次连接登记表为空，直接跳过。
       await this.replayResourceSubscriptions(name, client);
-      const mcpTransportPid = getStdioTransportPid(transport);
       const mcpProcessIdentity =
         mcpTransportPid != null && this.connectionContext
           ? this.telemetry?.recordProcessStarted({
@@ -2112,21 +2121,22 @@ class NodeMcpAdapter implements McpPort {
     if (!record) return;
     record.abortController?.abort(new Error(`MCP server ${name} connection closed`));
     if (!record.client && !record.transport) return;
-    await this.closeClientAndTransport(name, record.client, record.transport);
+    await this.closeClientAndTransport(name, record.client, record.transport, record.transportPid);
   }
 
   private async closeClientAndTransport(
     name: string,
     client?: McpClient,
     transport?: McpTransport,
+    knownPid?: number,
   ): Promise<void> {
     const startedAt = Date.now();
-    const mcpTransportPid = getStdioTransportPid(transport);
+    const mcpTransportPid = resolveStdioTransportPid(transport, knownPid);
     // 主动关闭前先摘掉 connection_lost 监听，避免正常回收被误报为意外断连。
     if (client) client.onclose = undefined;
     // MCP SDK close 只保证直接 stdio 子进程退出，npx/npm wrapper 拉起的 MCP server
     // 或 chrome-devtools-mcp watchdog 可能残留；这里先按进程树显式回收，再走 SDK close 清理协议状态。
-    await this.terminateStdioProcessTree(name, transport);
+    await this.terminateStdioProcessTree(name, mcpTransportPid);
 
     try {
       await client?.close();
@@ -2156,18 +2166,19 @@ class NodeMcpAdapter implements McpPort {
         connectionId: this.connectionContext.mcpConnectionId,
       });
     }
+    const closedTransportType = this.records.get(name)?.config.type;
     this.logger?.info("MCP server closed", {
       ...this.connectionContext,
       durationMs: Date.now() - startedAt,
       event: "mcp.server.closed",
       mcpServerName: name,
+      ...(closedTransportType ? { transport: closedTransportType } : {}),
       ...(mcpTransportPid != null ? { mcpTransportPid } : {}),
       status: "completed",
     });
   }
 
-  private async terminateStdioProcessTree(name: string, transport?: McpTransport): Promise<void> {
-    const pid = getStdioTransportPid(transport);
+  private async terminateStdioProcessTree(name: string, pid?: number): Promise<void> {
     if (pid == null) return;
 
     try {
@@ -2477,6 +2488,23 @@ function getStdioTransportPid(transport?: McpTransport): number | undefined {
   if (!(transport instanceof StdioClientTransport)) return undefined;
   const pid = transport.pid;
   return typeof pid === "number" && Number.isInteger(pid) && pid > 0 ? pid : undefined;
+}
+
+/**
+ * 关闭时的 stdio pid 解析：先读 transport 当前值，读不到再回退到连接成功时记录的 pid。
+ *
+ * 生产日志里同一条连接「连接有 pid、关闭无 pid」是常态，而进程当时仍活着——只读当前值
+ * 会让 `terminateMcpStdioProcessTree` 永远提前返回。transport 已报告退出时不回退：那时
+ * pid 可能被系统复用，按旧 pid 回收会误伤无关进程。
+ */
+export function resolveStdioTransportPid(
+  transport?: McpTransport,
+  knownPid?: number,
+): number | undefined {
+  const observed = getStdioTransportPid(transport);
+  if (observed != null) return observed;
+  if (knownPid == null || !(transport instanceof StdioClientTransport)) return undefined;
+  return getStdioTransportExitInfo(transport) === undefined ? knownPid : undefined;
 }
 
 function getStdioTransportExitInfo(transport?: McpTransport):
