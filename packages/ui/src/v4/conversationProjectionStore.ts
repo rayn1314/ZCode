@@ -27,15 +27,20 @@ import { ConversationRowPool } from "@/v4/conversationRowSharing.js";
 import { uiMemoryDiagnosticsRegistry } from "@/lib/memoryDiagnostics.js";
 
 /**
- * runtime 换代打断 subscribe 后的退避节奏。
+ * 瞬态 subscribe 失败的有界退避节奏。
  *
- * CUA Helper 冷启动就绪会 recycleUntilStable → disposeWorkspace 回收 agent
- * runtime，在途 subscribe 被 rejectAll 打断。若把这次瞬态失败定格成 status="error"，
- * 懒启动的 agent 在 dispose 后可能无人拉起，onRuntimeRestart 就不会到达，面板只能靠用户
- * 手点「重新连接」。subscribeConversationV4 走 start-if-needed，重订阅自身会拉起 runtime，
- * 所以这里按 sessionsIndexStore 的既定模式做有界退避。
+ * 覆盖两类「正在来」而不是「真失败」的中间态：
+ * 1. runtime 换代：CUA Helper 冷启动就绪会 recycleUntilStable → disposeWorkspace 回收
+ *    agent runtime，在途 subscribe 被 rejectAll 打断。若把这次瞬态失败定格成
+ *    status="error"，懒启动的 agent 在 dispose 后可能无人拉起，onRuntimeRestart 就不会
+ *    到达，面板只能靠用户手点「重新连接」。subscribeConversationV4 走 start-if-needed，
+ *    重订阅自身会拉起 runtime。
+ * 2. 远程 workspace 连接换代：断开重连后旧 remote session dispose、新 services 尚未
+ *    activate（attachment/bind/握手仍在路上），点击落在旧 proxy 上会吃到断连类 fail-fast。
+ *    重订阅走同一 transport 身份（ReplaceableConversationTransport），新 proxy activate
+ *    后由重试命中；额度耗尽仍落真实错误，不掩盖设备真离线（该场景 UI 本就另有呈现）。
  */
-const RUNTIME_RECYCLE_RETRY_DELAYS_MS = [250, 1_000, 3_000] as const;
+const TRANSIENT_CONNECT_RETRY_DELAYS_MS = [250, 1_000, 3_000] as const;
 
 /**
  * accepted ACK 后等待权威输入投影的宽限期。
@@ -78,6 +83,24 @@ function isRuntimeRecycleError(error: unknown): boolean {
     message.includes("ZCode Protocol client disposed") ||
     message.includes("ZCode Protocol client is disposed") ||
     message.includes("ZCode Agent runtime is not running")
+  );
+}
+
+/**
+ * 是否为远程 workspace 连接换代期的 subscribe 失败。
+ *
+ * 断开重连后旧 remote session dispose（session.dispose 用
+ * ZCODE_REMOTE_WORKSPACE_DISCONNECTED reject 在途 RPC），或旧 connectionScope 已
+ * closed、新 scope 握手未完成（handshakeRequired）时，subscribe 会立刻 fail-fast。
+ * 这是重连换代窗口的合法中间态而非故障：点击落在旧 proxy 上，新 proxy activate 后
+ * 同一订阅就能成功。仅收窄到这些结构化错误码，不把任何普通业务失败拉进重试。
+ */
+function isRemoteWorkspaceHandoverError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    message.includes("ZCODE_REMOTE_WORKSPACE_DISCONNECTED") ||
+    message.includes("fault.connection.closed") ||
+    message.includes("fault.connection.handshakeRequired")
   );
 }
 
@@ -320,8 +343,8 @@ export class ConversationProjectionStore {
   private readonly offAssemblyFault: () => void;
   private readonly offRuntimeRestart: (() => void) | null = null;
   private readonly offRuntimeLifecycle: (() => void) | null = null;
-  private runtimeRecycleRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private runtimeRecycleRetryAttempt = 0;
+  private transientConnectRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  private transientConnectRetryAttempt = 0;
   private sessionOpenRendererTiming: SessionOpenRendererTiming = {};
   private initialSubscribeAckAt: number | null = null;
   private planQueryInFlight = false;
@@ -469,7 +492,7 @@ export class ConversationProjectionStore {
       // 的在途 resync 注定被 notOwned 拒绝。换代成功即丢弃旧 recovery——新订阅的 initial
       // 会原子替换整个投影，旧恢复流已无意义；否则其迟到失败会把 live 的新订阅打成 error。
       this.discardRecovery();
-      this.runtimeRecycleRetryAttempt = 0;
+      this.transientConnectRetryAttempt = 0;
       this.initialSubscribeAckAt = monotonicNow();
       this.setState({
         status: "live",
@@ -512,7 +535,7 @@ export class ConversationProjectionStore {
         await this.connect({ forceSnapshot: true, initialOverflowRetry: true });
         return;
       }
-      if (this.scheduleRuntimeRecycleRetry(error, generation)) {
+      if (this.scheduleTransientConnectRetry(error, generation)) {
         logger.lifecycle.warn("v4 conversation store connect retry scheduled", {
           durationMs: roundedDuration(subscribeStartedAt, monotonicNow()),
           errorMessage: message,
@@ -522,7 +545,9 @@ export class ConversationProjectionStore {
           status: "retrying",
           topic: this.topic,
         });
-        logger.warn(`[v4-store] subscribe ${this.topic} 被 runtime 换代打断，退避重连: ${message}`);
+        logger.warn(
+          `[v4-store] subscribe ${this.topic} 落在瞬态换代窗口（runtime 换代/远程连接换代），退避重连: ${message}`,
+        );
         return;
       }
       logger.lifecycle.warn("v4 conversation store connect failed", {
@@ -541,36 +566,37 @@ export class ConversationProjectionStore {
     }
   }
 
-  private clearRuntimeRecycleRetry(): void {
-    if (this.runtimeRecycleRetryTimer === null) return;
-    clearTimeout(this.runtimeRecycleRetryTimer);
-    this.runtimeRecycleRetryTimer = null;
+  private clearTransientConnectRetry(): void {
+    if (this.transientConnectRetryTimer === null) return;
+    clearTimeout(this.transientConnectRetryTimer);
+    this.transientConnectRetryTimer = null;
   }
 
   /**
-   * runtime 换代导致的 subscribe 失败：保持 connecting 并有界退避重连。
+   * 瞬态失败（runtime 换代 / 远程连接换代）的 subscribe：保持 connecting 并有界退避重连。
    * 返回 true 表示已接管本次失败，调用方不应再落 error。
    */
-  private scheduleRuntimeRecycleRetry(error: unknown, generation: number): boolean {
-    if (!isRuntimeRecycleError(error)) return false;
-    return this.scheduleRuntimeRecycleReconnect(generation);
+  private scheduleTransientConnectRetry(error: unknown, generation: number): boolean {
+    if (!isRuntimeRecycleError(error) && !isRemoteWorkspaceHandoverError(error)) return false;
+    return this.scheduleTransientConnectReconnect(generation);
   }
 
   /**
    * 有界退避重连。重订阅走 start-if-needed（zcodeAgentService.subscribeConversationV4），
-   * 自身即可把懒启动的 runtime 拉起来——这是 available 永不到达时唯一的自愈路径。
+   * 自身即可把懒启动的 runtime 拉起来——这是 available 永不到达时唯一的自愈路径；
+   * 远程连接换代场景则等新 proxy activate 后由重试命中。
    * 返回 true 表示已接管，调用方不应再落 error。
    */
-  private scheduleRuntimeRecycleReconnect(generation: number): boolean {
+  private scheduleTransientConnectReconnect(generation: number): boolean {
     if (this.closed) return false;
-    const delayMs = RUNTIME_RECYCLE_RETRY_DELAYS_MS[this.runtimeRecycleRetryAttempt];
+    const delayMs = TRANSIENT_CONNECT_RETRY_DELAYS_MS[this.transientConnectRetryAttempt];
     if (delayMs === undefined) return false;
-    this.runtimeRecycleRetryAttempt += 1;
-    this.clearRuntimeRecycleRetry();
+    this.transientConnectRetryAttempt += 1;
+    this.clearTransientConnectRetry();
     // 保留旧 snapshot：换代期间投影未被污染，重连成功会原子替换。
     this.setState({ status: "connecting" });
-    this.runtimeRecycleRetryTimer = setTimeout(() => {
-      this.runtimeRecycleRetryTimer = null;
+    this.transientConnectRetryTimer = setTimeout(() => {
+      this.transientConnectRetryTimer = null;
       if (this.closed || generation !== this.generation) return;
       void this.connect();
     }, delayMs);
@@ -580,7 +606,7 @@ export class ConversationProjectionStore {
   /** workspace-dispose 当场：旧 runtime 已死，新的尚不存在，不可重订阅。 */
   private handleRuntimeUnavailable(): void {
     if (this.closed) return;
-    this.clearRuntimeRecycleRetry();
+    this.clearTransientConnectRetry();
     this.discardRecovery();
     this.awaitingInitial = null;
     this.subscriptionHasAppliedBase = false;
@@ -589,7 +615,7 @@ export class ConversationProjectionStore {
     this.setState({ status: "connecting", subscriptionId: null });
     // 不能只 dormant 等 available：agent 懒启动，dispose 后无人拉起时该信号永不到达，
     // 面板会永久转圈。退避重连自身会拉起 runtime；available 先到则复位计数并即时重连。
-    if (this.scheduleRuntimeRecycleReconnect(this.generation)) return;
+    if (this.scheduleTransientConnectReconnect(this.generation)) return;
     // 退避额度耗尽（runtime 反复回收）：必须落 error 暴露「重新连接」入口，
     // 否则 connecting 无 timer 就是永久转圈，连手动重试都没有。
     this.setState({ status: "error", lastError: RUNTIME_RECYCLED_ERROR });
@@ -598,8 +624,8 @@ export class ConversationProjectionStore {
   /** 新 runtime 就绪：与 onRuntimeRestart 同义，携原水位重订阅。 */
   private handleRuntimeAvailable(): void {
     if (this.closed) return;
-    this.clearRuntimeRecycleRetry();
-    this.runtimeRecycleRetryAttempt = 0;
+    this.clearTransientConnectRetry();
+    this.transientConnectRetryAttempt = 0;
     if (this.connectInFlight > 0) {
       // 冷启动 spawn 会在首次 subscribe ACK
       // 返回前广播 available。若这里立即再 connect，服务端会按同一 connection/topic
@@ -612,8 +638,8 @@ export class ConversationProjectionStore {
 
   /** 订阅失败后的手动重试入口（pane 层「重新连接」按钮落点）。 */
   retry(): Promise<void> {
-    this.clearRuntimeRecycleRetry();
-    this.runtimeRecycleRetryAttempt = 0;
+    this.clearTransientConnectRetry();
+    this.transientConnectRetryAttempt = 0;
     const initialization = this.state.snapshot?.runtimeInitialization;
     return this.connect(
       initialization?.status === "failed" ? { retryInitialization: initialization.attemptId } : {},
@@ -1417,7 +1443,7 @@ export class ConversationProjectionStore {
     this.offAssemblyFault();
     this.offRuntimeRestart?.();
     this.offRuntimeLifecycle?.();
-    this.clearRuntimeRecycleRetry();
+    this.clearTransientConnectRetry();
     for (const timer of this.acceptedInputProjectionTimers.values()) clearTimeout(timer);
     this.acceptedInputProjectionTimers.clear();
     this.modelTransitionListeners.clear();

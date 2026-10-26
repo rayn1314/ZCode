@@ -58,7 +58,7 @@ function lifecycleEvent(state: "available" | "unavailable", generation: number):
 /** workspace-dispose 打断在途 subscribe 时，ZCodeProtocolClient.rejectAll 抛出的真实文案。 */
 const TRANSPORT_CLOSED = "ZCode agent transport closed";
 
-/** 与实现的 RUNTIME_RECYCLE_RETRY_DELAYS_MS 长度一致（250/1000/3000ms）。 */
+/** 与实现的瞬态重试延迟表长度一致（250/1000/3000ms）。 */
 const RUNTIME_RECYCLE_RETRY_ATTEMPTS = 3;
 
 function setupBase(options: { withLifecycle?: boolean } = {}) {
