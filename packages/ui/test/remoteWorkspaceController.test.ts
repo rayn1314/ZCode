@@ -6,7 +6,10 @@ describe("RemoteWorkspaceController", () => {
     const connectDevice = vi.fn(async () => undefined);
     const disconnectDevice = vi.fn(async () => undefined);
     const openConversation = vi.fn(async () => undefined);
-    const openProject = vi.fn(async () => undefined);
+    const openProject = vi.fn(async () => ({
+      workspacePath: "/workspace/project",
+      workspaceIdentity: "remote:server:server-1:/workspace/project",
+    }));
     const reconnectWorkspace = vi.fn(async () => undefined);
     const closeWorkspace = vi.fn(async () => undefined);
     const controller = createRemoteWorkspaceController({
@@ -34,11 +37,15 @@ describe("RemoteWorkspaceController", () => {
         remoteSessionId: "session-1",
       }),
     ).rejects.toThrow("project.remote-project-required");
-    await controller.dispatch({
-      type: "open-project",
-      sourceServerId: "server-1",
-      path: "/workspace/project",
-      profileId: "profile-1",
+    await expect(
+      controller.openProject({
+        sourceServerId: "server-1",
+        path: "/workspace/project",
+        profileId: "profile-1",
+      }),
+    ).resolves.toEqual({
+      workspacePath: "/workspace/project",
+      workspaceIdentity: "remote:server:server-1:/workspace/project",
     });
     await controller.dispatch({
       type: "reconnect-workspace",
@@ -54,7 +61,6 @@ describe("RemoteWorkspaceController", () => {
     expect(disconnectDevice).toHaveBeenCalledWith("server-1");
     expect(openConversation).not.toHaveBeenCalled();
     expect(openProject).toHaveBeenCalledWith({
-      type: "open-project",
       sourceServerId: "server-1",
       path: "/workspace/project",
       profileId: "profile-1",
@@ -68,7 +74,10 @@ describe("RemoteWorkspaceController", () => {
       connectDevice: vi.fn(async () => undefined),
       disconnectDevice: vi.fn(async () => undefined),
       openConversation: vi.fn(),
-      openProject: vi.fn(async () => undefined),
+      openProject: vi.fn(async () => ({
+        workspacePath: "/workspace/project",
+        workspaceIdentity: "remote:server:server-1:/workspace/project",
+      })),
       reconnectWorkspace: vi.fn(async () => undefined),
       closeWorkspace: vi.fn(async () => undefined),
     });

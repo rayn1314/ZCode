@@ -1,6 +1,7 @@
 import type {
   RemoteConnectionFeedbackOptions,
   RemoteConnectionOpenPreference,
+  RemoteWorkspaceBoundScope,
 } from "@/app-shell/types.js";
 import { requestRemoteProjectConnection } from "@/remote-connection-flow/contract.js";
 import { requestRetainedRemoteProjectConnection } from "@/project-sidebar/remote-project-connection.js";
@@ -15,7 +16,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import type {
   AppSettings,
-  BindRemoteWorkspaceSessionContextResult,
   IPlatformService,
   RemoteTarget,
   RemoteSessionClosedEvent,
@@ -198,11 +198,6 @@ export async function bindRemoteWorkspaceContextAndGetSession(params: {
   };
 }
 
-type BoundRemoteWorkspaceScope = Pick<
-  BindRemoteWorkspaceSessionContextResult,
-  "workspacePath" | "workspaceIdentity" | "previousWorkspaceIdentity" | "workspacePurpose"
->;
-
 export function shouldPersistRemoteWorkspaceFailure(params: {
   pendingReconnectRequestIds: ReadonlyMap<string, string>;
   sessionEntry: RemoteWorkspaceSessionEntry;
@@ -244,7 +239,7 @@ interface OpenRemoteWorkspaceFromHistoryParams {
     workspacePath: string,
     workspaceIdentity?: string,
     workspacePurpose?: "project" | "conversation",
-  ) => Promise<BoundRemoteWorkspaceScope>;
+  ) => Promise<RemoteWorkspaceBoundScope>;
   disposeRemoteWorkspaceSession: (sessionId: string) => Promise<void>;
   addTab: (
     workspacePath: string,
@@ -753,7 +748,7 @@ export async function selectRemoteWorkspaceProjectFromDialog({
     workspacePath: string,
     workspaceIdentity?: string,
     workspacePurpose?: "project" | "conversation",
-  ) => Promise<BoundRemoteWorkspaceScope>;
+  ) => Promise<RemoteWorkspaceBoundScope>;
   commitRemoteWorkspaceSessionMutation: (
     mutation: ReturnType<typeof buildRemoteWorkspaceSessionMutation>,
   ) => Promise<RemoteWorkspaceSessionEntry>;
@@ -777,7 +772,7 @@ export async function selectRemoteWorkspaceProjectFromDialog({
     restoreSelection?: boolean;
     projectId?: string | null;
   }) => void;
-}): Promise<void> {
+}): Promise<RemoteWorkspaceBoundScope> {
   if (!canUseRemoteWorkspace) {
     throw new Error("Remote workspace is disabled in this mode");
   }
@@ -870,7 +865,7 @@ export async function selectRemoteWorkspaceProjectFromDialog({
     // Bug 原因：项目历史会复用当前 owner；旧分支将它误当临时连接取消，导致任务重开后断线。
     if (existingWorkspaceTab.remoteSessionId !== sessionId)
       await handleCancelRemoteProject(sessionId);
-    return;
+    return boundScope;
   }
 
   // 断连 tab 以前会在 provider/session 绑定完成前先被 activateTabByPath 激活，
@@ -919,6 +914,7 @@ export async function selectRemoteWorkspaceProjectFromDialog({
   // 修复原因：旧链路等待无人消费的列表缓存，导致 tab 与草稿 owner 交接分叉。
   // attachment 和 tab 已就绪后立即提交同一 workspaceKey 的草稿，项目树自行读取权威行。
   onWorkspaceActivated?.(activation);
+  return boundScope;
 }
 
 export async function openRemoteConversationWorkspace(params: {
@@ -1788,7 +1784,8 @@ export function useRemoteWorkspaceHistory({
       isCurrent?: () => boolean | Promise<boolean>,
     ) => {
       try {
-        await selectRemoteWorkspaceProjectFromDialog({
+        // 返回值是 Host bind 后的权威 scope：侧栏导航要用它做绑定后校验，不能回退到调用方身份。
+        return await selectRemoteWorkspaceProjectFromDialog({
           canUseRemoteWorkspace,
           isCurrent,
           sessionId,
@@ -1859,13 +1856,19 @@ export function useRemoteWorkspaceHistory({
           }
           return management.ensureConversationWorkspace(resolvedSourceServerId);
         },
-        selectRemoteWorkspace: async (conversationSessionId, conversationPath, workspacePurpose) =>
+        selectRemoteWorkspace: async (
+          conversationSessionId,
+          conversationPath,
+          workspacePurpose,
+        ) => {
+          // 对话工作区不需要导航侧的绑定后校验，这里只等待绑定完成。
           await selectRemoteProjectFromDialog(
             conversationSessionId,
             conversationPath,
             undefined,
             workspacePurpose,
-          ),
+          );
+        },
         disposeRemoteWorkspaceSession: handleCancelRemoteProject,
       }),
     [
@@ -2378,7 +2381,7 @@ export function useRemoteWorkspaceHistory({
               `Remote project requires one attached session for Source Server: ${sourceServerId}`,
             );
           }
-          await selectRemoteProjectFromDialog(
+          return await selectRemoteProjectFromDialog(
             sessions[0]!.sessionId,
             path,
             localWorkspacePath,
@@ -2414,8 +2417,8 @@ export function useRemoteWorkspaceHistory({
       isCurrent?: () => boolean | Promise<boolean>,
     ) => {
       const session = getRemoteWorkspaceSession(sessionId);
-      await remoteWorkspaceController.dispatch({
-        type: "open-project",
+      // 侧栏导航依赖 Bind 返回的权威 scope 做绑定后校验（见 remote-navigation.ts）。
+      return await remoteWorkspaceController.openProject({
         isCurrent,
         sourceServerId: session?.sourceServerId ?? "",
         path,

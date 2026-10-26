@@ -822,8 +822,8 @@ function RootInner({
       cancel: handleCancelRemoteProject,
       bind: async (remoteSessionId, path, isCurrent) => {
         const session = useRemoteWorkspaceSessionStore.getState().sessionsById[remoteSessionId];
-        await remoteWorkspaceController.dispatch({
-          type: "open-project",
+        // 返回 Host bind 后的权威 scope：侧栏导航只消费它做绑定后校验（remote-navigation.ts）。
+        return await remoteWorkspaceController.openProject({
           sourceServerId: session?.sourceServerId ?? "",
           path,
           remoteSessionId,
@@ -1339,8 +1339,7 @@ function RootInner({
       if (selection.kind === "not-found") throw new Error("project.not-found");
       if (selection.kind === "open-project") {
         const retained = selection.entry;
-        await remoteWorkspaceController.dispatch({
-          type: "open-project",
+        await remoteWorkspaceController.openProject({
           sourceServerId: session.sourceServerId ?? "",
           remoteSessionId: sessionId,
           path,

@@ -70,8 +70,10 @@ it("rejects a foreign root before any connection side effect", async () => {
 
 it("binds an unopened remote root through its existing host connector", async () => {
   let bound = false;
-  const bind = vi.fn(async () => {
+  // bind 契约要求返回 Host bind 后的权威 scope：导航只消费它做绑定后校验。
+  const bind = vi.fn(async (_sessionId: string, path: string) => {
     bound = true;
+    return { workspacePath: path, workspaceIdentity: `remote:server:s:${path}` };
   });
   const connectHost = vi.fn(async () => ({
     id: "remote:server:s",

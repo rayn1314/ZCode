@@ -2,6 +2,7 @@ import type { FileManagerTarget } from "@/lib/workspaceSidePane.js";
 import type { ComposerDraftHandoff } from "@/v4/composer/composerDraftWorkspaceTransfer.js";
 import type { RefObject } from "react";
 import type {
+  BindRemoteWorkspaceSessionContextResult,
   ZCodeProvider,
   SessionCreateSource,
   ZCodeTaskRuntimeStatus,
@@ -152,6 +153,21 @@ export interface RemoteConnectionOpenPreference {
   preferredProfileId?: string;
 }
 
+/**
+ * Host bind 之后返回的权威 workspace scope。
+ *
+ * bind 是身份换代点：调用方传入的 identity 可能是 transport/route 命名空间
+ * （`remote:wsl:<distro>[:<user>]:<path>`），Host 在 Source Server 身份已知后一律登记为
+ * 稳定命名空间 `remote:server:<sourceServerId>:<path>`（main 见
+ * packages/desktop/src/main/desktopRemoteSessions.ts 的 bindRemoteWorkspaceSessionContext）。
+ * 因此 bind 之后的消费方只认这份权威值，不得再用调用方原样身份做等价判断。
+ * 契约与不变式见 packages/ui/spec/remote-workspace-identity-authority.md。
+ */
+export type RemoteWorkspaceBoundScope = Pick<
+  BindRemoteWorkspaceSessionContextResult,
+  "workspacePath" | "workspaceIdentity" | "previousWorkspaceIdentity" | "workspacePurpose"
+>;
+
 export interface AppProps {
   services: IServiceAccessor;
   baseFeedbackService: IFeedbackService;
@@ -162,7 +178,7 @@ export interface AppProps {
     localWorkspacePath?: string,
     preparedWorkspaceIdentity?: string,
     isCurrent?: () => boolean | Promise<boolean>,
-  ) => Promise<void>;
+  ) => Promise<RemoteWorkspaceBoundScope>;
   onCancelRemoteProject: (sessionId: string) => Promise<void>;
   onReconnectRemoteWorkspace: (workspaceKey: string) => Promise<void>;
   onLogout?: () => void;

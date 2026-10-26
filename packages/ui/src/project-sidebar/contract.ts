@@ -3,6 +3,7 @@ import type { LucideIcon } from "lucide-react";
 import type {
   AppProps,
   CreateTaskRequest,
+  RemoteWorkspaceBoundScope,
   RemoteWorkspaceRecoveryStatus,
 } from "@/app-shell/types.js";
 import type { CodeViewerSource } from "@/lib/codeViewer.js";
@@ -116,7 +117,7 @@ export interface ProjectSidebarProps {
     localWorkspacePath?: string,
     preparedWorkspaceIdentity?: string,
     isCurrent?: () => boolean | Promise<boolean>,
-  ) => Promise<void>;
+  ) => Promise<RemoteWorkspaceBoundScope>;
   onCancelRemoteProject: (sessionId: string) => Promise<void>;
   onReconnectRemoteWorkspace: (workspaceKey: string) => Promise<void>;
   onLogout?: () => void;

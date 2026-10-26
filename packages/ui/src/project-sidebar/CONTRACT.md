@@ -20,7 +20,7 @@ Web 远端 attachment 的整体可选 `windowProjectDirectory` 能力提供窗�
 
 本地和远程项目平铺混排，设备标识与连接状态放在项目行，连接状态只读连接管理器；离线可连接或移除本机成员，在线可显式选择已有项目或创建并添加入口。选择器 readTree 不写入口，只有用户选择/创建成功调用 addEntry。新建使用 Host 分配的 workspaceIdentity；同 cwd 不跨 Source 复用 logical attachment。Host 移除后重连不得创建成员或重建入口。
 
-远端项目 prepare/历史 task 已确定 cwd 与 identity，导航将两者一起传给原 open-project/Host bind；普通目录选择才执行 canonical resolver。不得再次 realpath 后以别名重建身份，不能放宽绑定后精确 identity 检查来掩盖路径分叉。
+远端项目 prepare/历史 task 已确定 cwd 与 identity，导航将两者一起传给原 open-project/Host bind；普通目录选择才执行 canonical resolver。不得再次 realpath 后以别名重建身份，不能放宽绑定后精确 identity 检查来掩盖路径分叉。绑定后的身份校验只消费 Host bind 返回的权威 scope：调用方传入的 identity 可能仍是 transport/route 命名空间（`remote:wsl:*`），与 bind 后的稳定身份（`remote:server:<sourceServerId>:<path>`）不同命名空间，用原样身份回查会把成功绑定误判成 `project.workspace-identity-mismatch`。详见 [远端工作区身份权威](spec/remote-workspace-identity-authority.md)。
 
 UI 纠偏：分区复用 WorkspacePurposeSection 和原折叠/顺序偏好；项目行恢复旧行高、间距及 hover/focus/touch 操作。项目菜单用非模态右键导航，编辑弹窗独占模态限制。时间线通过插件市场下的筛选菜单开放为「最近更新」。项目加号直接显示名称、设备、源文件夹。ProjectEditor 持有唯一草稿，桌面设备全集从 Source 投影读取，不取项目 open set；无 Source 管理能力的 Web／手机只投影既有 Host 目录，不扩大管理权限。选择设备无连接副作用；有目录须先确认再原子清目录并切设备。离线设备在显式选择文件夹或已有项目时复用 Root 唯一连接向导，保持原项目页签；只有新增设备进入设置。连接层收起期间保留表单。设备切换、取消和卸载使旧目录结果失效。创建前只为没有成员的已识别设备显式登记，已有成员严格复查 membership；远端保存后按原 ID 登记本机入口，登记失败重试不再创建项目。不打开 workspace tab 或 Agent。
 

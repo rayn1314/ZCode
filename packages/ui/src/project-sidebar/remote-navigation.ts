@@ -1,3 +1,4 @@
+import type { RemoteWorkspaceBoundScope } from "@/app-shell/types.js";
 import type {
   IProjectService,
   IRemoteProjectService,
@@ -16,11 +17,12 @@ export async function attachRemoteProjectWorkspace(input: {
   isCurrent?(): boolean;
   findSession(identity: string): { sessionId: string } | undefined;
   connect: ProjectSidebarProps["onConnectRemote"];
+  /** 返回 Host bind 之后的权威 scope；调用方传入的 workspaceIdentity 只是绑定输入，不是校验依据。 */
   bind(
     sessionId: string,
     path: string,
     isCurrent?: () => boolean | Promise<boolean>,
-  ): Promise<void>;
+  ): Promise<RemoteWorkspaceBoundScope>;
   cancel: ProjectSidebarProps["onCancelRemoteProject"];
 }): Promise<string> {
   const assertCurrent = () => {
@@ -64,13 +66,21 @@ export async function attachRemoteProjectWorkspace(input: {
   try {
     // 连接和绑定都会等待远端；只回收本次创建的 attachment，不能取消其他项目复用的连接。
     assertCurrent();
+    let boundScope: RemoteWorkspaceBoundScope;
     if (input.expectedMembershipId || input.projectService) {
       // Host 在连接等待中被移除再添加时，原请求不能借新成员的身份提交导航。
       await validateMembership();
-      await input.bind(sessionId, input.workspacePath, validateMembership);
-    } else if (input.isCurrent) await input.bind(sessionId, input.workspacePath, input.isCurrent);
-    else await input.bind(sessionId, input.workspacePath);
-    const bound = input.findSession(input.workspaceIdentity);
+      boundScope = await input.bind(sessionId, input.workspacePath, validateMembership);
+    } else if (input.isCurrent)
+      boundScope = await input.bind(sessionId, input.workspacePath, input.isCurrent);
+    else boundScope = await input.bind(sessionId, input.workspacePath);
+    // 修复原因：bind 是身份换代点——Host 会把 Source Server 侧身份统一登记为
+    // `remote:server:<sourceServerId>:<path>`，而调用方传入的 identity 可能是 transport
+    // 命名空间（`remote:wsl:<distro>[:<user>]:<path>`，见 Root.tsx 的连接目录选择与
+    // packages/desktop/src/host/index.ts 的 connect descriptor）。用调用方原样身份回查，
+    // 会把一次成功的绑定误判成 project.workspace-identity-mismatch。
+    // 依据：packages/ui/spec/remote-workspace-identity-authority.md。
+    const bound = input.findSession(boundScope.workspaceIdentity);
     if (bound?.sessionId !== sessionId) throw new Error("project.workspace-identity-mismatch");
     return sessionId;
   } catch (error) {
