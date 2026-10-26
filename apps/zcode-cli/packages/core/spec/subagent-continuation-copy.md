@@ -269,9 +269,10 @@ agent`）只覆盖面板直发路径，SendMessage 续跑的工具回执里那�
 - hydration 的 `subagentHandles` 是**可选入参**：旧调用方（rewind 重建分支）不传即维持现状，
   不构成行为回归。
 - 遗留（有意不做）：通知不带结构化失败分类字段；空 result 的成因（provider 截断）未根治；
-  跨进程重启后 `agent_*` 寻址仍不可用（只用 `sess_subagent_*`）；`stopped` 只有 `user` /
-  `model` / 系统三档，**没有 `parent` 档**——父代理停子代理只经 `TaskStop`，与模型自己停是
-  同一只手，硬分出来是伪区分。
+  `stopped` 只有 `user` / `model` / 系统三档，**没有 `parent` 档**——父代理停子代理只经
+  `TaskStop`，与模型自己停是同一只手，硬分出来是伪区分。
+  （原文列的「跨进程重启后 `agent_*` 寻址不可用」已由 `subagent-session-messaging.md` D9
+  消除：注册表未命中时按 lifecycle entry 重建终态任务再续跑，D4c 给出的句柄因此跨进程有效。）
 - 遗留（D4c 有意不做）：**同进程内中断不经过 hydration**——那一次的工具结果由 executor 的
   cancel 路径落成 error，模型当场就能读到 `Failure kind: cancelled …` 与 agentId（D4b 已覆盖）。
   D4c 只补「会话重新打开后模型面只剩一句泛化文案」这个缺口。

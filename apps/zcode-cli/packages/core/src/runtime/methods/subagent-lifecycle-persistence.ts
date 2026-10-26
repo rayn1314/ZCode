@@ -13,8 +13,17 @@ import {
   SessionEventType,
   traceContextToLogContext,
 } from "../deps.js";
+import { mapSubagentLifecycleStatus } from "@zcode/contracts";
 import type { AgentRuntimeInternal } from "../internal.js";
-import type { SessionEntryInfo, SessionEvent, SessionId, TraceContext } from "../deps.js";
+import type {
+  Logger,
+  SessionEntryInfo,
+  SessionEvent,
+  SessionId,
+  SessionStorePort,
+  TraceContext,
+} from "../deps.js";
+import type { RuntimeTaskSnapshot } from "../../runtime-task/registry.js";
 
 /** 稳定 entry id：一个 agentId 一行。spawn/stop 覆写同一行，行数不随事件数增长。 */
 export function subagentLifecycleEntryId(agentId: string): string {
@@ -191,6 +200,73 @@ export function readLifecycleData(
     ...(status ? { status } : {}),
     startedAt: typeof data.startedAt === "number" ? data.startedAt : entry.time.created,
     ...(typeof data.endedAt === "number" ? { endedAt: data.endedAt } : {}),
+  };
+}
+
+/**
+ * 从父会话的 lifecycle entry 重建一个**终态** task 快照（spec `subagent-session-messaging.md` D9）。
+ *
+ * 进程重启或会话重新接管后 `RuntimeTaskRegistry` 是空的，`SendMessage(to: "agent_*")` 本来
+ * 只能报「No active local_agent task found」——但子会话和这条 entry 都还在库里，agent 没消失、
+ * 只是不在内存。重建出的快照交给既有 `resumeTerminalAgentInBackground` 续跑同一子会话，
+ * 不新开执行路径。
+ *
+ * 状态归一与 `ListAgents` 同口径：spawn-only 或仍是 `running` 的陈旧 entry 落成 `lost`
+ * （进程重启后那个 runtime 已不存在；`running` 只能由本进程注册表断言）。
+ *
+ * `notified: true`：这条任务在上一条命里已经宣告过终态，重建不得再触发一遍通知——本次续跑
+ * 产生的终态由 resume 新注册的快照负责宣告。
+ */
+export async function readPersistedSubagentTask(
+  store: SessionStorePort | undefined,
+  sessionId: SessionId,
+  agentId: string,
+  logger?: Logger,
+): Promise<RuntimeTaskSnapshot | undefined> {
+  if (!store) return undefined;
+  const entryId = subagentLifecycleEntryId(agentId);
+  let entry: SessionEntryInfo | null | undefined;
+  try {
+    entry = store.sessionEntry
+      ? await store.sessionEntry({ sessionID: sessionId, id: entryId })
+      : undefined;
+    if (!entry && store.sessionEntries) {
+      // 旧宿主未实现单行读：按类型列出再按稳定 id 过滤（一个 agentId 一行，不会长）。
+      const entries = await store.sessionEntries({
+        sessionID: sessionId,
+        type: SESSION_ENTRY_SUBAGENT_LIFECYCLE,
+      });
+      entry = entries.find((candidate) => candidate.id === entryId) ?? null;
+    }
+  } catch (error) {
+    // 存储异常不等于「agent 不存在」：只降级，让调用方回落到原有的失败文案。
+    logger?.warn("Failed to read subagent lifecycle entry for persisted addressing", {
+      errorMessage: error instanceof Error ? error.message : String(error),
+      event: "subagent.persisted_task.read_failed",
+      module: "core.runtime",
+      sessionId: sessionId as string,
+      agentId,
+      status: "failed",
+    });
+    return undefined;
+  }
+
+  const facts = readLifecycleData(entry ?? undefined);
+  if (!facts?.childSessionId) return undefined;
+  return {
+    taskId: facts.agentId,
+    agentId: facts.agentId,
+    agentType: facts.agentType,
+    description: facts.description,
+    status: mapSubagentLifecycleStatus(facts.status),
+    startedAt: new Date(facts.startedAt),
+    ...(facts.endedAt !== undefined ? { completedAt: new Date(facts.endedAt) } : {}),
+    // 持久化 JSON 丢品牌，但该值由 createSessionId 产出，跨这个边界收回 SessionId 是安全的。
+    childSessionId: facts.childSessionId as SessionId,
+    ...(facts.parentToolCallId ? { parentToolCallId: facts.parentToolCallId } : {}),
+    isBackgrounded: facts.background,
+    notified: true,
+    type: "local_agent",
   };
 }
 

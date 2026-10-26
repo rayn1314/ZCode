@@ -72,11 +72,11 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 
 **`model` 的三态与描述口径（2026-10-17 追记）**：解析顺序里 `profile` 高于父模型，所以「省略 = 用会话模型」是**错的**——省略走该类型在设置页配的模型。旧文案把两者并成 `profile/session model` 一个词，模型据此既没传 `model` 又向用户复述了一个没发生的继承，而子代理跑的是设置页那个模型；它当时也确实没有别的办法做到用户要的「继承」，只能劝用户去改设置。**描述写省一个词，等于给模型一条错的事实。** 因此该字段定为三态（与 `AmendWorkflow.subagent_model` 同规）：
 
-| 取值 | 语义 | 需要模型目录 | 生效的派发路 |
-| --- | --- | --- | --- |
-| 省略 | 沿用该类型在设置页的模型（缺失时才是父会话模型） | 否 | 两条 |
-| `null` | **本次显式继承父会话**（忽略 profile 的选择，设置不动） | 否 | 两条 |
-| 字符串 | 本次钉一个模型（`providerId/modelId[$level]`） | 是 | 仅前台 |
+| 取值   | 语义                                                    | 需要模型目录 | 生效的派发路 |
+| ------ | ------------------------------------------------------- | ------------ | ------------ |
+| 省略   | 沿用该类型在设置页的模型（缺失时才是父会话模型）        | 否           | 两条         |
+| `null` | **本次显式继承父会话**（忽略 profile 的选择，设置不动） | 否           | 两条         |
+| 字符串 | 本次钉一个模型（`providerId/modelId[$level]`）          | 是           | 仅前台       |
 
 `null` 落在目录检查**之前**，且不过 `resolveSelection`（继承来的选择已有执行归属）；它让 `hasConcreteModel` 为假，调用方于是照常复用父模型实例（含父 turn 的执行模型）——这正是「继承」该有的行为。**它是唯一一条两条派发路都带得动的调用级模型请求**（`SubagentStartOptions.callModelInherit`）：继承是开关不是选型，不需要 Model 实例与 request dependencies，所以后台 `start` 也带；否则用户说「这一发跟着会话走」时，默认的后台派发会静默丢掉它，模型只能靠 `wait: true` 兜。字符串那条仍是记录在案的前台独占（后台 `start` 与 SendMessage 复活都没有选型通道）——**复活会把模型解析回 profile**，与首次派发的调用级请求不一致，这是本字段已知边界。
 
@@ -106,9 +106,31 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 - **新增只读端口 `SubagentRosterPort`**（contracts），按父会话列出历史子代理；由 bootstrap 实现（它拿得到持久化 session store），core 只依赖端口。
 - **数据来源是父会话自己的持久化 session entry**（`runtime/subagent_lifecycle`，id 稳定为 `subagent-lifecycle:<agentId>`）：core 的 `persistDurableSessionEvent` 在 `SubagentSpawned` / `SubagentStopped` 事件上**覆写同一行**（行数 = 派发过的子代理数），spawn 建行、stop 收口并保留首次 spawn 的 `created`/`startedAt`。给出 `agentId`、`childSessionId`、`agentType`、`description`、`isBackgrounded`、`status`（事件原词）、`startedAt`、`endedAt`。**不读父会话事件投影**（内存 eventStore 随会话去激活清空、冷恢复不回灌），也不读父会话消息历史——列个子代理不该触发整段 transcript 的 hydrate。
 - **状态语义必须诚实**：entry 带终态 → 映射为终态（`success → completed` 等）；只有 spawn 没有终态 → 报 `lost`（进程重启后那个 runtime 已经不存在了），**不得报 `running`**——`running` 只能由本进程注册表断言。**同一事实两种来源必须同词**：后台被 TaskStop 时活体注册表报 `killed`（`runner.ts` 的 `BACKGROUND_AGENT_STOPPED_STATE.registryStatus`），事件只带 `stopped`，故 entry 路径把 `stopped` 也归一到 `killed`。
-- **合并语义**：注册表条目优先（实时状态与 `isBackgrounded` 更准），roster 补注册表缺的条目，按 `agentId` 去重；每行标注 `source: "live" | "history"`，模型据此知道哪些能用 `agent_*` 寻址、哪些只能用 `childSessionId`（`sess_subagent_*`）走跨会话路径。
-- 重启后 `agent_*` 寻址不可用是既有行为（内存注册表为空），不在本轮改成持久寻址；输出里的 `childSessionId` 就是给这种情况用的寻址键。
+- **合并语义**：注册表条目优先（实时状态与 `isBackgrounded` 更准），roster 补注册表缺的条目，按 `agentId` 去重；每行标注 `source: "live" | "history"`。两种来源都可用 `agent_*` 寻址（D9 起 history 行同样持久可寻址），`source` 只用于说明状态新鲜度，不再区分可寻址性。
+- ~~重启后 `agent_*` 寻址不可用是既有行为（内存注册表为空），不在本轮改成持久寻址；输出里的 `childSessionId` 就是给这种情况用的寻址键。~~ **已由 D9 推翻（2026-10-27）**：`agent_*` 改为持久句柄，注册表未命中时按 lifecycle entry 重建终态任务再续跑；`childSessionId` 退为兜底键。
 - **本端口不是左栏层级的数据源**（2026-10-07 订正）：左栏的"父条目下有哪些子代理 + 运行中计数"走父会话 conversation 投影的 `subagents`（配 `session/subagents` 查询已结束项），不走 roster。理由见 `subagent-session-as-first-class.md` 的「前置 2 · 左栏数据源订正」；本端口只服务 `ListAgents` 的跨重启历史。
+
+### D9 · `agent_*` 是持久句柄，不是进程内别名（2026-10-27）
+
+**问题**：`SendMessage` 的 `agent_*` 分支只查进程内 `RuntimeTaskRegistry`。进程重启或会话重新接管后注册表是空的，`agent_*` 立刻变成死地址，返回「No active local*agent task found for target …」。但子会话和它的 `runtime/subagent_lifecycle` entry 都还在库里——**agent 没消失，只是不在内存**；失败文案把「不在内存」误述成「不存在」。D8 曾把这条记成"既有行为、不在本轮改"，实际是**能力在重启后静默降级**：`SendMessage` 的模型面承诺（"SendMessage to its `agentId` resumes the same session with its full context"）在这一刻失效，而 `ListAgents` 又告诉模型 history 行只能用 `sess*\*`——两条描述互相兜底却都不指向真正可用的路径。
+
+**决策**：`agent_*` 的语义是**跨进程持久**的。
+
+- 注册表命中且非终态：原路径（`messageSink.steer` / `registry.queueMessage`）。
+- 注册表命中且终态：原路径（`resumeTerminalAgentInBackground`）。
+- **注册表未命中**：按 `subagentLifecycleEntryId(agentId)` 读父会话的 lifecycle entry（`sessionEntry` 单行读；旧宿主未实现时回退 `sessionEntries` 过滤），命中且带 `childSessionId` 就用 entry 重建一个**终态** task 快照，交给**同一条** `resumeTerminalAgentInBackground`。entry 也没有 → 维持原失败文案（此时"不存在"才是准确说法）。
+- 状态归一用 `mapSubagentLifecycleStatus`：spawn-only 或仍是 `running` 的陈旧 entry 落成 `lost`（与 D8「history 行只报 lost，不报 running」同一口径）。`lost` 在终态表内，因此走续跑。
+- 重建的快照带 `notified: true`：它在上一条命里已经宣告过，不能因为这次重建再触发一遍终态通知；本次续跑产生的终态由 resume 新注册的快照负责宣告。
+- 重建是**纯读**：不写 registry、不写 entry。续跑失败（profile 已删、子会话缺失等）按既有语义回失败，不留下半条 running。
+
+**不变式**
+
+- 只有一个续跑入口（`resumeTerminalAgentInBackground`）。持久寻址只是给它补一个 task 快照来源，**不新开第二条执行路径**，也不绕开 stale-branch / 分支代数防护。
+- 生命周期 entry 仍是子代理生命周期的唯一持久真相源；注册表只断言"本进程还在跑"。
+- 父会话只能寻址自己的子代理：读取按当前 `sessionId` 限定，不跨父会话。
+- 端口的持久化回落由调用方注入（`ExploreSubagentPortOptions.findPersistedSubagentTask`），core 的 runner 不直接依赖 session store——与 D8 的 roster 端口同一条分层理由。
+
+**失败语义**：读存储抛错只 warn 并退回原失败文案，不影响其它工具；**不把存储异常断言成"agent 不存在"**。
 
 ## 架构与投递拓扑
 
@@ -247,6 +269,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 ## 验收与验证
 
 - core 单测：默认立即返回 `agentId`；`wait:true` 阻塞并返回正文；`ListAgents` 投影；`SendMessage` 目标解析（`agent_*`/`sess_*`）。
+- **D9 验收**：注册表里**没有**该 agent、但父会话有对应 lifecycle entry 时，`SendMessage(to: "agent_*")` 仍走续跑（返回 `resumed_background`，不是「No active local_agent task found」）；entry 也不存在时维持原失败文案；spawn-only / `running` 的陈旧 entry 归一为 `lost` 后仍可续跑；重建快照带 `notified: true`（不重复宣告终态）。
 - bootstrap 集成：同进程投递恒用 `guide`（忙 → steered/排队，闲 → 开新轮唤醒，不抢占）；冷会话先 `ensureResumed`。
 - services 单测：`deliverSessionMessage` 实时投递（统一 `guide`，不抢占）、不可达落 mailbox、命中后 `consume` 去重、回执投回源会话。
 - 门禁：`pnpm typecheck:cli`、`pnpm lint`；触及根包补 `pnpm typecheck`。
@@ -272,7 +295,7 @@ ZCode 已有子代理能力，但协作体验与 Codex 差距集中在四点：
 **A. 已落地（本轮做完，仅需知悉）**
 
 1. **跨会话消息防环**（阶段 5）—— 链随消息携带、core runtime 记录、发送侧端口按 `SESSION_MESSAGE_MAX_HOP=6` 拒绝。剩下的只是一个口径问题：cap 值是否合适（当前 6 跳，人类输入重置），要调只改 `contracts` 的一个常量。
-2. **`ListAgents` 跨重启**（阶段 6）—— `SubagentRosterPort` 读父会话持久化的 `runtime/subagent_lifecycle` session entry，与进程内注册表合并。已知边界：`history` 条目只能按 `childSessionId` 寻址（`agent_*` 依赖内存注册表，重启即失效）；entry 只在子代理事件到达父 runtime 的事件汇时写入，被 stale-branch 丢弃的 stop 会让历史行报 `lost`（保守结果，不是 running）。
+2. **`ListAgents` 跨重启**（阶段 6）—— `SubagentRosterPort` 读父会话持久化的 `runtime/subagent_lifecycle` session entry，与进程内注册表合并。~~已知边界：`history` 条目只能按 `childSessionId` 寻址（`agent_*` 依赖内存注册表，重启即失效）~~ **该边界已由 D9 消除**：`agent_*` 现为持久句柄，history 行同样可寻址。entry 只在子代理事件到达父 runtime 的事件汇时写入，被 stale-branch 丢弃的 stop 会让历史行报 `lost`（保守结果，不是 running）。
 
 **B. 需要你拍板（产品取舍，不是技术债）**
 

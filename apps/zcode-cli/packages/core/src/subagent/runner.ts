@@ -160,6 +160,16 @@ export interface ExploreSubagentPortOptions {
   >;
   runtimeTaskRegistry?: RuntimeTaskRegistry;
   createAgentId?: () => string;
+  /**
+   * 按 agentId 从持久化数据重建一个**终态** task 快照（spec `subagent-session-messaging.md` D9）。
+   *
+   * 进程重启后 registry 是空的，`agent_*` 在内存里查不到；但子会话与 lifecycle entry 都还在
+   * 库中。没有这条回落，`SendMessage(to: "agent_*")` 会报「No active local_agent task found」——
+   * 而 agent 其实没消失，只是不在内存里。端口不直接依赖 session store，由调用方注入读取。
+   */
+  findPersistedSubagentTask?: (
+    agentId: string,
+  ) => Promise<RuntimeTaskSnapshot | undefined> | RuntimeTaskSnapshot | undefined;
   getAllowedTools?: (profile: AgentProfile) => readonly string[];
   inactivityTimeoutMs?: number;
   autoBackgroundMs?: number;
@@ -1102,7 +1112,19 @@ async function sendMessageToLocalAgent(
   }
 
   const task = registry.get(request.to);
-  if (!task || task.type !== "local_agent") {
+  const liveTask = task && task.type === "local_agent" ? task : undefined;
+  // spec D9：registry 未命中不等于 agent 不存在。进程重启/会话重新接管后注册表为空，但子会话
+  // 与 lifecycle entry 还在库里；用重建的终态快照走同一条续跑路径，而不是报「找不到任务」。
+  // 只接受终态快照：非终态意味着"本进程正在跑"，那种情况注册表一定有它。
+  const persistedTask = liveTask
+    ? undefined
+    : await options.findPersistedSubagentTask?.(request.to);
+  const resolvedTask =
+    liveTask ??
+    (persistedTask && persistedTask.type === "local_agent" && isTerminalRuntimeTask(persistedTask)
+      ? persistedTask
+      : undefined);
+  if (!resolvedTask) {
     return createSendMessageFailure(
       request,
       `No active local_agent task found for target ${request.to}.`,
@@ -1110,8 +1132,8 @@ async function sendMessageToLocalAgent(
   }
 
   const message = createRuntimeTaskPendingMessage(request);
-  if (!isTerminalRuntimeTask(task)) {
-    return deliverMessageToRunningAgent(registry, task, message, request);
+  if (!isTerminalRuntimeTask(resolvedTask)) {
+    return deliverMessageToRunningAgent(registry, resolvedTask, message, request);
   }
 
   return resumeTerminalAgentInBackground(
@@ -1119,7 +1141,7 @@ async function sendMessageToLocalAgent(
     getProfiles(),
     registry,
     abortControllers,
-    task,
+    resolvedTask,
     request,
     message,
     sendOptions,

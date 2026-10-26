@@ -37,7 +37,7 @@ const LIST_AGENTS_DESCRIPTION = [
   "",
   "Scope and sources:",
   '- Two sources are merged. `source: "live"` rows come from this process\'s in-memory task registry and carry the real-time status; `source: "history"` rows are projected from the session\'s persisted subagent events and cover subagents this process no longer knows about (for example from before a restart).',
-  "- Address by `source`: a `live` row can be addressed with its `agent_id` (the `agent_*` handle accepted by SendMessage), because the in-memory registry still knows it. A `history` row can NOT — the runtime behind it is gone, so address it only by its `child_session_id` (sess_subagent_*) through the cross-session path.",
+  "- Address either source with its `agent_id` (the `agent_*` handle accepted by SendMessage). `live` rows resolve through the in-memory registry; `history` rows resolve through the persisted lifecycle record, which resumes the same child session with its full context. `source` tells you how fresh the status is, not whether the row is addressable.",
   "- Direct children of this session only. Subagents cannot spawn subagents, and other sessions' subagents are not visible.",
   '- Without a filter, running and settled subagents are both listed. Pass `status: "running"` to see only what is still in flight (only `live` rows can be running).',
   "",

@@ -48,6 +48,7 @@ import {
 import { isSubagentDispatchToolName } from "../../tool/compat.js";
 import { resolveEmbeddedSearchBranchCapability } from "../../embedded-search/capability.js";
 import { getSessionShellEnvironment } from "./session-shell-environment.js";
+import { readPersistedSubagentTask } from "./subagent-lifecycle-persistence.js";
 import { deriveChildClientPorts } from "../helpers/child-client-ports.js";
 import {
   buildSubagentLaunchSpecEntry,
@@ -94,6 +95,10 @@ export function createDefaultSubagentPort(
     getAgentDefinitions: this.getAgentDefinitions,
     builtInModelSelectionOverrides: this.config.subagents?.builtInModelSelectionOverrides,
     runtimeTaskRegistry: this.runtimeTaskRegistry,
+    // spec D9：registry 未命中不等于 agent 不存在——按 lifecycle entry 重建终态快照，
+    // 让 `agent_*` 在进程重启 / 会话重新接管后仍可寻址，走同一条续跑路径。
+    findPersistedSubagentTask: (agentId) =>
+      readPersistedSubagentTask(this.sessionStore, this.sessionId, agentId, this.logger),
     emitParentEvent: async (event, traceContext) => {
       if (isStaleBranchRuntimeTaskEvent(this, event)) return;
       await this.appendEvent(event, traceContext);

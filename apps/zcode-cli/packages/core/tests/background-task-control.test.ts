@@ -2458,3 +2458,183 @@ describe("dwf 停止分支记录 stopInitiator", () => {
     });
   });
 });
+
+// spec `subagent-session-messaging.md` D9：`agent_*` 是跨进程持久句柄。进程重启后 registry 是空的，
+// 但子会话与 lifecycle entry 都还在库里——此时必须续跑，而不是报「找不到任务」。
+describe("SendMessage 的持久寻址（spec D9）", () => {
+  function persistedSnapshot(params: {
+    agentId: string;
+    sessionId: ReturnType<typeof createSessionId>;
+    childSessionId: ReturnType<typeof createSessionId>;
+    turnId: ReturnType<typeof createTurnId>;
+    status?: "lost" | "running";
+  }) {
+    return {
+      agentId: params.agentId,
+      agentType: "general-purpose",
+      childSessionId: params.childSessionId,
+      description: "Persisted work",
+      isBackgrounded: true,
+      notified: true,
+      parentSessionId: params.sessionId,
+      parentToolCallId: "tool_agent_persisted",
+      prompt: "Original prompt",
+      startedAt: new Date(0),
+      status: params.status ?? ("lost" as const),
+      taskId: params.agentId,
+      taskType: "local_agent" as const,
+      turnId: params.turnId,
+      type: "local_agent" as const,
+    };
+  }
+
+  it("registry 未命中时按持久化重建终态快照并续跑", async () => {
+    const sessionId = createSessionId("persisted-addressing");
+    const turnId = createTurnId("turn_persisted_addressing");
+    const childSessionId = createSessionId("subagent_agent_persisted");
+    const outputRootDir = await mkdtemp(join(tmpdir(), "zcode-persisted-addressing-"));
+    // 故意留空：模拟进程重启后注册表丢失。
+    const registry = new InMemoryRuntimeTaskRegistry();
+    // 续跑是后台任务，终态落盘晚于 sendMessage 返回；等它结束再清目录，避免 rm 与写入竞态。
+    let markSettled = () => {};
+    const settled = new Promise<void>((resolve) => {
+      markSettled = resolve;
+    });
+    const port = createExploreSubagentPort({
+      createAgentId: () => "unused_agent_id",
+      emitParentEvent: async () => {},
+      enqueueParentTaskNotification: () => {
+        markSettled();
+        return undefined;
+      },
+      outputRootDir,
+      runtimeTaskRegistry: registry,
+      findPersistedSubagentTask: async (agentId) =>
+        agentId === "agent_persisted"
+          ? persistedSnapshot({ agentId, childSessionId, sessionId, turnId })
+          : undefined,
+      async runExploreAgent(request) {
+        await request.onSessionReady?.();
+        return {
+          response: "resumed findings",
+          traceId: request.traceContext.traceId,
+          events: [],
+        };
+      },
+    });
+
+    try {
+      const result = await port.sendMessage?.({
+        message: "继续",
+        parentToolCallId: "tool_agent_persisted_send",
+        sessionId,
+        summary: "Continue persisted work",
+        to: "agent_persisted",
+        trace: {
+          traceId: "trace_persisted_addressing",
+          spanId: "span_persisted_addressing",
+          sessionId,
+          turnId,
+        },
+        turnId,
+        workingDirectory: outputRootDir,
+        workspaceRoot: outputRootDir,
+      });
+
+      expect(result).toMatchObject({
+        agentId: "agent_persisted",
+        delivery: "resumed_background",
+        status: "success",
+      });
+      // 核心断言：不能是「找不到任务」——那条文案把「不在内存」误述成「不存在」。
+      expect(result?.message).not.toContain("No active local_agent task found");
+      await settled;
+    } finally {
+      await rm(outputRootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("持久化里也没有该 agent 时维持原失败文案", async () => {
+    const sessionId = createSessionId("persisted-addressing-missing");
+    const turnId = createTurnId("turn_persisted_addressing_missing");
+    const outputRootDir = await mkdtemp(join(tmpdir(), "zcode-persisted-addressing-missing-"));
+    const port = createExploreSubagentPort({
+      createAgentId: () => "unused_agent_id",
+      emitParentEvent: async () => {},
+      enqueueParentTaskNotification: () => undefined,
+      outputRootDir,
+      runtimeTaskRegistry: new InMemoryRuntimeTaskRegistry(),
+      findPersistedSubagentTask: async () => undefined,
+      async runExploreAgent() {
+        throw new Error("must not resume an agent that does not exist");
+      },
+    });
+
+    try {
+      const result = await port.sendMessage?.({
+        message: "继续",
+        parentToolCallId: "tool_agent_missing_send",
+        sessionId,
+        summary: "Continue nothing",
+        to: "agent_missing",
+        trace: {
+          traceId: "trace_persisted_addressing_missing",
+          spanId: "span_persisted_addressing_missing",
+          sessionId,
+          turnId,
+        },
+        turnId,
+        workingDirectory: outputRootDir,
+        workspaceRoot: outputRootDir,
+      });
+
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result?.message).toContain("No active local_agent task found");
+    } finally {
+      await rm(outputRootDir, { force: true, recursive: true });
+    }
+  });
+
+  it("持久化快照是非终态时不续跑（本进程在跑的任务只认注册表）", async () => {
+    const sessionId = createSessionId("persisted-addressing-running");
+    const turnId = createTurnId("turn_persisted_addressing_running");
+    const childSessionId = createSessionId("subagent_agent_persisted_running");
+    const outputRootDir = await mkdtemp(join(tmpdir(), "zcode-persisted-addressing-running-"));
+    const port = createExploreSubagentPort({
+      createAgentId: () => "unused_agent_id",
+      emitParentEvent: async () => {},
+      enqueueParentTaskNotification: () => undefined,
+      outputRootDir,
+      runtimeTaskRegistry: new InMemoryRuntimeTaskRegistry(),
+      findPersistedSubagentTask: async (agentId) =>
+        persistedSnapshot({ agentId, childSessionId, sessionId, status: "running", turnId }),
+      async runExploreAgent() {
+        throw new Error("must not resume a non-terminal snapshot");
+      },
+    });
+
+    try {
+      const result = await port.sendMessage?.({
+        message: "继续",
+        parentToolCallId: "tool_agent_running_send",
+        sessionId,
+        summary: "Continue a running task",
+        to: "agent_persisted_running",
+        trace: {
+          traceId: "trace_persisted_addressing_running",
+          spanId: "span_persisted_addressing_running",
+          sessionId,
+          turnId,
+        },
+        turnId,
+        workingDirectory: outputRootDir,
+        workspaceRoot: outputRootDir,
+      });
+
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result?.message).toContain("No active local_agent task found");
+    } finally {
+      await rm(outputRootDir, { force: true, recursive: true });
+    }
+  });
+});
