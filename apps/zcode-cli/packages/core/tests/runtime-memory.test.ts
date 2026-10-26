@@ -184,21 +184,19 @@ describe("AgentRuntime project Memory context", () => {
     );
   });
 
-  it("uses an opaque workspace identity instead of interpreting it as a path", async () => {
+  it("keys memory by workspace path and ignores the opaque workspace identity", async () => {
     const workspaceIdentity = "ssh://host/workspace";
     const result = await executeMemoryTurn({ workspaceIdentity });
     const rootDir = resolveProjectMemoryRoot({
       cliStorageRoot: CLI_STORAGE_ROOT,
-      workspaceIdentity,
       workspacePath: WORKSPACE_PATH,
     });
 
     expect(result.providerText).toContain(`\`${rootDir}/\``);
-    // 身份是 opaque 的，slug 必须是 "project" 而不是路径 basename 推出的 "workspace"；
-    // join 在 Windows 上产出反斜杠，先归一化再断言与分隔符无关的部分。
+    // identity 里含会漂移的安装 ID，不能参与记忆键；目录名必须来自工作目录 basename。
     const normalizedRootDir = rootDir.replaceAll("\\", "/");
     expect(normalizedRootDir).toContain("/project-");
-    expect(normalizedRootDir).not.toContain("/workspace-");
+    expect(normalizedRootDir).not.toContain("ssh://");
   });
 
   it("leaves legacy summary/topics and explicit remember producers outside the active path", async () => {

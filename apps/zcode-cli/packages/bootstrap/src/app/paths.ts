@@ -17,11 +17,9 @@ export function getModelIoDir(cliStorageRoot: string, isDevelopment: boolean): s
 export function getProjectMemoryRoot(
   cliStorageRoot: string,
   workingDirectory: string,
-  workspaceIdentity?: string,
 ): string {
   return resolveProjectMemoryRoot({
     cliStorageRoot,
-    workspaceIdentity,
     workspacePath: workingDirectory,
   });
 }

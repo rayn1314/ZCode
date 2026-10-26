@@ -319,7 +319,6 @@ describe("AgentRuntime session persistence", () => {
     const workspaceIdentity = "ssh:example:/workspace/app";
     const expectedMemoryRoot = resolveProjectMemoryRoot({
       cliStorageRoot,
-      workspaceIdentity,
       workspacePath: persistedDirectory,
     });
     const store = createRecordingSessionStore();

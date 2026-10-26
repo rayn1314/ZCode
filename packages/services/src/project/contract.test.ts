@@ -85,6 +85,7 @@ it("does not classify an empty project as missing and keeps its normal first-roo
       ({
         readTree: () => ({ projects: [project], tasks: [] }),
         initializeProjectRoot,
+        recentTaskRoots: () => [],
       }) as unknown as ProjectRepositoryContract,
     workspaceDirectory: root,
   });
@@ -95,6 +96,40 @@ it("does not classify an empty project as missing and keeps its normal first-roo
       projectId: project.id,
     });
     expect(initializeProjectRoot).toHaveBeenCalledOnce();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("recovers a lost root from recent task directories and never adopts the system workspace directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "project-recover-"));
+  const systemWorkspace = join(root, "workspace");
+  const realRoot = join(root, "real-project");
+  await mkdir(realRoot, { recursive: true });
+  const project = { id: "recovered", roots: [] } as unknown as VirtualProject;
+  const initializeProjectRoot = vi.fn((id: string, rootPath: string) => ({
+    ...project,
+    id,
+    roots: [{ rootPath, position: 0, isPrimary: true }],
+  }));
+  const recentTaskRoots = vi.fn(() => [join(systemWorkspace, project.id), realRoot]);
+  const service = createProjectService({
+    repository: async () =>
+      ({
+        readTree: () => ({ projects: [project], tasks: [] }),
+        initializeProjectRoot,
+        recentTaskRoots,
+      }) as unknown as ProjectRepositoryContract,
+    workspaceDirectory: systemWorkspace,
+  });
+  try {
+    await expect(service.prepareSession({ projectId: project.id })).resolves.toMatchObject({
+      workspacePath: realRoot,
+      projectId: project.id,
+    });
+    expect(recentTaskRoots).toHaveBeenCalledWith(project.id);
+    // 系统目录下已有的 UUID 假根不能再被捡回来。
+    expect(initializeProjectRoot).toHaveBeenCalledWith(project.id, realRoot);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

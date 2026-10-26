@@ -2,7 +2,7 @@ import type { FileEntry } from "@zcode/shared";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { mkdir, stat } from "node:fs/promises";
-import { isAbsolute, join, normalize } from "node:path";
+import { isAbsolute, join, normalize, relative } from "node:path";
 import type { ProjectRepositoryContract } from "#src/project-storage/contract.js";
 import type { IProjectService, ProjectDirectories, VirtualProject } from "#src/project/contract.js";
 export { IProjectService } from "#src/project/contract.js";
@@ -35,6 +35,28 @@ async function readPrimaryRootStatus(
     const code = (error as NodeJS.ErrnoException).code;
     return code === "ENOENT" || code === "ENOTDIR" ? "missing" : "unavailable";
   }
+}
+
+function isWithinDirectory(parent: string, candidate: string): boolean {
+  const rel = relative(parent, candidate);
+  return rel === "" || (!rel.startsWith("..") && !isAbsolute(rel));
+}
+
+/**
+ * 项目记录可能与历史根脱节（例如升级迁移只带回项目名）。此时优先从最近任务恢复真实目录，
+ * 而不是把系统会话目录固化成项目主根——那会让后续所有会话的记忆换到一个新键上。
+ * 系统目录下已有的假根必须跳过，否则会把上一次损坏原样捡回来。
+ */
+async function recoverProjectRoot(
+  repo: ProjectRepositoryContract,
+  projectId: string,
+  systemWorkspaceDirectory: string,
+): Promise<string | null> {
+  for (const root of repo.recentTaskRoots(projectId)) {
+    if (!isAbsolute(root) || isWithinDirectory(systemWorkspaceDirectory, root)) continue;
+    if ((await readPrimaryRootStatus(root)) === "available") return root;
+  }
+  return null;
 }
 
 async function projectPrimaryRootStatuses(projects: VirtualProject[]): Promise<VirtualProject[]> {
@@ -233,9 +255,9 @@ export function createProjectService(options: {
         if (remoteOwner && project.roots.length !== 1)
           throw new Error("project.remote-single-root-required");
         if (!project.roots.length) {
-          // 多窗口为同一空项目生成同一个目录，不依赖进程间定时锁。
-          const path = join(options.workspaceDirectory, id);
-          await mkdir(path, { recursive: true });
+          const recovered = await recoverProjectRoot(repo, id, options.workspaceDirectory);
+          const path = recovered ?? join(options.workspaceDirectory, id);
+          if (!recovered) await mkdir(path, { recursive: true });
           // 空判断和 INSERT 必须共用写事务，防止另一 Host 的 roots 编辑被覆盖。
           project = repo.initializeProjectRoot(id, path);
           await changed();

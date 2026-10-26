@@ -323,11 +323,7 @@ export function runtimeConfigLogContext(
   workingDirectory: string,
 ) {
   const memoryRoot = runtimeConfig.memory?.cliStorageRoot
-    ? getProjectMemoryRoot(
-        runtimeConfig.memory.cliStorageRoot,
-        workingDirectory,
-        runtimeConfig.memory.workspaceIdentity,
-      )
+    ? getProjectMemoryRoot(runtimeConfig.memory.cliStorageRoot, workingDirectory)
     : undefined;
   return {
     mcpEnabled: runtimeConfig.mcp?.enabled !== false,

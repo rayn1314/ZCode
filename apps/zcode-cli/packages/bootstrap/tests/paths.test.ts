@@ -3,32 +3,22 @@ import { join, resolve } from "node:path";
 import { getModelIoDir, getProjectMemoryRoot } from "../src/app/paths.js";
 
 describe("getProjectMemoryRoot", () => {
-  it("uses an opaque workspace identity and the canonical memory suffix", () => {
-    const first = getProjectMemoryRoot(
-      "/tmp/zcode-cli",
-      "/workspace/first",
-      "  remote:ssh:host:/workspace/app  ",
-    );
-    const second = getProjectMemoryRoot(
-      "/tmp/zcode-cli",
-      "/workspace/second",
-      "remote:ssh:host:/workspace/app",
-    );
+  it("keys memory by the canonical workspace path", () => {
+    const first = getProjectMemoryRoot("/tmp/zcode-cli", "/workspace/first");
+    const second = getProjectMemoryRoot("/tmp/zcode-cli", "/workspace/first");
+    const other = getProjectMemoryRoot("/tmp/zcode-cli", "/workspace/second");
 
     // 分隔符随平台（Windows 上 resolve 会产出反斜杠），期望值用 join 拼，不能写死 posix 字面量。
-    expect(first).toBe(
-      join("/tmp/zcode-cli", "memories", "projects", "project-dce7d1610bbf24dd", "memory"),
-    );
+    expect(first).toMatch(/[\\/]memories[\\/]projects[\\/]first-[a-f0-9]{16}[\\/]memory$/);
     expect(second).toBe(first);
+    expect(other).not.toBe(first);
   });
 
-  it("normalizes the workspace path only when identity is absent", () => {
+  it("normalizes relative and absolute workspace paths", () => {
     const relativeRoot = getProjectMemoryRoot("/tmp/zcode-cli", ".");
     const absoluteRoot = getProjectMemoryRoot("/tmp/zcode-cli", resolve("."));
-    const blankIdentityRoot = getProjectMemoryRoot("/tmp/zcode-cli", ".", "   ");
 
     expect(relativeRoot).toBe(absoluteRoot);
-    expect(blankIdentityRoot).toBe(absoluteRoot);
     expect(relativeRoot).toMatch(/[\\/]memories[\\/]projects[\\/].+[\\/]memory$/);
   });
 });

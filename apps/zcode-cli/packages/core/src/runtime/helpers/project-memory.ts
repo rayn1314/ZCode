@@ -11,7 +11,6 @@ export function resolveEnabledProjectMemoryRoot(
 
   return resolveProjectMemoryRoot({
     cliStorageRoot: memory.cliStorageRoot,
-    workspaceIdentity: memory.workspaceIdentity,
     workspacePath,
   });
 }

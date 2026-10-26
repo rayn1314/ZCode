@@ -561,7 +561,7 @@ const appSettingsObjectSchema = z.object({
   toolSearchMode: appToolSearchModeSchema.default("off"),
   onboardingOccupation: appSettingsOccupationSchema.nullish(),
   proactiveSuggestionsEnabled: z.boolean().optional(),
-  memoryEnabled: z.boolean().default(false),
+  memoryEnabled: z.boolean().default(true),
   // 上下文压缩控制（默认全部「维持现状」）：余量缺省/null = 沿用默认安全余量。
   compactionBufferTokens: compactionBufferTokensSchema.optional(),
   compactionMicrocompactEnabled: z.boolean().default(false),

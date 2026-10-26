@@ -99,6 +99,8 @@ export interface ProjectRepositoryContract {
   deleteProject(id: string): void;
   /** 在写事务内只为空项目初始化 root；并发编辑已添加的目录优先。 */
   initializeProjectRoot(id: string, path: string): VirtualProject;
+  /** 按最近活动倒序返回该项目历史任务的工作目录，供根丢失后的恢复判定。 */
+  recentTaskRoots(projectId: string, limit?: number): string[];
   moveTask(input: { task: ProjectTaskRef; projectId: string; addMissingRoot?: boolean }): void;
   reorderProjects(ids: string[]): void;
   resolveSessionDirectories(task: ProjectTaskRef): ProjectDirectories;

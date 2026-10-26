@@ -62,6 +62,7 @@
     "count-lines": "bash scripts/count-lines.sh",
     "prepare:remote-assets": "pnpm --filter @zcode/server-cli stage:remote-assets",
     "prepare:remote-assets:linux": "pnpm --filter @zcode/server-cli stage:remote-assets --linux",
+    "deploy:wsl-server": "node scripts/deploy-wsl-server.mjs",
     "package:desktop": "node scripts/package-desktop.mjs",
     "ci:assert-node": "node scripts/assert-node-version.mjs",
     "build:cua": "pnpm --filter @zcode/zcode-cua build",

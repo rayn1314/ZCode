@@ -223,7 +223,6 @@ function createRecallRuntime(input: {
 }): AgentRuntime {
   const rootDir = resolveProjectMemoryRoot({
     cliStorageRoot: CLI_STORAGE_ROOT,
-    workspaceIdentity: input.workspaceIdentity,
     workspacePath: WORKSPACE_PATH,
   });
   const fileSystemPort = new RecallMemoryFileSystem({

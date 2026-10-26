@@ -100,7 +100,6 @@ describe("project Memory foreground permission", () => {
     const target = join(
       resolveProjectMemoryRoot({
         cliStorageRoot: "/storage",
-        workspaceIdentity,
         workspacePath: "/workspace",
       }),
       "runtime-boundary.md",

@@ -513,12 +513,12 @@ describe("hostResponseMessageSchema", () => {
     ).toBe(true);
   });
 
-  it("defaults Memory to off and preserves an explicit user selection", () => {
+  it("defaults Memory to on and preserves an explicit user selection", () => {
     const defaults = appSettingsSchema.parse({});
     const explicitEnabled = appSettingsSchema.parse({ memoryEnabled: true });
     const explicitDisabled = appSettingsSchema.parse({ memoryEnabled: false });
 
-    expect(defaults.memoryEnabled).toBe(false);
+    expect(defaults.memoryEnabled).toBe(true);
     expect(explicitEnabled.memoryEnabled).toBe(true);
     expect(explicitDisabled.memoryEnabled).toBe(false);
   });

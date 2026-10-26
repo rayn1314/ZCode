@@ -2113,7 +2113,8 @@ export const zcodeSessionRuntimePreferencesResultSchema = z
     nativeSearchEnhancementsEnabled: z.boolean(),
     toolSearchMode: appToolSearchModeSchema.default("off"),
     subagentRuntimeConfigEnabled: z.boolean().optional(),
-    memoryEnabled: z.boolean().default(false),
+    // 记忆是默认能力；缺字段按开启处理，避免升级后老用户被静默关掉。
+    memoryEnabled: z.boolean().default(true),
     askUserQuestionAutoResolutionEnabled: z.boolean().default(true),
     // 兼容旧 Host：缺失字段时按「未设置即开启」处理（默认开启授权超时自动拒绝）。
     permissionRequestAutoDenyEnabled: z.boolean().default(true),

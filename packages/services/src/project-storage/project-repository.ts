@@ -297,6 +297,17 @@ export class ProjectRepository implements ProjectRepositoryContract {
     });
   }
 
+  recentTaskRoots(projectId: string, limit = 8): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT workspace_path AS workspacePath FROM tasks
+        WHERE project_id=? AND host_id=? AND deleted=0 AND workspace_path<>''
+        GROUP BY workspace_path ORDER BY max(updated_at) DESC, workspace_path LIMIT ?`,
+      )
+      .all(projectId, this.ownerHostId ?? "local", limit) as { workspacePath: string }[];
+    return rows.map((row) => String(row.workspacePath));
+  }
+
   initializeProjectRoot(id: string, path: string): VirtualProject {
     return transaction(this.db, () => {
       const project = requireProject(this.db, id);
