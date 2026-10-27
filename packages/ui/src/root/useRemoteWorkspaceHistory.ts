@@ -1383,7 +1383,11 @@ export function useRemoteWorkspaceHistory({
           (tab): tab is import("@/store/tabStore.js").WorkspaceTabState =>
             isWorkspaceTab(tab) && buildWorkspaceSessionKey(tab) === workspaceKey,
         );
-      if (!workspaceTab || workspaceTab.remoteSessionId) {
+      // tab 已有 live session 时无需重连；无 tab 的历史条目也允许重连——
+      // 侧栏「重新连接」要能恢复已关闭 tab 的项目，downstream upsertWorkspaceTab 会补建 tab。
+      // 过去无 tab 直接拒绝，使这类项目永远无法通过重连恢复会话（设备连上也停留失败态）。
+      const reconnectingWithoutTab = !workspaceTab;
+      if (workspaceTab?.remoteSessionId) {
         return false;
       }
 
@@ -1423,11 +1427,20 @@ export function useRemoteWorkspaceHistory({
           logger,
           toast,
           shouldKeepReconnectedWorkspace: ({ workspacePath, workspaceIdentity }) =>
-            shouldKeepRemoteWorkspaceInTabs({
-              tabStoreApi,
-              workspacePath,
-              workspaceIdentity,
-            }),
+            // 无 tab 发起的重连（侧栏恢复已关闭项目）没有可失去的 tab，只要会话条目仍被
+            // 持有（未被用户移除）就继续恢复；带 tab 发起的重连仍只以 tab 在列为准，
+            // 避免用户在重连期间刚移除的 tab 被重新加回。
+            reconnectingWithoutTab
+              ? remoteWorkspaceSessionsRef.current.some(
+                  (candidate) =>
+                    (candidate.workspaceIdentity?.trim() || candidate.workspacePath) ===
+                      workspaceKey || candidate.workspacePath === workspacePath,
+                )
+              : shouldKeepRemoteWorkspaceInTabs({
+                  tabStoreApi,
+                  workspacePath,
+                  workspaceIdentity,
+                }),
           onWorkspaceActivated: (target) => {
             logger.debug("[Root] 远程 workspace ready，提交 tab 与 draft 激活", target);
             onWorkspaceActivated?.(target);
@@ -1922,13 +1935,18 @@ export function useRemoteWorkspaceHistory({
       const tab = tabStoreApi
         .getState()
         .tabs.find(
-          (candidate) =>
+          (candidate): candidate is import("@/store/tabStore.js").WorkspaceTabState =>
             isWorkspaceTab(candidate) && buildWorkspaceSessionKey(candidate) === workspaceKey,
         );
       const entry = remoteWorkspaceSessionsRef.current.find(
         (candidate) => buildWorkspaceSessionKey(candidate) === workspaceKey,
       );
-      if (!tab || !isWorkspaceTab(tab) || !entry) {
+      // 会话历史条目是「本项目曾在本窗口打开过」的事实；只要它存在，重连必须走唯一的
+      // 完整重连 owner（设备 + workspace 会话 + 条目状态一次恢复），与设置页设备重连达到
+      // 同等最终状态。只有从未打开过的项目（无会话条目）才保留设备级 retained 快捷路径。
+      // 过去按 `!tab` 分流：关掉 tab 的老项目被降级成只连设备，行上点「重新连接」后
+      // 会话与条目失败态原样残留，用户看到的就是“没有效果”。
+      if (!entry) {
         if (!services.remoteProjectService) throw new Error("remote-project.service-unavailable");
         inflightReconnectWorkspaceKeysRef.current.add(workspaceKey);
         try {
@@ -1952,10 +1970,25 @@ export function useRemoteWorkspaceHistory({
       const snapshot = await services.sourceServerManagementService
         ?.getSnapshot()
         .catch(() => undefined);
-      const isCurrent = () =>
-        tabStoreApi.getState().tabs.some((candidate) => candidate.id === tab.id);
+      // tab 可能不存在（项目已关闭）；存在时重连期间被移除才取消，不存在时以会话条目仍被持有为准。
+      const isCurrent = tab
+        ? () => tabStoreApi.getState().tabs.some((candidate) => candidate.id === tab.id)
+        : () =>
+            remoteWorkspaceSessionsRef.current.some(
+              (candidate) => buildWorkspaceSessionKey(candidate) === workspaceKey,
+            );
       if (!isCurrent()) return;
-      const sourceId = getWorkspaceSourceServerId(tab, {
+      // 无 tab 时用会话条目推导 Source 归属；getWorkspaceSourceServerId 只消费这三元组。
+      const sourceInput = tab ?? {
+        workspaceIdentity: entry.workspaceIdentity,
+        workspacePath: entry.workspacePath,
+        remoteTarget: createRemoteTargetFromSnapshot(entry.target, {
+          password: null,
+          privateKeyPassphrase: null,
+          token: null,
+        }),
+      };
+      const sourceId = getWorkspaceSourceServerId(sourceInput, {
         workspaceHistory: snapshot?.workspaceHistory,
       });
       const device = sourceId ? getRemoteDevicePresentationInput(snapshot, sourceId) : undefined;
@@ -1969,10 +2002,16 @@ export function useRemoteWorkspaceHistory({
       });
       await requestRemoteProjectConnection({
         preference: {
-          preferredWorkspaceTabId: tab.id,
           preferredDirectoryPath: entry.workspacePath,
           preferredProfileId: profile?.profileId,
-          preferredTarget: profile ? buildRemoteTargetFromProfile(profile) : tab.remoteTarget,
+          preferredTarget: profile
+            ? buildRemoteTargetFromProfile(profile)
+            : createRemoteTargetFromSnapshot(entry.target, {
+                password: null,
+                privateKeyPassphrase: null,
+                token: null,
+              }),
+          ...(tab ? { preferredWorkspaceTabId: tab.id } : {}),
         },
         presentation,
         failure: {

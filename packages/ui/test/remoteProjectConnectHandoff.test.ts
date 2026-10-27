@@ -5,7 +5,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { IServiceAccessor } from "@zcode/services";
 import type { IPlatformService, SourceServerManagementSnapshot } from "@zcode/shared";
 import { useRemoteWorkspaceHistory } from "@/root/useRemoteWorkspaceHistory.js";
-import { createTabStore } from "@/store/tabStore.js";
+import { isWorkspaceTab, createTabStore } from "@/store/tabStore.js";
+import { registerRemoteWorkspaceSession } from "@/store/remoteWorkspaceSessionStore.js";
 
 const identity = "remote:server:source-1:/srv/project";
 const host = {
@@ -241,3 +242,104 @@ it.each(["failed", "needs-install", "needs-upgrade"] as const)(
     );
   },
 );
+
+it("有会话历史的已关闭项目重连走完整 owner：恢复会话并补建 tab，而不是只连设备", async () => {
+  const wslIdentity = "remote:server:source-1:/srv/project";
+  const wslTargetSnapshot = { kind: "wsl", distro: "Ubuntu", user: "dev" } as const;
+  const settings = {
+    lastWorkspaceSession: [
+      {
+        kind: "remote",
+        workspacePath: "/srv/project",
+        workspaceIdentity: wslIdentity,
+        target: wslTargetSnapshot,
+        lastOpenedAt: 1,
+        lastConnectionStatus: "failed",
+        lastConnectionError: "Source Server startup reconnect timed out after 10000ms",
+      },
+    ],
+  };
+  const openWizard = vi.fn();
+  const connectHost = vi.fn(async () => host);
+  const services = {
+    remoteProjectService: {
+      readDirectory: async () => ({ hosts: [host], entries: [entry] }),
+      connectHost,
+    },
+    sourceServerManagementService: {
+      getSnapshot: async (): Promise<SourceServerManagementSnapshot> => ({
+        ...snapshot,
+        states: [{ profileId: "profile-1", state: "offline", updatedAt: 1 }],
+      }),
+      onDidChangeState: () => ({ dispose: () => {} }),
+    },
+    settingService: { get: async () => settings, update: async () => {} },
+    credentialService: { load: async () => null, save: async () => {}, delete: async () => {} },
+  } as unknown as IServiceAccessor;
+  // connectRemote 成功即同步注册 renderer session，模拟 main 侧 attach 完成后的 store 回填。
+  const connectRemote = vi.fn(async () => {
+    registerRemoteWorkspaceSession({
+      sessionId: "session-1",
+      workspacePath: "/srv/project",
+      workspaceIdentity: wslIdentity,
+      target: wslTargetSnapshot,
+      services: {} as IServiceAccessor,
+    });
+    return { success: true as const, sessionId: "session-1" };
+  });
+  const platform = {
+    onRemoteConnectionLog: () => () => {},
+    onRemoteSessionClosed: () => () => {},
+    onRemoteSessionReconnected: () => () => {},
+    connectRemote,
+    disposeRemoteSession: vi.fn(async () => {}),
+    bindRemoteWorkspaceSessionContext: vi.fn(async () => ({
+      workspacePath: "/srv/project",
+      workspaceIdentity: wslIdentity,
+    })),
+  } as unknown as IPlatformService;
+  const tabs = createTabStore();
+  const hook = renderHook(() =>
+    useRemoteWorkspaceHistory({
+      intl: { formatMessage: ({ id }: { id: string }) => id } as never,
+      services,
+      platform,
+      supportsSettings: false,
+      isDesktop: true,
+      tabStoreApi: tabs,
+      activateTabByPath: tabs.getState().activateTabByPath,
+      addTab: tabs.getState().addTab,
+      onOpenRemoteConnection: openWizard,
+    }),
+  );
+  unmounts.push(hook.unmount);
+  // 启动恢复把历史项目还原为断连 tab；随后直接在 tab store 移除 tab（不经过
+  // handleRemoteWorkspaceTabsClosed），模拟「项目已关闭但会话历史保留」的侧栏重连场景。
+  await act(async () => {
+    await hook.result.current.restorePersistedSession(settings as never);
+  });
+  const restoredTab = tabs.getState().tabs.find(isWorkspaceTab);
+  expect(restoredTab).toBeTruthy();
+  act(() => {
+    tabs.getState().closeTab(restoredTab!.id);
+  });
+  expect(tabs.getState().tabs.filter(isWorkspaceTab)).toHaveLength(0);
+
+  await act(async () => {
+    await hook.result.current.handleReconnectRemoteWorkspace(wslIdentity);
+  });
+  // 完整重连 owner 直连 workspace（platform.connectRemote），不再降级为设备级 connectHost。
+  expect(connectRemote).toHaveBeenCalledTimes(1);
+  expect(connectRemote.mock.calls[0]?.[0]).toMatchObject({ kind: "wsl", distro: "Ubuntu" });
+  expect(connectHost).not.toHaveBeenCalled();
+  expect(openWizard).not.toHaveBeenCalled();
+  const reconnectedTab = tabs
+    .getState()
+    .tabs.find((tab) => isWorkspaceTab(tab) && tab.remoteSessionId === "session-1");
+  expect(reconnectedTab).toBeTruthy();
+  const committedEntry = hook.result.current.remoteWorkspaceSessions.find(
+    (candidate) => candidate.workspaceIdentity === wslIdentity,
+  );
+  expect(committedEntry?.lastConnectionStatus).toBe("connected");
+  expect(committedEntry?.lastConnectionError).toBeUndefined();
+});
