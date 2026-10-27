@@ -82,7 +82,7 @@ it("releases only the new logical attachment when binding fails", async () => {
   expect(input.cancel).toHaveBeenCalledWith("new-session");
 });
 
-it("does not bind a late connection after navigation is superseded and releases its attachment", async () => {
+it("hands a late connection over instead of releasing it when navigation is superseded", async () => {
   const { input } = fixture();
   let current = true;
   input.connect.mockImplementation(async () => {
@@ -93,7 +93,10 @@ it("does not bind a late connection after navigation is superseded and releases 
     attachRemoteProjectWorkspace({ ...input, isCurrent: () => current }),
   ).rejects.toThrow("project.navigation-cancelled");
   expect(input.bind).not.toHaveBeenCalled();
-  expect(input.cancel).toHaveBeenCalledWith("late");
+  // 被取代的那次只让位，不回收自己刚建好的连接：后到的入口会按同一 identity 复用它
+  // （见 packages/ui/spec/remote-workspace-open-handover.md）。回收会让每次点击都从 WSL
+  // 重连开始，形成 connect → bind → cancel 的循环。
+  expect(input.cancel).not.toHaveBeenCalled();
 });
 it("does not create an attachment when the Host response belongs to an old navigation", async () => {
   const { input } = fixture();
