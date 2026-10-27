@@ -3011,4 +3011,327 @@ describe("升级目标身份竞态", () => {
       },
     );
   }
+
+  // 启动批次超时 → 有界自动补试（spec packages/desktop/spec/source-server-startup-retry.md）。
+  describe("startup retry window", () => {
+    /** 探针挂起、由 adapter.cancel 经 abort 解开：模拟真实 transport 的取消路径。 */
+    function createHangingProbeAdapter(): ReturnType<typeof createAdapter> {
+      const adapter = createAdapter();
+      let rejectProbe: ((error: Error) => void) | undefined;
+      adapter.probe = vi.fn(
+        async () =>
+          await new Promise<never>((_resolve, reject) => {
+            rejectProbe = reject;
+          }),
+      );
+      Object.assign(adapter, {
+        cancel: vi.fn(() => rejectProbe?.(new Error("transport canceled"))),
+      });
+      return adapter;
+    }
+
+    function createRetryManager(
+      overrides: Partial<ConstructorParameters<typeof SourceServerConnectionManager>[0]> = {},
+    ) {
+      return new SourceServerConnectionManager({
+        directory: { recordHandshake: vi.fn().mockResolvedValue({ identityChanged: false }) },
+        createAdapter: () => createAdapter(),
+        connectServer: vi.fn(async () => ({
+          serverInfo,
+          services: {} as IServiceAccessor,
+          dispose: vi.fn(),
+        })),
+        compatibilityManifest: serverInfo.compatibility!,
+        ...overrides,
+      });
+    }
+
+    it("recovers a timed-out startup candidate through the bounded retry window", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createAdapter();
+        let rejectProbe: ((error: Error) => void) | undefined;
+        let probeCalls = 0;
+        adapter.probe = vi.fn(async () => {
+          probeCalls += 1;
+          if (probeCalls === 1) {
+            // 首次探针挂起等批次超时；后续调用正常走完握手。
+            await new Promise<never>((_resolve, reject) => {
+              rejectProbe = reject;
+            });
+          }
+          return { platform: "linux", arch: "x64", installed: true, installedVersion: "3.8.0" };
+        });
+        const cancel = vi.fn(() => rejectProbe?.(new Error("transport canceled")));
+        Object.assign(adapter, { cancel });
+        const infos: string[] = [];
+        const closeHandlers: Array<(event: { code: number; reason: string }) => void> = [];
+        const manager = createRetryManager({
+          createAdapter: () => adapter,
+          logInfo: (message) => infos.push(message),
+          connectServer: vi.fn(
+            async (options: { onClose?: (event: { code: number; reason: string }) => void }) => {
+              closeHandlers.push(options.onClose ?? (() => undefined));
+              return {
+                serverInfo,
+                services: {} as IServiceAccessor,
+                dispose: vi.fn(),
+              };
+            },
+          ),
+        });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          {
+            profileId,
+            status: "failed",
+            error: "Source Server startup reconnect timed out after 100ms",
+          },
+        ]);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({
+          state: "retrying",
+          recoveryAttempt: 1,
+          recoveryLimit: 3,
+        });
+
+        await vi.advanceTimersByTimeAsync(15_000);
+
+        expect(manager.getOnlineConnection(sourceServerId)).toBeDefined();
+        expect(manager.getStateByProfile(profileId)).toMatchObject({
+          state: "online",
+          sourceServerId,
+        });
+        expect(adapter.probe).toHaveBeenCalledTimes(2);
+        expect(
+          infos.some((message) =>
+            message.includes(
+              `startup reconnect retry scheduled profile=${profileId} attempt=1/3 delayMs=15000`,
+            ),
+          ),
+        ).toBe(true);
+        expect(infos.some((message) => message.includes("startup reconnect retry succeeded"))).toBe(
+          true,
+        );
+
+        // 补试成功即汇入既有在线路径（写 reconnectInputs）：此后意外断线由 2/4/8 秒在线阶梯
+        // 接管，而不是回到「只探一次」。2s 档触发说明走的是在线阶梯而非补试窗口（15s 档）。
+        // 首探在 probe 阶段就超时被中止，只有补试这一次走到握手，因此只有一个 onClose。
+        expect(closeHandlers).toHaveLength(1);
+        closeHandlers[0]?.({ code: 1006, reason: "network lost" });
+        expect(manager.getStateByProfile(profileId)).toMatchObject({
+          state: "retrying",
+          recoveryAttempt: 1,
+          recoveryLimit: 3,
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(3);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "online" });
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("gives up after the retry window is exhausted and never probes again", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createHangingProbeAdapter();
+        const warns: string[] = [];
+        const manager = createRetryManager({
+          createAdapter: () => adapter,
+          logWarn: (message) => warns.push(message),
+        });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        // 首次 + 三次补试，每档退避各触发一次；步进各留 1s 余量容纳补试自身的探针超时。
+        await vi.advanceTimersByTimeAsync(15_000 + 1_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(2);
+        await vi.advanceTimersByTimeAsync(45_000 + 1_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(3);
+        await vi.advanceTimersByTimeAsync(105_000 + 1_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(4);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "failed" });
+        expect(
+          warns.some((message) =>
+            message.includes(
+              `startup reconnect retry window exhausted profile=${profileId} attempts=3`,
+            ),
+          ),
+        ).toBe(true);
+        // 窗口结束后彻底安静：再推进十分钟也不得有任何探测。
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(4);
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels the pending startup retry when the user connects manually", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createAdapter();
+        let rejectProbe: ((error: Error) => void) | undefined;
+        let probeCalls = 0;
+        adapter.probe = vi.fn(async () => {
+          probeCalls += 1;
+          if (probeCalls === 1) {
+            await new Promise<never>((_resolve, reject) => {
+              rejectProbe = reject;
+            });
+          }
+          throw new Error("manual connect refused");
+        });
+        const cancel = vi.fn(() => rejectProbe?.(new Error("transport canceled")));
+        Object.assign(adapter, { cancel });
+        const manager = createRetryManager({ createAdapter: () => adapter });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        // 让被中止的首个 flight 完全落定，避免手动连接并入在途 flight。
+        await vi.advanceTimersByTimeAsync(1);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "retrying" });
+
+        await expect(manager.connect({ profile, target })).rejects.toThrow(
+          "manual connect refused",
+        );
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "failed" });
+
+        await vi.advanceTimersByTimeAsync(15_000 + 45_000 + 105_000 + 60_000);
+        // 只有首次挂起探针 + 手动连接两次；补试窗口已被用户意图取消。
+        expect(adapter.probe).toHaveBeenCalledTimes(2);
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels the pending startup retry and lands offline when the user disconnects the source", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createHangingProbeAdapter();
+        const manager = createRetryManager({ createAdapter: () => adapter });
+        const knownProfile: ConnectionProfile = { ...profile, sourceServerId };
+
+        const resultPromise = manager.reconnectOnStartup([{ profile: knownProfile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({
+          state: "retrying",
+          sourceServerId,
+        });
+
+        manager.disconnect(sourceServerId);
+
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "offline" });
+        await vi.advanceTimersByTimeAsync(15_000 + 45_000 + 105_000 + 60_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(1);
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels the pending startup retry when the profile is removed", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createHangingProbeAdapter();
+        const manager = createRetryManager({ createAdapter: () => adapter });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "retrying" });
+
+        manager.removeProfile(profileId);
+
+        // Profile 行随删除消失，不能再被补试重建；窗口不再触发任何探测。
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "absent" });
+        await vi.advanceTimersByTimeAsync(15_000 + 45_000 + 105_000 + 60_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(1);
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not enter the retry window for user-action terminal states", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createAdapter();
+        const manager = createRetryManager({
+          createAdapter: () => adapter,
+          // 握手缺 compatibility 清单 → needs-upgrade，属用户动作终态。
+          connectServer: vi.fn(async () => ({
+            serverInfo: { ...serverInfo, compatibility: undefined },
+            services: {} as IServiceAccessor,
+            dispose: vi.fn(),
+          })),
+        });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "needs-upgrade" });
+
+        await vi.advanceTimersByTimeAsync(15_000 + 45_000 + 105_000 + 60_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(1);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "needs-upgrade" });
+        manager.dispose();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("cancels pending startup retries when the manager is disposed", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = createHangingProbeAdapter();
+        const manager = createRetryManager({ createAdapter: () => adapter });
+
+        const resultPromise = manager.reconnectOnStartup([{ profile, target }], {
+          timeoutMs: 100,
+        });
+        await vi.advanceTimersByTimeAsync(100);
+        await expect(resultPromise).resolves.toEqual([
+          expect.objectContaining({ profileId, status: "failed" }),
+        ]);
+        expect(manager.getStateByProfile(profileId)).toMatchObject({ state: "retrying" });
+
+        manager.dispose();
+
+        await vi.advanceTimersByTimeAsync(15_000 + 45_000 + 105_000 + 60_000);
+        expect(adapter.probe).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
 });

@@ -1829,6 +1829,7 @@ async function ensureSourceServerConnectionManager(): Promise<SourceServerConnec
       admitConnection: createRemoteProjectConnectionAdmission(remoteProjects),
       onProjectChange: notifyProjectChange,
       logWarn: (message, error) => logger.warn(message, error),
+      logInfo: (message) => logger.info(message),
       sourceServerArtifactPolicy,
       // 远端 daemon 不继承桌面 host env：运行环境（base URL / 灰度开关）与设置页代理
       // 必须在启动命令里显式注入，否则远端 agent 会落到错误的端点或直连失败。
@@ -4141,6 +4142,7 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
           ),
           onProjectChange: notifyProjectChange,
           logWarn: (message, error) => logger.warn(message, error),
+          logInfo: (message) => logger.info(message),
           sourceServerArtifactPolicy,
           resolveRelease: resolveSourceServerRelease,
         });
@@ -4292,8 +4294,10 @@ parentPort.on("message", async (e: Electron.MessageEvent) => {
                 });
               }
             }
+            // failed 计数只代表首次尝试；有资格的失败候选已进入有界补试窗口，
+            // 调度/成功/放弃各有带 profileId 与 attempt/delayMs 的生命周期日志。
             logger.info(
-              `Source Server startup reconnect finished, online=${online}, failed=${results.length - online}`,
+              `Source Server startup reconnect finished, online=${online}, failed=${results.length - online}; eligible failures enter the bounded startup retry window`,
             );
           })
           .catch((error) =>

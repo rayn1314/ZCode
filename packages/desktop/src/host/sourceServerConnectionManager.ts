@@ -37,6 +37,7 @@ import {
 } from "./serverRemoteConnection.js";
 import type { SourceServerDirectory } from "./sourceServerDirectory.js";
 import { isSourceServerAutomaticRecoveryTerminalState } from "./sourceServerRecoveryPolicy.js";
+import { planStartupRetry, STARTUP_RETRY_DELAYS_MS } from "./sourceServerStartupRetryPolicy.js";
 
 export type {
   SourceServerConnectionState,
@@ -159,6 +160,8 @@ export interface SourceServerConnectionManagerOptions {
   ) => Promise<Pick<TransportContext, "runtimeEnv" | "runtimeNetwork">>;
   now?: () => number;
   logWarn?: (message: string, error: Error) => void;
+  /** 生命周期类 info（启动补试调度/成功）；host 域无 debug 通道，info 是最低可落盘级别。 */
+  logInfo?: (message: string) => void;
   onProjectChange?: (sourceServerId: string) => void;
   compatibilityManifest?: CompatibilityManifest;
   sourceServerArtifactPolicy?: SourceServerArtifactPolicy;
@@ -189,6 +192,17 @@ export interface StartupReconnectResult {
   error?: string;
 }
 
+interface StartupReconnectCandidate {
+  profile: ConnectionProfile;
+  target: Exclude<RemoteTarget, { kind: "server" }>;
+}
+
+interface StartupReconnectGates {
+  timeoutMs: number;
+  globalGate: ReturnType<typeof createConcurrencyGate>;
+  dockerGate: ReturnType<typeof createConcurrencyGate>;
+}
+
 interface OnlineConnection extends ManagedSourceServerConnection {
   connection: ServerRemoteConnection;
   profileIds: Set<string>;
@@ -205,6 +219,17 @@ interface ConnectFlight {
   promise: Promise<ManagedSourceServerConnection>;
   sourceServerId?: string;
   controller: AbortController;
+}
+
+/**
+ * 挂起中的启动补试计时器（spec `source-server-startup-retry.md`）。按 profileId 归口：
+ * 从未握手成功的 Source 没有 sourceServerId 归属，只有 Profile 是稳定身份；
+ * 已知 Source 的 profile.sourceServerId 记录在案，供 disconnectSource 按设备取消。
+ * 候选与门禁由计时器回调闭包持有，记录本身只承载取消所需的最小事实。
+ */
+interface StartupRetryRecord {
+  timer: ReturnType<typeof setTimeout>;
+  sourceServerId?: string;
 }
 
 const ONLINE_RETRY_DELAYS_MS = [2_000, 4_000, 8_000] as const;
@@ -315,6 +340,7 @@ export class SourceServerConnectionManager {
   private readonly profileIdsBySourceServerId = new Map<string, Set<string>>();
   private readonly retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly offlineProbeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly startupRetryTimers = new Map<string, StartupRetryRecord>();
   private readonly updateFlights = new Set<{
     profileId: string;
     sourceServerId?: string;
@@ -352,6 +378,10 @@ export class SourceServerConnectionManager {
   public async connect(
     options: ConnectSourceServerOptions,
   ): Promise<ManagedSourceServerConnection> {
+    // 用户显式连接接管该 Profile 的生命周期：挂起的启动补试立即让位，避免手动 flight
+    // 与补试 flight 在同一窗口内互相抢占。启动批次与补试自身的尝试也经此入口，但它们的
+    // 记录要么尚未创建、要么已在计时器触发时摘除，此处取消对它们是幂等 no-op。
+    this.cancelStartupRetry(options.profile.profileId);
     return await this.connectForSource(
       { ...options, membershipIntent: options.membershipIntent ?? "add" },
       options.profile.sourceServerId,
@@ -432,74 +462,198 @@ export class SourceServerConnectionManager {
   }
 
   public async reconnectOnStartup(
-    candidates: Array<{
-      profile: ConnectionProfile;
-      target: Exclude<RemoteTarget, { kind: "server" }>;
-    }>,
+    candidates: StartupReconnectCandidate[],
     options: { maxConcurrency?: number; timeoutMs?: number } = {},
   ): Promise<StartupReconnectResult[]> {
     if (candidates.length === 0) return [];
-    const timeoutMs = options.timeoutMs ?? 10_000;
-    const globalGate = createConcurrencyGate(Math.max(1, options.maxConcurrency ?? 3));
     // Bug 原因：多个 Docker Source 共用本机 Docker daemon、磁盘和 CPU。三条冷启动 probe
     // 同时校验大体积 release 时，单条手动连接只需约 4.6 秒，三条并发却会一起撞上 10 秒
     // 上限。Docker 冷启动在 transport 内串行，SSH 仍可占用其余全局槽位。
-    const dockerGate = createConcurrencyGate(1);
-    const reconnectCandidate = async (
-      candidate: (typeof candidates)[number],
-    ): Promise<StartupReconnectResult> => {
-      const releaseTransport =
-        candidate.target.kind === "docker" ? await dockerGate.acquire() : undefined;
-      const releaseGlobal = await globalGate.acquire();
-      const abortController = new AbortController();
-      const startedAt = Date.now();
-      let diagnosticPhase = "queued";
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          this.connect({
-            profile: candidate.profile,
-            target: candidate.target,
-            membershipIntent: "retain",
-            context: { signal: abortController.signal },
-            onDiagnosticPhase: (phase) => {
-              diagnosticPhase = phase;
-            },
-          }),
-          new Promise<never>((_resolve, reject) => {
-            timer = setTimeout(() => {
-              reject(new Error(`Source Server startup reconnect timed out after ${timeoutMs}ms`));
-              abortController.abort();
-            }, timeoutMs);
-          }),
-        ]);
-        return { profileId: candidate.profile.profileId, status: "online" };
-      } catch (error) {
-        if (error instanceof Error && error.message.includes("startup reconnect timed out")) {
-          this.options.logWarn?.(
-            `Source Server startup reconnect timeout diagnostic profile=${
-              candidate.profile.profileId
-            } transport=${candidate.target.kind} phase=${diagnosticPhase} elapsedMs=${Date.now() - startedAt}`,
-            error,
-          );
-        }
-        return {
-          profileId: candidate.profile.profileId,
-          status: "failed",
-          error: error instanceof Error ? error.message : String(error),
-        };
-      } finally {
-        if (timer) clearTimeout(timer);
-        releaseGlobal();
-        releaseTransport?.();
-      }
+    const gates: StartupReconnectGates = {
+      timeoutMs: options.timeoutMs ?? 10_000,
+      globalGate: createConcurrencyGate(Math.max(1, options.maxConcurrency ?? 3)),
+      dockerGate: createConcurrencyGate(1),
     };
     // 最近在线的 Source 对应用户最可能仍在使用的 workspace。首个候选独占启动窗口，
     // 避免和其余 Source 同时 probe/握手而在应用冷启动峰值中耗尽 10 秒预算；完成后其余
-    // Source 再按全局 3 并发继续，不改变单 Source 超时和只尝试一次的合同。
+    // Source 再按全局 3 并发继续。单 Source 超时合同不变；「只尝试一次」由后续的有界
+    // 补试窗口接管（失败候选见 settleStartupRetryAfterFailure）。
     const [firstCandidate, ...remainingCandidates] = candidates;
-    const firstResult = await reconnectCandidate(firstCandidate!);
-    return [firstResult, ...(await Promise.all(remainingCandidates.map(reconnectCandidate)))];
+    const attempt = (candidate: StartupReconnectCandidate) =>
+      this.attemptStartupReconnect(candidate, gates);
+    const firstResult = await attempt(firstCandidate!);
+    const results: StartupReconnectResult[] = [
+      firstResult,
+      ...(await Promise.all(remainingCandidates.map(attempt))),
+    ];
+    // 首次尝试失败的候选进入有界自动补试（见 sourceServerStartupRetryPolicy.ts）；
+    // 终态候选（升级/安装/身份待确认、显式离线等）在 settle 内按状态判定并安静放弃。
+    for (const [index, result] of results.entries()) {
+      if (result.status === "failed") {
+        this.settleStartupRetryAfterFailure(candidates[index]!, gates, 0, result.error);
+      }
+    }
+    return results;
+  }
+
+  /**
+   * 单次启动连接尝试：并发门禁 + 批次级超时。合同上不 reject——失败一律归约为
+   * `status: "failed"` 结果，由调用方决定后续（批次汇报或补试窗口）。
+   */
+  private async attemptStartupReconnect(
+    candidate: StartupReconnectCandidate,
+    gates: StartupReconnectGates,
+  ): Promise<StartupReconnectResult> {
+    const releaseTransport =
+      candidate.target.kind === "docker" ? await gates.dockerGate.acquire() : undefined;
+    const releaseGlobal = await gates.globalGate.acquire();
+    const abortController = new AbortController();
+    const startedAt = Date.now();
+    let diagnosticPhase = "queued";
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        this.connect({
+          profile: candidate.profile,
+          target: candidate.target,
+          membershipIntent: "retain",
+          context: { signal: abortController.signal },
+          onDiagnosticPhase: (phase) => {
+            diagnosticPhase = phase;
+          },
+        }),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            reject(
+              new Error(`Source Server startup reconnect timed out after ${gates.timeoutMs}ms`),
+            );
+            abortController.abort();
+          }, gates.timeoutMs);
+        }),
+      ]);
+      return { profileId: candidate.profile.profileId, status: "online" };
+    } catch (error) {
+      if (error instanceof Error && error.message.includes("startup reconnect timed out")) {
+        this.options.logWarn?.(
+          `Source Server startup reconnect timeout diagnostic profile=${
+            candidate.profile.profileId
+          } transport=${candidate.target.kind} phase=${diagnosticPhase} elapsedMs=${Date.now() - startedAt}`,
+          error,
+        );
+      }
+      return {
+        profileId: candidate.profile.profileId,
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      if (timer) clearTimeout(timer);
+      releaseGlobal();
+      releaseTransport?.();
+    }
+  }
+
+  /**
+   * 补试窗口的一次失败结算：按策略决定下一档补试或结束窗口。`retriesSoFar` 为 0 表示
+   * 首次尝试失败；此时策略判 skip 保持历史行为（安静放弃，不新增日志）。
+   */
+  private settleStartupRetryAfterFailure(
+    candidate: StartupReconnectCandidate,
+    gates: StartupReconnectGates,
+    retriesSoFar: number,
+    error: string | undefined,
+  ): void {
+    const profileId = candidate.profile.profileId;
+    const stateAfterFailure = this.getStateByProfile(profileId);
+    const plan = planStartupRetry({ retriesSoFar, stateAfterFailure });
+    if (plan.kind === "retry") {
+      this.scheduleStartupRetry(candidate, gates, plan, error);
+      return;
+    }
+    if (retriesSoFar === 0) return;
+    // 窗口在中途结束：exhausted 是预算用尽的正常终点；skip 说明用户动作或终态接管
+    // （断开/删除/升级待确认等）。两者每个 Source 至多一条，不形成高频日志。
+    this.options.logWarn?.(
+      plan.kind === "exhausted"
+        ? `Source Server startup reconnect retry window exhausted profile=${profileId} attempts=${STARTUP_RETRY_DELAYS_MS.length}`
+        : `Source Server startup reconnect retry stopped profile=${profileId} state=${stateAfterFailure.state}`,
+      new Error(
+        plan.kind === "exhausted"
+          ? (error ?? "startup reconnect retry window exhausted")
+          : `startup reconnect retry stopped in state ${stateAfterFailure.state}`,
+      ),
+    );
+  }
+
+  private scheduleStartupRetry(
+    candidate: StartupReconnectCandidate,
+    gates: StartupReconnectGates,
+    plan: { attempt: number; delayMs: number },
+    error: string | undefined,
+  ): void {
+    const profileId = candidate.profile.profileId;
+    // 同一 Profile 同时只允许一个挂起补试；重复调度（理论上不可达）以最新失败为准。
+    this.cancelStartupRetry(profileId);
+    const sourceServerId = candidate.profile.sourceServerId;
+    this.setState(profileId, {
+      state: "retrying",
+      ...(sourceServerId ? { sourceServerId } : {}),
+      recoveryAttempt: plan.attempt,
+      recoveryLimit: STARTUP_RETRY_DELAYS_MS.length,
+      ...(error ? { error } : {}),
+    });
+    this.options.logInfo?.(
+      `Source Server startup reconnect retry scheduled profile=${profileId} attempt=${plan.attempt}/${STARTUP_RETRY_DELAYS_MS.length} delayMs=${plan.delayMs}`,
+    );
+    const timer = setTimeout(() => {
+      // 计时器先摘记录再尝试：在途尝试由 connectFlights 归并，手动连接加入同一 flight
+      // 不会与此记录互相取消；失败结算发生在尝试完全落定之后。
+      this.startupRetryTimers.delete(profileId);
+      void this.attemptStartupReconnect(candidate, gates)
+        .then((result) => {
+          if (result.status === "online") {
+            this.options.logInfo?.(
+              `Source Server startup reconnect retry succeeded profile=${profileId} attempt=${plan.attempt}/${STARTUP_RETRY_DELAYS_MS.length}`,
+            );
+            return;
+          }
+          this.settleStartupRetryAfterFailure(candidate, gates, plan.attempt, result.error);
+        })
+        .catch((unexpected: unknown) => {
+          // attemptStartupReconnect 合同不 reject；此处只防未处理拒绝，并让窗口继续收敛。
+          this.options.logWarn?.(
+            `Source Server startup reconnect retry attempt crashed profile=${profileId}`,
+            unexpected instanceof Error ? unexpected : new Error(String(unexpected)),
+          );
+          this.settleStartupRetryAfterFailure(candidate, gates, plan.attempt, undefined);
+        });
+    }, plan.delayMs);
+    this.startupRetryTimers.set(profileId, {
+      timer,
+      ...(sourceServerId ? { sourceServerId } : {}),
+    });
+  }
+
+  private cancelStartupRetry(profileId: string): void {
+    const record = this.startupRetryTimers.get(profileId);
+    if (!record) return;
+    clearTimeout(record.timer);
+    this.startupRetryTimers.delete(profileId);
+  }
+
+  private cancelStartupRetryForSource(sourceServerId: string): void {
+    for (const [profileId, record] of this.startupRetryTimers) {
+      if (record.sourceServerId !== sourceServerId) continue;
+      this.cancelStartupRetry(profileId);
+    }
+  }
+
+  private startupRetryProfileIdsForSource(sourceServerId: string): string[] {
+    const profileIds: string[] = [];
+    for (const [profileId, record] of this.startupRetryTimers) {
+      if (record.sourceServerId === sourceServerId) profileIds.push(profileId);
+    }
+    return profileIds;
   }
 
   public getOnlineConnection(sourceServerId: string): ManagedSourceServerConnection | undefined {
@@ -682,6 +836,8 @@ export class SourceServerConnectionManager {
 
   public removeProfile(profileId: string): void {
     this.operationLogs.removeProfile(profileId);
+    // Profile 已删除，挂起的启动补试不能再为它重建连接意图与状态行。
+    this.cancelStartupRetry(profileId);
     const canceledUpdateSources = new Set<string>();
     for (const flight of this.updateFlights) {
       if (flight.profileId !== profileId) continue;
@@ -742,6 +898,11 @@ export class SourceServerConnectionManager {
     const profileIds = new Set(this.profileIdsBySourceServerId.get(sourceServerId) ?? []);
     for (const profileId of online?.profileIds ?? []) profileIds.add(profileId);
     if (reconnectInput) profileIds.add(reconnectInput.profile.profileId);
+    // 挂起的启动补试也是该 Source 的活动恢复意图：显式断开要连人带状态一起收尾，
+    // 否则从未连上的 Profile 行会在取消补试后永远停在 retrying。必须在清理前收集。
+    for (const profileId of this.startupRetryProfileIdsForSource(sourceServerId)) {
+      profileIds.add(profileId);
+    }
     for (const flight of this.updateFlights) {
       if (flight.sourceServerId !== sourceServerId) continue;
       this.updateFlights.delete(flight);
@@ -797,6 +958,9 @@ export class SourceServerConnectionManager {
     // 更新的重握手可能尚无 online owner，不能只遍历 online 表来回收在途连接。
     for (const flight of this.connectFlights.values()) flight.controller.abort(reason);
     this.connectFlights.clear();
+    // 宿主关闭：挂起的启动补试一并取消，不再触发任何探测。
+    for (const record of this.startupRetryTimers.values()) clearTimeout(record.timer);
+    this.startupRetryTimers.clear();
     for (const sourceServerId of this.retryTimers.keys()) this.clearRecoveryTimers(sourceServerId);
     for (const sourceServerId of this.offlineProbeTimers.keys())
       this.clearRecoveryTimers(sourceServerId);
@@ -1202,12 +1366,18 @@ export class SourceServerConnectionManager {
         error && typeof error === "object" && "retryable" in error
           ? (error as { retryable?: unknown }).retryable
           : undefined;
-      this.setState(profile.profileId, {
-        state: "failed",
-        error: normalized.message,
-        ...(errorCode ? { errorCode } : {}),
-        ...(typeof retryable === "boolean" ? { retryable } : {}),
-      });
+      // Bug 原因（启动补试）：批次级超时先于被中止 flight 的失败落盘，补试调度会先把
+      // Profile 置为 retrying；若这里再写 failed，补试中的等待期会闪回 failed。挂起补试
+      // 存在时跳过 failed 落盘，保留 retrying（含 attempt/limit）的进行中呈现；手动连接
+      // 在入口已取消挂起补试，不受此分支影响。
+      if (!this.startupRetryTimers.has(profile.profileId)) {
+        this.setState(profile.profileId, {
+          state: "failed",
+          error: normalized.message,
+          ...(errorCode ? { errorCode } : {}),
+          ...(typeof retryable === "boolean" ? { retryable } : {}),
+        });
+      }
       throw error;
     } finally {
       signal?.removeEventListener("abort", cancelTargetTransport);
@@ -1439,6 +1609,9 @@ export class SourceServerConnectionManager {
     const probeTimer = this.offlineProbeTimers.get(sourceServerId);
     if (probeTimer) clearTimeout(probeTimer);
     this.offlineProbeTimers.delete(sourceServerId);
+    // 启动补试也属于该 Source 的恢复意图：显式断开、更新与发布在线都要一并让位。
+    // 从未握手的 Profile 没有 sourceServerId，只能经 connect/removeProfile 按 Profile 取消。
+    this.cancelStartupRetryForSource(sourceServerId);
   }
 
   private setState(
