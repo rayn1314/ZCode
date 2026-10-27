@@ -71,7 +71,9 @@ describe("workspace settings projection", () => {
       workspaceIdentity: "remote:server:retained:/repo",
     });
     expect(result.lastWorkspaceSession?.at(-1)).toMatchObject({
-      workspaceIdentity: "remote:ssh:example.test:22:user:/repo",
+      // 修复原因：host.id 是 Source Server 的 route 身份（remote:server:<sourceServerId>），
+      // 权威稳定身份必须由它构造；host.target 只是 relay 的 transport，不能拿它现算。
+      workspaceIdentity: "remote:server:retained:/repo",
       target,
     });
     await service.removeEntry(saved.id);
@@ -117,5 +119,90 @@ describe("workspace settings projection", () => {
         lastWorkspaceSession: [{ kind: "local", workspacePath: "/old" }],
       }).lastActiveWorkspace,
     ).toBeNull();
+  });
+
+  it("Source Server 路由写稳定身份；legacy 直连 WSL 主机仍写 transport 身份", async () => {
+    const { db, service, project } = await fixture();
+    await service.removeHost("source");
+    const wsl = { kind: "wsl" as const, distro: "Ubuntu", user: "rayn" };
+    // Source Server 场景：route 身份（remote:server:<sourceServerId>）才是权威稳定身份，
+    // relay transport（wsl）只是连接手段。
+    await service.saveHost({ id: "remote:server:0dd064e1", target: wsl });
+    await service.addEntry({ hostId: "remote:server:0dd064e1", project });
+    // legacy 直连 WSL 主机没有 sourceServerId，transport 身份是它唯一可解析的形式，不许改写。
+    await service.saveHost({ id: "remote:wsl:Ubuntu:rayn", target: wsl });
+    await service.addEntry({
+      hostId: "remote:wsl:Ubuntu:rayn",
+      project: {
+        ...project,
+        projectId: "legacy",
+        roots: [{ rootPath: "/home/rayn/repo", position: 0, isPrimary: true }],
+      },
+    });
+    const repository = projectStorage.repository(db);
+    const result = projectWorkspaceSettings(
+      repository.readTree({ includeTasks: false }).projects,
+      await service.readDirectory(),
+      appSettingsSchema.parse({}),
+    );
+    const identities = new Map(
+      (result.lastWorkspaceSession ?? []).flatMap((entry) =>
+        entry.kind === "remote" ? [[entry.workspacePath, entry.workspaceIdentity] as const] : [],
+      ),
+    );
+    expect(identities.get("/repo")).toBe("remote:server:0dd064e1:/repo");
+    expect(identities.get("/home/rayn/repo")).toBe("remote:wsl:Ubuntu:rayn:/home/rayn/repo");
+  });
+
+  it("读取兼容：存量 transport 身份与稳定身份都解析到同一 host 与稳定身份", async () => {
+    const { service, target, project } = await fixture();
+    await service.removeHost("source");
+    await service.saveHost({ id: "remote:server:retained", target });
+    await service.addEntry({ hostId: "remote:server:retained", project });
+    const directory = await service.readDirectory();
+    // 现场两种格式并存：旧写入留下的 transport 身份，与修复后写入的稳定身份。
+    const active = (workspaceIdentity: string) =>
+      projectWorkspaceSettings(
+        [],
+        directory,
+        appSettingsSchema.parse({
+          lastActiveWorkspace: {
+            kind: "remote",
+            workspacePath: "/repo",
+            target,
+            workspaceIdentity,
+            lastOpenedAt: 1,
+            lastConnectionStatus: "connected",
+          },
+        }),
+      ).lastActiveWorkspace;
+    expect(active("remote:ssh:example.test:22:user:/repo")).toMatchObject({
+      workspaceIdentity: "remote:server:retained:/repo",
+      target,
+    });
+    expect(active("remote:server:retained:/repo")).toMatchObject({
+      workspaceIdentity: "remote:server:retained:/repo",
+      target,
+    });
+    // lastActiveWorkspace 缺席时按旧快照条目取选择：条目是 transport 身份也照样收敛。
+    expect(
+      projectWorkspaceSettings(
+        [],
+        directory,
+        appSettingsSchema.parse({
+          lastWorkspaceSession: [
+            {
+              kind: "remote",
+              workspacePath: "/repo",
+              target,
+              workspaceIdentity: "remote:ssh:example.test:22:user:/repo",
+              lastOpenedAt: 1,
+              lastConnectionStatus: "connected",
+            },
+          ],
+          lastActiveTabIndex: 0,
+        }),
+      ).lastActiveWorkspace,
+    ).toMatchObject({ workspaceIdentity: "remote:server:retained:/repo" });
   });
 });

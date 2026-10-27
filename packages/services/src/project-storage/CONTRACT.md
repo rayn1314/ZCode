@@ -11,7 +11,7 @@ Host 项目组织态的持久化升级。调用者持有 app SQLite 连接，CLI
 - settings 的 remote 条目只首次导入本机入口缓存，不能变成本机权威 project；普通启动不再导入。
 - 迁移依赖 sqlite-migrations 公共端口；内部文件不被 UI/其他服务直接导入。目录/备份位置与 logger 均由启动入口注入。
 
-项目仓库的事务面：save/delete/move/reorder/reserveCreatedTask 不写 cli\_\* 列。列表与目录解析在同步 SQLite 读事务中完成，不跨 await。缺 root 移动需要 addMissingRoot=true；恢复必须同 host 且 roots 集合完全相同。项目唯一名称在写事务中分配。同 Host 的 root 集合最多被一个活项目占用：新建同根不插入第二行，直接返回已有活项目；恢复已删除项目时该根被占用报 `project.restore-root-claimed`。软删项目不占用根；只共享部分目录的多 root 项目不算占用。新建 task 归属只在未决定时提交，后续由 moveTask 显式变更。
+项目仓库的事务面：save/delete/move/reorder/reserveCreatedTask 不写 cli\_\* 列。列表与目录解析在同步 SQLite 读事务中完成，不跨 await。缺 root 移动需要 addMissingRoot=true；恢复必须同 host 且 roots 集合完全相同。项目唯一名称在写事务中分配。同 Host 的 root 集合最多被一个活项目占用：新建同根不插入第二行，直接返回已有活项目；恢复已删除项目时该根被占用报 `project.restore-root-claimed`；编辑把根改到另一个活项目占用的同根目录报 `project.root-claimed`。软删项目不占用根；只共享部分目录的多 root 项目不算占用。新建 task 归属只在未决定时提交，后续由 moveTask 显式变更。
 
 项目树任务沿用原列表/Controller 的执行后端过滤：仅 `provider=ZCODE_AGENT_PROVIDER`（当前 glm）。旧后端行即使已补齐 cli\_\* 也不进入项目、置顶、未归类、时间线、归档和未读投影；新导入的当前 CLI 会话保留，不按 migration_source、模型供应商或目录存在性过滤。只读，不改旧数据或 migration，已升级数据库无需再次转换；本地与远端持库 Host 使用同一规则。
 
@@ -35,4 +35,4 @@ Host 项目组织态的持久化升级。调用者持有 app SQLite 连接，CLI
 
 ## 2026-10-27 同根唯一
 
-saveProject 在写事务内保证同 Host 的同一 root 集合最多被一个活项目占用：新建同根直接返回已有活项目且不新增 projects/project_roots 行；恢复已删除项目而该根被占用时抛 `project.restore-root-claimed`。判定只认 root 集合完全相同（顺序无关），软删项目不参与，多 root 项目共享部分目录仍是合法组织态。既存同根重复数据不自动收敛，由写入侧约束后续。详见 [同根项目身份](../../ui/spec/remote-project-root-identity.md)。
+saveProject 在写事务内保证同 Host 的同一 root 集合最多被一个活项目占用：新建同根直接返回已有活项目且不新增 projects/project_roots 行；恢复已删除项目而该根被占用时抛 `project.restore-root-claimed`；编辑把根改到另一个活项目占用的同根集合时抛 `project.root-claimed`（根集合未变动的改名/置顶不拒绝，既存同根重复仍可编辑）。判定只认 root 集合完全相同（顺序无关），软删项目不参与，多 root 项目共享部分目录仍是合法组织态。既存同根重复数据不自动收敛，由写入侧约束后续。详见 [同根项目身份](../../../ui/spec/remote-project-root-identity.md) 与 [workspace/项目身份一致性](../../spec/workspace-project-identity-consistency.md)。

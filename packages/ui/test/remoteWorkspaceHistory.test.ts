@@ -345,6 +345,40 @@ describe("remoteWorkspaceHistory helpers", () => {
     ).toEqual([expect.objectContaining({ workspaceIdentity: legacyIdentity })]);
   });
 
+  it("parses both the persisted transport identity and the stable identity of a Source workspace", () => {
+    const workspacePath = "/home/dev/proj";
+    const target = { kind: "ssh" as const, host: "localhost", port: 2222, username: "dev" };
+    const legacyIdentity = `remote:ssh:localhost:2222:dev:${workspacePath}`;
+    const stableIdentity = `remote:server:source-1:${workspacePath}`;
+    // 两种格式并存：旧写入留下的 transport 身份，与 settings 投影改为稳定身份后写入的条目。
+    const read = (workspaceIdentity: string) =>
+      readPersistedWorkspaceSessionEntries({
+        lastWorkspaceSession: [
+          {
+            kind: "remote",
+            workspacePath,
+            workspaceIdentity,
+            target,
+            lastOpenedAt: 1,
+            lastConnectionStatus: "connected",
+          },
+        ],
+        sourceServerWorkspaceHistory: [
+          {
+            workspacePath,
+            workspaceIdentity: stableIdentity,
+            legacyWorkspaceIdentity: legacyIdentity,
+            profileId: "11111111-1111-4111-8111-111111111111",
+            sourceServerId: "22222222-2222-4222-8222-222222222222",
+            lastOpenedAt: 1,
+          },
+        ],
+      });
+    // 两种格式都归并到同一身份键；别名只做读取期归一，不改写存量值。
+    expect(read(legacyIdentity)[0]).toMatchObject({ workspaceIdentity: stableIdentity });
+    expect(read(stableIdentity)[0]).toMatchObject({ workspaceIdentity: stableIdentity });
+  });
+
   it("serializes local and remote tabs into a combined session snapshot", () => {
     const remoteEntryMap = buildRemoteWorkspaceSessionEntryMap([
       {

@@ -233,6 +233,7 @@ export class ProjectRepository implements ProjectRepositoryContract {
    * 同 Host 中根集合与 `roots` 完全相同的活项目（可排除自身）。
    * 只认「集合完全相同」：多 root 项目之间共享部分目录仍是合法组织态，
    * 只有完全同根才会让入口/任务归属无法判定身份。
+   * 三个写入口共用它：新建同根采纳已有活项目、恢复被占用的根、编辑改到同根。
    */
   private claimedRootsProject(
     hostId: string,
@@ -273,6 +274,12 @@ export class ProjectRepository implements ProjectRepositoryContract {
         // 同一 Host 的同根活项目不保留第二份：根是入口与任务归属的身份依据，
         // 两个活项目同根会让目录解析无法判定「打开哪一个」（新建直接采纳已有项目）。
         if (input.restoreProjectId) throw new Error("project.restore-root-claimed");
+        // 编辑路径此前无校验：把根改到另一个活项目占用的同根目录会重新造出同根重复。
+        // 口径与恢复路径一致（同根集合）；改自身根、自身多根重排已被 excludeId 排除。
+        // 只在根集合真的改变时拒绝：既存同根重复（本轮不自动收敛）的项目仍要能改名/置顶，
+        // 否则用户再没有别的办法区分它们。
+        if (old && rootSetKey(old.roots.map((root) => root.rootPath)) !== rootSetKey(roots))
+          throw new Error("project.root-claimed");
         if (!old) return claimed;
       }
       const primary =

@@ -50,6 +50,11 @@ export function projectWorkspaceSettings(
       if (seen.has(stableKey)) continue;
       seen.add(stableKey);
       identityOrder.push(stableKey);
+      // Source Server 路由的权威稳定身份来自 route 身份（host.id = remote:server:<sourceServerId>），
+      // host.target 只是该路由的 transport（relay 的 ssh/wsl）；继续用 transport 现算身份会把
+      // legacy 命名空间持续写回设置，让两种格式长期并存。host.id 本身不含 path 段、无法单独解析，
+      // 因此判据取自己补回 path 后的去重键（见 packages/services/spec/workspace-project-identity-consistency.md）。
+      const hasStableIdentity = parseRemoteWorkspaceIdentity(stableKey)?.kind === "server";
       const legacy =
         entry.legacyWorkspace?.workspacePath === workspacePath ? entry.legacyWorkspace : null;
       const target = legacy?.target ?? host.target;
@@ -58,9 +63,11 @@ export function projectWorkspaceSettings(
         ...legacy,
         kind: "remote",
         workspacePath,
-        workspaceIdentity:
-          legacy?.workspaceIdentity &&
-          parseRemoteWorkspaceIdentity(legacy.workspaceIdentity)?.kind !== "server"
+        // 稳定身份与去重键同源；legacy 直连主机没有稳定身份，沿用其存量 transport 身份或现算值。
+        workspaceIdentity: hasStableIdentity
+          ? stableKey
+          : legacy?.workspaceIdentity &&
+              parseRemoteWorkspaceIdentity(legacy.workspaceIdentity)?.kind !== "server"
             ? legacy.workspaceIdentity
             : buildRemoteWorkspaceIdentity(workspacePath, target),
         workspacePurpose: "project",
