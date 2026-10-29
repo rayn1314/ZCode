@@ -1570,6 +1570,16 @@ describe("SQLite session store", () => {
           taskTypes: ["selection_side_chat"],
         }),
       ).resolves.toEqual([expect.objectContaining({ id: childSessionId })]);
+      // 历史辅助对话入口按父会话过滤；父会话自身不是任何 child，也不能命中自己。
+      await expect(
+        store.listSessions({
+          parentID: parentSessionId,
+          taskTypes: ["selection_side_chat"],
+        }),
+      ).resolves.toEqual([
+        expect.objectContaining({ id: childSessionId, parentID: parentSessionId }),
+      ]);
+      await expect(store.listSessions({ parentID: childSessionId })).resolves.toEqual([]);
     } finally {
       store.close();
       await removeTempRoot(tempRoot);

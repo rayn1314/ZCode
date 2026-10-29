@@ -183,6 +183,11 @@ export async function listSessions(
     clauses.push("parent_id is null");
   }
 
+  if (input.parentID) {
+    clauses.push("parent_id = ?");
+    values.push(input.parentID);
+  }
+
   const taskTypes = normalizeSessionTaskTypes(input.taskTypes);
   if (taskTypes.length > 0) {
     clauses.push(`task_type in (${taskTypes.map(() => "?").join(", ")})`);

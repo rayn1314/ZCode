@@ -1365,6 +1365,29 @@ export function createConversationV4Gateway(
       });
       return { sessionId: String(fork.forkedSessionId) };
     },
+    // 历史辅助对话入口：只读 sessionStore，不激活 child runtime；UI 打开某项时再由
+    // SessionPane 订阅 childSessionId 触发冷恢复。
+    listSelectionSideSessions: async (parentSessionId) => {
+      const store = context.deps.sessionStore;
+      if (!store) return [];
+      const parent = await store.getSession(parentSessionId as SessionId);
+      if (!parent) return [];
+      const children = await store.listSessions({
+        projectID: parent.projectID,
+        parentID: parentSessionId as SessionId,
+        taskTypes: ["selection_side_chat"],
+        limit: 50,
+      });
+      return children
+        .filter((child) => child.time.deleted === undefined)
+        .sort((a, b) => b.time.updated - a.time.updated)
+        .map((child) => ({
+          sessionId: String(child.id),
+          title: child.title,
+          createdAt: child.time.created,
+          updatedAt: child.time.updated,
+        }));
+    },
     // running stable fork：只走 core transcript copy，再注册 child record。父 runtime、queue、
     // background/continuation inbox 与 shared workspace 均不读取、不停止、不复制。
     forkStableConversation: async (sessionId, options) => {

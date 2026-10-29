@@ -307,6 +307,10 @@ export interface V4CommandCoreHost {
       >["modelSelection"];
     },
   ): Promise<{ sessionId: string }>;
+  /** 列出某父会话的历史辅助对话（selection_side_chat child）。binder 用 sessionStore 实现。 */
+  listSelectionSideSessions?(
+    parentSessionId: string,
+  ): Promise<Array<{ sessionId: string; title: string; createdAt: number; updatedAt: number }>>;
   /** conversation-only stable fork；不得 stop parent、rewind workspace 或复制 active work/queue。 */
   forkStableConversation?(
     sessionId: string,

@@ -79,6 +79,25 @@ async function createSelectionSideSession(
   }
 }
 
+/**
+ * listSelectionSideSessions：只读历史入口查询。
+ * 父会话必须在内存（历史入口只在主会话打开时使用），因此先 requireRecord 兜底；
+ * 真正的筛选交给 host 的 sessionStore 实现，handler 不持有存储依赖。
+ */
+async function listSelectionSideSessions(
+  host: V4CommandCoreHost,
+  envelope: CommandEnvelope,
+): Promise<CommandResult> {
+  const payload = envelope.payload as CommandPayloadMap["listSelectionSideSessions"];
+  requireRecord(host, envelope.sessionId);
+  if (!host.listSelectionSideSessions) {
+    throw new Error("v4 listSelectionSideSessions requires host capability");
+  }
+  const sessions = await host.listSelectionSideSessions(payload.parentSessionId);
+  return { type: "listSelectionSideSessions", sessions };
+}
+
 export const selectionSideSessionHandlers = {
   createSelectionSideSession,
+  listSelectionSideSessions,
 };

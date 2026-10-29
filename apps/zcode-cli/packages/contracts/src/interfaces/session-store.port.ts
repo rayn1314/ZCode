@@ -305,6 +305,8 @@ export interface ListSessionsInput {
   directory?: string;
   path?: string;
   roots?: boolean;
+  /** 按父会话过滤 child 会话（不递归）。 */
+  parentID?: SessionId;
   taskTypes?: SessionTaskType[];
   limit?: number;
 }

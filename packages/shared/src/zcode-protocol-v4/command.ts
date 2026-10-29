@@ -97,6 +97,10 @@ export const commandPayloadSchemas = {
       })
       .optional(),
   }),
+  // 列出某父会话下历史辅助对话（selection_side_chat child），供 UI 历史入口使用。
+  listSelectionSideSessions: z.object({
+    parentSessionId: z.string().min(1),
+  }),
   // 按 inputRouting 裁决：startNow / enqueue / guide / choice。
   // heldQueueDisposition：held 状态（inputRouting.mode=choice）下必带；
   // clear→清空 queue 后 startNow，keep→保留 queue 立即 startNow。
@@ -462,6 +466,17 @@ export const commandResultSchema = z.discriminatedUnion("type", [
     toolCallId: z.string().min(1),
   }),
   amendWorkflowRunSettingsResultSchema,
+  z.object({
+    type: z.literal("listSelectionSideSessions"),
+    sessions: z.array(
+      z.object({
+        sessionId: z.string().min(1),
+        title: z.string(),
+        createdAt: z.number(),
+        updatedAt: z.number(),
+      }),
+    ),
+  }),
   z.object({
     // messageId 只在 TurnStarted 后作为旁路归因补齐；Core admission ACK 不等待
     // projection commit，不能把 messageId 作为输入 accepted 的必要条件。

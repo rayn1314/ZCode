@@ -220,4 +220,42 @@ describe("v4 native selection side chat", () => {
       reasonCode: "guard.selectionSideChatRestrictedCommand",
     });
   });
+
+  it("历史查询透传 host 能力结果，空结果也是合法 ACK", async () => {
+    const parent = record();
+    const sessions = [{ sessionId: "child-1", title: "早前对话", createdAt: 10, updatedAt: 20 }];
+    const listSelectionSideSessions = vi
+      .fn()
+      .mockResolvedValueOnce(sessions)
+      .mockResolvedValueOnce([]);
+    const host: V4CommandCoreHost = {
+      getRecord: (sessionId) => (sessionId === "parent-1" ? parent : undefined),
+      listSelectionSideSessions,
+    };
+    const executor = new V4CommandExecutor(host);
+
+    const result = await executor.execute(
+      envelope("listSelectionSideSessions", { parentSessionId: "parent-1" }),
+    );
+    expect(listSelectionSideSessions).toHaveBeenCalledWith("parent-1");
+    expect(result).toEqual({ type: "listSelectionSideSessions", sessions });
+
+    await expect(
+      executor.execute(envelope("listSelectionSideSessions", { parentSessionId: "parent-1" })),
+    ).resolves.toEqual({ type: "listSelectionSideSessions", sessions: [] });
+  });
+
+  it("历史查询要求父会话在内存且 host 提供能力", async () => {
+    await expect(
+      new V4CommandExecutor({ getRecord: () => undefined }).execute(
+        envelope("listSelectionSideSessions", { parentSessionId: "parent-1" }),
+      ),
+    ).rejects.toMatchObject({ name: "V4SessionNotFoundError" });
+
+    await expect(
+      new V4CommandExecutor({ getRecord: () => record() }).execute(
+        envelope("listSelectionSideSessions", { parentSessionId: "parent-1" }),
+      ),
+    ).rejects.toThrow("v4 listSelectionSideSessions requires host capability");
+  });
 });

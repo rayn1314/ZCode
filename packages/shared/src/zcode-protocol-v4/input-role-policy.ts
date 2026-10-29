@@ -41,6 +41,8 @@ export const INPUT_COMMAND_ROLE_POLICY = {
   createSelectionSideSession: {
     deniedFor: { subagent_child: "guard.subagentCannotDeriveSession" },
   },
+  // 只读历史查询：不产生输入，任何角色（含 selection_side_chat 自身）都放行。
+  listSelectionSideSessions: {},
   sendText: { conversationInput: true },
   sendGoalCommand: {
     deniedFor: {
