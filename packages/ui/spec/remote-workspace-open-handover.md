@@ -11,18 +11,18 @@ logical session，再由 `bind` 把身份换代成权威 scope `remote:server:<s
 
 现场证据（2026-10-27 06:58:50–06:59:10，pid 8612，`C:\Users\rayn\.zcode-rayn\v2\logs\2026-10-27.log`）：
 
-| 时刻 | 事件 |
-| --- | --- |
-| 06:58:57.273 | `[rpc:call] remote-projects.connectHost OK`（第 1 次打开开始） |
-| 06:58:57.609 | `connecting window-scoped remote source requestId=93912d96` |
-| 06:58:58.391 | 第 2 次 `connectHost`（更晚的入口） |
-| 06:58:58.451 | `renderer attachment ready sessionId=d3e9e463 reason=connect`（第 1 次的连接此刻才可用） |
-| 06:58:58.462 | 第 2 次 `connecting window-scoped remote source` |
-| 06:58:58.475 | `detached service port` + `remote-session-disposed`（第 1 次的 session 被回收，**没有 bind 过**） |
+| 时刻                | 事件                                                                                                                             |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| 06:58:57.273        | `[rpc:call] remote-projects.connectHost OK`（第 1 次打开开始）                                                                   |
+| 06:58:57.609        | `connecting window-scoped remote source requestId=93912d96`                                                                      |
+| 06:58:58.391        | 第 2 次 `connectHost`（更晚的入口）                                                                                              |
+| 06:58:58.451        | `renderer attachment ready sessionId=d3e9e463 reason=connect`（第 1 次的连接此刻才可用）                                         |
+| 06:58:58.462        | 第 2 次 `connecting window-scoped remote source`                                                                                 |
+| 06:58:58.475        | `detached service port` + `remote-session-disposed`（第 1 次的 session 被回收，**没有 bind 过**）                                |
 | 06:58:59.308–59.594 | 第 2 次的 session `0512401c` attach → `bound remote workspace context` → `reason=workspace-context-bound` attach（一次完整成功） |
-| 06:58:59.609 | 第 3 次 `connectHost` |
-| 06:58:59.612–59.614 | `0512401c` 被 detach + `remote-session-disposed`（成功后 20ms 被回收） |
-| 06:59:00.699–01.624 | 第 4 次的 session `8562b487` 走完 connect → attach → bind → attach，**此后没有第 5 次点击，它存活** |
+| 06:58:59.609        | 第 3 次 `connectHost`                                                                                                            |
+| 06:58:59.612–59.614 | `0512401c` 被 detach + `remote-session-disposed`（成功后 20ms 被回收）                                                           |
+| 06:59:00.699–01.624 | 第 4 次的 session `8562b487` 走完 connect → attach → bind → attach，**此后没有第 5 次点击，它存活**                              |
 
 - `remote-session-disposed` 只有 `packages/desktop/src/host/index.ts` 的
   `DisposeRemoteWorkspaceSession` 处理函数会打印，而该消息只由
