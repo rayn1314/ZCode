@@ -342,6 +342,7 @@ import {
   clearSelectionSideChat,
   createSelectionSideChat,
   isSelectionSideChatBlocked,
+  registerSelectionSideChatHistoryLoader,
   registerSelectionSideChatOpener,
   setSelectionSideChatBlocked,
   subscribeSelectionSideChatRuntime,
@@ -2854,6 +2855,47 @@ export function SessionPane({
     handleOpenSelectionSideConversation,
     isMobileTextInputViewport,
     onOpenSelectionSideChat,
+    selectionSideChatKey,
+    sessionId,
+  ]);
+
+  // 历史入口的查询能力与 opener 同一路由键同源注册；只读查询，不激活 child runtime。
+  useEffect(() => {
+    if (
+      !capabilities.selectionSideChatOpener ||
+      !selectionSideChatKey ||
+      !sessionId ||
+      readOnly ||
+      selectionSideChat ||
+      isMobileTextInputViewport ||
+      !onOpenSelectionSideChat
+    ) {
+      return;
+    }
+
+    return registerSelectionSideChatHistoryLoader(
+      selectionSideChatKey,
+      async () => {
+        const ack = await dispatchCommand(
+          "listSelectionSideSessions",
+          { parentSessionId: sessionId },
+          sessionId,
+        );
+        if (ack.status !== "accepted" || ack.result?.type !== "listSelectionSideSessions") {
+          throw new Error(ack.reasonCode ?? "listSelectionSideSessions 被拒绝");
+        }
+        return ack.result.sessions;
+      },
+      focused,
+    );
+  }, [
+    capabilities.selectionSideChatOpener,
+    dispatchCommand,
+    focused,
+    isMobileTextInputViewport,
+    onOpenSelectionSideChat,
+    readOnly,
+    selectionSideChat,
     selectionSideChatKey,
     sessionId,
   ]);

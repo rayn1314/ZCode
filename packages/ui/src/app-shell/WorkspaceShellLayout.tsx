@@ -110,6 +110,7 @@ import {
 } from "@/lib/workspacePathNavigation.js";
 import {
   buildSelectionSideChatKey,
+  loadSelectionSideChatHistory,
   requestSelectionSideChatOpen,
 } from "@/lib/selectionSideChatRuntime.js";
 import { getActiveSelectionSideChatTab } from "@/lib/workspaceSidePane.js";
@@ -1842,6 +1843,34 @@ const WorkspaceShellLayoutContent = memo(function WorkspaceShellLayoutComponent(
       });
     }
   }, [activeTaskId, workspaceKey]);
+  const handleOpenSelectionSideChatHistoryTab = useCallback(
+    (childSessionId: string) => {
+      if (!activeTaskId) return;
+      // 与固定入口同一条打开路径：宿主只补 scope，冷恢复由 child pane 订阅触发。
+      handleOpenSelectionSideChat({
+        workspacePath: workspaceAbsPath,
+        ...(workspaceIdentity ? { workspaceIdentity } : {}),
+        ...(workspaceRemoteSessionId ? { remoteSessionId: workspaceRemoteSessionId } : {}),
+        parentSessionId: activeTaskId,
+        childSessionId,
+      });
+    },
+    [
+      activeTaskId,
+      handleOpenSelectionSideChat,
+      workspaceAbsPath,
+      workspaceIdentity,
+      workspaceRemoteSessionId,
+    ],
+  );
+  // 历史查询沿用 opener 的注册路由键；无注册者（pane 未挂载）时返回空列表。
+  const handleLoadSelectionSideChatHistory = useCallback(
+    () =>
+      activeTaskId
+        ? loadSelectionSideChatHistory(buildSelectionSideChatKey(workspaceKey, activeTaskId))
+        : Promise.resolve([]),
+    [activeTaskId, workspaceKey],
+  );
   const hasUpdateStatusButton =
     updateReadyVersion !== null ||
     updateState?.kind === "update-available" ||
@@ -1941,6 +1970,8 @@ const WorkspaceShellLayoutContent = memo(function WorkspaceShellLayoutComponent(
       onOpenTerminalTab={handleOpenTerminalTab}
       onOpenReviewTab={handleToggleGit}
       onOpenSelectionSideConversation={handleOpenSelectionSideConversationLauncher}
+      onLoadSelectionSideChatHistory={handleLoadSelectionSideChatHistory}
+      onOpenSelectionSideChatTab={handleOpenSelectionSideChatHistoryTab}
       onRevealGitFileInTree={handleRevealGitFileInTree}
       onOpenBrowserUrl={handleOpenBrowserUrl}
       onOpenCodeViewer={handleOpenCodeViewer}

@@ -5,6 +5,8 @@ import {
   clearSelectionSideChat,
   createSelectionSideChat,
   isSelectionSideChatBlocked,
+  loadSelectionSideChatHistory,
+  registerSelectionSideChatHistoryLoader,
   registerSelectionSideChatOpener,
   requestSelectionSideChatOpen,
   setSelectionSideChatBlocked,
@@ -76,6 +78,33 @@ describe("selection side chat renderer runtime", () => {
     unregisterBackground();
     expect(requestSelectionSideChatOpen(key)).toBe(false);
   });
+  it("历史 loader 与 opener 同一路由：focused pane 优先，无注册者返回空列表", async () => {
+    const key = buildSelectionSideChatKey("/workspace", "parent-history");
+    await expect(loadSelectionSideChatHistory(key)).resolves.toEqual([]);
+
+    const background = vi.fn(async () => [
+      { sessionId: "child-bg", title: "bg", createdAt: 1, updatedAt: 1 },
+    ]);
+    const focused = vi.fn(async () => [
+      { sessionId: "child-focus", title: "focus", createdAt: 2, updatedAt: 2 },
+    ]);
+    const unregisterBackground = registerSelectionSideChatHistoryLoader(key, background, false);
+    const unregisterFocused = registerSelectionSideChatHistoryLoader(key, focused, true);
+
+    await expect(loadSelectionSideChatHistory(key)).resolves.toEqual([
+      { sessionId: "child-focus", title: "focus", createdAt: 2, updatedAt: 2 },
+    ]);
+    expect(background).not.toHaveBeenCalled();
+
+    unregisterFocused();
+    await expect(loadSelectionSideChatHistory(key)).resolves.toEqual([
+      { sessionId: "child-bg", title: "bg", createdAt: 1, updatedAt: 1 },
+    ]);
+
+    unregisterBackground();
+    await expect(loadSelectionSideChatHistory(key)).resolves.toEqual([]);
+  });
+
   it("Markdown 引用按精确父 scope 传递，阻塞只拒绝引用动作", () => {
     const key = buildSelectionSideChatKey("ssh:first:/same", "parent");
     const reference = {

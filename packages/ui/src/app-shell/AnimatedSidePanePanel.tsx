@@ -90,6 +90,7 @@ import type { BrowserNavigationRequest, RecentClosedSidePaneTab } from "@/hooks/
 import { useDeveloperToolsVisibility } from "@/hooks/useDeveloperToolsVisibility.js";
 import { usePlatform } from "@/hooks/usePlatform.js";
 import { useIsMobileTextInputViewport } from "@/lib/mobileTextInput.js";
+import type { SelectionSideChatHistoryEntry } from "@/lib/selectionSideChatRuntime.js";
 import { logger } from "@/logger.js";
 import { formatTaskRelativeTime } from "@/lib/taskListItemPresentation.js";
 import {
@@ -112,10 +113,12 @@ import { getVisibleSidePaneTabs } from "@/lib/workspaceSidePane.js";
 import { useZCodeIntl } from "@/i18n/IntlProvider.js";
 import {
   BugIcon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   FileDiffIcon,
   FolderOpenIcon,
   GlobeIcon,
+  HistoryIcon,
   MessageSquareTextIcon,
   PlusIcon,
   SquareTerminalIcon,
@@ -346,6 +349,8 @@ export function AnimatedSidePanePanel({
   onOpenTerminalTab,
   onOpenReviewTab,
   onOpenSelectionSideConversation,
+  onLoadSelectionSideChatHistory,
+  onOpenSelectionSideChatTab,
   onRevealGitFileInTree,
   onOpenBrowserUrl,
   onOpenCodeViewer,
@@ -437,6 +442,10 @@ export function AnimatedSidePanePanel({
   onOpenTerminalTab: () => void;
   onOpenReviewTab: () => void;
   onOpenSelectionSideConversation: () => void;
+  /** 历史辅助对话查询（由宿主用 loadSelectionSideChatHistory 注入）；缺省时列表为空。 */
+  onLoadSelectionSideChatHistory?: () => Promise<SelectionSideChatHistoryEntry[]>;
+  /** 打开历史列表里选中的 child 会话（宿主按 activeTaskId 组装 tab）。 */
+  onOpenSelectionSideChatTab?: (childSessionId: string) => void;
   onRevealGitFileInTree?: (path: string) => void;
   onOpenBrowserUrl: (url: string) => void;
   onOpenCodeViewer: (source: CodeViewerSource) => void;
@@ -526,6 +535,29 @@ export function AnimatedSidePanePanel({
     right: false,
   });
   const [draggingTabId, setDraggingTabId] = useState<string | null>(null);
+  // 历史辅助对话是 launcher 的一次性视图（不是面板 tab）：打开列表、点条目回到普通面板内容。
+  const [selectionSideChatHistoryOpen, setSelectionSideChatHistoryOpen] = useState(false);
+  const [selectionSideChatHistory, setSelectionSideChatHistory] = useState<{
+    status: "loading" | "ready" | "failed";
+    sessions: SelectionSideChatHistoryEntry[];
+  }>({ status: "loading", sessions: [] });
+  const refreshSelectionSideChatHistory = async () => {
+    if (!onLoadSelectionSideChatHistory) {
+      setSelectionSideChatHistory({ status: "ready", sessions: [] });
+      return;
+    }
+    setSelectionSideChatHistory((current) => ({ ...current, status: "loading" }));
+    try {
+      const sessions = await onLoadSelectionSideChatHistory();
+      setSelectionSideChatHistory({ status: "ready", sessions });
+    } catch (error) {
+      logger.warn("[side-pane] 历史辅助对话加载失败", {
+        error: error instanceof Error ? error.message : String(error),
+        workspaceKey,
+      });
+      setSelectionSideChatHistory({ status: "failed", sessions: [] });
+    }
+  };
   const sidePaneVisibleInlineSizePx = useViewportInlineIntersectionSize(
     panelElementRef,
     hasRenderedSidePane,
@@ -540,6 +572,11 @@ export function AnimatedSidePanePanel({
     isMobileTextInputViewport,
     mobileOverlay,
   });
+  // 历史列表是 new-tab 的一次性子视图：切任务或切走 tab 后回到 launcher，
+  // 避免用户下次打开新标签页时看到上一次的列表而不是入口。
+  useEffect(() => {
+    if (!canOpenSelectionSideConversation) setSelectionSideChatHistoryOpen(false);
+  }, [activeTabId, activeTaskId, canOpenSelectionSideConversation]);
   const tabDragSensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: {
@@ -792,6 +829,18 @@ export function AnimatedSidePanePanel({
       icon: MessageSquareTextIcon,
       onOpen: onOpenSelectionSideConversation,
     },
+    "selection-side-conversation-history": {
+      id: "selection-side-conversation-history",
+      label: intl.formatMessage({ id: "sidePane.selectionChatHistory" }),
+      description: intl.formatMessage({
+        id: "sidePane.launcher.selection-side-conversation-history",
+      }),
+      icon: HistoryIcon,
+      onOpen: () => {
+        setSelectionSideChatHistoryOpen(true);
+        void refreshSelectionSideChatHistory();
+      },
+    },
     files: {
       id: "files",
       label: intl.formatMessage({ id: "fileManager.title" }),
@@ -854,7 +903,81 @@ export function AnimatedSidePanePanel({
         {showWindowControls ? <DesktopWindowControls /> : null}
       </div>
     ) : null;
-  const openTabLauncher = (
+  const selectionSideChatHistoryBody =
+    selectionSideChatHistory.status === "loading" ? (
+      <p className="px-2 text-ui-sm text-foreground-subtle">
+        {intl.formatMessage({ id: "common.loading" })}
+      </p>
+    ) : selectionSideChatHistory.status === "failed" ? (
+      <div className="flex flex-col items-start gap-3 px-2">
+        <p className="text-ui-sm text-foreground-subtle">
+          {intl.formatMessage({ id: "sidePane.selectionChatHistory.failed" })}
+        </p>
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          onClick={() => void refreshSelectionSideChatHistory()}
+        >
+          {intl.formatMessage({ id: "common.retry" })}
+        </Button>
+      </div>
+    ) : selectionSideChatHistory.sessions.length === 0 ? (
+      <p className="px-2 text-ui-sm text-foreground-subtle">
+        {intl.formatMessage({ id: "sidePane.selectionChatHistory.empty" })}
+      </p>
+    ) : (
+      <div className="flex min-w-0 flex-col gap-1">
+        {selectionSideChatHistory.sessions.map((entry) => (
+          <button
+            key={entry.sessionId}
+            type="button"
+            data-side-pane-selection-chat-history-item={entry.sessionId}
+            className="flex w-full min-w-0 flex-col rounded-xl px-2 py-2.5 text-left transition-colors hover:bg-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-input-border-focused"
+            onClick={() => {
+              if (!onOpenSelectionSideChatTab) return;
+              setSelectionSideChatHistoryOpen(false);
+              onOpenSelectionSideChatTab(entry.sessionId);
+            }}
+          >
+            <span className="block truncate text-ui-base font-semibold text-foreground">
+              {entry.title.trim() || intl.formatMessage({ id: "sidePane.selectionChat" })}
+            </span>
+            <span className="mt-0.5 block truncate text-ui-sm text-foreground-subtle">
+              {formatTaskRelativeTime(entry.updatedAt, intl)}
+            </span>
+          </button>
+        ))}
+      </div>
+    );
+  const openTabLauncher = selectionSideChatHistoryOpen ? (
+    <div
+      className="side-pane-open-tab-shell flex h-full min-h-0 flex-col bg-background"
+      data-testid="side-pane-selection-chat-history"
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">
+        <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+          <div className="flex items-center gap-2 pl-1">
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-md"
+              className="shrink-0"
+              aria-label={intl.formatMessage({ id: "common.back" })}
+              data-testid="side-pane-selection-chat-history-back"
+              onClick={() => setSelectionSideChatHistoryOpen(false)}
+            >
+              <ChevronLeftIcon className="size-4" />
+            </Button>
+            <h2 className="text-ui-xl font-semibold text-foreground">
+              {intl.formatMessage({ id: "sidePane.selectionChatHistory" })}
+            </h2>
+          </div>
+          {selectionSideChatHistoryBody}
+        </div>
+      </div>
+    </div>
+  ) : (
     <div className="side-pane-open-tab-shell @container/launcher flex h-full min-h-0 flex-col bg-background">
       {/* 对齐原型：顶部对齐滚动、左对齐标题；内置应用与 UI 插件同为横向行，短分割线分区。 */}
       <div className="min-h-0 flex-1 overflow-y-auto px-7 py-6">

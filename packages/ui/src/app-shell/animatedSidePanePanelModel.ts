@@ -2,6 +2,7 @@ export const MIN_PREVIEW_PANE_HEAVY_CONTENT_VISIBLE_INLINE_SIZE_PX = 96;
 
 export type OpenTabLauncherItemId =
   | "selection-side-conversation"
+  | "selection-side-conversation-history"
   | "files"
   | "review"
   | "terminal"
@@ -33,6 +34,7 @@ export function resolveOpenTabLauncherItemIds({
 
   if (canOpenSelectionSideConversation) {
     itemIds.push("selection-side-conversation");
+    itemIds.push("selection-side-conversation-history");
   }
 
   if (developerToolsEnabled) {

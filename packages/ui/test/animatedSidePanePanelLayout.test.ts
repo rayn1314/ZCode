@@ -137,7 +137,14 @@ describe("AnimatedSidePanePanel layout", () => {
         developerToolsEnabled: false,
         hasReviewTab: false,
       }),
-    ).toEqual(["files", "browser", "terminal", "review", "selection-side-conversation"]);
+    ).toEqual([
+      "files",
+      "browser",
+      "terminal",
+      "review",
+      "selection-side-conversation",
+      "selection-side-conversation-history",
+    ]);
     expect(
       resolveOpenTabLauncherItemIds({
         canOpenSelectionSideConversation: false,

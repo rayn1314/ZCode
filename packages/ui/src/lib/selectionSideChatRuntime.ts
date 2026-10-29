@@ -10,6 +10,12 @@ interface SelectionSideChatOpenerEntry {
   open: SelectionSideChatOpener;
 }
 const openers = new Map<string, Map<symbol, SelectionSideChatOpenerEntry>>();
+type SelectionSideChatHistoryLoader = () => Promise<SelectionSideChatHistoryEntry[]>;
+interface SelectionSideChatHistoryLoaderEntry {
+  focused: boolean;
+  load: SelectionSideChatHistoryLoader;
+}
+const historyLoaders = new Map<string, Map<symbol, SelectionSideChatHistoryLoaderEntry>>();
 
 export function buildSelectionSideChatKey(workspaceKey: string, parentSessionId: string): string {
   return `${workspaceKey}\0${parentSessionId}`;
@@ -60,6 +66,13 @@ export function subscribeSelectionSideChatRuntime(listener: () => void): () => v
   return () => listeners.delete(listener);
 }
 
+export interface SelectionSideChatHistoryEntry {
+  sessionId: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
 /**
  * Side Pane 的固定入口位于会话 Provider 外，不能自己拼协议命令。
  * 由已挂载的主 SessionPane 注册创建能力，launcher 只按 workspace + parent 路由；
@@ -106,6 +119,41 @@ export function requestSelectionSideChatOpen(
   if (reference) void target.open(reference);
   else void target.open();
   return true;
+}
+
+/**
+ * 与 opener 同一路由策略：历史查询由已挂载的主 SessionPane 承接（命令 owner 与 opener 一致），
+ * 侧栏 launcher 只按 workspace + parent 取"当前 pane"的实现。
+ */
+export function registerSelectionSideChatHistoryLoader(
+  key: string,
+  loader: () => Promise<SelectionSideChatHistoryEntry[]>,
+  focused = false,
+): () => void {
+  const token = Symbol(key);
+  const scoped = historyLoaders.get(key) ?? new Map<symbol, SelectionSideChatHistoryLoaderEntry>();
+  scoped.set(token, { focused, load: loader });
+  historyLoaders.set(key, scoped);
+  emitChange();
+
+  return () => {
+    const current = historyLoaders.get(key);
+    current?.delete(token);
+    if (current?.size === 0) historyLoaders.delete(key);
+    emitChange();
+  };
+}
+
+/** 无注册者（例如只有草稿会话 / pane 尚未挂载）时返回空列表，历史入口不报错。 */
+export async function loadSelectionSideChatHistory(
+  key: string,
+): Promise<SelectionSideChatHistoryEntry[]> {
+  const scoped = historyLoaders.get(key);
+  if (!scoped?.size) return [];
+  const candidates = Array.from(scoped.values());
+  const target = candidates.find((candidate) => candidate.focused) ?? candidates[0];
+  if (!target) return [];
+  return target.load();
 }
 
 function emitChange(): void {
