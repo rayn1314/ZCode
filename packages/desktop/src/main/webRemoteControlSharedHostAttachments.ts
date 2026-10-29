@@ -48,11 +48,11 @@ export function createWebRemoteControlSharedHostAttachments(dependencies: {
     workspaceIdentity: string;
     workspaceKey: string;
     clientMode: "web-remote-replayable";
-  }) => {
+  }) => Promise<{
     process: ElectronUtilityProcess;
     port: MessagePortMain;
     remoteKind: RemoteUsageRemoteKind;
-  };
+  }>;
   logger: {
     info: (...args: unknown[]) => void;
     warn: (...args: unknown[]) => void;
@@ -125,7 +125,9 @@ export function createWebRemoteControlSharedHostAttachments(dependencies: {
       );
     }
     const workspaceKey = workspaceIdentity || context.workspacePath;
-    const attached = dependencies.attachRemoteWorkspaceSessionHost({
+    // route 可能仍在途（connect 未登记）；attachRemoteWorkspaceSessionHost 会等待，
+    // 因此这里必须 await，否则拿到的是 Promise 而不是 attachment。
+    const attached = await dependencies.attachRemoteWorkspaceSessionHost({
       windowId,
       remoteSessionId: context.remoteSessionId,
       workspacePath: context.workspacePath,

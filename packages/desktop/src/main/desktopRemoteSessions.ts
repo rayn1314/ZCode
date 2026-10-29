@@ -195,6 +195,8 @@ export function createRemoteWorkspaceSessionManager(options: {
   };
   rendererAttachmentReadyTimeoutMs?: number;
   workspaceBindReadyTimeoutMs?: number;
+  /** 等待在途 connect 登记 route 的超时；renderer 可能早于 route 带着 sessionId 到达。 */
+  remoteSessionRouteWaitTimeoutMs?: number;
   reportRemoteConnectionStateChanged?: (params: {
     rendererId: number;
     remoteKind: RemoteTarget["kind"];
@@ -234,6 +236,22 @@ export function createRemoteWorkspaceSessionManager(options: {
   const pendingWorkspaceBindsByRequestKey = new Map<string, PendingWorkspaceBind>();
   const workspaceContextBindFlightsBySessionId = new Map<string, WorkspaceContextBindFlight>();
   const routesBySessionId = new Map<string, RemoteAttachmentRoute>();
+  /**
+   * 等待指定 remoteSessionId 的 route 被登记的观察者。
+   * Bug 原因：renderer 的 context bind / 项目导航拿着 remoteSessionId（可能来自
+   * 跨重启持久化的 tab 状态）到达 Main 时，对应的 connect 流程可能仍在途——route
+   * 尚未登记。此时立即抛「未找到」会把本可以成功的打开判失败（导航取消、界面卡
+   * 连接中）。与 attachment 等待同构：等到 route 出现再放行，超时才 fail-closed。
+   */
+  const routeWaitersBySessionId = new Map<
+    string,
+    Array<{
+      resolve: () => void;
+      reject: (error: Error) => void;
+      timer: NodeJS.Timeout;
+    }>
+  >();
+  const remoteSessionRouteWaitTimeoutMs = options.remoteSessionRouteWaitTimeoutMs ?? 15_000;
   const listenedHosts = new WeakSet<ElectronUtilityProcess>();
   const workspaceBindReadyTimeoutMs = options.workspaceBindReadyTimeoutMs ?? 30_000;
   const pendingProviderProvisioningExecutions = new Map<
@@ -417,6 +435,43 @@ export function createRemoteWorkspaceSessionManager(options: {
       clearTimeout(waiter.timeout);
       waiter.reject(error);
     }
+  }
+
+  function settleRouteWaiters(sessionId: string, error?: Error): void {
+    const waiters = routeWaitersBySessionId.get(sessionId);
+    if (!waiters) return;
+    routeWaitersBySessionId.delete(sessionId);
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timer);
+      if (error) waiter.reject(error);
+      else waiter.resolve();
+    }
+  }
+
+  function waitForRouteBySessionId(sessionId: string): Promise<void> {
+    if (routesBySessionId.has(sessionId)) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const waiter = {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          const list = routeWaitersBySessionId.get(sessionId);
+          if (list) {
+            const index = list.indexOf(waiter);
+            if (index >= 0) list.splice(index, 1);
+            if (list.length === 0) routeWaitersBySessionId.delete(sessionId);
+          }
+          options.logger.warn("[window-host-remote] remote session route wait timeout", {
+            sessionId,
+          });
+          reject(new Error(`未找到远程 workspace session，sessionId=${sessionId}`));
+        }, remoteSessionRouteWaitTimeoutMs),
+      };
+      waiter.timer.unref?.();
+      const list = routeWaitersBySessionId.get(sessionId) ?? [];
+      list.push(waiter);
+      routeWaitersBySessionId.set(sessionId, list);
+    });
   }
 
   function waitForRendererAttachmentReady(route: RemoteAttachmentRoute): Promise<void> {
@@ -624,6 +679,7 @@ export function createRemoteWorkspaceSessionManager(options: {
       remoteUsageTelemetryEligible: pending.remoteUsageTelemetryEligible,
     };
     routesBySessionId.set(descriptor.remoteSessionId, route);
+    settleRouteWaiters(descriptor.remoteSessionId);
     const environmentKey = buildRemoteEnvironmentKey(descriptor.target);
     const registration = providerProvisioningCoordinator.register(
       environmentKey,
@@ -647,6 +703,10 @@ export function createRemoteWorkspaceSessionManager(options: {
       .catch((error: unknown) => {
         route.providerProvisioningDispose?.();
         routesBySessionId.delete(descriptor.remoteSessionId);
+        settleRouteWaiters(
+          descriptor.remoteSessionId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
         child.postMessage({
           type: HostMessageTypes.DisposeRemoteWorkspaceSession,
           requestId: randomUUID(),
@@ -682,9 +742,14 @@ export function createRemoteWorkspaceSessionManager(options: {
       return;
     }
     routesBySessionId.delete(previousRemoteSessionId);
+    settleRouteWaiters(
+      previousRemoteSessionId,
+      new Error(`远程 workspace session 已换代，sessionId=${previousRemoteSessionId}`),
+    );
     route.descriptor = descriptor;
     route.attachmentState = "attachable";
     routesBySessionId.set(descriptor.remoteSessionId, route);
+    settleRouteWaiters(descriptor.remoteSessionId);
     // Bug 原因：Provisioning lane 以 remoteSessionId 登记，execute 闭包也绑定旧 sessionId；
     // Source 重连换代后若不重新登记，后续下发都会命中 Host 已失效的旧 session，远端再也收不到配置。
     // 先摘掉旧登记再登记新 session，让 lane 按 Environment 重新上线整份重下发（离线期间的本机
@@ -749,6 +814,10 @@ export function createRemoteWorkspaceSessionManager(options: {
       .catch((error: unknown) => {
         route.providerProvisioningDispose?.();
         routesBySessionId.delete(descriptor.remoteSessionId);
+        settleRouteWaiters(
+          descriptor.remoteSessionId,
+          error instanceof Error ? error : new Error(String(error)),
+        );
         child.postMessage({
           type: HostMessageTypes.DisposeRemoteWorkspaceSession,
           requestId: randomUUID(),
@@ -873,6 +942,10 @@ export function createRemoteWorkspaceSessionManager(options: {
       retireActiveRoute(route, "disposed", () => {
         routesBySessionId.delete(event.remoteSessionId);
       });
+      settleRouteWaiters(
+        event.remoteSessionId,
+        new Error(`远程 workspace 已释放，sessionId=${event.remoteSessionId}`),
+      );
       detachRouteAttachments(
         route,
         "session-released",
@@ -969,6 +1042,10 @@ export function createRemoteWorkspaceSessionManager(options: {
             route.mobileOnly
           ) {
             routesBySessionId.delete(descriptor.remoteSessionId);
+            settleRouteWaiters(
+              descriptor.remoteSessionId,
+              error instanceof Error ? error : new Error(String(error)),
+            );
             route.providerProvisioningDispose?.();
             child.postMessage({
               type: HostMessageTypes.DisposeRemoteWorkspaceSession,
@@ -1007,6 +1084,7 @@ export function createRemoteWorkspaceSessionManager(options: {
       remoteUsageTelemetryEligible: false,
     };
     routesBySessionId.set(descriptor.remoteSessionId, route);
+    settleRouteWaiters(descriptor.remoteSessionId);
     const environmentKey = buildRemoteEnvironmentKey(descriptor.target);
     const registration = providerProvisioningCoordinator.register(
       environmentKey,
@@ -1177,6 +1255,7 @@ export function createRemoteWorkspaceSessionManager(options: {
         retireActiveRoute(route, "host-exit", () => {
           routesBySessionId.delete(sessionId);
         });
+        settleRouteWaiters(sessionId, error);
         if (route.pendingRendererAttachment) {
           clearTimeout(route.pendingRendererAttachment.timeout);
           route.pendingRendererAttachment.reject(error);
@@ -1248,7 +1327,13 @@ export function createRemoteWorkspaceSessionManager(options: {
     context: RemoteWorkspaceSessionContext,
     expectedWebContentsId?: number,
   ): Promise<BindRemoteWorkspaceSessionContextResult> {
-    const route = routesBySessionId.get(sessionId);
+    let route = routesBySessionId.get(sessionId);
+    if (!route) {
+      // renderer 可能在 connect 在途时就带着（持久化的）sessionId 来 bind；
+      // 等待 route 登记而不是立即判失败（见 routeWaitersBySessionId 注释）。
+      await waitForRouteBySessionId(sessionId);
+      route = routesBySessionId.get(sessionId);
+    }
     if (!route) {
       throw new Error(`未找到远程 workspace session，sessionId=${sessionId}`);
     }
@@ -1443,6 +1528,10 @@ export function createRemoteWorkspaceSessionManager(options: {
     retireActiveRoute(route, "disposed", () => {
       routesBySessionId.delete(sessionId);
     });
+    settleRouteWaiters(
+      sessionId,
+      new Error(`远程 workspace session 已释放，sessionId=${sessionId}`),
+    );
     route.providerProvisioningDispose?.();
     const child = options.windowHostProcessMap.get(route.webContentsId);
     rejectAttachmentWaiters(
@@ -1482,6 +1571,7 @@ export function createRemoteWorkspaceSessionManager(options: {
       retireActiveRoute(route, "window-closed", () => {
         routesBySessionId.delete(sessionId);
       });
+      settleRouteWaiters(sessionId, new Error("窗口已关闭，远程 workspace 连接已取消"));
       route.providerProvisioningDispose?.();
       if (route.pendingRendererAttachment) {
         clearTimeout(route.pendingRendererAttachment.timeout);
@@ -1553,19 +1643,25 @@ export function createRemoteWorkspaceSessionManager(options: {
     );
   }
 
-  function attachRemoteWorkspaceSessionHost(params: {
+  async function attachRemoteWorkspaceSessionHost(params: {
     windowId: number;
     remoteSessionId: string;
     workspacePath: string;
     workspaceIdentity: string;
     workspaceKey: string;
     clientMode: "web-remote-replayable";
-  }): {
+  }): Promise<{
     process: ElectronUtilityProcess;
     port: MessagePortMain;
     remoteKind: RemoteTarget["kind"];
-  } {
-    const route = routesBySessionId.get(params.remoteSessionId);
+  }> {
+    let route = routesBySessionId.get(params.remoteSessionId);
+    if (!route) {
+      // 与 bindRemoteWorkspaceSessionContext 同构：web bridge 可能早于 route 登记到达，
+      // 等待在途 connect 而不是立即抛 REMOTE_SESSION_MISSING。
+      await waitForRouteBySessionId(params.remoteSessionId);
+      route = routesBySessionId.get(params.remoteSessionId);
+    }
     if (!route) {
       throw Object.assign(
         new Error(`未找到远程 workspace session，sessionId=${params.remoteSessionId}`),
@@ -1669,6 +1765,7 @@ export function createRemoteWorkspaceSessionManager(options: {
         retireActiveRoute(route, "app-shutdown", () => {
           routesBySessionId.delete(sessionId);
         });
+        settleRouteWaiters(sessionId, error);
         route.providerProvisioningDispose?.();
         if (!route.pendingRendererAttachment) continue;
         clearTimeout(route.pendingRendererAttachment.timeout);

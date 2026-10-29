@@ -1466,7 +1466,7 @@ describe("desktopRemoteSessions R1 window Host forwarding", () => {
     await connecting;
     child.postMessage.mockClear();
 
-    const mobile = manager.attachRemoteWorkspaceSessionHost({
+    const mobile = await manager.attachRemoteWorkspaceSessionHost({
       windowId: 1,
       remoteSessionId: "remote-session-1",
       workspacePath: "/work/demo",
@@ -1551,7 +1551,7 @@ describe("desktopRemoteSessions R1 window Host forwarding", () => {
       expect.objectContaining({ type: HostMessageTypes.AttachServicePort }),
       expect.anything(),
     );
-    expect(() =>
+    await expect(
       manager.attachRemoteWorkspaceSessionHost({
         windowId: 1,
         remoteSessionId: "remote-session-1",
@@ -1560,7 +1560,7 @@ describe("desktopRemoteSessions R1 window Host forwarding", () => {
         workspaceKey: workspaceIdentity,
         clientMode: "web-remote-replayable",
       }),
-    ).toThrow("远程 workspace source 当前离线");
+    ).rejects.toThrow("远程 workspace source 当前离线");
     manager.disposeRemoteWorkspaceSession("remote-session-1", "tab-closed");
     expect(child.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1843,7 +1843,7 @@ describe("desktopRemoteSessions R1 window Host forwarding", () => {
     expect((await pending).remote?.remoteSessionId).toBe("mobile-scope");
     manager.reattachRemoteWorkspaceSessionsForWindow(win as never, "renderer-reload");
     expect(win.webContents.postMessage).not.toHaveBeenCalled();
-    const mobile = manager.attachRemoteWorkspaceSessionHost({
+    const mobile = await manager.attachRemoteWorkspaceSessionHost({
       windowId: 1,
       remoteSessionId: "mobile-scope",
       workspacePath: "/new",
@@ -2100,7 +2100,7 @@ describe("mobile scope admission joins", () => {
         workspaceKey: tabIdentity,
         clientMode: "web-remote-replayable",
       });
-    expect(attachMobile).toThrow("远程 workspaceKey 与 logical session 不匹配。");
+    await expect(attachMobile()).rejects.toThrow("远程 workspaceKey 与 logical session 不匹配。");
 
     child.postMessage.mockClear();
     const previousAttachmentId = getLatestScopedAttachment(win).attachmentId;
@@ -2126,7 +2126,7 @@ describe("mobile scope admission joins", () => {
     await binding;
     child.postMessage.mockClear();
 
-    expect(attachMobile().remoteKind).toBe("wsl");
+    expect((await attachMobile()).remoteKind).toBe("wsl");
     expect(child.postMessage.mock.calls[0]?.[0]).toMatchObject({
       type: HostMessageTypes.AttachServicePort,
       clientMode: "web-remote-replayable",
